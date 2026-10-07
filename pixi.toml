@@ -8,3 +8,14 @@ version = "0.1.0"
 [tasks]
 
 [dependencies]
+
+[feature.docs.tasks]
+docs = "mkdocs serve"
+docs-build = "mkdocs build --strict"
+
+[feature.docs.dependencies]
+mkdocs-material = ">=9.7,<10"
+mkdocs = ">=1.6,<2"
+
+[environments]
+docs = { features = ["docs"], no-default-feature = true }

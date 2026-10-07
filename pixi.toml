@@ -1,0 +1,10 @@
+[workspace]
+authors = ["natapol2547 <robloxplay41@gmail.com>"]
+channels = ["https://prefix.dev/robostack-jazzy", "https://prefix.dev/conda-forge"]
+name = "walkie-agent-ros"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+
+[dependencies]

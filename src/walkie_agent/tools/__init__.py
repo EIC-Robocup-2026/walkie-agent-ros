@@ -11,23 +11,39 @@ from walkie_agent.tools.navigation import ListLocationsTool, NavigateToLocationT
 from walkie_agent.tools.speech import SpeakTool
 
 __all__ = [
+    "FORBIDDEN_NAMES",
     "ListLocationsTool",
     "NavigateToLocationTool",
     "SpeakTool",
     "build_walkie_tools",
 ]
 
+# ROS names that no tool may read or write. Every BaseROS2Tool checks this list
+# itself, so it only covers tools that are given it; it is a guard against
+# mistakes, not a security boundary.
+#   /cmd_vel       raw velocity commands would bypass Nav2's obstacle avoidance
+#   /walkie/reset  the agent must not wipe its own memory
+FORBIDDEN_NAMES = ["/cmd_vel", "/walkie/reset"]
+
 
 def build_walkie_tools(
-    connector: ROS2Connector, locations: dict[str, Location]
+    connector: ROS2Connector,
+    locations: dict[str, Location],
 ) -> list[BaseTool]:
     return [
         # Walkie-specific tools.
-        SpeakTool(connector=connector),
+        SpeakTool(connector=connector, forbidden=FORBIDDEN_NAMES),
         ListLocationsTool(locations=locations),
-        NavigateToLocationTool(connector=connector, locations=locations),
+        NavigateToLocationTool(
+            connector=connector, locations=locations, forbidden=FORBIDDEN_NAMES
+        ),
         # Premade RAI tools, used as-is.
-        GetCurrentPoseTool(connector=connector, frame_id="map", robot_frame_id="base_link"),
-        GetROS2TopicsNamesAndTypesTool(connector=connector),
+        GetCurrentPoseTool(
+            connector=connector,
+            frame_id="map",
+            robot_frame_id="base_link",
+            forbidden=FORBIDDEN_NAMES,
+        ),
+        GetROS2TopicsNamesAndTypesTool(connector=connector, forbidden=FORBIDDEN_NAMES),
         WaitForSecondsTool(),
     ]

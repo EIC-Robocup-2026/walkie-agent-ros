@@ -3,10 +3,12 @@
 import time
 
 import pytest
+from geometry_msgs.msg import Twist
 from rai.tools.ros2.navigation.nav2_blocking import GetCurrentPoseTool
+from std_msgs.msg import Empty, String
 
 from walkie_agent.locations import Location
-from walkie_agent.tools import NavigateToLocationTool, SpeakTool
+from walkie_agent.tools import NavigateToLocationTool, SpeakTool, build_walkie_tools
 
 
 def wait_until(predicate, timeout=3.0):
@@ -91,6 +93,22 @@ def test_speak_delivers_first_message(fake_walkie, connector):
 def test_speak_without_listener_reports_failure(connector):
     tool = SpeakTool(connector=connector, subscriber_wait_sec=0.3)
     assert tool.invoke({"text": "anyone?"}).startswith("Nothing was said")
+
+
+def test_tools_hide_forbidden_topics(connector, locations):
+    node = connector.node
+    node.create_publisher(Twist, "/cmd_vel", 10)
+    node.create_publisher(Empty, "/walkie/reset", 10)
+    node.create_publisher(String, "/walkie/visible_test_topic", 10)
+    lister = next(
+        t for t in build_walkie_tools(connector, locations)
+        if t.name == "get_ros2_topics_names_and_types"
+    )
+
+    assert wait_until(lambda: "/walkie/visible_test_topic" in lister.invoke({}))
+    topics = lister.invoke({})
+    assert "/cmd_vel" not in topics
+    assert "/walkie/reset" not in topics
 
 
 def test_rai_get_current_pose_reads_fake_tf(fake_walkie, connector):

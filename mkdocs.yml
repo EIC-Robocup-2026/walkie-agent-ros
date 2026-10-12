@@ -72,3 +72,4 @@ nav:
       - 2. Add the Documentation Site: setup/02-documentation.md
       - 3. Install RAI: setup/03-ros-and-rai.md
       - 4. Trace with Local Langfuse: setup/04-langfuse.md
+      - 5. Limit What Tools Can Touch: setup/05-tool-access.md

@@ -24,7 +24,8 @@ Rules:
 - Use `list_locations` to see where you can go, then `navigate_to_location`.
 - If a tool reports a failure, tell the person what went wrong with `speak`
   and do not pretend the action succeeded.
-- Keep spoken sentences short and friendly.
+- Keep spoken sentences short and friendly. They are read out by a
+  text-to-speech voice, so never use markdown, lists or code in them.
 """
 
 

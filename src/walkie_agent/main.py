@@ -1,11 +1,14 @@
 """Entry point: runs the Walkie agent as a ROS 2 node.
 
-The agent reads tasks from /from_human (rai_interfaces/msg/HRIMessage) and
-replies on /to_human. Any message on /walkie/reset (std_msgs/msg/Empty) makes
-it forget the conversation so far. The LLM is selected by config.toml (see RAI's
-get_llm_model), which is read from the current working directory.
-API keys are read from the environment, or from a .env file in the
-working directory (see .env.example).
+The agent reads tasks from /from_human (rai_interfaces/msg/HRIMessage). What
+it says out loud goes to /to_human through the speak tool, where RAI's
+text-to-speech agent picks it up; its plain-text replies go to the operator
+console topic, /walkie/console. Any message on /walkie/reset
+(std_msgs/msg/Empty) makes it forget the conversation so far.
+
+The LLM is selected by config.toml (see RAI's get_llm_model), which is read
+from the current working directory. API keys are read from the environment, or
+from a .env file in the working directory (see .env.example).
 """
 
 import argparse
@@ -23,7 +26,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--locations", default="config/locations.toml")
     parser.add_argument("--input-topic", default="/from_human")
-    parser.add_argument("--output-topic", default="/to_human")
+    parser.add_argument("--output-topic", default="/walkie/console")
     parser.add_argument("--reset-topic", default="/walkie/reset")
     args = parser.parse_args()
 

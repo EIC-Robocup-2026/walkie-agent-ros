@@ -95,6 +95,26 @@ def test_speak_without_listener_reports_failure(connector):
     assert tool.invoke({"text": "anyone?"}).startswith("Nothing was said")
 
 
+def test_speak_changes_speech_id_only_on_stop(fake_walkie, connector):
+    """RAI's TTS plays one speech ID until "stop"; the tool must follow the same rule."""
+    tool = SpeakTool(connector=connector)
+    commands = connector.node.create_publisher(String, "/voice_commands", 10)
+    assert wait_until(lambda: commands.get_subscription_count() > 0)
+
+    tool.invoke({"text": "One."})
+    commands.publish(String(data="pause"))
+    tool.invoke({"text": "Two."})
+    first_id = tool.speech_id
+    commands.publish(String(data="stop"))
+    assert wait_until(lambda: tool.speech_id != first_id)
+    tool.invoke({"text": "Three."})
+
+    assert wait_until(lambda: len(fake_walkie.heard_speech_ids) == 3)
+    one, two, three = fake_walkie.heard_speech_ids
+    assert one == two == first_id
+    assert three == tool.speech_id
+
+
 def test_tools_hide_forbidden_topics(connector, locations):
     node = connector.node
     node.create_publisher(Twist, "/cmd_vel", 10)

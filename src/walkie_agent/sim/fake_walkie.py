@@ -3,7 +3,8 @@
 Provides the same ROS 2 interfaces the agent uses on the real robot:
   - /navigate_to_pose  nav2_msgs/action/NavigateToPose (drives in a straight line)
   - TF map -> base_link at 20 Hz
-  - /walkie/speech     std_msgs/msg/String (logged instead of voiced)
+  - /to_human          rai_interfaces/msg/HRIMessage (logged instead of voiced,
+                       standing in for RAI's TextToSpeechAgent)
 
 Goals farther than `max_range` meters from the origin are aborted, so the
 failure path can be tested too.
@@ -19,8 +20,8 @@ from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
+from rai_interfaces.msg import HRIMessage
 from rclpy.node import Node
-from std_msgs.msg import String
 from tf2_ros import TransformBroadcaster
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
@@ -30,7 +31,7 @@ class FakeWalkie(Node):
         self,
         drive_time_sec: float = 0.5,
         max_range: float = 10.0,
-        speech_topic: str = "/walkie/speech",
+        speech_topic: str = "/to_human",
     ):
         super().__init__("fake_walkie")
         self.drive_time_sec = drive_time_sec
@@ -39,12 +40,13 @@ class FakeWalkie(Node):
         self.y = 0.0
         self.yaw = 0.0
         self.heard: list[str] = []
+        self.heard_speech_ids: list[str] = []
         self._lock = threading.Lock()
 
         group = ReentrantCallbackGroup()
         self._tf = TransformBroadcaster(self)
         self.create_timer(0.05, self._publish_tf, callback_group=group)
-        self.create_subscription(String, speech_topic, self._on_speech, 10)
+        self.create_subscription(HRIMessage, speech_topic, self._on_speech, 10)
         self._nav_server = ActionServer(
             self,
             NavigateToPose,
@@ -80,9 +82,10 @@ class FakeWalkie(Node):
         t.transform.rotation.w = qw
         self._tf.sendTransform(t)
 
-    def _on_speech(self, msg: String) -> None:
-        self.heard.append(msg.data)
-        self.get_logger().info(f"[Walkie says] {msg.data}")
+    def _on_speech(self, msg: HRIMessage) -> None:
+        self.heard.append(msg.text)
+        self.heard_speech_ids.append(msg.communication_id)
+        self.get_logger().info(f"[Walkie says] {msg.text}")
 
     def _execute_nav(self, goal_handle):
         target = goal_handle.request.pose.pose
@@ -124,7 +127,7 @@ def main() -> None:
     node = FakeWalkie()
     executor = MultiThreadedExecutor()
     executor.add_node(node)
-    node.get_logger().info("Fake Walkie is up (navigate_to_pose, TF, /walkie/speech).")
+    node.get_logger().info("Fake Walkie is up (navigate_to_pose, TF, /to_human).")
     try:
         executor.spin()
     except KeyboardInterrupt:

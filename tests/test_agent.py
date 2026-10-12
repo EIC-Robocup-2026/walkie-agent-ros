@@ -12,6 +12,9 @@ from std_msgs.msg import Empty
 from scripted_llm import ScriptedChatModel, tool_call
 from walkie_agent.agent import SYSTEM_PROMPT, WalkieAgent, create_walkie_agent
 
+# The agent's plain-text replies; speech goes to /to_human instead.
+CONSOLE = "/walkie/console"
+
 
 def wait_until(predicate, timeout=5.0):
     deadline = time.monotonic() + timeout
@@ -67,18 +70,18 @@ def test_agent_sees_tool_failure(connector, locations):
 
 
 def test_agent_over_ros_hri_topics(fake_walkie, connector, locations):
-    """A human sends a task on /from_human; the agent acts and replies on /to_human."""
+    """A human sends a task on /from_human; the agent acts and replies on the console topic."""
     agent_hri = ROS2HRIConnector(node_name="walkie_agent_hri_test")
     human_hri = ROS2HRIConnector(node_name="human_console_test")
     replies: list[str] = []
-    human_hri.register_callback("/to_human", lambda msg: replies.append(msg.text))
+    human_hri.register_callback(CONSOLE, lambda msg: replies.append(msg.text))
 
     llm = ScriptedChatModel(responses=fetch_drink_script())
     agent = create_walkie_agent(
         llm,
         connector,
         locations,
-        target_connectors={"/to_human": agent_hri},
+        target_connectors={CONSOLE: agent_hri},
         stream_response=False,
     )
     agent.subscribe_source("/from_human", agent_hri)
@@ -108,14 +111,14 @@ def test_reset_topic_clears_memory(connector, locations):
     agent_hri = ROS2HRIConnector(node_name="walkie_agent_hri_reset_test")
     human_hri = ROS2HRIConnector(node_name="human_console_reset_test")
     replies: list[str] = []
-    human_hri.register_callback("/to_human", lambda msg: replies.append(msg.text))
+    human_hri.register_callback(CONSOLE, lambda msg: replies.append(msg.text))
     reset_pub = human_hri.node.create_publisher(Empty, "/walkie/reset", 10)
 
     llm = ScriptedChatModel(
         responses=[AIMessage(content="first"), AIMessage(content="second"), AIMessage(content="third")]
     )
     agent = create_walkie_agent(
-        llm, connector, locations, target_connectors={"/to_human": agent_hri}, stream_response=False
+        llm, connector, locations, target_connectors={CONSOLE: agent_hri}, stream_response=False
     )
     agent.subscribe_source("/from_human", agent_hri)
     agent.subscribe_reset(connector, "/walkie/reset")

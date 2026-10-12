@@ -92,8 +92,8 @@ pixi run fake-walkie
 pixi run agent
 ```
 
-```bash title="Terminal 3: listen to what the robot says"
-pixi run ros2 topic echo /walkie/speech
+```bash title="Terminal 3: read the agent's text replies"
+pixi run ros2 topic echo /walkie/console rai_interfaces/msg/HRIMessage --field text
 ```
 
 Then send the agent a task, from any terminal:
@@ -103,15 +103,16 @@ pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
   "{text: 'Please go to the kitchen and say hi when you get there.'}"
 ```
 
-The agent's log in terminal 2 shows each tool call. Terminal 3 prints what
-the robot says, for example `data: Hi everyone! I have arrived in the kitchen.`
+The agent's log in terminal 2 shows each tool call. Terminal 1 logs what the
+robot says, for example `[Walkie says] Hi everyone! I have arrived in the
+kitchen.`, and terminal 3 shows the agent's final text reply.
 
-| Topic            | Direction  | What it carries                                       |
-| ---------------- | ---------- | ----------------------------------------------------- |
-| `/from_human`    | to agent   | Tasks for the agent (`rai_interfaces/msg/HRIMessage`) |
-| `/to_human`      | from agent | The agent's text replies, for the operator            |
-| `/walkie/speech` | from agent | What the robot says out loud (`std_msgs/msg/String`)  |
-| `/walkie/reset`  | to agent   | Makes the agent forget the conversation (`std_msgs/msg/Empty`) |
+| Topic             | Direction  | What it carries                                                          |
+| ----------------- | ---------- | ------------------------------------------------------------------------ |
+| `/from_human`     | to agent   | Tasks, typed or from speech recognition (`rai_interfaces/msg/HRIMessage`) |
+| `/to_human`       | from agent | What the robot says out loud, for text-to-speech (`HRIMessage`)          |
+| `/walkie/console` | from agent | The agent's text replies, for the operator (`HRIMessage`)                |
+| `/walkie/reset`   | to agent   | Makes the agent forget the conversation (`std_msgs/msg/Empty`)           |
 
 The places the robot can go are listed in `config/locations.toml`.
 

@@ -442,6 +442,7 @@ environments:
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros-jazzy-tf2-ros-py-0.36.22-np2py312h2ed9cc7_21.conda
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros-jazzy-tracetools-8.2.6-hb0f4dca_25.conda
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros-jazzy-unique-identifier-msgs-2.5.1-hb0f4dca_25.conda
+      - conda: https://prefix.dev/robostack-jazzy/linux-64/ros-jazzy-vision-msgs-4.1.1-hb0f4dca_25.conda
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-action-msgs-2.0.4-np2py312h2ed9cc7_21.conda
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-actionlib-msgs-5.3.8-np2py312h2ed9cc7_21.conda
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-ament-cmake-2.5.6-np2py312h2ed9cc7_21.conda
@@ -660,6 +661,7 @@ environments:
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-urdf-parser-plugin-2.10.1-np2py312h2ed9cc7_21.conda
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-urdfdom-6.0-py312h24bf083_21.conda
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-urdfdom-headers-3.0-py312h24bf083_21.conda
+      - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-vision-msgs-4.1.1-np2py312h2ed9cc7_21.conda
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-visualization-msgs-5.3.8-np2py312h2ed9cc7_21.conda
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-yaml-cpp-vendor-9.0.1-np2py312h2ed9cc7_21.conda
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-zstd-vendor-0.26.11-np2py312h2ed9cc7_21.conda
@@ -8096,6 +8098,14 @@ packages:
   run_exports: {}
   size: 2076
   timestamp: 1791431908542
+- conda: https://prefix.dev/robostack-jazzy/linux-64/ros-jazzy-vision-msgs-4.1.1-hb0f4dca_25.conda
+  sha256: 8c6d861f640738bb1aeb8e395cd312aa9ee79470da600fefe61d0da1341afffe
+  md5: 8e68b8d67cb0828866cbd61092d3edd8
+  depends:
+  - ros2-vision-msgs ==4.1.1
+  run_exports: {}
+  size: 2027
+  timestamp: 1791434739753
 - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-action-msgs-2.0.4-np2py312h2ed9cc7_21.conda
   sha256: 75c91d670430db142488c4dbe62dc83108f934d70c0c1b617a277d3129e50999
   md5: df4d6a8bfc17c1c02bf6089769bb1e20
@@ -12782,6 +12792,26 @@ packages:
   run_exports: {}
   size: 7177
   timestamp: 1788258051295
+- conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-vision-msgs-4.1.1-np2py312h2ed9cc7_21.conda
+  sha256: f77c391e681c01331d09f886d4c9cb5b44a5346a3bddf121d2e2e6b177c4e2ce
+  md5: eba11ef262f122fb2222944be4b31ea3
+  depends:
+  - python
+  - ros2-distro-mutex 0.16.* jazzy_*
+  - ros2-geometry-msgs
+  - ros2-ros-workspace
+  - ros2-rosidl-default-runtime
+  - ros2-std-msgs
+  - __glibc >=2.17,<3.0.a0
+  - libgcc >=14
+  - libstdcxx >=14
+  - python_abi 3.12.* *_cp312
+  - numpy >=1.25,<3
+  - ros2-distro-mutex >=0.16.0,<0.17.0a0
+  license: Apache-2.0
+  run_exports: {}
+  size: 270824
+  timestamp: 1788261641947
 - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-visualization-msgs-5.3.8-np2py312h2ed9cc7_21.conda
   sha256: 8468a8f47209d71398d00017a8225dbc41c5952b82878c8f89ca3b461677eb70
   md5: 27206670ed4d1f73637c29d53281f083

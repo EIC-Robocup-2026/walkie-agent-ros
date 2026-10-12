@@ -34,6 +34,10 @@ cxx-compiler = "*"
 cmake = "*"
 pkg-config = "*"
 make = "*"
+# rai_interfaces also builds against vision_msgs, which ros-base does not
+# include. Without it here, CMake falls back to an apt ROS install on PATH, if
+# there is one, and the build fails on computers without it.
+ros-jazzy-vision-msgs = "*"
 pytest = "*"
 ros-jazzy-rqt-graph = ">=1.5.6,<2"
 # Voice (rai_s2s): sounddevice needs the PortAudio library, and KokoroTTS

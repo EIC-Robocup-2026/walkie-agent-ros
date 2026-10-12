@@ -12,6 +12,7 @@ from a .env file in the working directory (see .env.example).
 """
 
 import argparse
+from pathlib import Path
 
 from dotenv import load_dotenv
 from rai import get_llm_model
@@ -28,6 +29,7 @@ def main() -> None:
     parser.add_argument("--input-topic", default="/from_human")
     parser.add_argument("--output-topic", default="/walkie/console")
     parser.add_argument("--reset-topic", default="/walkie/reset")
+    parser.add_argument("--whoami-dir", type=Path, default=Path("whoami"))
     args = parser.parse_args()
 
     # Variables already set in the shell take precedence over .env.
@@ -44,6 +46,7 @@ def main() -> None:
             connector=connector,
             locations=load_locations(args.locations),
             target_connectors={args.output_topic: hri_connector},
+            whoami_dir=args.whoami_dir,
         )
         agent.subscribe_source(args.input_topic, hri_connector)
         agent.subscribe_reset(connector, args.reset_topic)

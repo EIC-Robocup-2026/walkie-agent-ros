@@ -3,6 +3,7 @@
 import secrets
 import threading
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -13,6 +14,7 @@ from std_msgs.msg import Empty
 
 from walkie_agent.locations import Location
 from walkie_agent.tools import build_walkie_tools
+from walkie_agent.whoami import build_system_prompt
 
 SYSTEM_PROMPT = """\
 You are Walkie, a home service robot competing in RoboCup@Home.
@@ -90,11 +92,14 @@ def create_walkie_agent(
     locations: dict[str, Location],
     target_connectors: dict[str, HRIConnector[HRIMessage]],
     stream_response: bool = True,
+    whoami_dir: Path | None = None,
 ) -> WalkieAgent:
+    """Build the agent. `whoami_dir` adds the robot description and documentation
+    search from `pixi run whoami-build`, when they have been built (see whoami.py)."""
     return WalkieAgent(
         target_connectors=target_connectors,
         llm=llm,
-        tools=build_walkie_tools(connector, locations),
-        system_prompt=SYSTEM_PROMPT,
+        tools=build_walkie_tools(connector, locations, whoami_dir),
+        system_prompt=build_system_prompt(SYSTEM_PROMPT, whoami_dir),
         stream_response=stream_response,
     )

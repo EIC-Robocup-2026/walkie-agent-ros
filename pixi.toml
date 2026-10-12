@@ -90,6 +90,12 @@ description = "Run the Walkie RAI agent (reads tasks from /from_human)"
 cmd = "pytest"
 description = "Run the test suite"
 
+# Robot identity (RAI's rai_whoami). Calls the LLM and embeddings model from
+# config.toml, so it costs a little each run. See docs/setup/06-whoami.md.
+[tasks.whoami-build]
+cmd = "build-whoami whoami --build-vector-db"
+description = "Build Walkie's description and documentation index into whoami/generated/"
+
 # Self-hosted Langfuse for tracing agent runs. Needs Docker on the host.
 # See docs/setup/04-langfuse.md.
 [tasks.langfuse-setup]

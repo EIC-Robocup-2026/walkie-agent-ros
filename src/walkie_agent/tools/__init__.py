@@ -1,5 +1,7 @@
 """Tools available to the Walkie agent: custom Walkie tools plus RAI's premade ones."""
 
+from pathlib import Path
+
 from langchain_core.tools import BaseTool
 from rai.communication.ros2 import ROS2Connector
 from rai.tools.ros2 import GetROS2TopicsNamesAndTypesTool
@@ -29,8 +31,9 @@ FORBIDDEN_NAMES = ["/cmd_vel", "/walkie/reset"]
 def build_walkie_tools(
     connector: ROS2Connector,
     locations: dict[str, Location],
+    whoami_dir: Path | None = None,
 ) -> list[BaseTool]:
-    return [
+    tools: list[BaseTool] = [
         # Walkie-specific tools.
         SpeakTool(connector=connector, forbidden=FORBIDDEN_NAMES),
         ListLocationsTool(locations=locations),
@@ -47,3 +50,10 @@ def build_walkie_tools(
         GetROS2TopicsNamesAndTypesTool(connector=connector, forbidden=FORBIDDEN_NAMES),
         WaitForSecondsTool(),
     ]
+    if whoami_dir is not None:
+        from walkie_agent.whoami import build_docs_tool
+
+        docs_tool = build_docs_tool(whoami_dir)
+        if docs_tool is not None:
+            tools.append(docs_tool)
+    return tools

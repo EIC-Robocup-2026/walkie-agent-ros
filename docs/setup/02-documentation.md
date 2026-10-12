@@ -129,5 +129,31 @@ Some useful things you can write in a page:
         Content of tab two.
     ```
 
+=== "Image"
+
+    Put image files in `docs/assets/`, then link them with a path relative
+    to your page:
+
+    ```markdown
+    ![rqt_graph of the agent](../assets/rqt-graph.png)
+    ```
+
+    From `docs/setup/my-page.md` the path starts with `../assets/`. From a
+    page directly in `docs/`, it is `assets/rqt-graph.png`.
+
+    To set the width, or add a caption:
+
+    ```markdown
+    ![rqt_graph of the agent](../assets/rqt-graph.png){ width="500" }
+
+    <figure markdown="span">
+      ![rqt_graph of the agent](../assets/rqt-graph.png){ width="500" }
+      <figcaption>Nodes and topics while the agent runs</figcaption>
+    </figure>
+    ```
+
+    Use PNG for screenshots and keep files under about 1 MB, because every
+    image is stored in Git forever.
+
 See the [Material reference](https://squidfunk.github.io/mkdocs-material/reference/)
 for everything else.

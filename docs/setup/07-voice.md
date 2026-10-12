@@ -16,6 +16,7 @@ flowchart LR
     agent -- "speak tool: /to_human" --> tts[voice-tts]
     tts --> spk([Speaker])
     asr -- "/voice_commands" --> tts
+    tts -- "/walkie/speaking" --> asr
     agent -- "/walkie/console" --> op([Operator terminal])
 ```
 
@@ -24,6 +25,8 @@ flowchart LR
   and the text goes to `/from_human`.
 - **voice-tts** (text to speech) speaks every message on `/to_human`. We use
   Kokoro, which runs locally and is free.
+- While voice-tts plays, it says so on `/walkie/speaking`, and voice-asr
+  ignores the microphone. Otherwise Walkie would hear itself.
 - The agent says things out loud **only** with its `speak` tool. Its final
   text reply goes to `/walkie/console`, so a summary is not read out twice.
 
@@ -150,10 +153,27 @@ voice, the default microphone is the wrong one or muted: check it with
 
 ## How speaking and listening work together
 
-- While you are talking, ASR sends `pause` on `/voice_commands`, so Walkie
-  does not talk over you.
+Walkie does not listen while it speaks
+([ADR-0029](../architecture/decisions/0029-half-duplex-voice.md)):
+
+- While audio plays, voice-tts publishes `true` on `/walkie/speaking` every
+  0.25 s, and `false` once when playback stops.
+- voice-asr ignores the microphone meanwhile, and for 0.5 s after. Its
+  terminal prints `Walkie is speaking, ignoring the microphone`. Without
+  this, the microphone hears Walkie's speaker, and Walkie interrupts
+  itself and hears its own words as a new task.
+- So you cannot interrupt Walkie mid-sentence, and anything you say while
+  it talks is lost. Wait until it finishes.
+
+While Walkie is quiet, ASR controls TTS on `/voice_commands`, as in RAI:
+
+- While you are talking, ASR sends `pause`. Anything the agent says
+  meanwhile waits, so Walkie does not start talking over you. (RAI's own
+  TTS would start anyway, so voice-tts holds new speech for up to 5 s after
+  the last `pause`.)
 - When you finish, ASR sends `stop`, and TTS drops whatever it still had to
-  say. Your new request matters more than the old answer.
+  say, including anything that waited. Your new request matters more than
+  the old answer.
 - RAI's TTS plays messages from **one conversation ID at a time**. It locks
   onto the first ID it receives, and only accepts a new one after a `stop`.
 - So the `speak` tool keeps one ID and changes it only when it sees `stop`.
@@ -165,7 +185,7 @@ voice, the default microphone is the wrong one or muted: check it with
     command, subscribes as best effort. RAI's ASR then also publishes best
     effort, and voice-tts, which subscribes as reliable, no longer receives
     `pause` or `stop`. Add `--qos-reliability reliable` when you watch this
-    topic.
+    topic. `/walkie/speaking` uses fixed settings and is safe to watch.
 
 ## Running on the robot PC
 
@@ -196,5 +216,5 @@ the robot's microphone and speaker, not only "Dummy Output".
     model names like `"LocalWhisper (Free)"`, but the config loader only
     accepts `"LocalWhisper"`. So it fails for every valid config.
     `src/walkie_agent/voice.py` builds the agent by hand from the same
-    config instead. `TextToSpeechAgent.from_config()` works and is used
-    as is.
+    config instead. `TextToSpeechAgent.from_config()` works, and the
+    half-duplex subclass uses it.

@@ -4,9 +4,14 @@
     python -m walkie_agent.voice tts   # /to_human -> speaker
 
 Settings come from the [asr] and [tts] sections of config.toml in the working
-directory. The two agents coordinate over /voice_commands (std_msgs/String):
-while a person is speaking, ASR pauses playback, and once their speech has been
-transcribed it sends "stop", which drops whatever TTS had left to say.
+directory. The two agents coordinate over two topics:
+
+- /walkie/speaking (std_msgs/Bool): TTS reports whether it is playing, and ASR
+  ignores the microphone meanwhile, so Walkie does not hear itself (see
+  walkie_agent.half_duplex).
+- /voice_commands (std_msgs/String): while a person is speaking, ASR pauses
+  playback and TTS holds anything new, and once their speech has been
+  transcribed ASR sends "stop", which drops whatever TTS had left to say.
 """
 
 import argparse
@@ -74,13 +79,12 @@ def check_audio_device(name: str, direction: str) -> None:
 
 
 def build_asr_agent(config_path: Path) -> BaseAgent:
-    """Build RAI's SpeechRecognitionAgent from the [asr] section of config.toml.
+    """Build the speech recognition agent from the [asr] section of config.toml.
 
     SpeechRecognitionAgent.from_config() is not used because in rai_s2s 1.0.x
     it expects model names such as "LocalWhisper (Free)", which its own config
     loader rejects, so it fails for every valid config.
     """
-    from rai_s2s.asr import SpeechRecognitionAgent
     from rai_s2s.asr.agents.initialization import load_config
     from rai_s2s.asr.models import (
         FasterWhisper,
@@ -90,6 +94,8 @@ def build_asr_agent(config_path: Path) -> BaseAgent:
         SileroVAD,
     )
     from rai_s2s.sound_device import SoundDeviceConfig
+
+    from walkie_agent.half_duplex import HalfDuplexSpeechRecognitionAgent
 
     cfg = load_config(str(config_path))
     check_audio_device(cfg.microphone.device_name, "input")
@@ -121,7 +127,7 @@ def build_asr_agent(config_path: Path) -> BaseAgent:
             raise ValueError(f"Unknown [asr] transcription_model: {transcribe.model_type}")
 
     vad = SileroVAD(SAMPLE_RATE, cfg.voice_activity_detection.threshold)
-    agent = SpeechRecognitionAgent(
+    agent = HalfDuplexSpeechRecognitionAgent(
         microphone,
         "walkie_asr",
         model,
@@ -136,12 +142,13 @@ def build_asr_agent(config_path: Path) -> BaseAgent:
 
 
 def build_tts_agent(config_path: Path) -> BaseAgent:
-    """Build RAI's TextToSpeechAgent from the [tts] section of config.toml."""
-    from rai_s2s.tts import TextToSpeechAgent
+    """Build the text-to-speech agent from the [tts] section of config.toml."""
     from rai_s2s.tts.agents.initialization import load_config
 
+    from walkie_agent.half_duplex import HalfDuplexTextToSpeechAgent
+
     check_audio_device(load_config(str(config_path)).speaker.device_name, "output")
-    return TextToSpeechAgent.from_config(str(config_path))
+    return HalfDuplexTextToSpeechAgent.from_config(str(config_path))
 
 
 def main() -> None:

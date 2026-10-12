@@ -2,7 +2,8 @@
 and the audio device checks that run before the voice agents start.
 
 The agents themselves need a microphone and a speaker, so they are tested by
-hand (see docs/setup/07-voice.md).
+hand (see docs/setup/07-voice.md). How they take turns is tested with fake
+sound devices in test_half_duplex.py.
 """
 
 import os

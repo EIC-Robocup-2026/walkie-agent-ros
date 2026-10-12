@@ -63,7 +63,9 @@ flowchart TB
   agent -- "get_current_pose" --> tf
 ```
 
-The voice box is two nodes, speech recognition and text-to-speech. See
+The voice box is two nodes, speech recognition and text-to-speech. Speech
+recognition ignores the microphone while Walkie speaks, so Walkie does not
+hear itself ([ADR-0029](decisions/0029-half-duplex-voice.md)). See
 [Voice](../setup/07-voice.md) for how they connect.
 
 `pixi run fake-walkie` stands in for the robot during development: it
@@ -246,3 +248,7 @@ proposed. See [Architecture](index.md) for how to add one.
 
 The arm manipulation decisions, ADR-0021 to ADR-0028, are on the
 [Arm Manipulation](manipulation.md#decisions) page.
+
+??? success "ADR-0029: Stop listening while Walkie speaks · Accepted"
+
+    --8<-- "architecture/decisions/0029-half-duplex-voice.md:body"

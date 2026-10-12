@@ -36,6 +36,10 @@ pkg-config = "*"
 make = "*"
 pytest = "*"
 ros-jazzy-rqt-graph = ">=1.5.6,<2"
+# Voice (rai_s2s): sounddevice needs the PortAudio library, and KokoroTTS
+# downloads its model files with wget on first use.
+portaudio = "*"
+wget = "*"
 
 # Python packages that are not on conda-forge come from PyPI. Pixi resolves
 # these together with the conda packages above into the same environment.
@@ -43,6 +47,23 @@ ros-jazzy-rqt-graph = ">=1.5.6,<2"
 rai-core = ">=2.12.1, <2.13"
 python-dotenv = ">=1.0"
 walkie-agent = { path = ".", editable = true }
+# rai_s2s and rai_whoami are not published on PyPI for this RAI release, so
+# they come from the RAI repository. Tag 2.12.2 has the same rai_s2s and
+# rai_whoami sources as 2.12.1 (our rai-core), but drops a broken submodule
+# entry that makes a git install of 2.12.1 fail.
+# rai_s2s imports every speech backend at import time, so all extras except
+# the GPU one are required even though we only use Whisper and Kokoro.
+rai-s2s = { git = "https://github.com/RobotecAI/rai.git", tag = "2.12.2", subdirectory = "src/rai_s2s", extras = [
+  "elevenlabs",
+  "whisper",
+  "fasterwhisper",
+  "wakeword",
+  "kokoro",
+] }
+rai-whoami = { git = "https://github.com/RobotecAI/rai.git", tag = "2.12.2", subdirectory = "src/rai_whoami" }
+# rai_s2s pins torchaudio 2.3.1, which pulls torch 2.3.1. The PyPI wheels are
+# CUDA 12.1 builds (NVIDIA driver 525 or newer), so Whisper runs on the GPU
+# when one is present and falls back to the CPU otherwise.
 
 [tasks.clone-ros2-ws]
 cmd = "vcs import --input ros2_ws.repos"

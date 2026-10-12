@@ -1,0 +1,7 @@
+repositories:
+  # HRIMessage and other RAI message types. Not published on RoboStack, so it
+  # is built from source. Pinned to the main-branch commit RAI 2.12 tracks.
+  ros2_ws/src/rai_interfaces:
+    type: git
+    url: https://github.com/RobotecAI/rai_interfaces.git
+    version: f03dc0f217679980447dfead177979f485eb44f6

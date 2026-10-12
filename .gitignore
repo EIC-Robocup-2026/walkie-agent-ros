@@ -1,5 +1,16 @@
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+# Local secrets (see .env.example)
+.env
 # MkDocs build output
 site/
+# colcon output and vcs-imported sources (see ros2_ws.repos)
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+ros2_ws/src/rai_interfaces/
+# Python
+__pycache__/
+*.egg-info/
+.pytest_cache/

@@ -1,0 +1,9 @@
+{
+	"python-envs.defaultEnvManager": "renan-r-santos.pixi-code:pixi",
+	"python-envs.defaultPackageManager": "renan-r-santos.pixi-code:pixi",
+	"python.defaultInterpreterPath": "${workspaceFolder}/.pixi/envs/default/bin/python",
+	// Message packages built by `pixi run build-ros2` live outside the pixi env.
+	"python.analysis.extraPaths": [
+		"${workspaceFolder}/ros2_ws/install/rai_interfaces/lib/python3.12/site-packages"
+	]
+}

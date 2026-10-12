@@ -12,3 +12,4 @@ steps in your own project or when you add a new ROS package.
 | [4. Trace with local Langfuse](04-langfuse.md)       | Runs a Langfuse server in Docker to see what the agent does     |
 | [5. Limit what tools can touch](05-tool-access.md)   | Keeps every tool away from topics such as `/cmd_vel`            |
 | [6. Give Walkie an identity](06-whoami.md)           | Adds the robot's description and documents to the agent         |
+| [7. Talk to Walkie by voice](07-voice.md)            | Adds speech recognition and text-to-speech with RAI's `rai_s2s` |

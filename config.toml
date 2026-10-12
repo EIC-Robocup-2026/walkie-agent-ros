@@ -36,13 +36,19 @@ host = "http://localhost:3000"
 use_langsmith = false
 host = "https://api.smith.langchain.com"
 
-# Speech input (speech-to-text). RAI defaults from `rai-config-init`.
+# Speech input (speech-to-text), used by `pixi run voice-asr`.
+# transcription_model: "LocalWhisper" or "FasterWhisper" (local, free), or
+# "OpenAI" (needs a real OpenAI key, not the OpenRouter key in .env).
+# List microphone names with: pixi run list-audio-devices
 [asr]
 recording_device_name = "default"
 transcription_model = "LocalWhisper"
 language = "en"
 vad_model = "SileroVAD"
-silence_grace_period = 0.3
+# Seconds of silence before the recording is cut and transcribed. Too short
+# splits a sentence at every pause.
+silence_grace_period = 1.0
+# Speech probability (0-1) that counts as voice. Raise it in a noisy room.
 vad_threshold = 0.3
 use_wake_word = false
 wake_word_model = ""
@@ -50,8 +56,11 @@ wake_word_threshold = 0.5
 wake_word_model_name = ""
 transcription_model_name = "tiny"
 
-# Speech output (text-to-speech). RAI defaults from `rai-config-init`.
+# Speech output (text-to-speech), used by `pixi run voice-tts`.
+# vendor: "KokoroTTS" (local, free; downloads ~300 MB of model files on first
+# use), "OpenTTS" (needs its Docker server) or "ElevenLabs" (cloud; needs
+# ELEVENLABS_API_KEY and a voice). An empty voice uses the vendor's default.
 [tts]
-vendor = "ElevenLabs"
+vendor = "KokoroTTS"
 voice = ""
 speaker_device_name = "default"

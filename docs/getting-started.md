@@ -113,6 +113,7 @@ kitchen.`, and terminal 3 shows the agent's final text reply.
 | `/to_human`       | from agent | What the robot says out loud, for text-to-speech (`HRIMessage`)          |
 | `/walkie/console` | from agent | The agent's text replies, for the operator (`HRIMessage`)                |
 | `/walkie/reset`   | to agent   | Makes the agent forget the conversation (`std_msgs/msg/Empty`)           |
+| `/voice_commands` | voice      | Pause/stop speech playback (`std_msgs/msg/String`), see [Voice](setup/07-voice.md) |
 
 The places the robot can go are listed in `config/locations.toml`.
 
@@ -143,6 +144,8 @@ you edit a file in `docs/`. Press ++ctrl+c++ to stop.
 
 - [Local Langfuse](setup/04-langfuse.md): see every step the agent takes in
   a web UI.
+- [Voice](setup/07-voice.md): talk to the agent with a microphone and hear
+  it through a speaker.
 - [Setup Log](setup/index.md): how this repository was built, one step at a
   time.
 - [Writing Docs](setup/02-documentation.md#writing-a-new-page): how to add

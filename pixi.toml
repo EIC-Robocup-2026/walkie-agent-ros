@@ -90,6 +90,20 @@ description = "Run the Walkie RAI agent (reads tasks from /from_human)"
 cmd = "pytest"
 description = "Run the test suite"
 
+# Voice interface (RAI's rai_s2s agents), configured by [asr] and [tts] in
+# config.toml. See docs/setup/07-voice.md.
+[tasks.voice-asr]
+cmd = "python -m walkie_agent.voice asr"
+description = "Listen on the microphone and send transcribed speech to /from_human"
+
+[tasks.voice-tts]
+cmd = "python -m walkie_agent.voice tts"
+description = "Speak everything published on /to_human"
+
+[tasks.list-audio-devices]
+cmd = "python -c 'import sounddevice; print(sounddevice.query_devices())'"
+description = "List microphone and speaker names for config.toml"
+
 # Robot identity (RAI's rai_whoami). Calls the LLM and embeddings model from
 # config.toml, so it costs a little each run. See docs/setup/06-whoami.md.
 [tasks.whoami-build]

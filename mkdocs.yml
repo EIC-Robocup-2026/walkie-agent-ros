@@ -74,3 +74,4 @@ nav:
       - 4. Trace with Local Langfuse: setup/04-langfuse.md
       - 5. Limit What Tools Can Touch: setup/05-tool-access.md
       - 6. Give Walkie an Identity: setup/06-whoami.md
+      - 7. Talk to Walkie by Voice: setup/07-voice.md

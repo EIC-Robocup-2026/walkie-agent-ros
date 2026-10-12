@@ -27,6 +27,7 @@ from time import monotonic
 from typing import Any
 
 import numpy as np
+import sounddevice
 from rai_s2s.asr import SpeechRecognitionAgent
 from rai_s2s.tts import TextToSpeechAgent
 from std_msgs.msg import Bool
@@ -39,7 +40,7 @@ SPEAKING_REPEAT = 0.25
 # speech recognition deaf for at most this long.
 SPEAKING_TIMEOUT = 1.0
 # Seconds the microphone stays ignored after playback stops, for audio still in
-# the output buffers and the room's echo.
+# the output buffers and the room's echo. Must be longer than SPEAKER_LATENCY.
 ECHO_TAIL = 0.5
 # Seconds without a speaker callback after which playback counts as stopped.
 # The callbacks stop when the audio stream dies, for example when the sound
@@ -50,6 +51,12 @@ SPEAKER_STALL_TIMEOUT = 0.5
 # after the voice ends, so this only matters if it dies in between. Must be
 # longer than silence_grace_period in config.toml.
 PAUSE_TIMEOUT = 5.0
+# Seconds of audio buffered for the speaker. RAI's "low" latency (about 9 ms)
+# stalls PipeWire on some sound cards, and nothing plays. With "high" (about
+# 35 ms), playback stutters: while the next sentence is synthesized, this
+# process pauses for tens of milliseconds, the buffer runs dry and old audio is
+# replayed.
+SPEAKER_LATENCY = 0.2
 
 
 class HalfDuplexTextToSpeechAgent(TextToSpeechAgent):
@@ -75,6 +82,9 @@ class HalfDuplexTextToSpeechAgent(TextToSpeechAgent):
         return self.ros2_connector
 
     def run(self) -> None:
+        # RAI's SoundDeviceAPI sets sounddevice's default latency to "low", and
+        # super().run() opens the speaker stream with it. See SPEAKER_LATENCY.
+        sounddevice.default.latency = SPEAKER_LATENCY
         super().run()
         self.speaking_thread = Thread(target=self._publish_speaking, daemon=True)
         self.speaking_thread.start()
@@ -103,9 +113,11 @@ class HalfDuplexTextToSpeechAgent(TextToSpeechAgent):
         # happens on speaking_thread.
         now = monotonic()
         self.last_callback = now
+        # RAI writes nothing while it is playing with no audio queued, and the
+        # stream then repeats whatever was left in its buffer.
+        outdata.fill(0)
         if now < self.paused_until:
             # Leave the queued audio where it is until "play" or "stop".
-            outdata.fill(0)
             speaking = False
         else:
             super()._speaker_callback(outdata, frames, time, status_dict)

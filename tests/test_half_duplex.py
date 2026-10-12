@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 import rai_s2s.asr.agents.asr_agent as asr_module
 import rai_s2s.tts.agents.tts_agent as tts_module
+import sounddevice
 from pydub import AudioSegment
 from rai_s2s.asr.agents.initialization import load_config as load_asr_config
 from std_msgs.msg import Bool
@@ -22,6 +23,7 @@ from walkie_agent import half_duplex
 from walkie_agent.half_duplex import (
     ECHO_TAIL,
     PAUSE_TIMEOUT,
+    SPEAKER_LATENCY,
     SPEAKER_STALL_TIMEOUT,
     SPEAKING_REPEAT,
     SPEAKING_TIMEOUT,
@@ -57,13 +59,16 @@ class FakeVAD:
 
 class FakeSpeaker:
     def __init__(self, **kwargs):
-        pass
+        # RAI's SoundDeviceAPI sets this when it is created.
+        sounddevice.default.latency = ("low", "low")
+        self.stream_latency = None
 
     def get_audio_params(self, target):
         return 24000, FRAMES, 1
 
     def start_action(self, *args, **kwargs):
-        pass
+        # The real connector opens the speaker stream here.
+        self.stream_latency = tuple(sounddevice.default.latency)
 
 
 class FakeVoice:
@@ -109,6 +114,10 @@ def make_tts(monkeypatch):
     agent.published instead of being published.
     """
     monkeypatch.setattr(tts_module, "SoundDeviceConnector", FakeSpeaker)
+    # Restore the process-wide default that the agents change.
+    monkeypatch.setattr(
+        sounddevice.default, "latency", tuple(sounddevice.default.latency)
+    )
     agents = []
 
     def make(record=False):
@@ -271,6 +280,12 @@ def test_pause_outlasts_the_asr_grace_period():
     assert cfg.voice_activity_detection.silence_grace_period < PAUSE_TIMEOUT
 
 
+def test_echo_tail_outlasts_the_speaker_buffer():
+    # The last callback hands over up to SPEAKER_LATENCY of audio that is still
+    # to be played when /walkie/speaking turns False.
+    assert SPEAKER_LATENCY < ECHO_TAIL
+
+
 def test_tts_reports_changes_at_once(make_tts, monkeypatch):
     # With a long repeat, only a change of state can wake the publisher.
     monkeypatch.setattr(half_duplex, "SPEAKING_REPEAT", 5.0)
@@ -308,6 +323,21 @@ def test_tts_reports_silence_when_it_stops(make_tts):
     tts.stop()
     assert tts.published[-1] is False
     assert not tts.playback_data.playing
+
+
+def test_tts_opens_the_speaker_with_its_own_latency(tts):
+    # With RAI's "low" latency, PipeWire's sink stalls on some sound cards and
+    # nothing plays.
+    assert tts.speaker.stream_latency == (SPEAKER_LATENCY, SPEAKER_LATENCY)
+
+
+def test_tts_plays_silence_while_waiting_for_speech(tts):
+    # After "play", or between sentences, nothing is queued. The buffer still
+    # holds old audio, which the stream would repeat.
+    tts.playback_data.playing = True
+    outdata = np.full((FRAMES, 1), 1000, dtype=np.int16)
+    tts._speaker_callback(outdata, FRAMES, None, {})
+    assert not outdata.any()
 
 
 def test_asr_ignores_the_microphone_while_tts_plays(tts, asr, connector):

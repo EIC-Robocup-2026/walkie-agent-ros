@@ -151,6 +151,23 @@ The speaker says the agent's `speak` lines. If ASR never reacts to your
 voice, the default microphone is the wrong one or muted: check it with
 `wpctl` (Step 2).
 
+??? info "Why voice-tts buffers 0.2 s of audio"
+    RAI opens sound streams with sounddevice's `"low"` latency, about 9 ms
+    per buffer. Some sound cards cannot keep up with that: PipeWire's log
+    (`journalctl --user -u pipewire`) repeats
+    `snd_pcm_avail after recover: Broken pipe`, the speaker stream stops,
+    and nothing plays.
+
+    With sounddevice's `"high"` latency, about 35 ms, it plays but
+    stutters. While Kokoro synthesizes the next sentence, voice-tts pauses
+    for tens of milliseconds. The buffer runs dry, the stream repeats old
+    audio, and the terminal prints `Flags set:output_underflow`.
+
+    So voice-tts buffers 0.2 s (`SPEAKER_LATENCY` in
+    `src/walkie_agent/half_duplex.py`). Speech does not need a lower
+    latency. voice-asr reads the microphone in fixed 80 ms blocks, so it is
+    not affected.
+
 ## How speaking and listening work together
 
 Walkie does not listen while it speaks

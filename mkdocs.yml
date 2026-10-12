@@ -70,3 +70,5 @@ nav:
       - setup/index.md
       - 1. Create the Pixi Workspace: setup/01-pixi-workspace.md
       - 2. Add the Documentation Site: setup/02-documentation.md
+      - 3. Install RAI: setup/03-ros-and-rai.md
+      - 4. Trace with Local Langfuse: setup/04-langfuse.md

@@ -37,6 +37,16 @@ theme:
 plugins:
   - search
 
+# Links that start with "/" are resolved from docs/, so a link inside an ADR
+# works both on the ADR's own page and where it is embedded.
+validation:
+  links:
+    absolute_links: relative_to_docs
+
+# ADRs are embedded in the architecture pages instead of listed in the menu.
+not_in_nav: |
+  architecture/decisions/*
+
 markdown_extensions:
   - admonition
   - attr_list
@@ -49,7 +59,11 @@ markdown_extensions:
       anchor_linenums: true
   - pymdownx.inlinehilite
   - pymdownx.keys
-  - pymdownx.snippets
+  # Embeds ADR files into the architecture pages. Paths are relative to docs/,
+  # and a missing file or section fails the build.
+  - pymdownx.snippets:
+      base_path: [docs]
+      check_paths: true
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -75,3 +89,7 @@ nav:
       - 5. Limit What Tools Can Touch: setup/05-tool-access.md
       - 6. Give Walkie an Identity: setup/06-whoami.md
       - 7. Talk to Walkie by Voice: setup/07-voice.md
+  - Architecture:
+      - architecture/index.md
+      - The Agent: architecture/agent.md
+      - Arm Manipulation (Proposed): architecture/manipulation.md

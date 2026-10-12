@@ -40,6 +40,7 @@ host = "https://api.smith.langchain.com"
 # transcription_model: "LocalWhisper" or "FasterWhisper" (local, free), or
 # "OpenAI" (needs a real OpenAI key, not the OpenRouter key in .env).
 # List microphone names with: pixi run list-audio-devices
+# "default" is the system's default microphone, through PipeWire.
 [asr]
 recording_device_name = "default"
 transcription_model = "LocalWhisper"
@@ -60,6 +61,7 @@ transcription_model_name = "tiny"
 # vendor: "KokoroTTS" (local, free; downloads ~300 MB of model files on first
 # use), "OpenTTS" (needs its Docker server) or "ElevenLabs" (cloud; needs
 # ELEVENLABS_API_KEY and a voice). An empty voice uses the vendor's default.
+# speaker_device_name: as recording_device_name in [asr].
 [tts]
 vendor = "KokoroTTS"
 voice = ""

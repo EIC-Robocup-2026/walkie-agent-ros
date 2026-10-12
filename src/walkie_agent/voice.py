@@ -10,6 +10,7 @@ transcribed it sends "stop", which drops whatever TTS had left to say.
 """
 
 import argparse
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -21,6 +22,55 @@ from rai.communication.ros2 import ROS2Context
 SAMPLE_RATE = 16000
 # Microphone samples per callback (80 ms at 16 kHz), as in RAI's examples.
 BLOCK_SIZE = 1280
+# Devices that exist only through the system's PipeWire or PulseAudio ALSA plugin.
+SOUND_SERVER_DEVICES = ("default", "pipewire", "pulse")
+
+
+def check_audio_device(name: str, direction: str) -> None:
+    """Exit with a readable message if `name` is not a usable audio device.
+
+    `direction` is "input" or "output". rai_s2s picks the first device whose
+    name matches exactly, and for an unknown name it fails with an
+    AttributeError raised inside its own error handling.
+    """
+    import sounddevice as sd
+
+    channels = f"max_{direction}_channels"
+    devices = list(sd.query_devices())
+    match = next((d for d in devices if d["name"] == name), None)
+    if match is not None and match[channels] > 0:
+        return
+
+    usable = [d["name"] for d in devices if d[channels] > 0]
+    lines = [
+        f"No audio {direction} device named {name!r}. Available {direction} devices:",
+        *(f"  {n}" for n in usable or ["(none)"]),
+        "Set the device name in config.toml (see docs/setup/07-voice.md).",
+    ]
+    if "(hw:" in name:
+        lines.append(
+            "An (hw:N,M) device opens sound card N directly. It is missing, or has "
+            "no channels, while PipeWire or another program is using the card, and "
+            'card numbers can change between boots. "default" avoids both.'
+        )
+    if name in SOUND_SERVER_DEVICES:
+        lines.append(
+            f"{name!r} comes from a system ALSA plugin for the sound server "
+            "(PipeWire or PulseAudio): check that the sound server is running and "
+            "that ALSA_PLUGIN_DIR points to the system plugins (set by "
+            "scripts/activate.sh)."
+        )
+        # Both servers listen on a socket in the user's runtime directory.
+        runtime_dir = os.environ.get("XDG_RUNTIME_DIR")
+        sockets = ("pipewire-0", "pulse/native")
+        if not runtime_dir or not any(Path(runtime_dir, s).exists() for s in sockets):
+            where = f"({runtime_dir}) has" if runtime_dir else "is not set, so there is"
+            lines.append(
+                f"XDG_RUNTIME_DIR {where} no sound server socket. Run this as the "
+                "desktop user from their login session, not as root, through sudo, "
+                "from cron or as a system service."
+            )
+    raise SystemExit("\n".join(lines))
 
 
 def build_asr_agent(config_path: Path) -> BaseAgent:
@@ -42,6 +92,7 @@ def build_asr_agent(config_path: Path) -> BaseAgent:
     from rai_s2s.sound_device import SoundDeviceConfig
 
     cfg = load_config(str(config_path))
+    check_audio_device(cfg.microphone.device_name, "input")
     microphone = SoundDeviceConfig(
         stream=True,
         channels=1,
@@ -87,7 +138,9 @@ def build_asr_agent(config_path: Path) -> BaseAgent:
 def build_tts_agent(config_path: Path) -> BaseAgent:
     """Build RAI's TextToSpeechAgent from the [tts] section of config.toml."""
     from rai_s2s.tts import TextToSpeechAgent
+    from rai_s2s.tts.agents.initialization import load_config
 
+    check_audio_device(load_config(str(config_path)).speaker.device_name, "output")
     return TextToSpeechAgent.from_config(str(config_path))
 
 

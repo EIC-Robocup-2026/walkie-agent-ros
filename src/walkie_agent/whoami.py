@@ -1,7 +1,7 @@
 """Walkie's identity from RAI whoami: a robot description and a documentation search.
 
-`pixi run whoami-build` reads the source files in whoami/ (documentation/,
-images/, urdfs/) and writes whoami/generated/:
+`pixi run whoami-build` reads the source files in whoami/ (documentation/ and
+images/) and writes whoami/generated/:
   - info.json: description, rules, capabilities and behaviors that an LLM
     derived from the sources. It is added to the agent's system prompt.
   - a FAISS index of the documentation, searched by the search_robot_docs tool.

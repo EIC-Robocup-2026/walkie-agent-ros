@@ -7,12 +7,14 @@ This follows RAI's
 
 ## Background
 
-- RAI's `rai_whoami` package reads a folder of documents, photos and URDF
-  files about a robot and asks an LLM to write a short description of it.
+- RAI's `rai_whoami` package reads a folder of documents and photos about a
+  robot and asks an LLM to write a short description of it.
 - The agent adds that description to its system prompt at startup.
-- The documents are also split into chunks and stored in a small vector
-  database (FAISS). A `search_robot_docs` tool lets the agent search them
-  when it needs a detail that is not in the description.
+- The documents are also stored in a small vector database (FAISS). A
+  `search_robot_docs` tool lets the agent search them when it needs a detail
+  that is not in the description. Each PDF page, and each Markdown or text
+  file, is one search result. The build does not split them further, so
+  keep each file or page about one topic.
 - If `whoami/generated/` does not exist, the agent starts with its normal
   prompt and without the search tool. Nothing breaks.
 
@@ -42,16 +44,18 @@ Everything lives in the `whoami/` folder at the project root:
 | ---------------- | --------------------------------- | ------------------------------ |
 | `documentation/` | Specs, manuals, rules of behavior | `.md`, `.txt`, `.pdf`, `.docx` |
 | `images/`        | Photos of the robot               | `.png`, `.jpg`                 |
-| `urdfs/`         | The robot's URDF or xacro         | `.urdf`, `.xacro`              |
 
 `whoami/documentation/walkie.md` describes Walkie: the team, the hardware,
 **what the agent can do today**, and how it should behave. Keep the "can do
 today" list honest. If it mentions the arm, the agent will offer to pick
 things up even though it has no tool for that.
 
-!!! warning "The folder is `urdfs/`, not `urdf/`"
-    RAI's tutorial says `urdf/`, but the build only reads `urdfs/`. Files in
-    a folder named `urdf/` are silently ignored.
+!!! info "Why there is no URDF"
+    RAI's tutorial also suggests a `urdf/` folder. In rai_whoami 2.12 the
+    build loads `urdfs/*.urdf` files but never uses them: neither the
+    description nor the search index changes. Describe the arms in plain
+    words in `documentation/` instead. See
+    [ADR-0020](../architecture/decisions/0020-no-urdf-in-agent.md).
 
 ## Step 3: Build
 
@@ -61,8 +65,8 @@ pixi run whoami-build
 
 This runs RAI's `build-whoami whoami --build-vector-db`. It:
 
-1. asks the `complex_model` from `config.toml` to summarize the documents,
-   photos and URDF, and writes `whoami/generated/info.json`;
+1. asks the `complex_model` from `config.toml` to summarize the documents
+   and photos, and writes `whoami/generated/info.json`;
 2. embeds the documents with the `embeddings_model` and writes
    `whoami/generated/index.faiss`.
 

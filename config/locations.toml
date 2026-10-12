@@ -1,0 +1,27 @@
+# Named places Walkie can navigate to, in the `map` frame.
+# x, y in meters; yaw in radians (0 = facing +x).
+# `description` is shown to the LLM, so write it for a reader who cannot see the map.
+
+[locations.start]
+x = 0.0
+y = 0.0
+yaw = 0.0
+description = "Starting point near the arena entrance."
+
+[locations.kitchen]
+x = 3.5
+y = 1.2
+yaw = 1.57
+description = "Kitchen counter. Drinks and snacks are usually here."
+
+[locations.living_room]
+x = -2.0
+y = 2.5
+yaw = 3.14
+description = "Living room with the sofa and coffee table. Guests usually sit here."
+
+[locations.bedroom]
+x = -3.0
+y = -2.0
+yaw = -1.57
+description = "Bedroom. The bed and a wardrobe are here."

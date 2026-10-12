@@ -1,7 +1,8 @@
 """Entry point: runs the Walkie agent as a ROS 2 node.
 
 The agent reads tasks from /from_human (rai_interfaces/msg/HRIMessage) and
-replies on /to_human. The LLM is selected by config.toml (see RAI's
+replies on /to_human. Any message on /walkie/reset (std_msgs/msg/Empty) makes
+it forget the conversation so far. The LLM is selected by config.toml (see RAI's
 get_llm_model), which is read from the current working directory.
 API keys are read from the environment, or from a .env file in the
 working directory (see .env.example).
@@ -23,6 +24,7 @@ def main() -> None:
     parser.add_argument("--locations", default="config/locations.toml")
     parser.add_argument("--input-topic", default="/from_human")
     parser.add_argument("--output-topic", default="/to_human")
+    parser.add_argument("--reset-topic", default="/walkie/reset")
     args = parser.parse_args()
 
     # Variables already set in the shell take precedence over .env.
@@ -41,6 +43,7 @@ def main() -> None:
             target_connectors={args.output_topic: hri_connector},
         )
         agent.subscribe_source(args.input_topic, hri_connector)
+        agent.subscribe_reset(connector, args.reset_topic)
 
         runner = AgentRunner([agent])
         try:

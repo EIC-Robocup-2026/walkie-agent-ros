@@ -4,6 +4,8 @@ This section records every step used to build this repository, in order.
 Each page explains **what** we ran and **why**, so you can repeat the same
 steps in your own project or when you add a new ROS package.
 
+![this is fine](https://media.giphy.com/media/v1.Y2lkPTc5MGI3NjExcjk2MjFka2JpdWI5ZW8wdzV0OXN3Z2w4c3U5cHpzZTJleHhsdWR0ZiZlcD12MV9naWZzX3NlYXJjaCZjdD1n/2c3E1JNkOJ2Ba/giphy.gif){width=500px}
+
 | Step                                                 | What it does                                                    |
 | ---------------------------------------------------- | --------------------------------------------------------------- |
 | [1. Create the Pixi workspace](01-pixi-workspace.md) | Starts the project and connects it to ROS 2 Jazzy packages      |

@@ -4,6 +4,8 @@
 every step the agent takes: the prompt sent to the LLM, its answer, each tool
 call with its arguments and result, timing, tokens and cost.
 
+![langfuse ui](../assets/langfuse.png){width=400px}
+
 ## Background
 
 - **Langfuse** is an open-source tool for watching LLM apps. It records each
@@ -16,9 +18,9 @@ call with its arguments and result, timing, tokens and cost.
   in Git, so tracing is opt-in.
 
 !!! info "Why Langfuse server v3 and not v4?"
-    `rai-core` requires the Langfuse Python SDK below version 4. The v4
-    server shows traces from these older SDKs with a delay, so we pin the
-    server to v3, which matches.
+`rai-core` requires the Langfuse Python SDK below version 4. The v4
+server shows traces from these older SDKs with a delay, so we pin the
+server to v3, which matches.
 
 ## Quick start
 
@@ -84,12 +86,12 @@ The server keeps running after a reboot until you run `langfuse-down`.
 
 ## What is in the repository
 
-| File                         | What it is                                                                                    |
-| ---------------------------- | --------------------------------------------------------------------------------------------- |
+| File                          | What it is                                                                                     |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- |
 | `docker/langfuse/compose.yml` | The Langfuse server: web UI, worker, Postgres, ClickHouse, Redis and MinIO, in six containers. |
-| `scripts/langfuse_setup.py`  | Creates the passwords and API keys. Never overwrites existing ones.                           |
-| `docker/langfuse/.env`       | Generated passwords. Ignored by Git.                                                          |
-| `tests/conftest.py`          | Turns tracing off during tests, whatever `config.toml` says.                                  |
+| `scripts/langfuse_setup.py`   | Creates the passwords and API keys. Never overwrites existing ones.                            |
+| `docker/langfuse/.env`        | Generated passwords. Ignored by Git.                                                           |
+| `tests/conftest.py`           | Turns tracing off during tests, whatever `config.toml` says.                                   |
 
 `compose.yml` is based on the
 [official Langfuse file](https://github.com/langfuse/langfuse/blob/v3.225.11/docker-compose.yml),
@@ -103,9 +105,9 @@ with these changes:
 - Usage statistics to Langfuse are turned off.
 
 !!! warning "Do not edit the passwords in `docker/langfuse/.env`"
-    The databases store their passwords the first time they start. If you
-    change the file afterwards, the server cannot log in to its own
-    databases. Use `pixi run langfuse-reset` to start over instead.
+The databases store their passwords the first time they start. If you
+change the file afterwards, the server cannot log in to its own
+databases. Use `pixi run langfuse-reset` to start over instead.
 
 ## Troubleshooting
 

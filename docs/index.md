@@ -6,6 +6,8 @@ ROS 2 (Jazzy) workspace for the Walkie agent, developed by the EIC RoboCup
 This site is also a learning guide. It shows how the project was set up, step
 by step, so new members can learn ROS 2 and create their own packages.
 
+![this is fine](https://miro.medium.com/v2/da:true/resize:fit:1200/0*ZjYSm_q36J4KChdn){width=500px}
+
 ## For next generations
 
 1. [Getting Started](getting-started.md): install the tools and run the

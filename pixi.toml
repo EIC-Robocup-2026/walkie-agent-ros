@@ -69,6 +69,29 @@ description = "Run the Walkie RAI agent (reads tasks from /from_human)"
 cmd = "pytest"
 description = "Run the test suite"
 
+# Self-hosted Langfuse for tracing agent runs. Needs Docker on the host.
+# See docs/setup/04-langfuse.md.
+[tasks.langfuse-setup]
+cmd = "python scripts/langfuse_setup.py"
+description = "Generate Langfuse server secrets and add its API keys to .env"
+
+[tasks.langfuse-up]
+cmd = "docker compose --file docker/langfuse/compose.yml up --detach --wait --wait-timeout 300"
+depends-on = ["langfuse-setup"]
+description = "Start the local Langfuse server at http://localhost:3000"
+
+[tasks.langfuse-down]
+cmd = "docker compose --file docker/langfuse/compose.yml down"
+description = "Stop the local Langfuse server (traces are kept)"
+
+[tasks.langfuse-logs]
+cmd = "docker compose --file docker/langfuse/compose.yml logs --follow langfuse-web langfuse-worker"
+description = "Follow the Langfuse server logs"
+
+[tasks.langfuse-reset]
+cmd = "docker compose --file docker/langfuse/compose.yml down --volumes && rm docker/langfuse/.env"
+description = "Delete the local Langfuse server, its stored traces and its secrets"
+
 [feature.docs.tasks]
 docs = "mkdocs serve"
 docs-build = "mkdocs build --strict"

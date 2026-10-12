@@ -26,8 +26,10 @@ base_url = "http://localhost:11434"
 [tracing]
 project = "walkie-agent-ros"
 
+# To trace agent runs, start the local server with `pixi run langfuse-up` and
+# set use_langfuse = true. Requires LANGFUSE_PUBLIC_KEY/SECRET_KEY in .env.
 [tracing.langfuse]
-use_langfuse = false
+use_langfuse = true
 host = "http://localhost:3000"
 
 [tracing.langsmith]

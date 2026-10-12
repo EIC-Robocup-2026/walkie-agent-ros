@@ -24,6 +24,19 @@ def ros():
     rclpy.try_shutdown()
 
 
+@pytest.fixture(autouse=True)
+def no_tracing(monkeypatch):
+    """Keep tests off Langfuse/LangSmith whatever config.toml enables.
+
+    RAI reads the tracing settings from ./config.toml when an agent is built
+    and again on every LLM call, so both lookups are patched.
+    """
+    monkeypatch.setattr("rai.agents.langchain.agent.get_tracing_callbacks", lambda *_: [])
+    monkeypatch.setattr(
+        "rai.agents.langchain.invocation_helpers.get_tracing_callbacks", lambda *_: []
+    )
+
+
 @pytest.fixture
 def locations():
     return load_locations(PROJECT_ROOT / "config" / "locations.toml")

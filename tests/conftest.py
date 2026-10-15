@@ -15,6 +15,11 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # Keep test traffic on this machine and off any domain a real robot might use.
 os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
+# Tests run on Fast DDS even from a shell set up for the robot or the
+# simulator: under rmw_zenoh, nodes find each other only through a router, and
+# without one every test would time out (ADR-0019). Set before rclpy.init,
+# which is when the middleware is loaded.
+os.environ["RMW_IMPLEMENTATION"] = "rmw_fastrtps_cpp"
 
 
 @pytest.fixture(scope="session", autouse=True)

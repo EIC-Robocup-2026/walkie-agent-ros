@@ -1,14 +1,22 @@
 """Walkie tools against the fake robot over real ROS 2 (no LLM)."""
 
+import math
 import time
 
 import pytest
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import TransformStamped, Twist
 from rai.tools.ros2.navigation.nav2_blocking import GetCurrentPoseTool
 from std_msgs.msg import Empty, String
+from tf2_ros import StaticTransformBroadcaster
 
 from walkie_agent.locations import Location
-from walkie_agent.tools import NavigateToLocationTool, SpeakTool, build_walkie_tools
+from walkie_agent.tools import (
+    MoveRelativeTool,
+    NavigateToLocationTool,
+    SpeakTool,
+    build_walkie_tools,
+)
+from walkie_agent.tools.navigation import MAP_FRAME, ROBOT_FRAME
 
 
 def wait_until(predicate, timeout=3.0):
@@ -132,5 +140,78 @@ def test_tools_hide_forbidden_topics(connector, locations):
 
 
 def test_rai_get_current_pose_reads_fake_tf(fake_walkie, connector):
-    tool = GetCurrentPoseTool(connector=connector, frame_id="map", robot_frame_id="base_link")
+    tool = GetCurrentPoseTool(
+        connector=connector, frame_id=MAP_FRAME, robot_frame_id=ROBOT_FRAME
+    )
     assert "frame_id='map'" in tool.invoke({})
+
+
+def tf_shows(connector, x, y):
+    """True once TF has caught up with a robot teleported to (x, y)."""
+    try:
+        t = connector.get_transform(MAP_FRAME, ROBOT_FRAME, timeout_sec=0.5).transform
+    except Exception:
+        return False
+    return (t.translation.x, t.translation.y) == pytest.approx((x, y))
+
+
+def test_move_relative_moves_in_the_robots_frame(fake_walkie, connector):
+    # Facing +y (90 degrees): forward is +y and left is -x in the map frame.
+    fake_walkie.teleport(1.0, 1.0, math.pi / 2)
+    assert wait_until(lambda: tf_shows(connector, 1.0, 1.0))
+
+    result = MoveRelativeTool(connector=connector).invoke(
+        {"forward_m": 1.0, "left_m": 0.5, "turn_deg": -90}
+    )
+
+    assert result == (
+        "Moved 1 m forward, 0.5 m left, turning 90 degrees right. "
+        "Now at x=0.50 m, y=2.00 m, heading 0 degrees in the map frame."
+    )
+    x, y, yaw = fake_walkie.pose()
+    assert (x, y) == pytest.approx((0.5, 2.0))
+    assert yaw == pytest.approx(0.0, abs=1e-6)
+
+
+def test_move_relative_right_after_a_goal_uses_the_new_heading(fake_walkie, connector, locations):
+    # The fake turns to the goal heading at the very end, so a TF pose cached
+    # from before the result arrived still faces the old way.
+    NavigateToLocationTool(connector=connector, locations=locations).invoke(
+        {"location": "kitchen"}  # x=3.5, y=1.2, facing +y
+    )
+    MoveRelativeTool(connector=connector).invoke({"forward_m": 1.0})
+
+    assert fake_walkie.pose()[:2] == pytest.approx((3.5, 2.2), abs=1e-2)
+
+
+def test_move_relative_refuses_stale_tf(connector):
+    # A static transform never gets a newer stamp, like a robot whose TF stopped.
+    static = StaticTransformBroadcaster(connector.node)
+    t = TransformStamped()
+    t.header.frame_id = MAP_FRAME
+    t.child_frame_id = ROBOT_FRAME
+    t.transform.rotation.w = 1.0
+    static.sendTransform(t)
+
+    tool = MoveRelativeTool(connector=connector, tf_timeout_sec=0.5)
+    assert tool.invoke({"forward_m": 1.0}).startswith(
+        "Cannot move: the robot's position (map -> base_footprint) is out of date."
+    )
+
+
+def test_move_relative_refuses_long_moves(connector):
+    # No fake robot: the limit is checked before TF or Nav2 are touched.
+    result = MoveRelativeTool(connector=connector).invoke({"forward_m": 300.0})
+    assert result == "Refused: a move of 300.00 m is more than the 3 m allowed in one move."
+
+
+def test_move_relative_without_tf_reports_unknown_position(connector):
+    tool = MoveRelativeTool(connector=connector, tf_timeout_sec=0.3)
+    assert tool.invoke({"forward_m": 1.0}).startswith(
+        "Cannot move: the robot's position (map -> base_footprint) is unknown."
+    )
+
+
+def test_move_relative_zero_move_does_nothing(connector):
+    result = MoveRelativeTool(connector=connector).invoke({"forward_m": 0.0})
+    assert result == "Nothing to do: the move is zero."

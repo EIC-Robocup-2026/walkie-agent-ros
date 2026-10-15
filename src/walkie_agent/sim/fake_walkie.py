@@ -2,7 +2,7 @@
 
 Provides the same ROS 2 interfaces the agent uses on the real robot:
   - /navigate_to_pose  nav2_msgs/action/NavigateToPose (drives in a straight line)
-  - TF map -> base_link at 20 Hz
+  - TF map -> base_footprint at 20 Hz (Nav2's robot frame on walkie-ros)
   - /to_human          rai_interfaces/msg/HRIMessage (logged instead of voiced,
                        standing in for RAI's TextToSpeechAgent)
 
@@ -67,12 +67,17 @@ class FakeWalkie(Node):
         with self._lock:
             return self.x, self.y, self.yaw
 
+    def teleport(self, x: float, y: float, yaw: float) -> None:
+        """Put the robot at a pose instantly, for tests that need a known start."""
+        with self._lock:
+            self.x, self.y, self.yaw = x, y, yaw
+
     def _publish_tf(self) -> None:
         x, y, yaw = self.pose()
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = "map"
-        t.child_frame_id = "base_link"
+        t.child_frame_id = "base_footprint"
         t.transform.translation.x = x
         t.transform.translation.y = y
         qx, qy, qz, qw = quaternion_from_euler(0.0, 0.0, yaw)

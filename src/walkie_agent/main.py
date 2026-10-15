@@ -30,6 +30,11 @@ def main() -> None:
     parser.add_argument("--output-topic", default="/walkie/console")
     parser.add_argument("--reset-topic", default="/walkie/reset")
     parser.add_argument("--whoami-dir", type=Path, default=Path("whoami"))
+    parser.add_argument(
+        "--use-sim-time",
+        action="store_true",
+        help="Use the simulator's /clock, so goal timestamps match the simulated robot.",
+    )
     args = parser.parse_args()
 
     # Variables already set in the shell take precedence over .env.
@@ -39,7 +44,7 @@ def main() -> None:
     llm = get_llm_model("complex_model", streaming=True)
 
     with ROS2Context():
-        connector = ROS2Connector(node_name="walkie_agent")
+        connector = ROS2Connector(node_name="walkie_agent", use_sim_time=args.use_sim_time)
         hri_connector = ROS2HRIConnector(node_name="walkie_agent_hri")
         agent = create_walkie_agent(
             llm=llm,

@@ -54,6 +54,7 @@ explains each step and lists the topics.
 | -------------------------------- | ------------------------------------------------------ |
 | `pixi run agent`                 | Run the agent. It reads tasks from `/from_human`.      |
 | `pixi run fake-walkie`           | Run a fake robot for testing without hardware.         |
+| `pixi run agent-sim`             | Run the agent against walkie-ros's MuJoCo simulation.  |
 | `pixi run test`                  | Run the tests. They need no API key and no hardware.   |
 | `pixi run voice-asr`             | Listen on the microphone and send speech to the agent. |
 | `pixi run voice-tts`             | Speak the agent's replies through the speaker.         |

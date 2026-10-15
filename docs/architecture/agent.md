@@ -103,6 +103,7 @@ between steps. A tool that is already running finishes first.
 | `speak`                           | this repo  | Says a sentence out loud through `/to_human`                    |
 | `list_locations`                  | this repo  | Lists the named places in `config/locations.toml`               |
 | `navigate_to_location`            | this repo  | Drives to a named place with Nav2, with every wait bounded      |
+| `move_relative`                   | this repo  | Moves up to 3 m forward, back or sideways from here, then turns |
 | `get_current_pose`                | RAI        | Reads the robot's position in the `map` frame from TF           |
 | `get_ros2_topics_names_and_types` | RAI        | Lists ROS topics, minus the forbidden ones                      |
 | `WaitForSecondsTool`              | RAI        | Waits a number of seconds                                       |
@@ -117,8 +118,10 @@ For the full list of topics, see
 ## Running on the robot
 
 !!! note "Proposed"
-    This part is not built yet. Today the agent runs on Fast DDS and talks
-    only to the fake robot.
+    This part is not built yet. Today the agent drives the fake robot on
+    Fast DDS, or walkie-ros's MuJoCo simulation over rmw_zenoh with
+    `pixi run agent-sim`
+    ([ADR-0030](decisions/0030-mujoco-sim-first.md)).
 
 The agent runs on the robot PC, next to walkie-ros. walkie-ros uses Zenoh as
 its ROS 2 middleware (`rmw_zenoh_cpp`) on domain 23. The agent must use the
@@ -252,3 +255,11 @@ The arm manipulation decisions, ADR-0021 to ADR-0028, are on the
 ??? success "ADR-0029: Stop listening while Walkie speaks · Accepted"
 
     --8<-- "architecture/decisions/0029-half-duplex-voice.md:body"
+
+??? success "ADR-0030: Drive walkie-ros's MuJoCo simulation before the real robot · Accepted"
+
+    --8<-- "architecture/decisions/0030-mujoco-sim-first.md:body"
+
+??? success "ADR-0031: Move short distances relative to the robot, bounded in length · Accepted"
+
+    --8<-- "architecture/decisions/0031-bounded-relative-moves.md:body"

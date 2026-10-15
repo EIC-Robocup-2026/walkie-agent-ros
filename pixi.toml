@@ -26,6 +26,12 @@ ros-jazzy-cv-bridge = "*"
 ros-jazzy-nav2-msgs = "*"
 ros-jazzy-tf2-geometry-msgs = "*"
 ros-jazzy-tf-transformations = "*"
+# walkie-ros uses Zenoh as its ROS 2 middleware. walkie-ros feat/Pixi has
+# RoboStack's 0.2.11, but that build needs a newer ROS stack that requires
+# OpenCV 5, which rai-core rejects. RoboStack's 0.2.10 is built on the same
+# Zenoh library (libzenohc 1.9.0). Installing it does not change the default
+# middleware: only tasks that set RMW_IMPLEMENTATION use it (see agent-sim).
+ros-jazzy-rmw-zenoh-cpp = "0.2.10.*"
 # Build toolchain for message packages in ros2_ws/src (rai_interfaces).
 colcon-common-extensions = "*"
 vcstool = "*"
@@ -89,6 +95,14 @@ description = "Run a fake robot (Nav2 action, TF, speech topic) for testing with
 [tasks.agent]
 cmd = "python -m walkie_agent.main"
 description = "Run the Walkie RAI agent (reads tasks from /from_human)"
+
+# The agent against walkie-ros's MuJoCo simulation (blank map), which runs
+# under rmw_zenoh on its own router at localhost:7447. Domain 42 keeps it
+# apart from the real robot's domain 23. See docs/getting-started.md.
+[tasks.agent-sim]
+cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.sim.toml"
+env = { RMW_IMPLEMENTATION = "rmw_zenoh_cpp", ROS_DOMAIN_ID = "42" }
+description = "Run the agent against walkie-ros's MuJoCo simulation (Zenoh, domain 42)"
 
 [tasks.test]
 cmd = "pytest"

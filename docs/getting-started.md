@@ -131,6 +131,44 @@ This also drops any tasks still waiting in line, and stops the current task.
 A tool that is already running (for example, driving to the kitchen) finishes
 first. In Langfuse, each conversation shows up as its own **session**.
 
+### Drive walkie-ros's simulation instead
+
+walkie-ros has a MuJoCo simulation of Walkie with Nav2 on a blank map. It
+runs under the Zenoh middleware (`rmw_zenoh_cpp`), so every terminal needs
+the same two variables, or the nodes silently do not see each other
+([ADR-0030](architecture/decisions/0030-mujoco-sim-first.md)). Domain 42 keeps
+the simulation apart from the real robot, which uses domain 23.
+
+In a walkie-ros checkout of `feat/Pixi` or `feat/mujoco-launch`, start the
+Zenoh router and the simulation:
+
+```bash title="walkie-ros, terminal 1: Zenoh router (the only one)"
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=42
+pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
+```
+
+```bash title="walkie-ros, terminal 2: simulation and Nav2"
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=42
+pixi run ros2 launch robot_bringup nav_mujoco_omnibot.launch.py headless:=true use_rviz:=false
+```
+
+Then, in this project:
+
+```bash title="Terminal 3: the agent"
+pixi run agent-sim
+```
+
+```bash title="Terminal 4: send a task"
+export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=42
+pixi run ros2 action list   # should show /navigate_to_pose
+pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
+  "{text: 'Move forward one meter, then go to the corner.'}"
+```
+
+`agent-sim` uses the simulation's clock and the test points in
+`config/locations.sim.toml` (start, ahead, left, corner). The map frame is
+the robot's start pose, so all points are relative to where it started.
+
 ## 7. Open the docs locally
 
 ```bash

@@ -1,0 +1,34 @@
+# Named places for walkie-ros's MuJoCo simulation (pixi run agent-sim).
+#
+# The simulation has a blank 20 x 20 m map centered on the robot's start pose,
+# and its map frame is the start pose itself: x points the way the robot faced
+# at start, y to its left. These are test points, not real rooms. They stay
+# within 2 m of the start because the position comes from wheel odometry,
+# which drifts a few tenths of a meter per goal.
+#
+# A goal at the robot's current position fails in Nav2, so asking for "start"
+# while already there reports a failure.
+
+[locations.start]
+x = 0.0
+y = 0.0
+yaw = 0.0
+description = "Where Walkie started, facing the way it faced at the start."
+
+[locations.ahead]
+x = 2.0
+y = 0.0
+yaw = 0.0
+description = "Two meters straight ahead of the start."
+
+[locations.left]
+x = 0.0
+y = 2.0
+yaw = 1.57
+description = "Two meters to the left of the start, facing away from it."
+
+[locations.corner]
+x = 2.0
+y = 2.0
+yaw = 3.14
+description = "Two meters ahead and two meters to the left of the start, facing back."

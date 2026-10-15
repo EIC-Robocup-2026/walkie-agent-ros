@@ -1,3 +1,4 @@
+from conftest import PROJECT_ROOT
 from walkie_agent.locations import load_locations
 from walkie_agent.tools import ListLocationsTool
 
@@ -14,6 +15,15 @@ def test_load_locations_defaults_yaw_and_description(tmp_path):
     path.write_text("[locations.door]\nx = 1\ny = 2\n")
     door = load_locations(path)["door"]
     assert (door.x, door.y, door.yaw, door.description) == (1.0, 2.0, 0.0, "")
+
+
+def test_sim_locations_fit_the_blank_map():
+    # walkie-ros's MuJoCo map is 20 x 20 m centered on the start pose.
+    sim = load_locations(PROJECT_ROOT / "config" / "locations.sim.toml")
+    assert "start" in sim
+    for loc in sim.values():
+        assert abs(loc.x) < 10 and abs(loc.y) < 10, loc.name
+        assert loc.description, loc.name
 
 
 def test_list_locations_tool_lists_names_and_descriptions(locations):

@@ -263,3 +263,7 @@ The arm manipulation decisions, ADR-0021 to ADR-0028, are on the
 ??? success "ADR-0031: Move short distances relative to the robot, bounded in length · Accepted"
 
     --8<-- "architecture/decisions/0031-bounded-relative-moves.md:body"
+
+??? success "ADR-0032: Build rmw_zenoh_cpp 0.2.11 from source and preload it · Accepted"
+
+    --8<-- "architecture/decisions/0032-rmw-zenoh-from-source.md:body"

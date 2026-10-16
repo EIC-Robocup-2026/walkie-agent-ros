@@ -16,6 +16,19 @@ if [[ -z "${ALSA_PLUGIN_DIR:-}" ]]; then
     done
 fi
 
+# Under Zenoh, load rmw_zenoh_cpp 0.2.11 (`pixi run build-rmw-zenoh`) instead
+# of RoboStack's 0.2.10, whose rmw_wait can block forever (ADR-0032). ROS
+# opens the middleware by file name, and the environment's
+# librmw_implementation.so has an RPATH of its own directory, which the loader
+# searches before LD_LIBRARY_PATH, so it always finds 0.2.10 there.
+# A preloaded library with the same name is reused instead. pixi applies a
+# task's env before this script, so agent-sim's RMW_IMPLEMENTATION counts.
+_rmw_zenoh_lib="${PIXI_PROJECT_ROOT}/rmw_zenoh_ws/install/rmw_zenoh_cpp/lib/librmw_zenoh_cpp.so"
+if [[ "${RMW_IMPLEMENTATION:-}" == "rmw_zenoh_cpp" && -f "${_rmw_zenoh_lib}" ]]; then
+    export LD_PRELOAD="${_rmw_zenoh_lib}${LD_PRELOAD:+:${LD_PRELOAD}}"
+fi
+unset _rmw_zenoh_lib
+
 # Project ROS 2 workspace overlay (available after `pixi run build-ros2`).
 if [[ -f "${PIXI_PROJECT_ROOT}/ros2_ws/install/local_setup.sh" ]]; then
     # shellcheck source=/dev/null

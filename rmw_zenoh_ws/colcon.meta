@@ -1,0 +1,7 @@
+{
+  "names": {
+    "rmw_zenoh_cpp": {
+      "dependencies": ["zenohcxx"]
+    }
+  }
+}

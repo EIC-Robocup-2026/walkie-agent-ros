@@ -152,7 +152,13 @@ export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=42
 pixi run ros2 launch robot_bringup nav_mujoco_omnibot.launch.py headless:=true use_rviz:=false
 ```
 
-Then, in this project:
+Then, in this project, build the Zenoh middleware once. RoboStack's version
+can stop receiving messages after a few seconds
+([ADR-0032](architecture/decisions/0032-rmw-zenoh-from-source.md)):
+
+```bash
+pixi run build-rmw-zenoh
+```
 
 ```bash title="Terminal 3: the agent"
 pixi run agent-sim

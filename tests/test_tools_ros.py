@@ -205,6 +205,20 @@ def test_move_relative_refuses_long_moves(connector):
     assert result == "Refused: a move of 300.00 m is more than the 3 m allowed in one move."
 
 
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"forward_m": "nan"},
+        {"forward_m": 1.0, "left_m": float("nan")},
+        {"forward_m": 1.0, "turn_deg": float("inf")},
+    ],
+)
+def test_move_relative_refuses_values_that_are_not_finite(connector, args):
+    # NaN passes the distance limit, because every comparison with it is False.
+    result = MoveRelativeTool(connector=connector).invoke(args)
+    assert result == "Refused: every value must be a finite number."
+
+
 def test_move_relative_without_tf_reports_unknown_position(connector):
     tool = MoveRelativeTool(connector=connector, tf_timeout_sec=0.3)
     assert tool.invoke({"forward_m": 1.0}).startswith(

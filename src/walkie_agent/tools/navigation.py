@@ -100,13 +100,15 @@ class Nav2GoalTool(BaseROS2Tool):
 
         goal = NavigateToPose.Goal()
         goal.pose = self._make_pose(x, y, yaw)
-        goal_handle = _wait(client.send_goal_async(goal), self.server_timeout_sec)
+        goal_handle = _wait(client.send_goal_async(goal),
+                            self.server_timeout_sec)
         if goal_handle is None:
             return f"Navigation to {target} failed: Nav2 did not answer the goal."
         if not goal_handle.accepted:
             return f"Navigation to {target} failed: Nav2 rejected the goal."
 
-        response = _wait(goal_handle.get_result_async(), self.navigation_timeout_sec)
+        response = _wait(goal_handle.get_result_async(),
+                         self.navigation_timeout_sec)
         if response is None:
             goal_handle.cancel_goal_async()
             return (
@@ -193,6 +195,10 @@ class MoveRelativeTool(Nav2GoalTool):
     tf_timeout_sec: float = 1.0
 
     def _run(self, forward_m: float, left_m: float = 0.0, turn_deg: float = 0.0) -> str:
+        # NaN fails every comparison, so it would pass the distance limit below.
+        # json.loads and pydantic both accept NaN and infinity from the LLM.
+        if not all(math.isfinite(v) for v in (forward_m, left_m, turn_deg)):
+            return "Refused: every value must be a finite number."
         if not (forward_m or left_m or turn_deg):
             return "Nothing to do: the move is zero."
         distance = math.hypot(forward_m, left_m)
@@ -218,8 +224,10 @@ class MoveRelativeTool(Nav2GoalTool):
 
         q = current.rotation
         _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
-        x = current.translation.x + forward_m * math.cos(yaw) - left_m * math.sin(yaw)
-        y = current.translation.y + forward_m * math.sin(yaw) + left_m * math.cos(yaw)
+        x = current.translation.x + forward_m * \
+            math.cos(yaw) - left_m * math.sin(yaw)
+        y = current.translation.y + forward_m * \
+            math.sin(yaw) + left_m * math.cos(yaw)
         target_yaw = _normalize_angle(yaw + math.radians(turn_deg))
 
         target = f"the point {_describe_move(forward_m, left_m, turn_deg)}"
@@ -259,11 +267,13 @@ def _describe_move(forward_m: float, left_m: float, turn_deg: float) -> str:
     """Plain words for a relative move, for example "1 m forward, 0.5 m right"."""
     parts = []
     if forward_m:
-        parts.append(f"{abs(forward_m):g} m {'forward' if forward_m > 0 else 'backward'}")
+        parts.append(
+            f"{abs(forward_m):g} m {'forward' if forward_m > 0 else 'backward'}")
     if left_m:
         parts.append(f"{abs(left_m):g} m {'left' if left_m > 0 else 'right'}")
     if turn_deg:
-        parts.append(f"turning {abs(turn_deg):g} degrees {'left' if turn_deg > 0 else 'right'}")
+        parts.append(
+            f"turning {abs(turn_deg):g} degrees {'left' if turn_deg > 0 else 'right'}")
     return ", ".join(parts) or "in place"
 
 

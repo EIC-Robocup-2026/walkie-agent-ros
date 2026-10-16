@@ -1,0 +1,14 @@
+repositories:
+  # rmw_zenoh_cpp 0.2.11, built from source to replace RoboStack's 0.2.10,
+  # whose rmw_wait can block forever (ros2/rmw_zenoh#1032). See ADR-0032.
+  rmw_zenoh_ws/src/rmw_zenoh:
+    type: git
+    url: https://github.com/ros2/rmw_zenoh.git
+    version: 0.2.11
+  # Header-only C++ bindings that rmw_zenoh_cpp compiles against. RoboStack
+  # ships libzenohc 1.9.0 but not these headers, so they come from the
+  # matching zenoh-cpp release.
+  rmw_zenoh_ws/src/zenoh-cpp:
+    type: git
+    url: https://github.com/eclipse-zenoh/zenoh-cpp.git
+    version: 1.9.0

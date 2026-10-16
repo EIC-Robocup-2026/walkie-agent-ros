@@ -31,6 +31,9 @@ ros-jazzy-tf-transformations = "*"
 # OpenCV 5, which rai-core rejects. RoboStack's 0.2.10 is built on the same
 # Zenoh library (libzenohc 1.9.0). Installing it does not change the default
 # middleware: only tasks that set RMW_IMPLEMENTATION use it (see agent-sim).
+# 0.2.10's rmw_wait can block forever, so `pixi run build-rmw-zenoh` builds
+# 0.2.11 from source, and scripts/activate.sh loads it in place of this one
+# (ADR-0032). This package still provides the router, rmw_zenohd.
 ros-jazzy-rmw-zenoh-cpp = "0.2.10.*"
 # Build toolchain for message packages in ros2_ws/src (rai_interfaces).
 colcon-common-extensions = "*"
@@ -87,6 +90,27 @@ cmd = "colcon build --symlink-install --cmake-args -DPython3_EXECUTABLE=$CONDA_P
 cwd = "ros2_ws"
 depends-on = ["clone-ros2-ws"]
 description = "Build ros2_ws with colcon"
+
+[tasks.clone-rmw-zenoh]
+cmd = "vcs import --input rmw_zenoh_ws.repos"
+outputs = [
+  "rmw_zenoh_ws/src/rmw_zenoh/rmw_zenoh_cpp/package.xml",
+  "rmw_zenoh_ws/src/zenoh-cpp/CMakeLists.txt",
+]
+description = "Clone rmw_zenoh 0.2.11 and zenoh-cpp 1.9.0 sources"
+
+# A separate workspace from ros2_ws, so CI's build-ros2 does not spend minutes
+# compiling a middleware the tests never use (they run on Fast DDS). The
+# vendor, security tools and test packages are ignored: rmw_zenoh_cpp builds
+# against the environment's zenoh_cpp_vendor and libzenohc instead.
+[tasks.build-rmw-zenoh]
+cmd = """colcon build \
+  --packages-ignore zenoh_cpp_vendor zenoh_security_tools test_rmw_zenoh_cpp \
+  --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_TESTING=OFF -DZENOHCXX_ENABLE_TESTS=OFF -DZENOHCXX_ENABLE_EXAMPLES=OFF"""
+cwd = "rmw_zenoh_ws"
+depends-on = ["clone-rmw-zenoh"]
+description = "Build rmw_zenoh_cpp 0.2.11, which replaces RoboStack's 0.2.10 (ADR-0032)"
 
 [tasks.fake-walkie]
 cmd = "python -m walkie_agent.sim.fake_walkie"

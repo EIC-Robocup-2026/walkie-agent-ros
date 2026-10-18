@@ -26,16 +26,22 @@ consequences. The idea comes from
 
 Each ADR has a status, shown by the color of its block:
 
-| Status                     | Block              | Meaning                                                         |
-| -------------------------- | ------------------ | --------------------------------------------------------------- |
-| Proposed                   | `note` (blue)      | Written for review. Nothing depends on it yet.                  |
-| Accepted                   | `success` (green)  | Agreed and in effect.                                           |
-| Superseded by ADR-NNNN     | `quote` (gray)     | Replaced by a newer decision. Kept so the reasons stay readable. |
-| Rejected                   | `failure` (red)    | Considered and turned down.                                     |
+| Status                                  | Block              | Meaning                                                          |
+| --------------------------------------- | ------------------ | ---------------------------------------------------------------- |
+| Proposed                                | `note` (blue)      | Written for review. Nothing depends on it yet.                   |
+| Accepted                                | `success` (green)  | Agreed and in effect.                                            |
+| Accepted, partly superseded by ADR-NNNN | `success` (green)  | In effect, except for the points the newer ADR replaces.         |
+| Superseded by ADR-NNNN                  | `quote` (gray)     | Replaced by a newer decision. Kept so the reasons stay readable. |
+| Rejected                                | `failure` (red)    | Considered and turned down.                                      |
 
 After an ADR is accepted, do not change its decision. If the decision
-changes, write a new ADR and set the old one to "Superseded by ADR-NNNN".
-Fixing typos and links is fine.
+changes, write a new ADR and set the old one to "Superseded by ADR-NNNN"
+([ADR-0001](decisions/0001-record-architecture-decisions.md)).
+ADR-0001 covers only a full replacement. If the new ADR replaces only part
+of the old one, it names that part, and the old one becomes "Accepted,
+partly superseded by ADR-NNNN". Change only the old ADR's status line, and
+the title of its block on the architecture page. Fixing typos and links is
+fine.
 
 ## Add a decision
 

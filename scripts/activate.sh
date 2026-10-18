@@ -16,18 +16,33 @@ if [[ -z "${ALSA_PLUGIN_DIR:-}" ]]; then
     done
 fi
 
-# Under Zenoh, load rmw_zenoh_cpp 0.2.11 (`pixi run build-rmw-zenoh`) instead
+# Under Zenoh, use rmw_zenoh_cpp 0.2.11 (`pixi run build-rmw-zenoh`) instead
 # of RoboStack's 0.2.10, whose rmw_wait can block forever (ADR-0032). ROS
 # opens the middleware by file name, and the environment's
-# librmw_implementation.so has an RPATH of its own directory, which the loader
-# searches before LD_LIBRARY_PATH, so it always finds 0.2.10 there.
-# A preloaded library with the same name is reused instead. pixi applies a
-# task's env before this script, so agent-sim's RMW_IMPLEMENTATION counts.
-_rmw_zenoh_lib="${PIXI_PROJECT_ROOT}/rmw_zenoh_ws/install/rmw_zenoh_cpp/lib/librmw_zenoh_cpp.so"
-if [[ "${RMW_IMPLEMENTATION:-}" == "rmw_zenoh_cpp" && -f "${_rmw_zenoh_lib}" ]]; then
-    export LD_PRELOAD="${_rmw_zenoh_lib}${LD_PRELOAD:+:${LD_PRELOAD}}"
+# librmw_implementation.so has an RPATH of its own directory, which the
+# dynamic linker searches before LD_LIBRARY_PATH, so it always finds 0.2.10
+# there. A library that is already loaded under the same name is reused
+# instead.
+#
+# This script cannot tell which middleware a process will use: pixi runs it
+# before it applies [activation.env] and a task's env, so it sees only the
+# calling shell's RMW_IMPLEMENTATION. It therefore preloads a small loader
+# (scripts/rmw_zenoh_loader.c) into every process, and the loader opens 0.2.11
+# when the process starts, only if RMW_IMPLEMENTATION is rmw_zenoh_cpp then.
+# Preloading 0.2.11 itself would put Zenoh under every process, also one that
+# asks for Fast DDS, and rcl would exit with "Expected RMW implementation
+# identifier of 'rmw_fastrtps_cpp'" (ADR-0033).
+#
+# This script prints no warning when the build is missing, because pixi run
+# and pixi shell do not show its output (Pixi 0.80). The loader prints an
+# error itself when it cannot open 0.2.11.
+_rmw_zenoh_install="${PIXI_PROJECT_ROOT}/rmw_zenoh_ws/install"
+_rmw_zenoh_loader="${_rmw_zenoh_install}/rmw_zenoh_loader/lib/librmw_zenoh_loader.so"
+if [[ -f "${_rmw_zenoh_loader}" && -f "${_rmw_zenoh_install}/rmw_zenoh_cpp/lib/librmw_zenoh_cpp.so" &&
+      ":${LD_PRELOAD:-}:" != *":${_rmw_zenoh_loader}:"* ]]; then
+    export LD_PRELOAD="${_rmw_zenoh_loader}${LD_PRELOAD:+:${LD_PRELOAD}}"
 fi
-unset _rmw_zenoh_lib
+unset _rmw_zenoh_install _rmw_zenoh_loader
 
 # Project ROS 2 workspace overlay (available after `pixi run build-ros2`).
 if [[ -f "${PIXI_PROJECT_ROOT}/ros2_ws/install/local_setup.sh" ]]; then

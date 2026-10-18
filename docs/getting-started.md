@@ -36,7 +36,7 @@ pixi install
 `pixi install` downloads everything listed in `pixi.toml` into a hidden
 `.pixi/` folder inside the project. Nothing is installed system-wide.
 
-## 3. Build the ROS message package
+## 3. Build the ROS packages
 
 RAI's message types (`rai_interfaces`) are not available as a package, so we
 build them from source once:
@@ -48,6 +48,27 @@ pixi run build-ros2
 This clones `rai_interfaces` into `ros2_ws/src/` and builds it with colcon.
 Pixi loads the result automatically every time you use `pixi run` or
 `pixi shell`. Run it again only if `ros2_ws.repos` changes.
+
+Every `pixi run` and `pixi shell` here uses the Zenoh middleware
+(`rmw_zenoh_cpp`), as walkie-ros and the robot do
+([ADR-0033](architecture/decisions/0033-zenoh-in-every-pixi-environment.md)).
+RoboStack's version of it can stop receiving messages after a few seconds,
+so build version 0.2.11 from source once as well
+([ADR-0032](architecture/decisions/0032-rmw-zenoh-from-source.md)):
+
+```bash
+pixi run build-rmw-zenoh
+```
+
+Pixi uses it in place of RoboStack's version from then on. Until you build
+it, nothing warns you: Zenoh nodes quietly use RoboStack's version. If the
+build exists but cannot be loaded, every command prints a line that starts
+with `rmw_zenoh_loader: cannot load rmw_zenoh_cpp 0.2.11`, with the reason.
+
+Run it again when `rmw_zenoh_ws.repos` or `scripts/rmw_zenoh_loader.c`
+changes. First stop everything you started with `pixi run` here, the Zenoh
+router included, because the build replaces a library those processes have
+loaded.
 
 ## 4. Add your API keys
 
@@ -77,22 +98,35 @@ fills them in for you, see [Local Langfuse](setup/04-langfuse.md).
 pixi run test
 ```
 
-The tests use the real ROS 2 middleware with a fake robot and a scripted LLM,
-so they need no API key and no hardware. All tests should pass.
+The tests run real ROS 2 nodes with a fake robot and a scripted LLM, so they
+need no API key and no hardware. They switch to the Fast DDS middleware
+themselves, so they need no Zenoh router either
+([ADR-0019](architecture/decisions/0019-test-fakes-fast-dds.md)). All tests
+should pass.
 
 ## 6. Run the agent with the fake robot
 
-Open three terminals in the project folder.
+Open four terminals in the project folder. Zenoh nodes find each other
+through a router, so start that first.
 
-```bash title="Terminal 1: fake robot (navigation, TF, speech topic)"
+```bash title="Terminal 1: Zenoh router"
+pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
+```
+
+Only one router can listen on `localhost:7447`, where every node looks for
+it. If walkie-ros already runs one on this computer, skip terminal 1 and use
+that router. A node that finds no router logs
+`Unable to connect to a Zenoh router` and sees no node in another terminal.
+
+```bash title="Terminal 2: fake robot (navigation, TF, speech topic)"
 pixi run fake-walkie
 ```
 
-```bash title="Terminal 2: the agent"
+```bash title="Terminal 3: the agent"
 pixi run agent
 ```
 
-```bash title="Terminal 3: read the agent's text replies"
+```bash title="Terminal 4: read the agent's text replies"
 pixi run ros2 topic echo /walkie/console rai_interfaces/msg/HRIMessage --field text
 ```
 
@@ -103,9 +137,9 @@ pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
   "{text: 'Please go to the kitchen and say hi when you get there.'}"
 ```
 
-The agent's log in terminal 2 shows each tool call. Terminal 1 logs what the
+The agent's log in terminal 3 shows each tool call. Terminal 2 logs what the
 robot says, for example `[Walkie says] Hi everyone! I have arrived in the
-kitchen.`, and terminal 3 shows the agent's final text reply.
+kitchen.`, and terminal 4 shows the agent's final text reply.
 
 | Topic             | Direction  | What it carries                                                          |
 | ----------------- | ---------- | ------------------------------------------------------------------------ |
@@ -133,39 +167,33 @@ first. In Langfuse, each conversation shows up as its own **session**.
 
 ### Drive walkie-ros's simulation instead
 
-walkie-ros has a MuJoCo simulation of Walkie with Nav2 on a blank map. It
-runs under the Zenoh middleware (`rmw_zenoh_cpp`), so every terminal needs
-the same two variables, or the nodes silently do not see each other
-([ADR-0030](architecture/decisions/0030-mujoco-sim-first.md)). Domain 42 keeps
-the simulation apart from the real robot, which uses domain 23.
+walkie-ros has a MuJoCo simulation of Walkie with Nav2 on a blank map
+([ADR-0030](architecture/decisions/0030-mujoco-sim-first.md)). Its Pixi
+environment uses Zenoh for every command too, so both projects share one
+router. They must also use the same `ROS_DOMAIN_ID`, or the nodes silently
+do not see each other. Domain 42 keeps the simulation apart from the real
+robot, which uses domain 23.
 
-In a walkie-ros checkout of `feat/Pixi` or `feat/mujoco-launch`, start the
-Zenoh router and the simulation:
+In a walkie-ros checkout, start the Zenoh router and the simulation. If the
+router from step 6 still runs, keep it and skip terminal 1.
 
 ```bash title="walkie-ros, terminal 1: Zenoh router (the only one)"
-export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=42
 pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 ```
 
 ```bash title="walkie-ros, terminal 2: simulation and Nav2"
-export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=42
+export ROS_DOMAIN_ID=42
 pixi run ros2 launch robot_bringup nav_mujoco_omnibot.launch.py headless:=true use_rviz:=false
 ```
 
-Then, in this project, build the Zenoh middleware once. RoboStack's version
-can stop receiving messages after a few seconds
-([ADR-0032](architecture/decisions/0032-rmw-zenoh-from-source.md)):
-
-```bash
-pixi run build-rmw-zenoh
-```
+Then, in this project, start the agent. `agent-sim` sets domain 42 itself.
 
 ```bash title="Terminal 3: the agent"
 pixi run agent-sim
 ```
 
 ```bash title="Terminal 4: send a task"
-export RMW_IMPLEMENTATION=rmw_zenoh_cpp ROS_DOMAIN_ID=42
+export ROS_DOMAIN_ID=42
 pixi run ros2 action list   # should show /navigate_to_pose
 pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
   "{text: 'Move forward one meter, then go to the corner.'}"

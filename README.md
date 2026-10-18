@@ -23,11 +23,17 @@ git clone https://github.com/EIC-Robocup-2026/walkie-agent-ros.git
 cd walkie-agent-ros
 pixi install
 pixi run build-ros2  # builds RAI's message package once
+pixi run build-rmw-zenoh  # builds the Zenoh middleware once
 cp .env.example .env # then set OPENAI_API_KEY to your OpenRouter key
 pixi run test
 ```
 
-Run the agent against a fake robot, in two terminals:
+Every `pixi run` uses the Zenoh middleware, as walkie-ros does, so nodes need
+a Zenoh router. Run the agent against a fake robot, in three terminals:
+
+```bash
+pixi run ros2 run rmw_zenoh_cpp rmw_zenohd  # skip if a router already runs
+```
 
 ```bash
 pixi run fake-walkie

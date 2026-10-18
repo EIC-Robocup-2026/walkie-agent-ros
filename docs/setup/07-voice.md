@@ -121,7 +121,9 @@ The settings you are most likely to change:
 
 ## Step 3: Run
 
-Open four terminals:
+Start a Zenoh router first, unless one already runs, as in
+[Getting Started](../getting-started.md#6-run-the-agent-with-the-fake-robot).
+Then open four terminals:
 
 ```bash title="Terminal 1"
 pixi run fake-walkie   # or the real robot

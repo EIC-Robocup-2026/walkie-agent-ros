@@ -29,7 +29,9 @@ it over ROS 2.
   [ADR-0016](decisions/0016-talk-to-walkie-ros-directly.md)).
 - **On the robot PC.** The agent will run next to walkie-ros and reach it
   over rmw_zenoh on the same computer
-  ([ADR-0017](decisions/0017-rmw-zenoh-domain-23.md)).
+  ([ADR-0017](decisions/0017-rmw-zenoh-domain-23.md)). Every Pixi command
+  already uses rmw_zenoh
+  ([ADR-0033](decisions/0033-zenoh-in-every-pixi-environment.md)).
 
 ## Components
 
@@ -118,10 +120,11 @@ For the full list of topics, see
 ## Running on the robot
 
 !!! note "Proposed"
-    This part is not built yet. Today the agent drives the fake robot on
-    Fast DDS, or walkie-ros's MuJoCo simulation over rmw_zenoh with
-    `pixi run agent-sim`
-    ([ADR-0030](decisions/0030-mujoco-sim-first.md)).
+    This part is not built yet. Today the agent drives the fake robot, or
+    walkie-ros's MuJoCo simulation with `pixi run agent-sim`
+    ([ADR-0030](decisions/0030-mujoco-sim-first.md)). Both run over
+    rmw_zenoh
+    ([ADR-0033](decisions/0033-zenoh-in-every-pixi-environment.md)).
 
 The agent runs on the robot PC, next to walkie-ros. walkie-ros uses Zenoh as
 its ROS 2 middleware (`rmw_zenoh_cpp`) on domain 23. The agent must use the
@@ -256,7 +259,7 @@ The arm manipulation decisions, ADR-0021 to ADR-0028, are on the
 
     --8<-- "architecture/decisions/0029-half-duplex-voice.md:body"
 
-??? success "ADR-0030: Drive walkie-ros's MuJoCo simulation before the real robot · Accepted"
+??? success "ADR-0030: Drive walkie-ros's MuJoCo simulation before the real robot · Accepted, partly superseded by ADR-0033"
 
     --8<-- "architecture/decisions/0030-mujoco-sim-first.md:body"
 
@@ -264,6 +267,10 @@ The arm manipulation decisions, ADR-0021 to ADR-0028, are on the
 
     --8<-- "architecture/decisions/0031-bounded-relative-moves.md:body"
 
-??? success "ADR-0032: Build rmw_zenoh_cpp 0.2.11 from source and preload it · Accepted"
+??? success "ADR-0032: Build rmw_zenoh_cpp 0.2.11 from source and preload it · Accepted, partly superseded by ADR-0033"
 
     --8<-- "architecture/decisions/0032-rmw-zenoh-from-source.md:body"
+
+??? success "ADR-0033: Use rmw_zenoh_cpp in every Pixi environment · Accepted"
+
+    --8<-- "architecture/decisions/0033-zenoh-in-every-pixi-environment.md:body"

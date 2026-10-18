@@ -1,7 +1,9 @@
 # ADR-0032: Build rmw_zenoh_cpp 0.2.11 from source and preload it
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-16
+**Status:** Accepted, partly superseded by
+[ADR-0033](/architecture/decisions/0033-zenoh-in-every-pixi-environment.md) ·
+**Date:** 2026-10-16
 
 **Context**
 

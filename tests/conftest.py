@@ -4,22 +4,24 @@ import threading
 from pathlib import Path
 
 import pytest
-import rclpy
-from rai.communication.ros2 import ROS2Connector
-from rclpy.executors import MultiThreadedExecutor
 
-from walkie_agent.locations import load_locations
-from walkie_agent.sim.fake_walkie import FakeWalkie
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-
+# Tests run on Fast DDS, although pixi sets rmw_zenoh_cpp for every command
+# (ADR-0019, ADR-0033). Fast DDS needs no router, and it does not reach the
+# Zenoh nodes of a robot or a simulation on the same computer. This must run
+# before rclpy is imported: loading rcl checks RMW_IMPLEMENTATION and loads
+# that middleware, so a change after the import has no effect.
+os.environ["RMW_IMPLEMENTATION"] = "rmw_fastrtps_cpp"
 # Keep test traffic on this machine and off any domain a real robot might use.
 os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
-# Tests run on Fast DDS even from a shell set up for the robot or the
-# simulator: under rmw_zenoh, nodes find each other only through a router, and
-# without one every test would time out (ADR-0019). Set before rclpy.init,
-# which is when the middleware is loaded.
-os.environ["RMW_IMPLEMENTATION"] = "rmw_fastrtps_cpp"
+
+import rclpy  # noqa: E402
+from rai.communication.ros2 import ROS2Connector  # noqa: E402
+from rclpy.executors import MultiThreadedExecutor  # noqa: E402
+
+from walkie_agent.locations import load_locations  # noqa: E402
+from walkie_agent.sim.fake_walkie import FakeWalkie  # noqa: E402
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
 @pytest.fixture(scope="session", autouse=True)

@@ -10,15 +10,17 @@ fakes the Nav2 action, TF and the speech topic. They keep traffic local with
 `ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST` and a random domain ID.
 
 Once the agent uses rmw_zenoh
-([ADR-0017](/architecture/decisions/0017-rmw-zenoh-domain-23.md)), tests that
-inherit that middleware need a running Zenoh router. Without one, nodes do
-not discover each other, and the tests fail with timeouts that say nothing
-about the cause.
+([ADR-0017](/architecture/decisions/0017-rmw-zenoh-domain-23.md),
+[ADR-0033](/architecture/decisions/0033-zenoh-in-every-pixi-environment.md)),
+tests that inherit that middleware need a running Zenoh router. Without one,
+nodes in different processes do not discover each other, and a test that
+needs such a node fails with a timeout that says nothing about the cause.
 
 **Decision**
 
-- `tests/conftest.py` sets `RMW_IMPLEMENTATION=rmw_fastrtps_cpp` before
-  `rclpy.init`, and keeps the random domain and local discovery.
+- `tests/conftest.py` sets `RMW_IMPLEMENTATION=rmw_fastrtps_cpp` before it
+  imports rclpy, because rcl loads the middleware at import. It keeps the
+  random domain and local discovery.
 - Each walkie-ros node the agent calls gets a fake in `src/walkie_agent/sim/`
   with the same names and message types, quirks included.
 - Fakes have settings to produce failures (slow motion, planning failure,

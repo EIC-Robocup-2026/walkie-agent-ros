@@ -1,7 +1,9 @@
 # ADR-0030: Drive walkie-ros's MuJoCo simulation before the real robot
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-15
+**Status:** Accepted, partly superseded by
+[ADR-0033](/architecture/decisions/0033-zenoh-in-every-pixi-environment.md) ·
+**Date:** 2026-10-15
 
 **Context**
 

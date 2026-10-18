@@ -5,9 +5,22 @@ name = "walkie-agent-ros"
 platforms = ["linux-64"]
 version = "0.1.0"
 
-# Sources ros2_ws/install/local_setup.sh (when built) so rai_interfaces is importable.
+# Sources ros2_ws/install/local_setup.sh (when built) so rai_interfaces is
+# importable, and preloads a loader that opens rmw_zenoh_cpp 0.2.11 under
+# Zenoh (ADR-0032, ADR-0033).
 [activation]
 scripts = ["scripts/activate.sh"]
+
+# walkie-ros and the robot use Zenoh, so every `pixi run` and `pixi shell` here
+# does too (ADR-0033). There is no Zenoh config: nodes connect to a router at
+# localhost:7447, rmw_zenoh's default, which must be running
+# (`pixi run ros2 run rmw_zenoh_cpp rmw_zenohd`). This value replaces one
+# exported in the calling shell. To use another middleware, set
+# RMW_IMPLEMENTATION in a task's env, or for one command:
+#   pixi run env RMW_IMPLEMENTATION=rmw_fastrtps_cpp <command>
+# The tests switch to Fast DDS themselves, in tests/conftest.py (ADR-0019).
+[activation.env]
+RMW_IMPLEMENTATION = "rmw_zenoh_cpp"
 
 [dependencies]
 # RAI supports Python >=3.10,<3.13; RoboStack Jazzy builds for 3.12.
@@ -26,14 +39,14 @@ ros-jazzy-cv-bridge = "*"
 ros-jazzy-nav2-msgs = "*"
 ros-jazzy-tf2-geometry-msgs = "*"
 ros-jazzy-tf-transformations = "*"
-# walkie-ros uses Zenoh as its ROS 2 middleware. walkie-ros feat/Pixi has
-# RoboStack's 0.2.11, but that build needs a newer ROS stack that requires
-# OpenCV 5, which rai-core rejects. RoboStack's 0.2.10 is built on the same
-# Zenoh library (libzenohc 1.9.0). Installing it does not change the default
-# middleware: only tasks that set RMW_IMPLEMENTATION use it (see agent-sim).
+# The ROS 2 middleware, set for every task in [activation.env] above.
+# walkie-ros has RoboStack's 0.2.11, but that build needs a newer ROS stack
+# that requires OpenCV 5, which rai-core rejects. RoboStack's 0.2.10 is built
+# on the same Zenoh library (libzenohc 1.9.0).
 # 0.2.10's rmw_wait can block forever, so `pixi run build-rmw-zenoh` builds
-# 0.2.11 from source, and scripts/activate.sh loads it in place of this one
-# (ADR-0032). This package still provides the router, rmw_zenohd.
+# 0.2.11 from source, and the loader that scripts/activate.sh preloads opens
+# it in place of this one (ADR-0032, ADR-0033). This package still provides
+# the router, rmw_zenohd.
 ros-jazzy-rmw-zenoh-cpp = "0.2.10.*"
 # Build toolchain for message packages in ros2_ws/src (rai_interfaces).
 colcon-common-extensions = "*"
@@ -103,14 +116,21 @@ description = "Clone rmw_zenoh 0.2.11 and zenoh-cpp 1.9.0 sources"
 # compiling a middleware the tests never use (they run on Fast DDS). The
 # vendor, security tools and test packages are ignored: rmw_zenoh_cpp builds
 # against the environment's zenoh_cpp_vendor and libzenohc instead.
+# The second step builds the loader that scripts/activate.sh preloads
+# (ADR-0033). LD_PRELOAD is cleared because CMake overwrites the installed
+# library in place, and the loader would have it open in every build process.
 [tasks.build-rmw-zenoh]
 cmd = """colcon build \
   --packages-ignore zenoh_cpp_vendor zenoh_security_tools test_rmw_zenoh_cpp \
   --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_TESTING=OFF -DZENOHCXX_ENABLE_TESTS=OFF -DZENOHCXX_ENABLE_EXAMPLES=OFF"""
+  -DBUILD_TESTING=OFF -DZENOHCXX_ENABLE_TESTS=OFF -DZENOHCXX_ENABLE_EXAMPLES=OFF \
+  && mkdir -p install/rmw_zenoh_loader/lib \
+  && cc -shared -fPIC -O2 -Wall -Wextra ../scripts/rmw_zenoh_loader.c -ldl \
+  -o install/rmw_zenoh_loader/lib/librmw_zenoh_loader.so"""
 cwd = "rmw_zenoh_ws"
+env = { LD_PRELOAD = "" }
 depends-on = ["clone-rmw-zenoh"]
-description = "Build rmw_zenoh_cpp 0.2.11, which replaces RoboStack's 0.2.10 (ADR-0032)"
+description = "Build rmw_zenoh_cpp 0.2.11 and the loader that uses it in place of RoboStack's 0.2.10 (ADR-0032, ADR-0033)"
 
 [tasks.fake-walkie]
 cmd = "python -m walkie_agent.sim.fake_walkie"
@@ -120,14 +140,16 @@ description = "Run a fake robot (Nav2 action, TF, speech topic) for testing with
 cmd = "python -m walkie_agent.main"
 description = "Run the Walkie RAI agent (reads tasks from /from_human)"
 
-# The agent against walkie-ros's MuJoCo simulation (blank map), which runs
-# under rmw_zenoh on its own router at localhost:7447. Domain 42 keeps it
+# The agent against walkie-ros's MuJoCo simulation (blank map). It uses the
+# Zenoh router on localhost:7447, from either repository. Domain 42 keeps it
 # apart from the real robot's domain 23. See docs/getting-started.md.
 [tasks.agent-sim]
 cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.sim.toml"
-env = { RMW_IMPLEMENTATION = "rmw_zenoh_cpp", ROS_DOMAIN_ID = "42" }
-description = "Run the agent against walkie-ros's MuJoCo simulation (Zenoh, domain 42)"
+env = { ROS_DOMAIN_ID = "42" }
+description = "Run the agent against walkie-ros's MuJoCo simulation (domain 42)"
 
+# The tests run on Fast DDS, which tests/conftest.py sets, so they need no
+# Zenoh router (ADR-0019).
 [tasks.test]
 cmd = "pytest"
 description = "Run the test suite"
@@ -182,6 +204,12 @@ docs-build = "mkdocs build --strict"
 [feature.docs.dependencies]
 mkdocs-material = ">=9.7,<10"
 mkdocs = ">=1.6,<2"
+
+# The docs environment leaves out the default feature, and with it the
+# [activation.env] above. It has no ROS, but sets the same middleware so that
+# every environment agrees (ADR-0033).
+[feature.docs.activation.env]
+RMW_IMPLEMENTATION = "rmw_zenoh_cpp"
 
 [environments]
 docs = { features = ["docs"], no-default-feature = true }

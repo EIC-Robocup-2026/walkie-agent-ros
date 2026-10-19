@@ -26,7 +26,9 @@ it over ROS 2.
 - **Agent-side only.** This repository holds the agent, its configuration and
   fakes for testing. Robot nodes live in walkie-ros
   ([ADR-0015](decisions/0015-repository-boundary.md),
-  [ADR-0016](decisions/0016-talk-to-walkie-ros-directly.md)).
+  [ADR-0016](decisions/0016-talk-to-walkie-ros-directly.md)). The vision
+  models will run in a new robot-side repository, walkie-vision
+  ([ADR-0034](decisions/0034-vision-models-in-walkie-vision.md)).
 - **On the robot PC.** The agent will run next to walkie-ros and reach it
   over rmw_zenoh on the same computer
   ([ADR-0017](decisions/0017-rmw-zenoh-domain-23.md)). Every Pixi command
@@ -162,7 +164,10 @@ robot PC does not touch the live robot
 | Drivers, ros2_control, Nav2, MoveIt, `bimanual_commander`    | walkie-ros                 |
 | URDF, SRDF, joint limits                                     | walkie-ros                 |
 | `my_robot_interfaces` and future skill interfaces            | walkie-ros, pinned here    |
-| Perception, skill server, policy inference                   | walkie-ros (or another robot-side repository) |
+| `walkie_perception`: grasp pipeline, classic 3D positions    | walkie-ros                 |
+| Vision: detection, embeddings, pose, faces, re-ID, captions  | walkie-vision (not on GitHub yet) |
+| `walkie_vision_msgs`                                         | walkie-vision, to be pinned here |
+| Skill server, policy inference                               | walkie-ros (or another robot-side repository) |
 
 The agent does not load the URDF. MoveIt uses it on the robot, and rai_whoami
 ignores it ([ADR-0020](decisions/0020-no-urdf-in-agent.md)).
@@ -228,7 +233,7 @@ proposed. See [Architecture](index.md) for how to add one.
 
     --8<-- "architecture/decisions/0014-mkdocs-material.md:body"
 
-??? success "ADR-0015: Keep only agent-side code in this repository · Accepted"
+??? success "ADR-0015: Keep only agent-side code in this repository · Accepted, partly superseded by ADR-0034"
 
     --8<-- "architecture/decisions/0015-repository-boundary.md:body"
 
@@ -274,3 +279,7 @@ The arm manipulation decisions, ADR-0021 to ADR-0028, are on the
 ??? success "ADR-0033: Use rmw_zenoh_cpp in every Pixi environment · Accepted"
 
     --8<-- "architecture/decisions/0033-zenoh-in-every-pixi-environment.md:body"
+
+??? success "ADR-0034: Run the vision models in a new repository, walkie-vision · Accepted"
+
+    --8<-- "architecture/decisions/0034-vision-models-in-walkie-vision.md:body"

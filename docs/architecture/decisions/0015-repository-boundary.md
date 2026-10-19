@@ -1,7 +1,9 @@
 # ADR-0015: Keep only agent-side code in this repository
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-12
+**Status:** Accepted, partly superseded by
+[ADR-0034](/architecture/decisions/0034-vision-models-in-walkie-vision.md) ·
+**Date:** 2026-10-12
 
 **Context**
 

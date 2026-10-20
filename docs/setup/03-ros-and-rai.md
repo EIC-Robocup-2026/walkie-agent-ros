@@ -270,6 +270,7 @@ Two tasks clone and build it:
 ```toml title="pixi.toml"
 [tasks.clone-ros2-ws]
 cmd = "vcs import --input ros2_ws.repos"
+inputs = ["ros2_ws.repos"]
 outputs = ["ros2_ws/src/rai_interfaces/package.xml"]
 
 [tasks.build-ros2]
@@ -279,7 +280,11 @@ depends-on = ["clone-ros2-ws"]
 ```
 
 - `vcs import` (from `vcstool`) clones every repository listed in the file.
-- `outputs` lets Pixi skip the clone when the folder already exists.
+- `inputs` and `outputs` let Pixi skip the clone when the folder already
+  exists and `ros2_ws.repos` has not changed. A changed pin runs
+  `vcs import` again, which moves the existing clone to the new commit. With
+  `outputs` alone, Pixi would skip the task after a pin change, and
+  `build-ros2` would keep building the old commit.
 - `-DPython3_EXECUTABLE=...` forces CMake to use Pixi's Python. Without it,
   a `~/.colcon/defaults.yaml` made for a system ROS install can point the
   build at the wrong Python.

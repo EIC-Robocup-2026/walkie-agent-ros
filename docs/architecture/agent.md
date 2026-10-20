@@ -29,6 +29,10 @@ it over ROS 2.
   [ADR-0016](decisions/0016-talk-to-walkie-ros-directly.md)). The vision
   models will run in a new robot-side repository, walkie-vision
   ([ADR-0034](decisions/0034-vision-models-in-walkie-vision.md)).
+- **Reads Walkie's memory.** `find_objects` asks the walkie-database node
+  where objects of one kind were last seen. The agent reads the memory only
+  through the node's ROS 2 services
+  ([ADR-0035](decisions/0035-memory-through-walkie-database.md)).
 - **On the robot PC.** The agent will run next to walkie-ros and reach it
   over rmw_zenoh on the same computer
   ([ADR-0017](decisions/0017-rmw-zenoh-domain-23.md)). Every Pixi command
@@ -56,6 +60,10 @@ flowchart TB
     tf["TF"]
   end
 
+  subgraph memory["walkie-database"]
+    db[("walkie_database<br/>Walkie's memory")]
+  end
+
   person -- speech --> voice
   voice -- speaker --> person
   voice <-- "in: /from_human<br/>out: /to_human (speak tool)" --> agent
@@ -65,6 +73,7 @@ flowchart TB
   agent -.-> langfuse
   agent -- "navigate_to_pose" --> nav2
   agent -- "get_current_pose" --> tf
+  agent -- "find_objects" --> db
 ```
 
 The voice box is two nodes, speech recognition and text-to-speech. Speech
@@ -73,7 +82,9 @@ hear itself ([ADR-0029](decisions/0029-half-duplex-voice.md)). See
 [Voice](../setup/07-voice.md) for how they connect.
 
 `pixi run fake-walkie` stands in for the robot during development: it
-serves the Nav2 action and TF, and listens on the speech topic.
+serves the Nav2 action and TF, and listens on the speech topic. It has no
+memory. `find_objects` needs the walkie-database node, see
+[Getting Started](../getting-started.md#ask-walkies-memory).
 
 ## How a task runs
 
@@ -108,10 +119,21 @@ between steps. A tool that is already running finishes first.
 | `list_locations`                  | this repo  | Lists the named places in `config/locations.toml`               |
 | `navigate_to_location`            | this repo  | Drives to a named place with Nav2, with every wait bounded      |
 | `move_relative`                   | this repo  | Moves up to 3 m forward, back or sideways from here, then turns |
+| `find_objects`                    | this repo  | Asks walkie-database where objects of one kind were last seen   |
 | `get_current_pose`                | RAI        | Reads the robot's position in the `map` frame from TF           |
 | `get_ros2_topics_names_and_types` | RAI        | Lists ROS topics, minus the forbidden ones                      |
 | `WaitForSecondsTool`              | RAI        | Waits a number of seconds                                       |
 | `search_robot_docs`               | rai_whoami | Searches Walkie's documentation (only after `pixi run whoami-build`) |
+
+`find_objects` calls `/walkie_database/find_objects` with a label and asks
+for at most 5 objects. It returns each object's room and position on the
+map, most recently seen first. The database node's `map_id` parameter
+decides which map is searched. The tool waits up to 2 s for the node to
+appear and reports memory as unavailable after that. It then waits up to
+5 s for the answer. A node that does not answer in time is reported to the
+LLM as busy, and the agent's log says that the node may have been built
+from a different `walkie_database_msgs` than the pinned commit
+([ADR-0035](decisions/0035-memory-through-walkie-database.md)).
 
 The [arm manipulation design](manipulation.md) proposes four arm tools and,
 later, two skill tools.
@@ -131,9 +153,11 @@ For the full list of topics, see
 The agent runs on the robot PC, next to walkie-ros. walkie-ros uses Zenoh as
 its ROS 2 middleware (`rmw_zenoh_cpp`) on domain 23. The agent must use the
 same middleware, the same domain and the same message definitions, or it
-silently sees nothing
+silently sees nothing. A service client built from different definitions
+still finds the server, but its requests are never answered
 ([ADR-0017](decisions/0017-rmw-zenoh-domain-23.md),
-[ADR-0018](decisions/0018-pin-robot-interfaces.md)).
+[ADR-0018](decisions/0018-pin-robot-interfaces.md),
+[ADR-0035](decisions/0035-memory-through-walkie-database.md)).
 
 ```mermaid
 flowchart LR
@@ -167,6 +191,8 @@ robot PC does not touch the live robot
 | `walkie_perception`: grasp pipeline, classic 3D positions    | walkie-ros                 |
 | Vision: detection, embeddings, pose, faces, re-ID, captions  | walkie-vision (not on GitHub yet) |
 | `walkie_vision_msgs`                                         | walkie-vision, to be pinned here |
+| Long-term memory: maps, rooms, objects, people, conversations | walkie-database           |
+| `walkie_database_msgs`                                       | walkie-database, pinned here |
 | Skill server, policy inference                               | walkie-ros (or another robot-side repository) |
 
 The agent does not load the URDF. MoveIt uses it on the robot, and rai_whoami
@@ -283,3 +309,7 @@ The arm manipulation decisions, ADR-0021 to ADR-0028, are on the
 ??? success "ADR-0034: Run the vision models in a new repository, walkie-vision · Accepted"
 
     --8<-- "architecture/decisions/0034-vision-models-in-walkie-vision.md:body"
+
+??? success "ADR-0035: Read Walkie's memory through walkie-database's ROS 2 services · Accepted"
+
+    --8<-- "architecture/decisions/0035-memory-through-walkie-database.md:body"

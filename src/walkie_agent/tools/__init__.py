@@ -9,6 +9,7 @@ from rai.tools.ros2.navigation.nav2_blocking import GetCurrentPoseTool
 from rai.tools.time import WaitForSecondsTool
 
 from walkie_agent.locations import Location
+from walkie_agent.tools.memory import FindObjectsTool
 from walkie_agent.tools.navigation import (
     MAP_FRAME,
     ROBOT_FRAME,
@@ -20,6 +21,7 @@ from walkie_agent.tools.speech import SpeakTool
 
 __all__ = [
     "FORBIDDEN_NAMES",
+    "FindObjectsTool",
     "ListLocationsTool",
     "MoveRelativeTool",
     "NavigateToLocationTool",
@@ -48,6 +50,7 @@ def build_walkie_tools(
             connector=connector, locations=locations, forbidden=FORBIDDEN_NAMES
         ),
         MoveRelativeTool(connector=connector, forbidden=FORBIDDEN_NAMES),
+        FindObjectsTool(connector=connector, forbidden=FORBIDDEN_NAMES),
         # Premade RAI tools, used as-is.
         GetCurrentPoseTool(
             connector=connector,

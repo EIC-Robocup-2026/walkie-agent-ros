@@ -10,6 +10,7 @@ ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
 ros2_ws/src/rai_interfaces/
+ros2_ws/src/walkie-database/
 # rmw_zenoh build workspace (see rmw_zenoh_ws.repos); colcon.meta is tracked
 rmw_zenoh_ws/build/
 rmw_zenoh_ws/install/

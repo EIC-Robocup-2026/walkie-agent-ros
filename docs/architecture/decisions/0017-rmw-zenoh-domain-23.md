@@ -19,6 +19,9 @@ A mismatch does not raise an error. With the wrong middleware, the wrong
 domain or no router, discovery simply finds nothing. Zenoh also puts the
 message type's hash in every name, so a node built with a different version
 of a message definition never connects either.
+[ADR-0035](/architecture/decisions/0035-memory-through-walkie-database.md)
+has since found that a service client does find such a server, but its
+requests are never answered.
 
 **Decision**
 

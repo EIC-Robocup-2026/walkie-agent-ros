@@ -5,9 +5,8 @@ config/locations.toml, and relative moves are bounded in length.
 """
 
 import math
-import threading
 import time
-from typing import Any, Type
+from typing import Type
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, Quaternion, Transform
@@ -16,12 +15,12 @@ from nav2_msgs.action import NavigateToPose
 from pydantic import BaseModel, Field, PrivateAttr
 from rai.tools.ros2.base import BaseROS2Tool
 from rclpy.action import ActionClient
-from rclpy.task import Future
 from rclpy.time import Time
 from tf2_ros import TransformException
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
 from walkie_agent.locations import Location
+from walkie_agent.tools.waiters import wait_for_future
 
 # Nav2's global frame and robot frame on walkie-ros. walkie-ros configures Nav2
 # with base_footprint; on its main branch base_link is rotated 90 degrees from
@@ -100,15 +99,15 @@ class Nav2GoalTool(BaseROS2Tool):
 
         goal = NavigateToPose.Goal()
         goal.pose = self._make_pose(x, y, yaw)
-        goal_handle = _wait(client.send_goal_async(goal),
-                            self.server_timeout_sec)
+        goal_handle = wait_for_future(client.send_goal_async(goal),
+                                      self.server_timeout_sec)
         if goal_handle is None:
             return f"Navigation to {target} failed: Nav2 did not answer the goal."
         if not goal_handle.accepted:
             return f"Navigation to {target} failed: Nav2 rejected the goal."
 
-        response = _wait(goal_handle.get_result_async(),
-                         self.navigation_timeout_sec)
+        response = wait_for_future(goal_handle.get_result_async(),
+                                   self.navigation_timeout_sec)
         if response is None:
             goal_handle.cancel_goal_async()
             return (
@@ -285,15 +284,3 @@ def _round(value: float, digits: int) -> float:
 def _normalize_angle(angle: float) -> float:
     """Wrap an angle in radians to [-pi, pi]."""
     return math.atan2(math.sin(angle), math.cos(angle))
-
-
-def _wait(future: Future, timeout_sec: float) -> Any | None:
-    """Wait for a future completed by the connector's executor thread.
-
-    Returns the result, or None on timeout.
-    """
-    done = threading.Event()
-    future.add_done_callback(lambda _: done.set())
-    if not done.wait(timeout_sec):
-        return None
-    return future.result()

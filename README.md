@@ -22,7 +22,7 @@ curl -fsSL https://pixi.sh/install.sh | sh  # once per computer, then reopen the
 git clone https://github.com/EIC-Robocup-2026/walkie-agent-ros.git
 cd walkie-agent-ros
 pixi install
-pixi run build-ros2  # builds RAI's message package once
+pixi run build-ros2  # builds the message packages from ros2_ws.repos once
 pixi run build-rmw-zenoh  # builds the Zenoh middleware once
 cp .env.example .env # then set OPENAI_API_KEY to your OpenRouter key
 pixi run test
@@ -80,6 +80,6 @@ explains each step and lists the topics.
 | `config.toml`           | RAI settings: LLM vendor and models, voice, tracing               |
 | `config/locations.toml` | The places Walkie can drive to                                    |
 | `whoami/`               | Walkie's identity sources for RAI's whoami                        |
-| `ros2_ws/`              | ROS packages built from source (`rai_interfaces`)                 |
+| `ros2_ws/`              | Message packages built from source (`rai_interfaces`, `walkie_database_msgs`) |
 | `docker/langfuse/`      | The local Langfuse server                                         |
 | `docs/`                 | The documentation site (MkDocs)                                   |

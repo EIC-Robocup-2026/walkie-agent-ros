@@ -10,6 +10,9 @@ Agent tools need walkie-ros message types, for example `SetJointPosition`,
 rmw_zenoh, a client built from a different version of a message definition
 does not fail: it never matches the server
 ([ADR-0017](/architecture/decisions/0017-rmw-zenoh-domain-23.md)).
+[ADR-0035](/architecture/decisions/0035-memory-through-walkie-database.md)
+has since found that a service client does find such a server, but its
+requests are never answered.
 
 walkie-ros is public, and `my_robot_interfaces` is in its main tree
 (`manipulate/my_robot_interfaces`), so no submodules are needed.

@@ -255,7 +255,8 @@ pkg-config = "*"
 make = "*"
 ```
 
-The repository and its exact commit are listed in `ros2_ws.repos`:
+The repository and its exact commit are listed in `ros2_ws.repos`. The file
+now also lists walkie-database, which was added later (see the note below):
 
 ```yaml title="ros2_ws.repos"
 repositories:
@@ -263,18 +264,26 @@ repositories:
     type: git
     url: https://github.com/RobotecAI/rai_interfaces.git
     version: f03dc0f217679980447dfead177979f485eb44f6
+  ros2_ws/src/walkie-database:
+    type: git
+    url: https://github.com/EIC-Robocup-2026/walkie-database.git
+    version: ...  # the commit of the database node the robot runs
 ```
 
-Two tasks clone and build it:
+Two tasks clone and build them:
 
 ```toml title="pixi.toml"
 [tasks.clone-ros2-ws]
 cmd = "vcs import --input ros2_ws.repos"
 inputs = ["ros2_ws.repos"]
-outputs = ["ros2_ws/src/rai_interfaces/package.xml"]
+outputs = [
+  "ros2_ws/src/rai_interfaces/package.xml",
+  "ros2_ws/src/walkie-database/ros2_ws/src/walkie_database_msgs/package.xml",
+]
 
 [tasks.build-ros2]
-cmd = "colcon build --symlink-install --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python"
+cmd = """colcon build --symlink-install --packages-select rai_interfaces walkie_database_msgs \
+  --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python"""
 cwd = "ros2_ws"
 depends-on = ["clone-ros2-ws"]
 ```
@@ -288,6 +297,15 @@ depends-on = ["clone-ros2-ws"]
 - `-DPython3_EXECUTABLE=...` forces CMake to use Pixi's Python. Without it,
   a `~/.colcon/defaults.yaml` made for a system ROS install can point the
   build at the wrong Python.
+
+!!! note "Later: walkie-database"
+    [walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)
+    was added for the messages of Walkie's memory, `walkie_database_msgs`.
+    Its clone holds a whole repository, so `build-ros2` builds only the
+    packages named after `--packages-select`. That list is an allow-list: a
+    message package from `ros2_ws.repos` that is missing from it is not
+    built
+    ([ADR-0035](../architecture/decisions/0035-memory-through-walkie-database.md)).
 
 ```bash
 pixi run build-ros2
@@ -352,7 +370,7 @@ search finds it:
 | A ROS package (`*_msgs`, `nav2_*`, `rqt_*`) | RoboStack          | `pixi search ros-jazzy-<name>`, then `pixi add ros-jazzy-<name>` |
 | A Python library                            | conda-forge        | `pixi search <name>`, then `pixi add <name>`                     |
 | A Python library that is not on conda-forge | PyPI               | `pixi add --pypi <name>`                                         |
-| A ROS package that is not packaged anywhere | Its Git repository | Add it to `ros2_ws.repos`, then `pixi run build-ros2`            |
+| A ROS package that is not packaged anywhere | Its Git repository | Add it to `ros2_ws.repos` and to `--packages-select` in `build-ros2`, then `pixi run build-ros2` |
 
 Why conda-forge before PyPI: ROS packages also use common libraries like
 `numpy` and OpenCV, and they come from conda. A PyPI package that needs a

@@ -38,16 +38,22 @@ pixi install
 
 ## 3. Build the ROS packages
 
-RAI's message types (`rai_interfaces`) are not available as a package, so we
-build them from source once:
+RAI's message types (`rai_interfaces`) and the messages of Walkie's memory
+(`walkie_database_msgs`, from
+[walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)) are
+not published as packages, so we build them from source once:
 
 ```bash
 pixi run build-ros2
 ```
 
-This clones `rai_interfaces` into `ros2_ws/src/` and builds it with colcon.
-Pixi loads the result automatically every time you use `pixi run` or
-`pixi shell`. Run it again only if `ros2_ws.repos` changes.
+This clones `rai_interfaces` and walkie-database into `ros2_ws/src/`, at the
+commits pinned in `ros2_ws.repos`, and builds the two message packages with
+colcon. Pixi loads the result automatically every time you use `pixi run`
+or `pixi shell`. Run it again only if `ros2_ws.repos` changes. The
+walkie-database pin must match the database node you run, or the agent's
+memory requests are never answered
+([ADR-0035](architecture/decisions/0035-memory-through-walkie-database.md)).
 
 Every `pixi run` and `pixi shell` here uses the Zenoh middleware
 (`rmw_zenoh_cpp`), as walkie-ros and the robot do
@@ -164,6 +170,39 @@ pixi run ros2 topic pub --once /walkie/reset std_msgs/msg/Empty
 This also drops any tasks still waiting in line, and stops the current task.
 A tool that is already running (for example, driving to the kitchen) finishes
 first. In Langfuse, each conversation shows up as its own **session**.
+
+### Ask Walkie's memory
+
+The fake robot has no memory. The `find_objects` tool asks the
+walkie-database node where objects were last seen, through the
+`/walkie_database/find_objects` service. Without that node, the tool tells
+the agent that memory is unavailable, and the other tools still work.
+
+To try it, set up walkie-database with its
+[Getting Started](https://eic-robocup-2026.github.io/walkie-database/getting-started/),
+and check out the commit pinned in this project's `ros2_ws.repos`. A new
+`data/walkie.db` has no objects yet, so write the sample house to
+`data/demo.db` and run the node on it:
+
+```bash title="walkie-database, terminal 5: the database node"
+pixi run db-seed
+pixi run db-node --ros-args -p db_path:=data/demo.db -p map_id:=demo-house
+```
+
+The node searches only the map named by `map_id`. The sample house's map is
+`demo-house`. On the robot, `map_id` is the id of the map the robot uses. If
+`map_id` is empty, every search fails and the agent is told why. The node
+must use the same router and the same `ROS_DOMAIN_ID` as the agent.
+
+Then ask the agent:
+
+```bash
+pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
+  "{text: 'Where is my cup?'}"
+```
+
+The agent's log shows a `find_objects` call for `cup`, which finds the two
+cups in the sample house's kitchen.
 
 ### Drive walkie-ros's simulation instead
 

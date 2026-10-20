@@ -1,3 +1,4 @@
+import importlib.util
 import os
 import random
 import threading
@@ -13,6 +14,23 @@ import pytest
 os.environ["RMW_IMPLEMENTATION"] = "rmw_fastrtps_cpp"
 # Keep test traffic on this machine and off any domain a real robot might use.
 os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
+
+# The message packages from ros2_ws.repos, built by `pixi run build-ros2`.
+# scripts/activate.sh adds them to the environment only once they are built.
+# Without them, an import fails with an ImportError that does not say what to
+# do: the FakeWalkie import below needs rai_interfaces, and the test modules
+# import walkie_database_msgs. The check runs here, before those imports,
+# because pytest imports this file before it calls pytest_configure.
+_missing = [
+    name
+    for name in ("rai_interfaces", "walkie_database_msgs")
+    if importlib.util.find_spec(name) is None
+]
+if _missing:
+    raise pytest.UsageError(
+        f"Message packages not built: {', '.join(_missing)}. "
+        "Run `pixi run build-ros2` once, then run the tests again."
+    )
 
 import rclpy  # noqa: E402
 from rai.communication.ros2 import ROS2Connector  # noqa: E402

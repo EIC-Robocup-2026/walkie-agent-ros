@@ -1,6 +1,6 @@
 {
-	"python-envs.defaultEnvManager": "renan-r-santos.pixi-code:pixi",
-	"python-envs.defaultPackageManager": "renan-r-santos.pixi-code:pixi",
+	"python-envs.defaultEnvManager": "ms-python.python:system",
+	"python-envs.defaultPackageManager": "ms-python.python:pip",
 	"python.defaultInterpreterPath": "${workspaceFolder}/.pixi/envs/default/bin/python",
 	// Message packages built by `pixi run build-ros2` live outside the pixi env.
 	"python.analysis.extraPaths": [

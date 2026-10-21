@@ -2,7 +2,8 @@
 
 <!-- --8<-- [start:body] -->
 **Status:** Accepted, partly superseded by
-[ADR-0033](/architecture/decisions/0033-zenoh-in-every-pixi-environment.md) ·
+[ADR-0033](/architecture/decisions/0033-zenoh-in-every-pixi-environment.md)
+and [ADR-0036](/architecture/decisions/0036-agent-sim-shell-domain.md) ·
 **Date:** 2026-10-15
 
 **Context**

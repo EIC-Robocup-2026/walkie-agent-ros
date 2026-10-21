@@ -209,9 +209,12 @@ cups in the sample house's kitchen.
 walkie-ros has a MuJoCo simulation of Walkie with Nav2 on a blank map
 ([ADR-0030](architecture/decisions/0030-mujoco-sim-first.md)). Its Pixi
 environment uses Zenoh for every command too, so both projects share one
-router. They must also use the same `ROS_DOMAIN_ID`, or the nodes silently
-do not see each other. Domain 42 keeps the simulation apart from the real
-robot, which uses domain 23.
+router. Every terminal must also use the same `ROS_DOMAIN_ID`, or the nodes
+silently do not see each other. `agent-sim` uses the terminal's value, or
+domain 0 when it is not set
+([ADR-0036](architecture/decisions/0036-agent-sim-shell-domain.md)). The
+commands below leave it unset everywhere. Do not run them in a terminal that
+exports `ROS_DOMAIN_ID=23`: that is the real robot's domain.
 
 In a walkie-ros checkout, start the Zenoh router and the simulation. If the
 router from step 6 still runs, keep it and skip terminal 1.
@@ -221,18 +224,20 @@ pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
 ```
 
 ```bash title="walkie-ros, terminal 2: simulation and Nav2"
-export ROS_DOMAIN_ID=42
 pixi run ros2 launch robot_bringup nav_mujoco_omnibot.launch.py headless:=true use_rviz:=false
 ```
 
-Then, in this project, start the agent. `agent-sim` sets domain 42 itself.
+Then, in this project, start the agent.
 
 ```bash title="Terminal 3: the agent"
 pixi run agent-sim
 ```
 
+If `move_relative` answers that no node publishes `/tf`, the agent and the
+simulation are on different domains or routers. Check `echo $ROS_DOMAIN_ID`
+in each terminal.
+
 ```bash title="Terminal 4: send a task"
-export ROS_DOMAIN_ID=42
 pixi run ros2 action list   # should show /navigate_to_pose
 pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
   "{text: 'Move forward one meter, then go to the corner.'}"

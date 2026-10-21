@@ -290,7 +290,7 @@ The arm manipulation decisions, ADR-0021 to ADR-0028, are on the
 
     --8<-- "architecture/decisions/0029-half-duplex-voice.md:body"
 
-??? success "ADR-0030: Drive walkie-ros's MuJoCo simulation before the real robot · Accepted, partly superseded by ADR-0033"
+??? success "ADR-0030: Drive walkie-ros's MuJoCo simulation before the real robot · Accepted, partly superseded by ADR-0033 and ADR-0036"
 
     --8<-- "architecture/decisions/0030-mujoco-sim-first.md:body"
 
@@ -313,3 +313,7 @@ The arm manipulation decisions, ADR-0021 to ADR-0028, are on the
 ??? success "ADR-0035: Read Walkie's memory through walkie-database's ROS 2 services · Accepted"
 
     --8<-- "architecture/decisions/0035-memory-through-walkie-database.md:body"
+
+??? success "ADR-0036: Run agent-sim on the calling shell's ROS_DOMAIN_ID · Accepted"
+
+    --8<-- "architecture/decisions/0036-agent-sim-shell-domain.md:body"

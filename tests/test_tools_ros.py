@@ -221,9 +221,30 @@ def test_move_relative_refuses_values_that_are_not_finite(connector, args):
 
 def test_move_relative_without_tf_reports_unknown_position(connector):
     tool = MoveRelativeTool(connector=connector, tf_timeout_sec=0.3)
-    assert tool.invoke({"forward_m": 1.0}).startswith(
+    result = tool.invoke({"forward_m": 1.0})
+    assert result.startswith(
         "Cannot move: the robot's position (map -> base_footprint) is unknown."
     )
+    # No node publishes TF, as when the agent is on another ROS_DOMAIN_ID.
+    assert result.endswith(
+        "No node publishes /tf: either the robot is not running, or the agent "
+        "uses a different ROS_DOMAIN_ID or Zenoh router than the robot."
+    )
+
+
+def test_move_relative_with_other_tf_skips_the_domain_hint(connector):
+    # TF exists but lacks the robot frame, as before localization starts.
+    static = StaticTransformBroadcaster(connector.node)
+    t = TransformStamped()
+    t.header.frame_id = MAP_FRAME
+    t.child_frame_id = "odom"
+    t.transform.rotation.w = 1.0
+    static.sendTransform(t)
+
+    tool = MoveRelativeTool(connector=connector, tf_timeout_sec=0.3)
+    result = tool.invoke({"forward_m": 1.0})
+    assert "is unknown." in result
+    assert "ROS_DOMAIN_ID" not in result
 
 
 def test_move_relative_zero_move_does_nothing(connector):

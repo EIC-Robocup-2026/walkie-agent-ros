@@ -212,7 +212,7 @@ class MoveRelativeTool(Nav2GoalTool):
         except TransformException as e:
             return (
                 f"Cannot move: the robot's position ({self.frame_id} -> "
-                f"{self.robot_frame_id}) is unknown. {e}"
+                f"{self.robot_frame_id}) is unknown. {e}{self._tf_publisher_hint()}"
             )
         if current is None:
             return (
@@ -236,6 +236,22 @@ class MoveRelativeTool(Nav2GoalTool):
             f"Now at x={_round(x, 2):.2f} m, y={_round(y, 2):.2f} m, "
             f"heading {_round(math.degrees(target_yaw), 0):.0f} degrees "
             f"in the {self.frame_id} frame."
+        )
+
+    def _tf_publisher_hint(self) -> str:
+        """Names the likely cause when no node in reach publishes TF at all.
+
+        Under rmw_zenoh, nodes on another ROS_DOMAIN_ID or behind another
+        router are invisible, so an empty TF buffer looks the same as a robot
+        that is not running. A frame missing from a TF tree that does exist
+        has other causes, such as localization not having started.
+        """
+        node = self.connector.node
+        if node.count_publishers("/tf") or node.count_publishers("/tf_static"):
+            return ""
+        return (
+            " No node publishes /tf: either the robot is not running, or the "
+            "agent uses a different ROS_DOMAIN_ID or Zenoh router than the robot."
         )
 
     def _current_transform(self) -> Transform | None:

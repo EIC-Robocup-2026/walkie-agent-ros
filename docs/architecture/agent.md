@@ -6,16 +6,26 @@ robot's own software, including navigation and manipulation, runs in
 [walkie-ros](https://github.com/EIC-Robocup-2026/walkie-ros). The agent calls
 it over ROS 2.
 
-!!! info "Proposed redesign"
-    A redesign of this agent into a self-evolving agent is proposed: see
-    [Self-Evolving Agent (Proposed)](self-evolving-agent.md). This page
-    describes the agent as it is today.
+!!! info "Redesign in progress"
+    The agent is being redesigned into a self-evolving agent: see
+    [Self-Evolving Agent (Proposed)](self-evolving-agent.md). Phase 1's host
+    graph and todo list are built. The rest of the redesign is proposed.
+    This page describes the agent as it is today.
 
 ## Summary
 
-- **Built on RAI.** `WalkieAgent` is RAI's `ReActAgent` with a reset added
+- **Built on RAI.** `WalkieAgent` runs its own small graph on RAI's
+  `LangChainAgent`. It keeps RAI's connectors, `HRIMessage`, `ToolRunner`
+  and tracing, binds the tools on every LLM call, and adds a reset
   ([ADR-0003](decisions/0003-rai-react-agent.md),
+  [ADR-0038](decisions/0038-own-graph-per-turn-binding.md),
   [ADR-0008](decisions/0008-reset-topic.md)).
+- **A todo list for every task.** For a task with several steps, the LLM
+  writes the steps with `update_todos` and marks them as it goes. The rules
+  are enforced in code: for example, a step whose tool failed cannot be
+  marked completed until that tool succeeds, unless a note explains why.
+  A task can also arrive with its steps already seeded
+  ([ADR-0041](decisions/0041-todo-list-and-seeding.md)).
 - **Tasks in, speech and console out.** Tasks arrive on `/from_human`, typed
   or from speech recognition. The agent speaks only through the `speak` tool
   on `/to_human`. Its plain-text replies go to the operator on
@@ -102,7 +112,7 @@ sequenceDiagram
   participant N as Nav2
 
   P->>A: "Go to the kitchen" (/from_human)
-  A->>L: system prompt + conversation + task
+  A->>L: system prompt + conversation + task,<br/>plus the todo list if it has items
   L-->>A: call speak("On my way") and navigate_to_location("kitchen")
   A->>T: "On my way" (/to_human)
   A->>N: NavigateToPose goal (every wait bounded)
@@ -112,9 +122,121 @@ sequenceDiagram
   A-->>P: reply on /walkie/console (operator only)
 ```
 
-RAI runs the tool calls one at a time. All tool calls from one LLM answer
-run inside one step of the agent's graph, and a reset is noticed only
-between steps. A tool that is already running finishes first.
+Messages wait in a queue. When the agent is idle, it takes the oldest one
+and runs it as a task until the LLM stops calling tools. An utterance that
+arrives during a task waits until the task ends. RAI's default would
+interrupt the task instead, and at a noisy booth any overheard speech would
+then cancel the current step
+([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)). Every task
+joins the same conversation, so the LLM also sees the earlier tasks until a
+reset.
+
+### The agent's graph
+
+`build_walkie_graph()` in `src/walkie_agent/graph.py` builds the graph.
+Its nodes change RAI's message list in place, so a reset and the tests
+work on the same history as the graph.
+
+```mermaid
+flowchart TD
+  IN["Next message from the queue,<br/>an utterance or submit(text, todos)"] --> LLM["llm node<br/>repairs the history, binds the tools,<br/>adds the todo reminder"]
+  LLM -->|"tool calls"| TR["tools node: WalkieToolRunner<br/>runs the calls one at a time"]
+  TR -->|"results"| LLM
+  TR -->|"wait_for_person asked its question"| DONE(["Task ends"])
+  LLM -->|"only calls with unreadable arguments"| LLM
+  LLM -->|"no tool call"| GATE{"Todo items open,<br/>none waiting?"}
+  GATE -->|"yes: completion gate,<br/>at most twice per task"| LLM
+  GATE -->|"no, or already twice"| DONE
+```
+
+- **llm node.** It puts the system prompt first and repairs the history.
+  Then it binds the tools in `agent.tools` and calls the LLM. The tools are
+  bound on every call, so a tool added during a task is callable on the
+  next turn. Phase 1 binds every tool. Above 20 tools it logs a warning,
+  once per count, because a small local model copes poorly with that many.
+- **History repair.** OpenAI-compatible endpoints reject an AI message
+  whose tool calls have no results. That happens when a stop lands after
+  the LLM asked for tools but before they ran, or when an error ends a
+  turn halfway. Before every LLM call, each such call gets an
+  error result, "Interrupted before it ran.", right after its AI message.
+  A call whose arguments are not valid JSON never runs either. LangChain
+  keeps it apart from the other calls, but still sends it back to the
+  endpoint, so it gets the error "The arguments were not a valid JSON
+  object, so the call did not run." When the LLM made no other call, the
+  graph goes straight back to the llm node, so the LLM can try again.
+- **tools node.** `WalkieToolRunner` is a subclass of RAI's `ToolRunner`,
+  so the calls still run one at a time with RAI's error handling. It
+  reports whether each call succeeded to the todo list's error ledger. A
+  call to a tool that does not exist, such as `fly`, gets the error
+  "Unknown tool fly." and the task goes on. Only the first `update_todos`
+  call in one LLM answer is applied. Any later one gets an error that asks
+  for all the changes in one call.
+- **Completion gate.** The LLM may answer without a tool call while todo
+  items are still open and none is waiting. The graph then saves this
+  message in the history and calls the LLM again: "[todo] Open items: t3,
+  t4. Finish them, or mark them failed or cancelled with a note." It does
+  this at most twice per task.
+- **`wait_for_person` ends the task.** It speaks the question and marks the
+  step in progress as waiting. The task then ends, with no completion gate.
+  The person's answer arrives as the next message and puts the step back in
+  progress. Any tool calls after the question in the same LLM reply do not
+  run; each is answered "Not run" so the LLM can repeat it after the answer.
+  If the question could not be spoken, the call fails and the task goes on,
+  so the LLM can try something else.
+- **At most 100 graph steps per task,** about 50 rounds of tool calls.
+  LangGraph's default of 25 is too few for a seeded task with several
+  steps. Past the limit, the task stops with a logged error.
+
+### The todo list in each turn
+
+When the list has items, each LLM call gets it as one extra human message
+at the end. That message is not saved in the history, so the history holds
+only what happened. It is a human message, not a system message, because
+some providers reject a system message that is not first.
+
+```text title="Todo reminder"
+<todos>
+[x] t1 Go to the kitchen
+[>] t2 Pick up the red mug
+[ ] t3 Come back to the person
+</todos>
+```
+
+`[ ]` is pending, `[>]` in progress, `[?]` waiting for an answer, `[x]`
+completed, `[!]` failed and `[-]` cancelled.
+
+When the next task starts, a list with no open items is cleared, so a
+finished list does not carry over. A list with open items is kept, for
+example while the agent waits for an answer.
+
+`WalkieAgent.submit(text, todos)` queues a task with its steps already
+written. The seed replaces the list when that task starts, before the first
+LLM call. Seeded steps cannot be reworded or removed. A bad seed raises
+`TodoRejected` from `submit()` at once, not later on the agent thread.
+Seeding over ROS, from `/walkie/task` or a template, is proposed
+([ADR-0041](decisions/0041-todo-list-and-seeding.md)).
+
+### Stop, reset and errors
+
+- **Stop.** An utterance that is just "stop", "never mind" or "nevermind"
+  interrupts a running task. Case, extra spaces and `.`, `,`, `!` or `?`
+  around it are ignored, so "Stop." counts, but "Walkie, stop" and "stop
+  the music" do not. Messages queued before it are dropped, with their
+  seeds. The stop message itself runs next, so the LLM can cancel the open
+  steps and say so. While the agent is idle, "stop" is an ordinary message.
+- **Reset.** A message on `/walkie/reset` drops the queued messages and
+  their seeds, and stops the running task. Before the next task, the agent
+  clears the history and the todo list and starts a new Langfuse session
+  ([ADR-0008](decisions/0008-reset-topic.md)).
+- **Both act between steps.** All tool calls from one LLM answer run inside
+  one step of the graph, and a stop or a reset is noticed only between
+  steps. A tool that is already running finishes first. If the stop lands
+  after the LLM asked for tools, those tools never run, and the history
+  repair answers them.
+- **Errors.** An error from the LLM or the graph is logged, and the agent
+  goes on to the next message. In RAI's own loop, such an error ends the
+  agent thread. If the error left tool calls without results, the history
+  repair answers them on the next call.
 
 ## Tools
 
@@ -125,6 +247,8 @@ between steps. A tool that is already running finishes first.
 | `navigate_to_location`            | this repo  | Drives to a named place with Nav2, with every wait bounded      |
 | `move_relative`                   | this repo  | Moves up to 3 m forward, back or sideways from here, then turns |
 | `find_objects`                    | this repo  | Asks walkie-database where objects of one kind were last seen   |
+| `update_todos`                    | this repo  | Adds, updates and removes steps on the task's todo list, by id  |
+| `wait_for_person`                 | this repo  | Asks the person a question out loud and ends the task until they answer |
 | `get_current_pose`                | RAI        | Reads the robot's position in the `map` frame from TF           |
 | `get_ros2_topics_names_and_types` | RAI        | Lists ROS topics, minus the forbidden ones                      |
 | `WaitForSecondsTool`              | RAI        | Waits a number of seconds                                       |
@@ -139,6 +263,17 @@ appear and reports memory as unavailable after that. It then waits up to
 LLM as busy, and the agent's log says that the node may have been built
 from a different `walkie_database_msgs` than the pinned commit
 ([ADR-0035](decisions/0035-memory-through-walkie-database.md)).
+
+When `navigate_to_location`, `move_relative`, `speak` or `find_objects`
+fails, the LLM reads a sentence saying why, and the result is marked as an
+error. The todo list counts only successful calls as evidence that a step
+was done ([ADR-0041](decisions/0041-todo-list-and-seeding.md)). Finding no
+remembered object is a successful search.
+
+`update_todos` applies all its changes or none. A refused change, such as
+completing a step whose tool failed, comes back to the LLM as an error that
+says why. `wait_for_person` speaks through the same `speak` tool. When no
+speech node is listening, it fails and the task goes on.
 
 The [arm manipulation design](manipulation.md) proposes four arm tools and,
 later, two skill tools.
@@ -216,7 +351,7 @@ proposed. See [Architecture](index.md) for how to add one.
 
     --8<-- "architecture/decisions/0002-pixi-and-robostack.md:body"
 
-??? success "ADR-0003: Build the agent on RAI's ReActAgent · Accepted"
+??? success "ADR-0003: Build the agent on RAI's ReActAgent · Accepted, partly superseded by ADR-0038"
 
     --8<-- "architecture/decisions/0003-rai-react-agent.md:body"
 

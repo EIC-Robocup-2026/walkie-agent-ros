@@ -1,4 +1,5 @@
-"""The full Walkie agent (RAI ReActAgent + tools) with a scripted LLM and the fake robot."""
+"""The full Walkie agent (Walkie's graph on RAI's LangChainAgent + tools) with a scripted
+LLM and the fake robot."""
 
 import threading
 import time
@@ -69,6 +70,25 @@ def test_agent_sees_tool_failure(connector, locations):
     assert "Navigation is unavailable" in last_tool.content
 
 
+def test_todo_tools_and_the_graph_share_one_list(connector, locations):
+    """create_walkie_agent gives update_todos, wait_for_person and the graph the same list."""
+    add_step = {"op": "add", "content": "Say hello", "status": "completed"}
+    llm = ScriptedChatModel(
+        responses=[tool_call("update_todos", {"ops": [add_step]}), AIMessage(content="Hello.")]
+    )
+    agent = create_walkie_agent(llm, connector, locations, target_connectors={})
+
+    assert {"update_todos", "wait_for_person"} <= set(agent.tools.names())
+    assert agent.tools.get("wait_for_person").speak_tool is agent.tools.get("speak")
+
+    agent.agent.invoke({"messages": [HumanMessage(content="Say hello.")]})
+
+    items = agent.todos.snapshot()
+    assert [(i.content, i.status) for i in items] == [("Say hello", "completed")]
+    # The graph reads the list that the tool wrote: the next call carries it.
+    assert llm.reminders == ["", "<todos>\n[x] t1 Say hello\n</todos>"]
+
+
 def test_agent_over_ros_hri_topics(fake_walkie, connector, locations):
     """A human sends a task on /from_human; the agent acts and replies on the console topic."""
     agent_hri = ROS2HRIConnector(node_name="walkie_agent_hri_test")
@@ -87,8 +107,8 @@ def test_agent_over_ros_hri_topics(fake_walkie, connector, locations):
     agent.subscribe_source("/from_human", agent_hri)
     agent.run()
     try:
-        # Send exactly once: with RAI's default "interrupt_keep_last" behavior a
-        # repeated task would interrupt the run already in progress.
+        # Send exactly once: messages queue, so a repeated task would wait for
+        # the first run to end and then run a second time.
         assert wait_until(lambda: human_hri.node.count_subscribers("/from_human") > 0)
         task = ROS2HRIMessage(text="Go to the kitchen.", message_author="human")
         human_hri.send_message(task, "/from_human")
@@ -101,7 +121,8 @@ def test_agent_over_ros_hri_topics(fake_walkie, connector, locations):
     assert fake_walkie.heard == ["I am at the kitchen."]
     task_message = llm.received[0][1]
     assert isinstance(task_message, HumanMessage)
-    # RAI joins queued human messages with newlines before handing them to the LLM.
+    # The agent takes one queued message per task and ends its text with a
+    # newline, as RAI's own message handling does.
     assert task_message.content == "Go to the kitchen.\n"
     assert len(llm.received) == len(fetch_drink_script())
 

@@ -1,7 +1,9 @@
 # ADR-0003: Build the agent on RAI's ReActAgent
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-12
+**Status:** Accepted, partly superseded by
+[ADR-0038](/architecture/decisions/0038-own-graph-per-turn-binding.md) ·
+**Date:** 2026-10-12
 
 **Context**
 

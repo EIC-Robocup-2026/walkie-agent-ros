@@ -87,6 +87,25 @@ def test_find_objects_needs_a_label(fake_database, connector):
     assert fake_database.requests == []
 
 
+def test_find_objects_marks_only_a_failure_as_an_error(fake_database, connector):
+    # As a tool call, a failure comes back as an error ToolMessage, so the todo
+    # list's ledger counts it as failed (ADR-0041). Finding nothing is not a
+    # failure.
+    tool = FindObjectsTool(connector=connector)
+
+    def call(label: str):
+        return tool.invoke(
+            {"name": tool.name, "args": {"label": label}, "id": "call_1", "type": "tool_call"}
+        )
+
+    empty = call("  ")
+    assert (empty.content, empty.status) == (
+        "Say what kind of object to look for, for example 'cup'.",
+        "error",
+    )
+    assert call("unicorn").status == "success"
+
+
 def test_find_objects_reports_a_failed_search(fake_database, connector):
     fake_database.failure = "The database could not search its objects: disk I/O error"
     result = FindObjectsTool(connector=connector).invoke({"label": "cup"})

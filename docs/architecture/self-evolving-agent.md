@@ -1,10 +1,13 @@
 # Self-Evolving Agent (Proposed)
 
 !!! note "Status: Proposed"
-    Nothing on this page is built yet. It is the design for team review. Each
-    of the [open questions](#open-questions) says which phase it blocks.
+    The host graph and the todo list are partly built: see
+    [The Agent](agent.md#how-a-task-runs) for how they work today. Levels,
+    taint, tool search, the cancel token and the todo topics are not built
+    yet. The rest of this page is the design for team review. Each of the
+    [open questions](#open-questions) says which phase it blocks.
 
-Today's agent has a fixed set of tools, bound once at startup (see
+Today's agent has a fixed set of tools, built once at startup (see
 [The Agent](agent.md)). The self-evolving agent, nicknamed Mahoraga, can
 also combine its tools into larger ones and create new tools while it runs.
 The tools that work can later join the reviewed set. The levels and the
@@ -38,9 +41,9 @@ and the vision models on [Perception](perception.md).
 
 | Area | Today | Proposed |
 | ---- | ----- | -------- |
-| Host | `WalkieAgent` subclasses RAI's `ReActAgent`, which binds the tools once | Subclasses `LangChainAgent` and runs its own graph, which binds the visible tools every turn |
-| Tools | Eight tools from `build_walkie_tools()`, plus `search_robot_docs` after `pixi run whoami-build`. Most return one sentence | Typed atomics and reviewed bundles in git, plus generated tools outside it, in four tiers |
-| Planning | None | A todo list with rules in code, seedable from templates or `/walkie/task` |
+| Host | `WalkieAgent` subclasses RAI's `LangChainAgent` and runs its own graph, which binds every tool every turn (phase 1) | The same graph binds only the visible tools, filtered by access level and taint |
+| Tools | Ten tools from `build_walkie_tools()`, `update_todos` and `wait_for_person` included, plus `search_robot_docs` after `pixi run whoami-build`. Most return one sentence | Typed atomics and reviewed bundles in git, plus generated tools outside it, in four tiers |
+| Planning | A todo list with rules in code, seedable through `submit()` (phase 1) | Also seedable from templates or `/walkie/task`, and published on `/walkie/todos` |
 | Tool choice | Every tool is bound | At most 20 bound. The rest are found with `find_tools` |
 | New tools | None at runtime | `request_tool`: reuse, compose or write code, as the access level allows |
 | Models | One agent model in `config.toml` | A model, fallbacks, a timeout and an API key per role |
@@ -682,16 +685,17 @@ T12 on [Access Levels](access-levels.md#safety-model).
 
 ## Open questions
 
-ADR-0037, ADR-0038, ADR-0041 and ADR-0043 propose the recommended answers
-to questions 2, 3, 4 and 5, so reviewing them settles those.
+ADR-0037, ADR-0041 and ADR-0043 propose the recommended answers to
+questions 2, 4 and 5, so reviewing them settles those.
 
 1. **What does a new utterance do mid-task?** Settled: RAI's `queue`
    behaviour, with only reset, "stop" or "never mind" as interrupts
    ([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
 2. **Bundle syntax.** Proposed: the `ast`-parsed DSL, over YAML (no IDE
    help) or plain Python (every bundle needs the sandbox). Blocks phase 2.
-3. **Host.** Proposed: our own graph on `LangChainAgent`, over
-   `create_agent` with middleware. Blocks phase 1.
+3. **Host.** Settled: our own graph on `LangChainAgent`, over
+   `create_agent` with middleware, built in phase 1
+   ([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
 4. **Seeding.** Recommended: templates, `submit()` and `/walkie/task` now,
    a typed `RunTask` action later. Blocks phase 1.
 5. **`move_absolute`.** Proposed: an internal `navigate_to_pose` with a
@@ -720,14 +724,14 @@ to questions 2, 3, 4 and 5, so reviewing them settles those.
 
 ## Decisions
 
-Click a decision to expand it. All of these are proposed. See
-[Architecture](index.md) for how decisions work.
+Click a decision to expand it. Green blocks are accepted, blue blocks are
+proposed. See [Architecture](index.md) for how decisions work.
 
 ??? note "ADR-0037: Split tools into atomic and bundled tiers, keep bundles as data, and gate them by effect · Proposed"
 
     --8<-- "architecture/decisions/0037-tool-tiers-bundles-effects.md:body"
 
-??? note "ADR-0038: Run our own graph on LangChainAgent and bind the visible tools every turn · Proposed"
+??? success "ADR-0038: Run our own graph on LangChainAgent and bind the visible tools every turn · Accepted"
 
     --8<-- "architecture/decisions/0038-own-graph-per-turn-binding.md:body"
 

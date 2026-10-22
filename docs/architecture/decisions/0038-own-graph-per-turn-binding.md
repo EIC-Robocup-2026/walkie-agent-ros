@@ -1,7 +1,7 @@
 # ADR-0038: Run our own graph on LangChainAgent and bind the visible tools every turn
 
 <!-- --8<-- [start:body] -->
-**Status:** Proposed · **Date:** 2026-10-22
+**Status:** Accepted · **Date:** 2026-10-22
 
 **Context**
 

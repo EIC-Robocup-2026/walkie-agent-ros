@@ -7,6 +7,7 @@ the walkie-database commit pinned in ros2_ws.repos (ADR-0035).
 
 from typing import Type
 
+from langchain_core.tools import ToolException
 from pydantic import BaseModel, Field, PrivateAttr
 from rai.tools.ros2.base import BaseROS2Tool
 from rclpy.client import Client
@@ -33,8 +34,12 @@ class FindObjectsTool(BaseROS2Tool):
     makes the tool answer within `server_timeout_sec` instead of freezing the
     agent. The request names no map, so the node's map_id parameter decides
     which map is searched.
+
+    A failed search raises ToolException, handled as in Nav2GoalTool. Finding
+    no object is a successful search, not a failure.
     """
 
+    handle_tool_error: bool = True
     name: str = "find_objects"
     description: str = (
         "Look up where Walkie remembers seeing objects of one kind, for example 'cup'. "
@@ -58,14 +63,14 @@ class FindObjectsTool(BaseROS2Tool):
 
     def _run(self, label: str) -> str:
         if not self.is_writable(self.service_name):
-            return f"Service {self.service_name} is not callable by this agent."
+            raise ToolException(f"Service {self.service_name} is not callable by this agent.")
         label = label.strip()
         if not label:
-            return "Say what kind of object to look for, for example 'cup'."
+            raise ToolException("Say what kind of object to look for, for example 'cup'.")
 
         client = self._get_client()
         if not client.wait_for_service(timeout_sec=self.server_timeout_sec):
-            return (
+            raise ToolException(
                 f"Memory is unavailable: no node offers '{self.service_name}'. "
                 "The walkie-database node is not running, or not on this ROS "
                 "domain."
@@ -89,12 +94,12 @@ class FindObjectsTool(BaseROS2Tool):
                 "it was probably built from another walkie_database_msgs than "
                 "the walkie-database commit pinned in ros2_ws.repos."
             )
-            return (
+            raise ToolException(
                 f"Memory did not answer within {self.call_timeout_sec:g} s "
                 f"when asked for '{label}'. It may be busy; try again once."
             )
         if not response.success:
-            return f"Memory search for '{label}' failed. {response.message}"
+            raise ToolException(f"Memory search for '{label}' failed. {response.message}")
         if not response.objects:
             # The node matches the label exactly, so "phone" does not find an
             # object the detector called "cell phone".

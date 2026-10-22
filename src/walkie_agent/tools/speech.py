@@ -5,6 +5,7 @@ import time
 import uuid
 from typing import Any, Type
 
+from langchain_core.tools import ToolException
 from pydantic import BaseModel, Field, PrivateAttr
 from rai.tools.ros2.base import BaseROS2Tool
 from rai_interfaces.msg import HRIMessage
@@ -31,7 +32,13 @@ class SpeakTool(BaseROS2Tool):
     The tool owns its publisher instead of using connector.send_message: that
     method creates the publisher on first use and publishes immediately, so the
     first sentence is dropped before DDS discovery matches the TTS subscriber.
+
+    Unspoken text raises ToolException, handled as in Nav2GoalTool: a tool
+    call gets an error ToolMessage with the same sentence, and a plain dict
+    call returns the sentence.
     """
+
+    handle_tool_error: bool = True
 
     name: str = "speak"
     description: str = (
@@ -68,13 +75,15 @@ class SpeakTool(BaseROS2Tool):
 
     def _run(self, text: str) -> str:
         if not self.is_writable(self.topic):
-            return f"Topic {self.topic} is not writable by this agent."
+            raise ToolException(f"Topic {self.topic} is not writable by this agent.")
 
         publisher = self._publisher
         deadline = time.monotonic() + self.subscriber_wait_sec
         while publisher.get_subscription_count() == 0:
             if time.monotonic() > deadline:
-                return f"Nothing was said: no speech node is listening on {self.topic}."
+                raise ToolException(
+                    f"Nothing was said: no speech node is listening on {self.topic}."
+                )
             time.sleep(0.05)
 
         msg = HRIMessage(text=text, communication_id=self.speech_id, seq_end=True)

@@ -43,11 +43,24 @@ these:
     - `commons_search`: `commons.wikimedia.org/w/api.php`, with
       `action=query` and `prop=imageinfo` only
     - `commons_media`: `upload.wikimedia.org/`, returned as a handle
-- **`web_snippets`,** a seventh named source: the search provider's
-  endpoint. The template fixes the result count, strict safe search and the
-  language, and allows no extra snippets, page content or images.
-  Redirects are refused. The parent adds the key after the template check.
-- **The speech gate's moderation service.** Which one is still open.
+- **`web_snippets`,** a seventh named source, with one template per search
+  provider. Each template fixes the result count, strict safe search and
+  the language, and allows no extra snippets, page content or images.
+  Redirects are refused. The parent adds the provider's key after the
+  template check.
+    - **Brave Search, first:** a GET to
+      `api.search.brave.com/res/v1/web/search` with `q`, and with `count`,
+      `safesearch=strict` and `search_lang` fixed. `extra_snippets` stays
+      off.
+    - **Tavily, as the fallback:** a POST to `api.tavily.com/search`. The
+      JSON body is fixed except for `query` and `language`:
+      `search_depth = "basic"`, `max_results = 3`, `chunks_per_source = 1`,
+      `safe_search = true`, and no answer, raw content or images. This is
+      the only POST at Competition, and only the parent's search client
+      makes it. Generated code still has GET alone.
+
+No moderation service is reached. The speech gate is local only
+([Competition Mode](/architecture/competition.md#speech-gate)).
 
 [Competition Mode](/architecture/competition.md#named-sources) lists each
 template's parameters. `web_snippets` gets the named-source caps plus its
@@ -60,7 +73,7 @@ own:
 | Per hour           | not capped separately          | 120, shared by all visitors              |
 | Concurrency        | 1 per host                     | 1 per host, as for all named sources     |
 | Response           | 1 MiB decoded                  | 3 results, 1,500 characters after shaping |
-| Timeouts           | connect 3 s, total 8 s         | connect 2 s, total 3 s                   |
+| Timeouts           | connect 3 s, total 8 s         | connect 2 s, total 3 s per provider; 4 s per search |
 
 The broker checks every request:
 
@@ -72,22 +85,29 @@ The broker checks every request:
 - It caps decoded bytes, so a gzip bomb stops at the cap.
 - It sends a fixed User-Agent with a team contact.
 
-Search keys are per role, `WALKIE_SEARCH_KEY_ROBOT` and
-`WALKIE_SEARCH_KEY_SIM`, and only the parent reads them. Separate keys keep
-sim runs off the robot's quota.
+**Search providers.** Brave comes first because it has its own index,
+strict safe search, a GET with one header, and about 0.6 s per search.
+Tavily takes about 1.7 to 1.9 s at basic depth, and its safe search is off
+unless the template sets it. Tavily is kept as the fallback so that one
+provider's outage does not switch web search off for an event.
 
-The search provider is still open:
-
-| Option                                   | For                                                                                                     | Against                                                                                                                                                         |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Brave alone (recommended)**            | Own index; `safesearch=strict`; a GET with one header; about 0.6 s; $5 per 1,000 requests, $5 free credit a month | Card required; its terms ask for attribution and allow storing results only on a plan with storage rights; which plan permits use with an LLM is unverified |
-| Tavily alone                             | 1,000 free credits a month with no card, then $0.008 per credit; a country boost for Thailand          | About 1.7 to 1.9 s at basic depth; safe search is off by default and works only at basic or advanced depth, so the template must set it; a POST of JSON with a Bearer token, while Competition allows only GET, so `web_snippets` would need a POST exception and a template over the request body; its terms on storage and LLM use are unverified |
-| Brave, with Tavily on fast failures      | Survives one provider's outage                                                                          | Two secrets on the robot and two services to declare; Tavily's POST exception and body template as well; worth it only if practice shows outages               |
+- One attempt per provider, each with connect 2 s and total 3 s. The
+  whole search stops at 4 s.
+- Tavily is tried only after a fast Brave failure: a DNS, connection or
+  TLS error, or an HTTP 401, 403, 429 or 5xx status. A Brave timeout is
+  not retried at Tavily, so a fallback never doubles the wait.
+- A failed provider is skipped for 60 s, or for the session on 401 or
+  403, so the next searches go straight to the other one.
+- Keys are per provider and per role: `WALKIE_BRAVE_KEY_ROBOT`,
+  `WALKIE_TAVILY_KEY_ROBOT`, `WALKIE_BRAVE_KEY_SIM` and
+  `WALKIE_TAVILY_KEY_SIM`. Only the parent reads them. Separate keys keep
+  sim runs off the robot's quota. A provider whose key is unset is skipped,
+  so a sim machine can run on Brave alone.
 
 Prices were checked on the providers' pages on 2026-10-22. The latencies
 are third-party benchmark means measured in the US, not at the venue. The
-cloud LLM (the Competition coder included), the moderation service and the
-search provider are declared to the Technical Committee one month ahead.
+cloud LLM (the Competition coder included) and both search providers are
+declared to the Technical Committee one month ahead.
 
 Rejected:
 
@@ -98,6 +118,20 @@ Rejected:
   a source of misinformation, and every query string an exfiltration
   channel. No template can bound either. It would also give the coder open
   web access again.
+- **Brave alone.** One secret and one service to declare, but a Brave
+  outage would turn `look_up_online` off for the whole event.
+- **Tavily alone.** No card and 1,000 free credits a month, but about three
+  times Brave's latency, safe search off by default, and a POST for every
+  search.
+- **A cloud moderation check in the speech gate.** It would have read
+  echoed, generated and tainted text before it was spoken, and switched
+  creation and `look_up_online` off whenever it was down. OpenRouter has no
+  moderation endpoint, so it would have been a guard model call, such as
+  `meta-llama/llama-guard-4-12b`, which one provider serves. It is dropped,
+  and the gate keeps only its local checks. So text built from clean words
+  (an insult, a defamatory line, or bad advice in a snippet) can reach the
+  speaker. What limits it instead is listed in
+  [Competition Mode](/architecture/competition.md#speech-gate).
 
 **Consequences**
 
@@ -105,10 +139,18 @@ Rejected:
   the robot PC. It also holds the robot's search key, and its outbound
   traffic is limited to the hosts above.
 - Offline, composing, creating, `fetch_sound` and `look_up_online` fail
-  closed. With moderation down but the network up, only creating code and
-  `look_up_online` are off. Reusing existing tools keeps working.
-- Each search costs one provider request. 120 per hour bounds an 8-hour
-  booth day at 960 searches, or about $5 at Brave's listed price.
+  closed. Reusing existing tools keeps working. With the network up, only
+  the kill switch, the caps, or both search providers failing turn
+  `look_up_online` off.
+- Each search costs one provider request, or two when it falls back. 120
+  per hour bounds an
+  8-hour booth day at 960 searches, or about $5 at Brave's listed $5 per
+  1,000. Brave's $5 of free credit a month covers about one such day.
+  Tavily's 1,000 free credits a month cover fallback traffic.
+- Two secrets on the robot, two services to declare and two sets of terms.
+  Brave allows storing results only on a plan with storage rights, so
+  traces must mask snippet text. Tavily's terms on storage and LLM use are
+  checked before phase 6.
 - One visitor can use up the hour's searches. Per-visitor caps would need
   an identity the robot does not have.
 - Adding a source is a reviewed code change, never a runtime decision.

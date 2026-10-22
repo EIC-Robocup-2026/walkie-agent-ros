@@ -253,7 +253,8 @@ or objects, stop time or swap controllers, and so fake its own success.
 own spend limit, so hitting it cuts off no other role. In scored episodes
 the agent's `look_up_online` uses `FakeSearchProvider`, so a score does not
 depend on a search engine's results that day. The coder's web search goes
-live on `WALKIE_SEARCH_KEY_SIM` with a per-run cap, and traces keep the
+live on the sim search keys, `WALKIE_BRAVE_KEY_SIM` and
+`WALKIE_TAVILY_KEY_SIM`, with a per-run cap, and traces keep the
 query hash, result count and site names ([Competition Mode](competition.md)).
 
 ## Localization

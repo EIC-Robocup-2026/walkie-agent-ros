@@ -11,8 +11,7 @@ streaming=True)` in `src/walkie_agent/main.py`, through RAI's `[vendor]` and
 `OPENAI_API_KEY` ([ADR-0005](/architecture/decisions/0005-openrouter-via-openai-vendor.md)).
 The [self-evolving agent](/architecture/self-evolving-agent.md) adds more
 LLM roles: an atomic agent that composes bundles, a tool coder, a judge for
-the harvest, a query writer for web lookups, a moderation check and an
-embedder. One model and one key do not fit them:
+the harvest, a query writer for web lookups and an embedder. One model and one key do not fit them:
 
 - **Timeouts.** The OpenAI SDK defaults to a 600 s timeout and 2 retries,
   and `langchain_openai` 1.7 leaves `max_retries` unset, so those defaults
@@ -52,9 +51,9 @@ and silently drops both (checked with langchain-ollama 1.1.0).
   tool creation or a harvest that hits its limit never cuts off the task
   agent. `OPENAI_API_KEY` stays as the task agent's key. RAI's own roles,
   such as the whoami build, still read it. The web search keys,
-  `WALKIE_SEARCH_KEY_ROBOT` and `WALKIE_SEARCH_KEY_SIM`, follow the same
-  idea and are read only by the parent process, so a sim run cannot spend
-  the robot's search quota
+  `WALKIE_BRAVE_KEY_ROBOT` and `WALKIE_TAVILY_KEY_ROBOT` with their `_SIM`
+  twins, follow the same idea and are read only by the parent process, so
+  a sim run cannot spend the robot's search quota
   ([ADR-0049](/architecture/decisions/0049-competition-internet-egress.md)).
 - **Fallbacks.** Each turn, the agent role binds the visible tools on every
   model and then wraps them with `.with_fallbacks()`. Structured roles call
@@ -70,16 +69,15 @@ and silently drops both (checked with langchain-ollama 1.1.0).
   provider-side tool such as `openrouter:web_search` would switch
   `langchain_openai` to the Responses API and escape the coder's
   `ToolCallLimitMiddleware`. The coder's `web_search` is an ordinary
-  function tool that the parent runs on the sim search key.
+  function tool that the parent runs on the sim search keys.
 - **Embedder.** It has its own table, `[walkie.toolbox.embedder]`, because
   RAI's `[ollama] embeddings_model` is a chat model
   ([ADR-0046](/architecture/decisions/0046-hybrid-tool-index.md)).
-- **Moderation.** The moderation service is open. If the recommended
-  option is chosen, a classifier call through OpenRouter, it runs on
-  `WALKIE_TOOLSMITH_API_KEY`. OpenRouter is believed not to offer OpenAI's
-  `/v1/moderations` endpoint (unverified), which is why the OpenAI
-  alternative would need a direct OpenAI key. The options are on
-  [Competition Mode](/architecture/competition.md#speech-gate).
+- **No moderation role.** The speech gate has no cloud check
+  ([ADR-0049](/architecture/decisions/0049-competition-internet-egress.md)).
+  If one is added later, a guard model on OpenRouter would run on
+  `WALKIE_TOOLSMITH_API_KEY`; OpenRouter has no `/v1/moderations`
+  endpoint.
 - **Level.** Config has no access level key. The level comes only from the
   `--access-level` flag ([ADR-0039](/architecture/decisions/0039-access-levels.md)).
   `[walkie.mode] profile` selects the run profile.

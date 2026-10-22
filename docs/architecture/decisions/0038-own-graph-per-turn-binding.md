@@ -73,13 +73,18 @@ Two hosts were compared:
   tool coder, and flushes queued audio. Draft files survive it. At
   Competition, session tools survive it too, and clear only when the agent
   stops or on the new `/walkie/reset_session` topic.
+- **New utterances mid-task queue.** `WalkieAgent` passes
+  `new_message_behavior="queue"` to RAI, so an utterance that arrives during
+  a task waits until the task ends. Only a reset, or an utterance that is
+  just "stop" or "never mind", interrupts. `WalkieAgent` checks each
+  utterance as it arrives; an interrupt sets the interrupt event and the
+  cancel token, so it also aborts a running tool creation. The history
+  repair still ships, because an interrupt can land right after the llm
+  node.
 
-The history repair ships whatever happens to a new utterance mid-task. That
-behaviour stays open
-(see the [open questions](/architecture/self-evolving-agent.md#open-questions)).
-The recommendation is RAI's `queue`, with reset, "stop" and "never mind" as
-the only interrupts. They set the interrupt event and the cancel token, so
-they also abort a running tool creation.
+Keeping RAI's default, `interrupt_keep_last`, was rejected. Corrections
+would land at once, but at a noisy booth any overheard speech would cancel
+the current step, so a 20 to 35 s tool creation would rarely finish.
 
 **Amends ADR-0003.** The agent is still built on rai-core 2.12 under the
 `<2.13` pin, with RAI's connectors, `HRIMessage`, `ToolRunner`, tracing and
@@ -101,6 +106,8 @@ and the base class becomes `LangChainAgent`.
   ([ADR-0041](/architecture/decisions/0041-todo-list-and-seeding.md)). This,
   `_interrupt_event` and the `ToolRunner` internals must be rechecked on
   every rai-core upgrade.
+- A correction such as "no, the red one" waits until the current task
+  ends. Overheard speech can no longer abort a pick or a tool creation.
 - RAI still runs one tool at a time, and a reset is still noticed only
   between steps. A bundle checks the cancel token between its own steps.
   [ADR-0023](/architecture/decisions/0023-motion-supervisor.md) remains the

@@ -66,7 +66,7 @@ flowchart TD
     TR --> CORE["Core atomics<br/>speak, navigate, find_objects, update_todos"]
     TR -->|bundle call| RUN["BundleRunner<br/>validate, run, trace, cancel check"]
     TR -->|generated tool call| HOST["Sandbox host and bwrap worker<br/>ctx.tools, ctx.ros, ctx.http"]
-    CORE & HOST --> SG["Speech gate<br/>moderation, caps"]
+    CORE & HOST --> SG["Speech gate<br/>word list, caps"]
     HOST --> WEB["HTTP broker<br/>named sources, web search"]
     RUN & HOST --> ATOM["Typed atomic tools"]
     ATOM --> BE["ROS 2 clients or mocks"]
@@ -358,12 +358,17 @@ names in the registry and reports each result to the error ledger. With no
 tool call while items are open and none is waiting, a **completion gate**
 sends the LLM back, at most twice.
 
-**A new utterance today.** RAI's default, `interrupt_keep_last`, is checked
-only between graph steps, so a running tool or bundle finishes first. A
-break right after the llm node leaves tool calls with no results, which
-OpenAI-compatible endpoints reject. Phase 1 adds a **history repair** that
-answers each with an error ToolMessage, whatever behaviour is kept.
-Switching to RAI's `queue` behaviour is [open question 1](#open-questions).
+**A new utterance.** Phase 1 switches from RAI's default,
+`interrupt_keep_last`, to its `queue` behaviour: an utterance that arrives
+mid-task waits until the task ends. Only a reset, or an utterance that is
+just "stop" or "never mind", interrupts. It sets the interrupt event and
+the cancel token, so it also aborts a running tool creation. A correction
+such as "no, the red one" waits, but overheard booth speech can no longer
+cancel a pick. RAI checks the interrupt only between graph steps, so a
+running tool or bundle finishes first. A break right after the llm node
+leaves tool calls with no results, which OpenAI-compatible endpoints
+reject, so phase 1 also adds a **history repair** that answers each with an
+error ToolMessage.
 
 **Reset.** `reset()` keeps clearing the history and starting a new Langfuse
 session. It also trips the cancel token; clears the todo list (publishing
@@ -595,7 +600,7 @@ not on main, so those paths may change
 | Levels | Policy lists drift from the real launch graphs | Competition allow-lists generated from the robot launch graph, a property test with a captured name list, review on interface ADRs |
 | Competition | Prompt injection through web content | Named sources with templates, typed results, turn taint, the speech gate, the Rule of Two, the query writer, small snippets and the history scrub |
 | Competition | No internet at the venue | An offline probe, creation off, reuse only, the local embedder, pre-baked tools and the sound pack. `look_up_online` fails fast with `UNAVAILABLE` |
-| Competition | The moderation service is unavailable or unsuitable | Fail closed for creation and `look_up_online`. Local checks are always on |
+| Competition | Harmful text built from clean words reaches the speaker, since the speech gate has no cloud check | The query writer's topic refusals, strict safe search, the denylist, short snippets, the 200-character cap, clean-word cases in the red-team set. A guard model on OpenRouter is the drop-in if they get through |
 | Harvest | The interlock demotes during harvest runs by mistake | A pause is not a demotion, viewers do not count as drivers, the agent stops before each relaunch and starts once the new sim is ready, check values are logged, a smoke run over consecutive episodes |
 | Harvest | Low or costly yield | Start at 100 episodes, the harvest key's limit, tool-step scoring. Expect a minority of drafts to survive |
 | Harvest | Sim localization distorts navigation results | Position checks read `/mujoco_ground_truth/odom`. Each check and every Nav2 abort logs the localization error, and the relaunch from the origin resets drift. Ask walkie-ros for ground-truth localization if more than about 10% of first-run episodes fail on localization |
@@ -632,13 +637,9 @@ ADR-0037, ADR-0038, ADR-0041 and ADR-0043 propose the recommended answers
 to questions 2, 3, 4 and 5, so reviewing them settles those. ADR-0046 lists
 the embedder options and leaves question 6 open.
 
-1. **What does a new utterance do mid-task?** Recommended: RAI's `queue`
-   behaviour, with only reset, "stop" or "never mind" as interrupts. They
-   set the interrupt event and the cancel token, so they also abort a
-   running tool creation. Overheard speech then cannot abort a pick, but a
-   correction waits until the task ends. The alternative keeps
-   `interrupt_keep_last` with the history repair: more responsive, but at a
-   noisy booth creation rarely finishes. Blocks the phase 1 graph.
+1. **What does a new utterance do mid-task?** Settled: RAI's `queue`
+   behaviour, with only reset, "stop" or "never mind" as interrupts
+   ([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
 2. **Bundle syntax.** Proposed: the `ast`-parsed DSL, over YAML (no IDE
    help) or plain Python (every bundle needs the sandbox). Blocks phase 2.
 3. **Host.** Proposed: our own graph on `LangChainAgent`, over

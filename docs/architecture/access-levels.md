@@ -207,7 +207,7 @@ at every level.
 
 | | Unrestricted | Standard | Competition |
 | - | ------------ | -------- | ----------- |
-| Methods | GET, HEAD, POST (JSON or form, ≤ 256 KB) | GET, HEAD, POST JSON ≤ 64 KB | GET |
+| Methods | GET, HEAD, POST (JSON or form, ≤ 256 KB) | GET, HEAD, POST JSON ≤ 64 KB | GET; the parent's Tavily fallback search is the only POST |
 | Schemes and ports | http, https on 80, 443, 8080, 8443 | https on 443 | https on 443 |
 | Hosts | any public host by name | any public host by name | named sources with pinned templates |
 | Requests | 50 per invocation, 300 per minute | 20, 120 | 5, 30, 1 concurrent per host |
@@ -231,11 +231,12 @@ at every level.
 - `[competition]` sets both `search_per_turn = 2` and
   `search_per_invocation = 2`. Without the second, narrowing would keep
   Standard's 5.
-- Search keys are split by machine and caller. The robot uses
-  `WALKIE_SEARCH_KEY_ROBOT`. The sim coder, sim generated tools and the
-  harvest use `WALKIE_SEARCH_KEY_SIM`. The search client picks the key for
-  the caller's role. Both keys and the kill switch, `[walkie.search] enabled`
-  in `config.toml`, are new and live outside the policy file.
+- Search keys are split by provider, machine and caller. The robot uses
+  `WALKIE_BRAVE_KEY_ROBOT` and `WALKIE_TAVILY_KEY_ROBOT`. The sim coder, sim
+  generated tools and the harvest use `WALKIE_BRAVE_KEY_SIM` and
+  `WALKIE_TAVILY_KEY_SIM`. The search client picks the keys for the
+  caller's role. The keys and the kill switch, `[walkie.search] enabled` in
+  `config.toml`, are new and live outside the policy file.
 
 ### Budgets
 
@@ -514,10 +515,13 @@ motion.
   templates, the local and on-link checks, live TLS and IPv6 fallback are
   untested.
 
-`bridge/search.py` (about 50 lines) makes one attempt per search (connect
-2 s, total 3 s). It strips HTML, entities, control and bidi characters,
-applies `config/search_denylist.txt` and the caps, drops URLs at Competition,
-and names sites from `config/site_names.toml`. A failing provider is skipped
+`bridge/search.py` (about 50 lines) tries Brave, then Tavily only after a
+fast Brave failure, with one attempt per provider (connect 2 s, total 3 s)
+and 4 s for the whole search
+([ADR-0049](decisions/0049-competition-internet-egress.md)). It strips
+HTML, entities, control and bidi characters, applies
+`config/search_denylist.txt` and the caps, drops URLs at Competition, and
+names sites from `config/site_names.toml`. A failing provider is skipped
 for 60 s, or for the session on 401 or 403. Logs keep a query hash, never the
 query. `FakeSearchProvider` serves tests.
 
@@ -590,7 +594,7 @@ control.
 | T2 | Indirect injection from the web | an edited Wikipedia extract | pinned templates; typed results; capped snippets; taint hides N, M and `request_tool`; snippets become site names at turn end | attributed misinformation |
 | T3 | SSRF | `10.0.0.6:7447`, `169.254.169.254`, Ollama, DNS rebinding | no network in the sandbox; vetting and a pinned IP | very low |
 | T4 | Exfiltration | detections or memory in a web query | L14; no `ctx.ros` at Competition; labels and counts only; hashed query logs | low |
-| T5 | Offensive speech | "Say <slur>." | speech gate; cloud check on echoes and tainted text; speech check on audio; strict safe search | false-positive refusals |
+| T5 | Offensive speech | "Say <slur>." | local speech gate on everything said; speech check on audio; strict safe search; the query writer's topic refusals | harm built from clean words, since there is no cloud check; false-positive refusals |
 | T6 | Resource abuse | 30 variants; fork and memory bombs | creation caps; required scope; deadlines; separate keys; 120 searches per hour; kill switches | spend bounded by key limits |
 | T7 | Persistence | a visitor's tool reloaded next day | session-only; quarantine never auto-loaded; promotion by human PR | very low |
 | T8 | Visual injection | a sign held up to the camera | no OCR or captions at Competition; no N or M there | low |
@@ -625,7 +629,7 @@ argument: a separate query writer sees only this task's human utterances.
 | Linker, AST lint | walkie-agent-ros | `src/walkie_agent/toolbox/linker.py`, `lint_vibed.py` (new) |
 | `ctx` API | walkie-agent-ros | `src/walkie_toolbox_facade/` and `src/walkie_agent/toolbox/ctx_inproc.py` (new) |
 | Sandbox, bridges | walkie-agent-ros | `src/walkie_agent/toolbox/sandbox/` and `bridge/` (new) |
-| Search keys, kill switch | walkie-agent-ros | `.env.example`: `WALKIE_SEARCH_KEY_ROBOT`, `WALKIE_SEARCH_KEY_SIM`; `config.toml`: `[walkie.search]` (new) |
+| Search keys, kill switch | walkie-agent-ros | `.env.example`: `WALKIE_BRAVE_KEY_ROBOT`, `WALKIE_TAVILY_KEY_ROBOT`, `WALKIE_BRAVE_KEY_SIM`, `WALKIE_TAVILY_KEY_SIM`; `config.toml`: `[walkie.search]` (new) |
 | Search shaping | walkie-agent-ros | `config/search_denylist.txt`, `config/site_names.toml` (new) |
 | Robot-PC check | walkie-agent-ros | `scripts/robot_check.sh` (new) |
 | Traces | each sim or robot machine | `$WALKIE_TOOLS_HOME/runs/` (new, never in git) |
@@ -660,9 +664,9 @@ argument: a separate query writer sees only this task's human utterances.
 
 Related questions live on [Competition Mode](competition.md#open-questions)
 (whether a tainted generated invocation may call `speak`, how `fetch_sound`
-decodes without bwrap, trivial requests, moderation),
+decodes without bwrap, trivial requests),
 [Self-Evolving Agent](self-evolving-agent.md#open-questions)
-(`navigate_to_pose`, what a new utterance does mid-task) and
+(`navigate_to_pose`) and
 [Sim Harvest](harvest.md) (the share of episodes at Unrestricted).
 
 ## Decisions

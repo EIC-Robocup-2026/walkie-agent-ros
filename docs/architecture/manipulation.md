@@ -1,14 +1,23 @@
 # Arm Manipulation (Proposed)
 
 !!! note "Status: Proposed"
-    Nothing on this page is built yet. It is the design for team review. The
-    [open questions](#open-questions) must be answered before phase 1 is
-    finished.
+    Nothing on this page is built yet. It is the design for team review. Most
+    of the [open questions](#open-questions) say which phase they block.
 
 Walkie has two 7-DOF OpenArm arms with grippers, on a lift. walkie-ros runs
 MoveIt and `bimanual_commander`, which plan and execute arm motion. This page
 describes how the agent will use them, and how complex skills such as
 folding a shirt with a VLA policy fit in later.
+
+The [self-evolving agent](self-evolving-agent.md) changes the order of the
+work. Its arm tools are built first as typed atomics that call mocks, and the
+commander and skill-server clients follow on a parallel track. Generated
+tools are meant to reach the arms only through those atomics. See
+[Arms in the self-evolving agent](#arms-in-the-self-evolving-agent).
+
+Phase numbers on this page are the arm phases in the [Roadmap](#roadmap).
+The self-evolving agent has its own phases 0 to 6, which this page always
+names in full, for example "phase 2 of the self-evolving agent".
 
 ## Summary
 
@@ -32,6 +41,20 @@ folding a shirt with a VLA policy fit in later.
   behind a robot-side `RunSkill` action. Each skill is scripted with MoveIt
   or runs a learned policy, and the LLM cannot tell which
   ([ADR-0027](decisions/0027-runskill-action.md)).
+- **Mocked first.** The arm tools become typed atomics of the self-evolving
+  agent. They call mocks at the ADR-0021 and ADR-0027 contracts until the
+  real clients land, and MoveIt 2 is not called before then
+  ([ADR-0044](decisions/0044-mocked-arm-atomics.md)).
+- **Generated tools only through atomics.** In simulation, at the Standard
+  and Unrestricted levels, generated tools are to move the arms only through
+  the atomics `run_skill`, `move_arm_to_pose` and `set_gripper`. At
+  Competition they cannot move the arms at all. Every arm, gripper, head and
+  lift controller, and the commander's `/go_to_home` and collision services,
+  are refused at every level. `/set_joint_position`, `/control_gripper` and
+  `RunSkill`, once its name is pinned, are refused everywhere except in the
+  human-written arm atomics' manifests
+  ([ADR-0044](decisions/0044-mocked-arm-atomics.md),
+  [The never-list](access-levels.md#the-never-list)).
 
 ## Components
 
@@ -39,9 +62,9 @@ folding a shirt with a VLA policy fit in later.
 flowchart TB
   subgraph agent["walkie-agent-ros"]
     cfg[("config/arm_poses.toml<br/>config/robot_model.toml")]
-    llm_tools["Arm tools<br/>list_arm_poses, move_arm_to_pose,<br/>set_gripper, get_arm_state"]
+    llm_tools["Arm atomics<br/>run_skill, list_arm_poses, move_arm_to_pose,<br/>set_gripper, get_arm_state"]
     nav_tool["navigate_to_location<br/>+ arm check"]
-    skill_tools["list_skills, run_skill<br/>(phase 3)"]
+    skill_tools["list_skills<br/>(skill server: phase 3)"]
     ms["MotionSupervisor<br/>one goal at a time, reset, stop"]
   end
 
@@ -71,6 +94,10 @@ flowchart TB
   skills --- policy
 ```
 
+The diagram shows the real backends. Until they land, the arm atomics call
+mocks instead, and no arm goal reaches walkie-ros
+([Arms in the self-evolving agent](#arms-in-the-self-evolving-agent)).
+
 ## How a pose move works
 
 ```mermaid
@@ -94,18 +121,26 @@ sequenceDiagram
 
 ## Tools
 
-| Tool                  | Arguments                                         | What it does                                                                 |
-| --------------------- | ------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `list_arm_poses`      | none                                              | Lists the named poses, which arms each moves, and whether it is safe for driving |
-| `move_arm_to_pose`    | `pose`                                            | Moves to a named pose, waits, and checks the joints                          |
-| `set_gripper`         | `arm`: left, right, both; `state`: open, half, close | Moves the grippers; after a close, says whether it is holding something   |
-| `get_arm_state`       | none                                              | Reports the nearest named pose for each arm and how far each gripper is open |
-| `list_skills`         | none                                              | Phase 3. Lists the skills the robot offers                                   |
-| `run_skill`           | `skill`, `target`, `arm`                          | Phase 3. Runs a skill and reports whether success was verified               |
+| Tool                  | Arguments                                         | Effect | What it does                                                                 |
+| --------------------- | ------------------------------------------------- | ------ | ---------------------------------------------------------------------------- |
+| `list_arm_poses`      | none                                              | R      | Lists the named poses, which arms each moves, and whether it is safe for driving |
+| `move_arm_to_pose`    | `pose`                                            | M      | Moves to a named pose, waits, and checks the joints                          |
+| `set_gripper`         | `arm`: left, right, both; `state`: open, half, close | M   | Moves the grippers; after a close, says whether it is holding something   |
+| `get_arm_state`       | none                                              | R      | Reports the nearest named pose for each arm and how far each gripper is open |
+| `list_skills`         | none                                              | R      | Phase 3. Lists the skills the robot offers. Not in the first, mocked set of atomics |
+| `run_skill`           | `skill`, `target`, `arm`                          | M      | Runs a skill and reports whether success was verified. Mocked from phase 2 of the self-evolving agent; the real skill server is phase 3 |
 
-Every tool returns a plain sentence and never raises an error. Every arm
-tool ends with the arm state, so the LLM always knows whether it may drive.
-Some example answers:
+Every tool except `list_skills` is an atomic of the self-evolving agent,
+and runs against a mock until its real backend lands
+([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The Effect column uses
+the self-evolving agent's letters: R reads, and M moves an arm or gripper
+([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)).
+
+Every tool answers with a plain sentence. As an atomic, it returns a typed
+result whose summary is that sentence. On failure it raises a `StepError`,
+and the LLM gets the same kind of sentence in an error tool message. Every
+arm tool ends with the arm state, so the LLM always knows whether it may
+drive. Some example answers:
 
 - "Moved to 'home'. Arms: safe for driving."
 - "Could not move to 'standby': MoveIt found no path (Planning Failed). The
@@ -141,13 +176,37 @@ description = "Both arms down beside the body. Safe for driving."
 openarm_left_joint1 = 0.2618
 openarm_left_joint2 = 0.0
 # ... every joint of the group, by name
+
+[poses.carry]
+group = "both_arms"      # one pose, whichever arm holds the object
+travel_safe = true       # required: the pick presets end here, then drive
+description = "Holding an object close to the body. Safe for driving."
+# No SRDF state. Joint values are chosen and tried on the robot first.
+# [poses.carry.joints]: every joint of the group, by name
+
+[poses.standby]
+group = "both_arms"
+srdf_state = "standby"
+travel_safe = false      # to be confirmed by the team
+description = "Elbows bent, hands in front of the body."
+# [poses.standby.joints]: every joint of the group, by name
 ```
 
+- The first draft has three poses. `home` and `standby` copy the SRDF
+  states of the same name. `carry` is new and has no SRDF state. Every pose
+  has its own joints table; `srdf_state` only records which state it copies.
+- `pick_object` and `pickup_object_in_view` end in `carry`, and the robot
+  then drives. So `carry` must have `travel_safe = true`, or the
+  [ADR-0025](decisions/0025-travel-safe-interlock.md) interlock refuses the
+  drive. When a bundle fails after an arm step started, the bundle runner
+  stows the arms in `home`, so `home` must be travel-safe too.
 - Joint values are keyed by name. The order sent to the robot comes from
   `/get_joint_states` at run time.
 - `config/robot_model.toml` is a snapshot of the SRDF groups and states and
   of `joint_limits.yaml` from the pinned walkie-ros commit. The loader checks
   every pose against it, and lists every error at once.
+- Poses of the `*_lift` groups are rejected, so the LLM never gets one
+  ([ADR-0026](decisions/0026-exclude-lift.md)).
 - Poses copied from walkie-agent-v2 must be tried on the robot first. It
   sent some of them with collision checking turned off.
 
@@ -175,6 +234,12 @@ openarm_left_joint2 = 0.0
   gripper controller is down, or when "half" is set at or below 0.03 m. The
   tool checks the finger gap too, and the detection band must be calibrated
   on real objects.
+- **Generated code.** Tools written by the self-evolving agent can never
+  reach the arm controllers or the MoveIt and commander planning names. They
+  move the arms only in simulation, and only through the atomics: the
+  commander's motion and collision names, and `RunSkill` once its name is
+  pinned, are on the never-list too
+  ([The never-list](access-levels.md#the-never-list)).
 
 ### Forbidden names
 
@@ -199,6 +264,12 @@ generic tool: `/navigate_to_pose`, `/set_joint_position`,
 | Arm and gripper controllers  | `/left_joint_trajectory_controller/joint_trajectory`, `/right_joint_trajectory_controller/joint_trajectory`, `/left_joint_trajectory_controller/follow_joint_trajectory`, `/right_joint_trajectory_controller/follow_joint_trajectory`, `/left_gripper_controller/gripper_cmd`, `/right_gripper_controller/gripper_cmd`, `/left_forward_position_controller/commands`, `/right_forward_position_controller/commands` |
 | Lift and head                | `/lift_controller/follow_joint_trajectory`, `/lift_controller/commands`, `/lift/cmd`, `/head_servo_controller/commands`                                                                                                                                         |
 | Controller manager           | `/controller_manager/switch_controller`                                                                                                                                                                                                                        |
+
+These lists guard the agent's own ROS tools
+([ADR-0009](decisions/0009-forbidden-names-guard-rail.md)). Generated code
+goes through a separate never-list in `config/access_levels.toml`, which
+uses glob patterns such as `/*_joint_trajectory_controller/*`
+([The never-list](access-levels.md#the-never-list)).
 
 ## Skills and VLA policies
 
@@ -243,20 +314,257 @@ A cancel stops the policy, holds position and restores the controllers
 within 2 s. Images and inference stay in robot-side nodes, outside the
 agent ([ADR-0028](decisions/0028-images-and-policy-robot-side.md)).
 
+## Arms in the self-evolving agent
+
+The [self-evolving agent](self-evolving-agent.md) wires atomic tools into
+bundles, and writes new tools in simulation. For the arms that means three
+changes, recorded in [ADR-0044](decisions/0044-mocked-arm-atomics.md): the
+arm tools become typed atomics, they call mocks until the real backends
+exist, and generated tools are to reach the arms only through them. The
+contracts on this page stay. The atomics keep the sentences in
+[Tools](#tools), and `run_skill` keeps the `RunSkill` outcomes of ADR-0027.
+
+```mermaid
+flowchart LR
+  llm["Task LLM"] --> presets["Presets<br/>pick_object, hand_over, ..."]
+  llm --> atomics
+  gen["Generated tool<br/>(Standard, Unrestricted)"] -- "ctx.tools" --> atomics
+  gen -- "ctx.ros: refused" --x ctrl["Arm, gripper, head<br/>and lift controllers"]
+  presets --> atomics["Arm atomics<br/>run_skill, move_arm_to_pose, set_gripper,<br/>get_arm_state, list_arm_poses"]
+  atomics --> mocks["MockArmBackend, MockSkillServer<br/>(unit tests, agent-sim)"]
+  atomics --> fake["FakeSkillServer over ROS<br/>(sim harvest)"]
+  atomics --> real["Commander and skill server<br/>(real-backends track)"]
+```
+
+### Typed arm atomics
+
+Each atomic is one file in `src/walkie_agent/tools/atomic/`, with a `META`,
+typed `Args` and `Out`, and a `run(ctx, args)` function
+([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). A bundle can
+wire only typed fields, never sentences, so this refactor comes first.
+`move_arm_to_pose` and `get_arm_state` are bound every turn. The other three
+are reached through `find_tools`, and `run_skill` usually through a preset
+([What the agent sees each turn](self-evolving-agent.md#what-the-agent-sees-each-turn)).
+
+- `run_skill` returns a `SkillResult` with `outcome`, `arm` (left or right)
+  and `holding`. In the pick presets its `target` is an object handle from
+  perception, such as `obj_3f2a.0`, never a literal (linker rule L08).
+- The linker checks literal arguments against the tool's validator (L06). A
+  `pose` that is not in `config/arm_poses.toml` fails to link, for example
+  `both_arms_lift`, since lift groups are barred.
+- The bundle runner retries only idempotent R or P steps, so it never
+  retries an arm step on its own (L07). The prompt rule above still allows
+  the agent one retry.
+
+### Outcomes as typed failures
+
+Outcomes are errors, not optional fields. A failed pick raises a
+`StepError`, so the next step of a bundle never runs on a result it might
+misread, and the runner can say which step failed with which code.
+`SUCCEEDED` and `FINISHED_UNVERIFIED` return a `SkillResult`. The other five
+ADR-0027 outcomes raise `SKILL_FAILED`, `PRECONDITION_FAILED`, `CANCELLED`,
+`SAFETY_STOP` and `TIMEOUT` ([ADR-0044](decisions/0044-mocked-arm-atomics.md)).
+
+A `FINISHED_UNVERIFIED` pick returns, because the skill may have worked. The
+pick presets add the postcondition `expect={"holding": True}`, so a pick
+that ends without holding anything fails with `POSTCONDITION`. The pose and
+gripper atomics fail the same way, with the sentences in [Tools](#tools).
+After a failed pick inside a bundle, the agent reads:
+
+```text title="Tool message, status error"
+pickup_object_in_view FAILED at step 4/5 'pick' (run_skill): SKILL_FAILED
+Skill server reported FAILED: grasp slipped on obj_3f2a.0 (mug, 0.62 m ahead, 0.15 m left).
+Done: dets, match, where. Not run: carry.
+Recovery: runtime stow, move_arm_to_pose('home') ok. Arms: home, safe for driving.
+```
+
+### Mock backends
+
+MoveIt 2 is not called. The atomics reach the arms through backend
+protocols, and the first backends are mocks at the ADR-0021 and ADR-0027
+contracts:
+
+| Mock              | File (new)                          | What it does |
+| ----------------- | ----------------------------------- | ------------ |
+| `MockArmBackend`  | `src/walkie_agent/sim/mock_arm.py`  | Serves `move_arm_to_pose`, `set_gripper` and `get_arm_state` as this page describes them. It checks pose names against a test `arm_poses.toml`, tracks the pose, whether it is travel-safe and whether a gripper holds something, and ends every answer with the "Arms: ..." sentence from [Tools](#tools). A reset gives "Stopped by reset. Arms: state unknown." |
+| `MockSkillServer` | `src/walkie_agent/sim/mock_skill.py` | Serves `run_skill` with the seven ADR-0027 outcomes. Each skill has fault knobs: a forced outcome and a delay. A successful pick attaches the `FakeScene` object to the arm. |
+| `FakeScene`       | `src/walkie_agent/sim/fake_scene.py` | Loads a TOML scene of objects (label, description, map pose, size, graspable) for the perception mocks and the picks. |
+
+- Each atomic declares its backends in `META.requires`. The registry hides
+  a tool whose backend is a mock unless the agent runs in simulation, and a
+  real run refuses to start if a required backend is a mock. A mocked pick
+  never runs on the real robot.
+- These are protocol mocks for unit tests and `agent-sim`, not the ROS-level
+  fakes of [ADR-0019](decisions/0019-test-fakes-fast-dds.md). ADR-0037
+  records that gap. The mocks can drift from the real interfaces, so the
+  bundle tests rerun against the real clients on the real-backends track.
+- Until the MotionSupervisor ([ADR-0023](decisions/0023-motion-supervisor.md))
+  lands with the commander client, a reset trips the session's cancel token.
+  The bundle runner checks it between steps. A running step stops only when
+  its own wait checks the token.
+
+### Presets that move the arms
+
+Presets are human-reviewed bundles in
+`src/walkie_agent/tools/bundled_preset/`. All four are bound every turn.
+
+| Preset                  | Arguments                       | Steps                                                                     |
+| ----------------------- | ------------------------------- | ------------------------------------------------------------------------- |
+| `find_object_in_view`   | `object`, `description`         | `detect_objects`, `search_detections`, `localize_object`. No arm motion; returns the object handle |
+| `pick_object`           | `obj`, `arm`                    | `localize_object`, `run_skill("pick")`, `move_arm_to_pose("carry")`       |
+| `pickup_object_in_view` | `object`, `description`, `arm`  | All five steps of the two above                                           |
+| `hand_over`             | `arm`                           | `run_skill("hand_over")`                                                  |
+
+- `arm` is left, right or auto.
+- Presets stop at decision points before any arm moves. When
+  `search_detections` finds several close matches (`AMBIGUOUS`, up to 3
+  candidates) or none (`NOT_FOUND`), `pickup_object_in_view` returns
+  "Nothing moved". The agent asks the person, then calls `pick_object` with
+  the chosen handle. Picking is `run_skill` reached through a preset, which
+  is how the agent keeps the rule "never improvise a pick from poses and
+  grippers".
+- **Runtime stow.** When recovery runs after an arm step started, the runner
+  calls `get_arm_state`, and moves to `home` if the arms are not
+  travel-safe. It covers every bundle, including ones without recovery
+  steps, and also runs when the sim interlock demotes the session in the
+  middle of a bundle with arm steps.
+- A preset may add `Recover(tool, args, if_ran="pick")`, which runs only if
+  the named step started. No recovery step is unconditional, so a perception
+  failure can never move an arm.
+- A bundle can link and still do the wrong thing, for example with left and
+  right swapped. Postconditions, the stops at decision points, arm motion
+  from generated code only in simulation, and human promotion are the
+  guards ([Risks](self-evolving-agent.md#risks)).
+- Presets cannot call presets. A `place_object` preset comes later.
+
+### Generated tools and the arms
+
+Generated tools are meant to move the arms only by calling the atomics.
+
+| Level        | Where it runs | Arm motion in generated tools                       | Arm atomics in `ctx.tools` |
+| ------------ | ------------- | --------------------------------------------------- | -------------------------- |
+| Unrestricted | Simulation    | Only through `run_skill`, `move_arm_to_pose`, `set_gripper` | All five           |
+| Standard     | Simulation    | Only through `run_skill`, `move_arm_to_pose`, `set_gripper` | All five           |
+| Competition  | Anywhere      | None. Generated tools may have effects R, P and S only | `get_arm_state`         |
+
+- **Never-list.** At every level and for every verb, `ctx.ros` refuses the
+  arm, gripper, head and lift controllers, `/controller_manager/*` and the
+  MoveIt and commander planning names
+  ([The never-list](access-levels.md#the-never-list)). In simulation these
+  controllers exist: walkie-ros's MuJoCo launch spawns the joint trajectory,
+  gripper, lift and head controllers. The reviewed manifests of tools
+  promoted to git obey the same list.
+- **Commander and skill names.** The never-list also names the commander's
+  `/go_to_home` and collision services at every level, and
+  `/set_joint_position`, `/control_gripper` and the `RunSkill` action, once
+  its name is pinned, everywhere except in the human-written arm atomics'
+  manifests. Unrestricted allows any action or service off that list, so
+  these entries land in phase 4a with raw actions at Unrestricted. Until
+  `RunSkill`'s name is pinned, whatever the `FakeSkillServer` serves in the
+  sim harvest needs the same entry ([open question 9](#open-questions)).
+  walkie-ros's MuJoCo launch starts neither the commander nor MoveIt today.
+- **Stamps and fresh checks.** A draft that calls `run_skill` is stamped
+  Standard, so it never loads at Competition
+  ([Level stamps](access-levels.md#level-stamps)). At Standard and
+  Unrestricted, every M call through `ctx.tools` first re-runs the sim
+  interlock's domain and real-driver checks, and a failure demotes the
+  session ([ADR-0040](decisions/0040-sim-interlock.md)).
+- **No raw controllers.** Code that drives the controllers skips MoveIt's
+  planning and collision checking, so it could never be promoted as-is, and
+  cleaning up after it needs controller-aware stops. If phase 4b of the
+  self-evolving agent ships, which happens only on harvest evidence, it adds
+  raw base-command publishing at Unrestricted but no arm controllers. Raw
+  arm controllers are reconsidered only if the harvest's atomic wishlist
+  shows tools blocked without them
+  ([ADR-0044](decisions/0044-mocked-arm-atomics.md)).
+
+At Competition the task LLM also loses its M tools once untrusted web text
+enters a turn ([Turn taint](competition.md#turn-taint-and-the-history-scrub)).
+A generated tool that composes the arm atomics is what the harvest can turn
+into a new preset, by a human-reviewed pull request
+([ADR-0048](decisions/0048-sim-harvest-promotion.md)).
+
+### The FakeSkillServer in the sim harvest
+
+The [sim harvest](harvest.md) runs the agent in MuJoCo on many tasks. Its
+arms are served by `FakeSkillServer` (`src/walkie_agent/sim/fake_skill_server.py`,
+new in phase 5 of the self-evolving agent), a ROS-level fake in the spirit
+of ADR-0019:
+
+- It runs in the harvest harness and answers with the ADR-0027 outcomes.
+- It updates the harness's record of the world, and mirrors every pick and
+  place into MuJoCo with one `SetFreeJointState` call
+  (`mujoco_ros2_control_msgs/srv/SetFreeJointState`). That service moves
+  only the listed bodies. `ResetWorld` is never used for this, because it
+  would also put the robot back at its spawn.
+- A held object is parked away from the rooms until it is placed.
+- The harness alone holds the simulator's services. No agent tool exposes
+  them, and they are on every level's never-list, so neither the agent nor
+  generated code can move an object.
+
+No component of the stack publishes ground-truth object poses in simulation
+today, so the harvest takes object positions from the scenario and from the
+`FakeSkillServer`, by construction.
+
+### Pick, then drive
+
+`navigate_to_location` asks the arm backend whether the arms are travel-safe
+([ADR-0025](decisions/0025-travel-safe-interlock.md)). So a pick followed by
+a drive exercises the interlock against the mock:
+
+```mermaid
+sequenceDiagram
+  participant A as Agent
+  participant R as BundleRunner
+  participant S as run_skill (mock)
+  participant B as Arm backend (mock)
+  participant N as navigate_to_location
+
+  A->>R: pick_object(obj="obj_3f2a.0")
+  R->>S: run_skill("pick", obj_3f2a.0)
+  S-->>R: SUCCEEDED, holding
+  R->>B: move_arm_to_pose("carry")
+  R-->>A: Holding mug obj_3f2a.0 in the right arm. Arms: carry, safe for driving.
+  A->>N: navigate_to_location("operator")
+  N->>B: are the arms travel-safe?
+  B-->>N: yes, carry
+  Note over N: drives
+```
+
+- If `carry` were not travel-safe, `navigate_to_location` would answer with
+  the interlock sentence instead of driving. A failed pick ends in `home`
+  through the runtime stow, which is travel-safe too.
+- After the drive, the object handles captured before it are `STALE`: a
+  handle expires once the base has moved more than 5 cm or 3° since capture.
+  A later pick needs a fresh detection. `pick_object` with an old handle
+  fails with `STALE` at `localize_object`, before any arm moves.
+
+The [self-evolving agent](self-evolving-agent.md) page follows the same task
+from the spoken request to the hand-over.
+
 ## What lives where
 
 | Piece                                                            | Repository       | Location                                             |
 | ---------------------------------------------------------------- | ---------------- | ---------------------------------------------------- |
-| Arm, gripper and skill tools; the navigation arm check           | walkie-agent-ros | `src/walkie_agent/tools/`                            |
-| MotionSupervisor                                                 | walkie-agent-ros | `src/walkie_agent/motion.py`                         |
-| Named poses, robot-model snapshot and its generator              | walkie-agent-ros | `config/arm_poses.toml`, `config/robot_model.toml`, `scripts/` |
-| Fake commander and fake skill server                             | walkie-agent-ros | `src/walkie_agent/sim/`                              |
-| Arm summary for the LLM                                          | walkie-agent-ros | `whoami/documentation/arms.md`                       |
+| Arm atomics, one file per tool                                   | walkie-agent-ros | `src/walkie_agent/tools/atomic/` (new)               |
+| Presets `find_object_in_view`, `pick_object`, `pickup_object_in_view`, `hand_over` | walkie-agent-ros | `src/walkie_agent/tools/bundled_preset/` (new) |
+| Typed results, `StepError`, the bundle runner and its runtime stow | walkie-agent-ros | `src/walkie_agent/toolbox/types.py`, `src/walkie_agent/toolbox/runner.py` (new) |
+| The navigation arm check                                         | walkie-agent-ros | `src/walkie_agent/tools/navigation.py` (changed)     |
+| MotionSupervisor                                                 | walkie-agent-ros | `src/walkie_agent/motion.py` (new)                   |
+| Named poses, robot-model snapshot and its generator              | walkie-agent-ros | `config/arm_poses.toml`, `config/robot_model.toml`, a script in `scripts/` (new) |
+| Never-list of arm, gripper, head and lift controllers            | walkie-agent-ros | `config/access_levels.toml` (new)                    |
+| Protocol mocks: `MockArmBackend`, `MockSkillServer`, `FakeScene` | walkie-agent-ros | `src/walkie_agent/sim/mock_arm.py`, `mock_skill.py`, `fake_scene.py` (new) |
+| ROS-level fake skill server for the sim harvest                  | walkie-agent-ros | `src/walkie_agent/sim/fake_skill_server.py` (new)    |
+| Fake commander (real-backends track)                             | walkie-agent-ros | a new file in `src/walkie_agent/sim/`                |
+| Arm summary for the LLM                                          | walkie-agent-ros | `whoami/documentation/arms.md` (new)                 |
 | `my_robot_interfaces`, including future skill interfaces         | walkie-ros       | `manipulate/my_robot_interfaces`, pinned here        |
 | Commander, MoveIt, SRDF, joint limits                            | walkie-ros       | `manipulate/` (unchanged in phases 0 and 1)          |
 | Controllers, lift node, Nav2, URDF                               | walkie-ros       | `bringup/`, `navigation/`, `description/`            |
 | Skill server, safety filter, controller switching                | walkie-ros       | new package                                          |
 | Policy inference, success checks, perception                     | walkie-ros or another robot-side repository | new                       |
+
+The linker, the ROS bridge and the sim interlock are listed on
+[Access Levels](access-levels.md#what-lives-where).
 
 ## Changes needed in walkie-ros
 
@@ -274,28 +582,51 @@ Phases 0 and 1 need none. Later phases need:
 | W8 | before hardware tests | Commander launch: declare and pass a `plan_only` argument, for a safe dry run on the real robot. Today the launch file cannot set it. |
 | W9 | before mock tests | A MoveIt mock launch without `pick_and_place_isaac2`. The current `moveit_demo_with_commander.launch.py` starts it, and it moves the arms and adds collision objects on its own. |
 
+The mocked arm atomics need none of these. W4 would also fix the interface
+the `FakeSkillServer` serves in the sim harvest
+([open question 9](#open-questions)).
+
 ## Testing
 
+- **Protocol mocks first.** From phase 2 of the self-evolving agent, the
+  arm atomics and presets run against `MockArmBackend`, `MockSkillServer`
+  and `FakeScene`, with no ROS. Tests check the structured result: the
+  step, the tool and the code.
+    - `test_runner` covers the bundle runner. Proposed cases include a clean
+      stop on `AMBIGUOUS`, a skill failure and its stow, and a cancel
+      between steps.
+    - `test_nav_interlock`: pick, then drive, against the mock arm backend.
+    - A mocked fetch runs end to end on `agent-sim` with injected faults.
 - **No hardware.** A `FakeCommander` in `src/walkie_agent/sim/` serves the
   commander's actions and service with the same names and quirks. It has
   settings for scrambled joint order, planning failure, slow motion,
   plan-only mode, "success" without moving, ignored cancels and grasping an
   object. Tests run on Fast DDS
-  ([ADR-0019](decisions/0019-test-fakes-fast-dds.md)).
+  ([ADR-0019](decisions/0019-test-fakes-fast-dds.md)). It is built on the
+  real-backends track, and the bundle tests then rerun against the real
+  commander client.
+- **Fake skill server.** Next to it, `FakeSkillServer` serves the skill
+  interface over ROS with the ADR-0027 outcomes, for the sim harvest. Its
+  tests should show that a pick and a place move only the object, through
+  `SetFreeJointState`, and leave the robot where it is.
+- **Generated code.** `test_ros_bridge` (phase 4a of the self-evolving
+  agent) runs the access policy per level on `fake_walkie`. Every arm,
+  gripper, head and lift controller name is refused at every level.
 - **Robot software, mock hardware.** The real commander and MoveIt with mock
   controllers (needs W9).
-- **Real robot,** step by step:
+- **Real robot,** step by step. The steps are R0 to R7, so they are not
+  confused with the harvest stages H0 to H7:
 
 | Step | What                                           | Passes when                                                        |
 | ---- | ---------------------------------------------- | ------------------------------------------------------------------ |
-| H0   | Zenoh connection on the robot PC               | `/set_joint_position` is visible; `get_arm_state` answers          |
-| H1   | Mock hardware                                  | All arm tools work against it                                      |
-| H2   | Real robot, commander in plan-only mode (W8)   | `move_arm_to_pose` reports plan-only, and verification sees no motion |
-| H3   | Arms powered, emergency stop in hand           | A small single-arm move                                            |
-| H4   | Both arms, `home` to `standby`; reset mid-move | Measure how long the arms take to stop after a reset               |
-| H5   | Grippers on nothing, and on a bottle           | Grasp detection calibrated                                         |
-| H6   | Navigation with arms out                       | Navigation refuses, then drives after `home`                       |
-| H7   | Full voice scenario                            | End to end works                                                   |
+| R0   | Zenoh connection on the robot PC               | `/set_joint_position` is visible; `get_arm_state` answers          |
+| R1   | Mock hardware                                  | All arm tools work against it                                      |
+| R2   | Real robot, commander in plan-only mode (W8)   | `move_arm_to_pose` reports plan-only, and verification sees no motion |
+| R3   | Arms powered, emergency stop in hand           | A small single-arm move                                            |
+| R4   | Both arms, `home` to `standby`; reset mid-move | Measure how long the arms take to stop after a reset               |
+| R5   | Grippers on nothing, and on a bottle           | Grasp detection calibrated                                         |
+| R6   | Navigation with arms out                       | Navigation refuses, then drives after `home`                       |
+| R7   | Full voice scenario                            | End to end works                                                   |
 
 ## Roadmap
 
@@ -307,6 +638,31 @@ Phases 0 and 1 need none. Later phases need:
 | 3     | Skills: `list_skills`, `run_skill`, a scripted pick                                        | W4, W5                |
 | 4     | VLA policies                                                                               | W7, maybe W6          |
 
+The [self-evolving agent](self-evolving-agent.md#roadmap) builds the arm
+tools in a different order: typed and mocked first, real backends in
+parallel ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The arm phases
+above line up with its phases like this:
+
+| Self-evolving agent phase | Arm work | Arm phase it covers |
+| ------------------------- | -------- | ------------------- |
+| 0. Decisions | A first draft of `config/arm_poses.toml` with `home`, `carry` and `standby`, each with a `travel_safe` flag | part of 1 |
+| 2. Typed atomics, mocks, bundles | ADR-0044. The five arm atomics on `MockArmBackend` and `MockSkillServer`, the presets, `META.requires`, the navigation arm check against the mock, the controller patterns in `config/access_levels.toml`, `test_runner`, `test_nav_interlock`, a mocked fetch on `agent-sim` | 1 and 3, mocked |
+| 3. Index and atomic agent | `find_tools` reaches `set_gripper`, `list_arm_poses` and `run_skill`. Linker rules L07, L08 and L13 | none |
+| 4a. Sandbox and coder (sim) | The ROS bridge refuses every arm, gripper, head and lift controller at every level (`test_ros_bridge`). Fresh interlock checks before every M call | none |
+| 4b. Unrestricted extras | On harvest evidence: raw base commands, `ctx.handles.load` and `cv2`. No raw arm controllers | none |
+| 5. Harvest v0 | `FakeSkillServer`, mirroring picks and places into MuJoCo | none |
+| Real backends, from phase 2 | The commander client with the MotionSupervisor, the forbidden names and `FakeCommander` (needs arm phase 0), and the skill-server client (W4, W5). Done when the bundle tests rerun against the real clients | 1 and 3, real |
+
+- Phase 1 of the self-evolving agent changes nothing for the arms. Phase 6
+  adds the taint filter, which hides the M tools together with the N tools
+  ([Competition Mode](competition.md)).
+- Arm phase 2, the lift, is not scheduled by the self-evolving agent. The
+  lift stays out of the agent until W1 lands
+  ([ADR-0026](decisions/0026-exclude-lift.md)), and generated tools can
+  never command it.
+- Arm phase 4, VLA policies, stays behind the skill server
+  ([ADR-0027](decisions/0027-runskill-action.md)).
+
 ## Open questions
 
 1. **Which `rmw_zenoh_cpp` version does walkie-ros run?** It decides between
@@ -314,9 +670,12 @@ Phases 0 and 1 need none. Later phases need:
    `pixi.lock` answers this. Blocks phase 0.
 2. **Which walkie-ros commit is checked out on the robot PC?** Message
    definitions must match exactly. Blocks phase 0.
-3. **Which poses should the LLM get, and which are safe for driving?** Is
-   the SRDF's `home` safe to drive with? Is a "carry" pose needed for
-   driving with an object? Blocks phase 1.
+3. **Which poses should the LLM get, and which are safe for driving?** The
+   pick presets end in `carry`, so a carry pose is needed, and it must be
+   travel-safe. What are its joint values, and is one `both_arms` pose
+   enough whichever arm holds the object? Is the SRDF's `home` safe to drive
+   with? The runtime stow relies on it. Is `standby`? Blocks phase 1, and
+   the presets on the real arms.
 4. **Will W2 (speed scaling) land before arm hardware tests,** or do we test
    at full speed with an operator at the emergency stop?
 5. **Is `right_joint2_fixed` ever true on the real robot?** The commander
@@ -329,6 +688,18 @@ Phases 0 and 1 need none. Later phases need:
 8. **For the VLA:** can the robot PC's GPU run the policy, which cameras exist (the
    wrist cameras have device names but no ROS publisher yet), and who owns
    the skill server?
+9. **Which ROS interface does the `FakeSkillServer` serve before W4?** The
+   target is `RunSkill` from ADR-0027, but walkie-ros has not added it yet.
+   Until it does, the fake could serve a stand-in with the same fields, and
+   switch to `RunSkill` once W4 is pinned. Whatever it serves needs the
+   same never-list entry as `RunSkill`. Needed before the
+   `FakeSkillServer` is written in phase 5 of the self-evolving agent. W4
+   itself is not a precondition of phase 5.
+10. **How does `run_skill` pass an object handle to the real skill server?**
+    The presets give it an object handle from perception, but `RunSkill`'s
+    `target` is free text. The mock accepts the handle. The real client
+    needs either a new field or a convention for the text. Blocks the
+    skill-server client on the real-backends track.
 
 ## Decisions
 
@@ -366,3 +737,7 @@ Click a decision to expand it. All of these are proposed. See
 ??? note "ADR-0028: Keep camera images and policy inference out of the agent · Proposed"
 
     --8<-- "architecture/decisions/0028-images-and-policy-robot-side.md:body"
+
+??? note "ADR-0044: Mock the arm atomics, and let generated tools move the arms only through them · Proposed"
+
+    --8<-- "architecture/decisions/0044-mocked-arm-atomics.md:body"

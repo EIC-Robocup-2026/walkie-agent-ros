@@ -9,6 +9,10 @@ costs later.
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |
 | [The Agent](agent.md)                            | The agent node, its topics and tools, how it reaches the robot, and what lives where |
 | [Arm Manipulation (Proposed)](manipulation.md)   | How the agent will move the arms and grippers, and run skills such as a VLA policy |
+| [Self-Evolving Agent (Proposed)](self-evolving-agent.md) | The redesigned agent: the todo list, atomic and bundled tools, tool search, and the tool creator |
+| [Access Levels and Generated Tools (Proposed)](access-levels.md) | The Unrestricted, Standard and Competition levels, the sim interlock, and the sandbox for generated code |
+| [Competition Mode (Proposed)](competition.md)    | What the agent may create at a competition, run profiles, sounds, web search and the speech gate |
+| [Sim Harvest (Proposed)](harvest.md)             | Running the agent in MuJoCo on many tasks, checking what it built, and promoting tools by pull request |
 
 ## Architecture Decision Records
 

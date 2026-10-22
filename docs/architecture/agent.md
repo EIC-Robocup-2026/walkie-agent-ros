@@ -6,6 +6,11 @@ robot's own software, including navigation and manipulation, runs in
 [walkie-ros](https://github.com/EIC-Robocup-2026/walkie-ros). The agent calls
 it over ROS 2.
 
+!!! info "Proposed redesign"
+    A redesign of this agent into a self-evolving agent is proposed: see
+    [Self-Evolving Agent (Proposed)](self-evolving-agent.md). This page
+    describes the agent as it is today.
+
 ## Summary
 
 - **Built on RAI.** `WalkieAgent` is RAI's `ReActAgent` with a reset added

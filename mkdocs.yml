@@ -93,3 +93,7 @@ nav:
       - architecture/index.md
       - The Agent: architecture/agent.md
       - Arm Manipulation (Proposed): architecture/manipulation.md
+      - Self-Evolving Agent (Proposed): architecture/self-evolving-agent.md
+      - Access Levels and Generated Tools (Proposed): architecture/access-levels.md
+      - Competition Mode (Proposed): architecture/competition.md
+      - Sim Harvest (Proposed): architecture/harvest.md

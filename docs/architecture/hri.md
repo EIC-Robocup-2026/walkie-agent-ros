@@ -6,21 +6,25 @@
 
 The HRI task (RoboCup@Home 2026 rulebook, section 5.1) is the first task
 the [self-evolving agent](self-evolving-agent.md) will run end to end. It
-needs people, seats and gaze, but no object search, no arm and no
-embedding bake-off, so it is the shortest path to a test on the robot. This
-page plans that first slice, on top of [Perception](perception.md).
+needs people, seats, gaze and one simple arm motion, but no object search,
+no skill server and no embedding bake-off, so it is the shortest path to a
+test on the robot. This page plans that first slice, on top of
+[Perception](perception.md) and [Arm Manipulation](manipulation.md).
 
 ## Summary
 
-- **Slice 1 scores the main goal without the bag:** up to 550 of the
-  task's 1,450 points, plus 60 bonus points for asking no confirmation
+- **Slice 1 scores the main goal up to the bag hand-over:** up to 600 of
+  the task's 1,450 points, plus 60 bonus points for asking no confirmation
   questions.
 - **Off its path:** `DetectObjects`, `EmbedText`, the embedding bake-off,
   walkie-database's migration after it, person depth, the bundle runtime
-  and the arms.
+  and the skill server.
 - **On its path:** walkie-vision's torch and face nodes, walkie-database's
-  people services, and in this repository phase 1, six atomics and an
-  HRI template.
+  people services, and in this repository phase 1, six atomics, the arm
+  atomics and an HRI template. On the robot, also the real arm clients.
+- **The bag goes in the left hand.** The robot holds out its hand, the
+  guest says when the bag is in it, and the gripper closes. The two poses
+  it needs, `receive` and `carry`, come from walkie-agent-v2's hand-over.
 - **Gaze turns the base.** An agent-side loop publishes rotation only, on
   `/cmd_vel`, below Nav2 and the joystick in `twist_mux`. It is the one
   exception to `FORBIDDEN_NAMES`
@@ -52,6 +56,9 @@ Rules that shape the design:
   chairs, and seated guests may switch seats before the introductions.
 - **No help with identities.** Asking who is who costs 200 points per
   guest.
+- **The bag comes from the guest's hand.** Telling the guest to put it on
+  the robot scores nothing for the hand-over and costs 50 points. Asking
+  the guest for help during the hand-over reduces the score.
 - **Names and drinks are open.** Names are any popular English name, and
   drinks any popular drink, not only those in the object list.
 - **Only the two guests are introduced.** walkie-agent-v2 also introduced
@@ -65,15 +72,16 @@ Rules that shape the design:
 | Look at the person talking, when receiving a guest | 2×50 | Yes, the gaze loop |
 | Introduce the guests: each one's name and drink | 4×30 | Yes |
 | Look at the correct guest while introducing | 2×50 | Yes, the gaze loop |
-| Bag handover, following the host, dropping the bag | 50, 200, 50 | No: the arms are mocked, and following is open ([Perception question 5](perception.md#open-questions)) |
+| Take the bag from the guest's hand | 50 | Yes, with the left gripper |
+| Follow the host, drop the bag | 200, 50 | No: following is open ([Perception question 5](perception.md#open-questions)) |
 | Bonus: detect the doorbell | 2×30 | No |
 | Bonus: open the door | 2×200 | No |
 | Bonus: describe the first guest to the second | 4×20, and −20 per wrong attribute | No ([Perception question 4](perception.md#open-questions)) |
 | Bonus: no confirmation questions | 4×15 | Yes |
 
 Penalties the slice must avoid: wrong information memorized (4×−40), not
-recognizing people (2×−200), and an alternative input such as a keyboard
-(6×−20).
+recognizing people (2×−200), an alternative input such as a keyboard
+(6×−20), and telling the guest to put the bag on the robot (−50).
 
 ## One run
 
@@ -84,7 +92,10 @@ flowchart TB
     find --> look["look_at(guest)<br/>the gaze loop starts"]
     look --> ask["wait_for_person: name<br/>wait_for_person: drink"]
     ask --> mem["remember_person(<br/>guest, name, {drink})"]
-    mem --> guide["speak('Please follow me')<br/>navigate_to_location(<br/>'living_room')"]
+    mem --> second{"Is this the<br/>second guest?"}
+    second -->|"yes"| bag["Take the bag:<br/>receive pose, wait_for_person,<br/>close, carry pose"]
+    second -->|"no"| guide
+    bag --> guide["speak('Please follow me')<br/>navigate_to_location(<br/>'living_room')"]
     guide --> seats["find_seats()<br/>look_at(free seat), speak"]
     seats --> more{"Second guest<br/>still to come?"}
     more -->|"yes"| door
@@ -113,6 +124,8 @@ flowchart TB
 | `look_at(target)` | N | New ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)) | Starts the gaze loop on a person, or turns to a seat and holds. Returns at once |
 | `stop_looking()` | N | New | Stops the gaze loop |
 | `wait_for_person(question)` | — | Phase 1, a core tool | Speaks, marks the todo item waiting and ends the turn |
+| `move_arm_to_pose(pose, arm)` | M | As on [Manipulation](manipulation.md#tools), with two new poses | Moves the left arm to `receive` or `carry`, and checks the joints |
+| `set_gripper(arm, state)` | M | As on [Manipulation](manipulation.md#tools) | Opens or closes the left gripper. After a close, says whether it holds something |
 
 `navigate_to_location` and `speak` exist today. `refind_person` is not
 needed: the gaze loop follows the track, and the face is matched again at
@@ -161,6 +174,72 @@ introductions, when the guest is seated and seen from elsewhere.
 - **Names, not pronouns.** The robot calls guests by name and never says
   "he" or "she", since it cannot know their pronouns.
 
+## The bag hand-over
+
+The second guest's bag is taken at the door, right after
+`remember_person`, as walkie-agent-v2 did. The guest is already in front of
+the robot there, and the arm is back in a travel-safe pose before the robot
+drives.
+
+1. **Warn.** `speak("I will hold out my hand for your bag.")`. The system
+   prompt already says to tell people before moving the arms.
+2. **Hold out the hand.** `set_gripper("left", "open")`, then
+   `move_arm_to_pose("receive", "left")`.
+3. **Wait for the guest.** `wait_for_person("Please hang your bag on my
+   hand, and tell me when it is there.")` ends the turn.
+4. **Close.** In the next turn, `speak("Thank you. I will close my hand
+   now.")`, then `set_gripper("left", "close")`, which says whether the
+   gripper holds something.
+5. **Carry.** `move_arm_to_pose("carry", "left")`, then guide the guest as
+   before. The bag stays in the hand until the end of the run.
+
+Why it works this way:
+
+- **The guest says when.** The gripper closes only after the guest's
+  answer, so it does not close on a hand that is still placing the bag.
+  walkie-agent-v2 waited instead for joint 4's effort to change by 0.4,
+  after asking the guest to press down on the hand. That needs efforts
+  from `/joint_states`, which no atomic reads. v2 also went on as if it
+  held the bag when that wait timed out.
+- **One retry.** If the gripper holds nothing, the robot opens it and asks
+  once more. After a second miss it moves to `carry` empty, says it will
+  go on without the bag, and guides the guest. The template says so, so
+  the LLM does not keep asking. The rulebook lowers the score when the
+  robot asks the guest for help during the hand-over, without saying by
+  how much. Whether the first request already counts is unclear. v2's
+  request to press on the hand was the same kind of request.
+- **No new atomics.** The two arm atomics from
+  [Manipulation](manipulation.md#tools) do it. `move_arm_to_pose` checks
+  the joints after the move, and `set_gripper` reports the commander's
+  `grasped` flag and the finger gap.
+- **Two new poses** in `config/arm_poses.toml`, both from walkie-agent-v2's
+  hand-over:
+
+    | Pose | Arms | `travel_safe` | What it is |
+    | ---- | ---- | ------------- | ---------- |
+    | `receive` | left | false | The left hand held out in front, open, for the guest to hang the bag on |
+    | `carry` | left, right | true | The arm folded close to the body, holding the bag. The right table mirrors the left, as `home`'s does |
+
+- **Recorded on the robot.** v2 reached both poses with Cartesian goals
+  through the commander's `/go_to_pose`, which the agent never calls
+  ([Forbidden names](manipulation.md#forbidden-names)). A team member sends
+  the two goals once, with the lift at the top, reads
+  `/get_joint_states`, and copies the joint values into the file. From
+  then on they are joint poses like the SRDF ones, tried with collision
+  checking on before the LLM gets them. In sim the mock needs only the
+  names.
+- **Speed.** The arm moves toward a person, and the commander runs at full
+  speed until walkie-ros change W2 lands
+  ([Manipulation](manipulation.md#safety)). Until then the hand-over runs
+  on the robot only with a team member as the guest and an operator at the
+  emergency stop. Recommended: W2 before anyone else plays the guest
+  ([Manipulation question 4](manipulation.md#open-questions)).
+- **The robot stays still.** The gaze loop turns only while both arms are
+  travel-safe ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)), so it
+  stops when the arm goes out and `look_at` works again in `carry`.
+- **Thin handles.** Whether `grasped` sees a bag's handles is
+  [question 5](#open-questions).
+
 ## Gaze
 
 The gaze loop is the one place where the agent drives the base directly
@@ -185,8 +264,11 @@ flowchart TB
 - **Control.** walkie-agent-v2's loop at 15 Hz: gain 1.2, 0.15 to
   0.6 rad/s, no command inside 6°, acceleration capped at 3.2 rad/s².
 - **Stops.** After 1 s without the target, on `stop_looking`, before any
-  navigation goal, on reset, "stop" or "never mind", and on shutdown. If
-  the agent dies, `twist_mux` drops `/cmd_vel` after 0.5 s.
+  navigation goal or arm motion, on reset, "stop" or "never mind", and on
+  shutdown. If the agent dies, `twist_mux` drops `/cmd_vel` after 0.5 s.
+- **Arms in.** It turns only while both arms are in a travel-safe pose,
+  the check navigation makes
+  ([ADR-0025](decisions/0025-travel-safe-interlock.md)).
 - **Why `/cmd_vel`.** It is `twist_mux`'s lowest priority, so Nav2 and a
   person holding the joystick always win. The cost: it bypasses
   `collision_monitor` ([question 4](#open-questions)).
@@ -211,18 +293,23 @@ introduce them to each other.
 Keep looking at the person you talk to. Ask for the name, then the drink.
 Never ask a guest to confirm or correct an answer. Ask again only if you
 heard nothing. Never ask who is who. Call guests by name, never "he" or "she".
+Take the second guest's bag in your left hand before guiding them. Say
+before you move the arm. Close the hand only after the guest says the bag is
+in it. If you hold nothing, ask once more, then go on without the bag. Keep
+the bag in the carry pose until the end.
 """
 todos = [
   "Meet the first guest at the door and learn their name and drink",
   "Guide the first guest to the living room and offer a free seat",
   "Meet the second guest at the door and learn their name and drink",
+  "Take the second guest's bag",
   "Guide the second guest to the living room and offer a free seat",
   "Introduce the guests to each other",
 ]
 ```
 
-The run uses no preset. Each step is two to four atomic calls, and the
-first goal is to see how the new agent loop handles a real task. Presets
+The run uses no preset. Each step is two to four atomic calls, the
+hand-over about six over two turns, and the first goal is to see how the new agent loop handles a real task. Presets
 such as `greet_guest` and `offer_seat` can be promoted from the slice's
 traces once the bundle runtime exists.
 
@@ -231,19 +318,17 @@ traces once the bundle runtime exists.
 What blocks the slice, across the three repositories. A dashed box is new
 work this page or [Perception](perception.md) asks for.
 
+The sim run:
+
 ```mermaid
 flowchart TB
-    v1["<b>walkie-vision</b><br/>Torch node: YOLOE with<br/>seat classes, pose, OSNet"]
-    v2["<b>walkie-vision</b><br/>Face node, faces in<br/>PersonDetection"]
     di["<b>walkie-database</b><br/>People services:<br/>interface agreed"]:::proposed
-    d3["<b>walkie-database</b><br/>People services built"]:::proposed
     a0["<b>walkie-agent-ros</b><br/>Pin walkie_vision_msgs"]
     p1["<b>walkie-agent-ros</b><br/>Phase 1: host, todos,<br/>wait_for_person"]
-    a1["<b>walkie-agent-ros</b><br/>HRI atomics on mocks"]:::proposed
+    a1["<b>walkie-agent-ros</b><br/>HRI and arm<br/>atomics on mocks"]:::proposed
     g["<b>walkie-agent-ros</b><br/>Gaze loop"]:::proposed
-    s["<b>walkie-agent-ros</b><br/>oracle_perception:<br/>guests and seats"]:::proposed
+    s["<b>walkie-agent-ros</b><br/>oracle_perception:<br/>guests, seats, bag"]:::proposed
     t["<b>walkie-agent-ros</b><br/>HRI template,<br/>sim run passes"]:::proposed
-    r["<b>walkie-agent-ros</b><br/>Real clients,<br/>run on the robot"]
 
     a0 --> a1
     di --> a1
@@ -251,11 +336,30 @@ flowchart TB
     a1 --> t
     g --> t
     s --> t
-    di --> d3
+
+    classDef proposed stroke-dasharray: 5 5;
+```
+
+The run on the robot:
+
+```mermaid
+flowchart LR
+    t["<b>walkie-agent-ros</b><br/>Sim run passes"]:::proposed
+    v1["<b>walkie-vision</b><br/>Torch node: YOLOE with<br/>seat classes, pose, OSNet"]
+    v2["<b>walkie-vision</b><br/>Face node, faces in<br/>PersonDetection"]
+    d3["<b>walkie-database</b><br/>People services built"]:::proposed
+    ac["<b>walkie-agent-ros</b><br/>Commander client,<br/>MotionSupervisor"]
+    rp["<b>walkie-agent-ros</b><br/>receive and carry<br/>recorded on the robot"]:::proposed
+    w2["<b>walkie-ros</b><br/>W2: arm speed scaling"]
+    r["<b>walkie-agent-ros</b><br/>Real clients,<br/>run on the robot"]
+
     t --> r
     v1 --> r
     v2 --> r
     d3 --> r
+    ac --> r
+    rp --> r
+    w2 -.-> r
 
     classDef proposed stroke-dasharray: 5 5;
 ```
@@ -264,12 +368,19 @@ flowchart TB
   and the pinned messages. walkie-vision and walkie-database are needed
   only for the robot.
 - **From phase 2,** the slice takes only the toolbox core and the atomics
-  above. The linker, the bundle runtime, the presets and the level checks
-  are not needed, because the run calls reviewed atomics only.
-- **On the robot,** the order is: the gaze loop alone, with someone pacing
+  above, with the arm atomics on `MockArmBackend`
+  ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The linker, the
+  bundle runtime, the presets and the level checks are not needed, because
+  the run calls reviewed atomics only.
+- **On the robot,** the arm atomics need the commander client from
+  Manipulation's real-backends track. W2 is drawn dotted: the run works
+  without it, but only with team members and an operator at the emergency
+  stop ([The bag hand-over](#the-bag-hand-over)).
+- **The order on the robot** is: the gaze loop alone, with someone pacing
   and the joystick at hand, then the seats in the arena's living room,
-  then the whole run. The face distance limit is tuned there, with team
-  members ([Perception question 2](perception.md#open-questions)).
+  then the hand-over with a team member as the guest, then the whole run.
+  The face distance limit is tuned there, with team members
+  ([Perception question 2](perception.md#open-questions)).
 
 ## In simulation
 
@@ -287,6 +398,10 @@ flowchart TB
 - **Answers.** The scenario answers each question on `/from_human` after
   the robot's line on `/to_human`. Once, it answers with nothing, to test
   asking again.
+- **The bag.** When the second guest answers the hand-over request, the
+  scenario puts a bag between the left fingers in `MockArmBackend`, so the
+  next close holds it. In one variant the guest answers before hanging the
+  bag, to test the retry.
 
 A run passes when:
 
@@ -295,10 +410,15 @@ A run passes when:
   each conversation;
 - each seat offer faces a free place, never a taken one;
 - each introduction faces the listener;
-- the only questions are the four essential ones, plus one repeat after
-  the empty answer;
+- the only questions are the four essential ones and the hand-over
+  request, plus one repeat after the empty answer, and one more hand-over
+  request in the early-answer variant;
+- the robot speaks before every arm motion, and closes the gripper only
+  after the guest's answer;
+- the left gripper holds the bag before the second guest is guided, and
+  no navigation is refused because an arm is out;
 - every `/cmd_vel` message has zero linear velocity, and none is sent
-  while a Nav2 goal is active;
+  while a Nav2 goal is active or an arm is out of a travel-safe pose;
 - it finishes within 6 minutes of sim time.
 
 The 10° and 80% are first targets, to be tuned. Unit tests cover the gaze
@@ -312,7 +432,8 @@ walkie-agent-v2, and the name assignment in `recognize_person`.
 | walkie-vision | The torch node, with the seat classes in its streaming list | Planned there. How a task sets the list is new here ([question 1](#open-questions)) |
 | walkie-vision | The face node, and which process puts faces into `PersonDetection` | Open there |
 | walkie-database | People services: remember a person with facts and several vectors, and recognize a set of faces | New ([Perception question 2](perception.md#open-questions)) |
-| walkie-ros | Nothing for slice 1. A collision-checked input for the gaze loop, if [question 4](#open-questions) asks for one | — |
+| walkie-ros | W2, arm speed scaling, before the hand-over runs with anyone but team members ([The bag hand-over](#the-bag-hand-over)) | Planned on [Manipulation](manipulation.md#changes-needed-in-walkie-ros) |
+| walkie-ros | A collision-checked input for the gaze loop, if [question 4](#open-questions) asks for one | — |
 
 ## Open questions
 
@@ -336,15 +457,24 @@ walkie-agent-v2, and the name assignment in `recognize_person`.
    arbitrate. Recommended: `/cmd_vel` for slice 1, measured on the robot,
    and a collision-checked input in walkie-ros later if needed. Blocks:
    nothing in sim.
-5. **The next slice.** Following the host is worth 200 points and needs
-   no arm if the guest puts the bag on the robot (−50 instead of +50 for
-   the handover). It needs a follow skill
+5. **Whether `grasped` sees a bag's handles.** Handles are thin and soft.
+   The fingers may close almost fully on them, below the commander's
+   detection band, so `grasped` reads false while the bag hangs in the
+   hand. The robot then asks again and loses points. Recommended: try bags
+   with thin and thick handles while the band is calibrated
+   ([Manipulation](manipulation.md#safety)). If thin handles read as
+   empty, judge the hand-over by the gripper's effort on `/joint_states`
+   instead. Blocks: the hand-over on the robot, not in sim.
+6. **The next slice.** Following the host is worth 200 points, and
+   dropping the bag where the host shows another 50. The bag is already in
+   the left hand, so the drop is mostly `set_gripper("left", "open")`.
+   Following needs a follow skill
    ([Perception question 5](perception.md#open-questions)). The doorbell
    is worth 60 and needs a sound detector. Describing the first guest is
    worth up to 80, and loses 20 per wrong attribute
    ([Perception question 4](perception.md#open-questions)). Recommended:
-   following, since it is the largest block without arms. Blocks:
-   planning slice 2.
+   following and the drop, the largest block left. Blocks: planning
+   slice 2.
 
 ## Decisions
 

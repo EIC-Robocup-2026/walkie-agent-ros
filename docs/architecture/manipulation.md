@@ -217,7 +217,14 @@ description = "Left hand raised over a surface, before placing."
 [poses.carry]
 travel_safe = true       # required: the pick presets end here, then drive
 description = "Holding an object close to the body. Safe for driving."
-# No SRDF state. Open question 3: start from home, or drop carry.
+# No SRDF state. Recorded on the robot from walkie-agent-v2's carry after
+# the HRI bag hand-over. The right table mirrors the left.
+
+[poses.receive]
+travel_safe = false
+description = "Left hand held out in front, to take a bag from a person."
+# No SRDF state. Recorded on the robot from walkie-agent-v2's hand-over.
+# [poses.receive.left] only.
 ```
 
 - **One table per arm.** Each pose has a `left` and a `right` joint table,
@@ -246,6 +253,12 @@ description = "Holding an object close to the body. Safe for driving."
   `config/robot_model.toml`, so a retune in walkie-ros fails the test until
   someone copies it on purpose. A pose retuned agent-side drops
   `srdf_state`.
+- **Not from the SRDF.** `carry` and `receive` come from walkie-agent-v2's
+  HRI bag hand-over, which reached them with Cartesian goals through
+  `/go_to_pose`. The agent never sends those. A team member sends the two
+  goals once on the robot, with the lift at the top, and copies the joint
+  values from `/get_joint_states`
+  ([HRI Task](hri.md#the-bag-hand-over)).
 - **Right joint 2.** `real_omnibot.launch.py` defaults `right_joint2_fixed`
   to false, and the snapshot is generated the same way.
   Every right-arm preset has joint 2 at 0, so the presets hold either way.
@@ -712,7 +725,7 @@ above line up with its phases like this:
 
 | Self-evolving agent phase | Arm work | Arm phase it covers |
 | ------------------------- | -------- | ------------------- |
-| 0. Decisions | A first draft of `config/arm_poses.toml`: the seven SRDF presets in [Pose configuration](#pose-configuration) and the three gripper positions, copied by joint name, plus `carry`, each pose with a `travel_safe` flag | part of 1 |
+| 0. Decisions | A first draft of `config/arm_poses.toml`: the seven SRDF presets in [Pose configuration](#pose-configuration) and the three gripper positions, copied by joint name, plus `carry` and `receive`, recorded on the robot, each pose with a `travel_safe` flag | part of 1 |
 | 2. Typed atomics, mocks, bundles | ADR-0044. The five arm atomics on `MockArmBackend` and `MockSkillServer`, the presets, `META.requires`, the navigation arm check against the mock, the controller patterns in `config/access_levels.toml`, `test_runner`, `test_nav_interlock`, a mocked fetch on `agent-sim` | 1 and 3, mocked |
 | 3. Index and atomic agent | `find_tools` reaches `set_gripper`, `list_arm_poses` and `run_skill`. Linker rules L07, L08 and L13 | none |
 | 4a. Sandbox and coder (sim) | The ROS bridge refuses every arm, gripper, head and lift controller at every level (`test_ros_bridge`). Fresh interlock checks before every M call | none |
@@ -742,14 +755,15 @@ above line up with its phases like this:
    used them ([Pose configuration](#pose-configuration)): `home` safe,
    `standby` and `hands_up` not, since their elbows stick out. The runtime
    stow relies on `home`. Is `tray` safe to drive with? And `basket_hold`,
-   once the lift lands? The pick presets end in `carry`, which must be
-   travel-safe. walkie-agent-v2 carried objects in `home` (its
-   `WALKIE_CARRY_POSE`). The recommendation is to drop `carry` and end the
-   presets in `home`. The alternative is a `carry` that starts as a copy of
-   `home`, retuned if held objects tilt. Blocks phase 1, and the presets on
-   the real arms.
+   once the lift lands? Blocks phase 1, and the presets on the real arms.
+   `carry` is settled: kept as its own travel-safe pose, not replaced by
+   `home`. walkie-agent-v2 carried most objects in `home` (its
+   `WALKIE_CARRY_POSE`), but held the HRI bag in a pose closer to the body,
+   which seeds `carry` ([HRI Task](hri.md#the-bag-hand-over)).
 4. **Will W2 (speed scaling) land before arm hardware tests,** or do we test
-   at full speed with an operator at the emergency stop?
+   at full speed with an operator at the emergency stop? The HRI bag
+   hand-over moves an arm toward a person, so it makes W2 more pressing.
+   Recommended: W2 before anyone but a team member plays the guest.
 5. **Is `right_joint2_fixed` ever true on the real robot?**
    `real_omnibot.launch.py` defaults it to false. The commander builds its
    robot model without that setting, so it and `move_group` could disagree.

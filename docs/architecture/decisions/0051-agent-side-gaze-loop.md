@@ -67,6 +67,11 @@ inputs pass neither.
       the joystick and the keyboard. The loop also stays silent while a
       `navigate_to_pose` goal is active, and every navigation atomic
       stops it before sending a goal.
+    - **Arms in.** It turns only while both arms are in a travel-safe
+      pose, the check the navigation atomics make
+      ([ADR-0025](/architecture/decisions/0025-travel-safe-interlock.md)).
+      Every arm atomic stops it before moving an arm, and `look_at`
+      refuses while an arm is out.
     - **It stops by itself.** It sends a zero command and goes silent
       when the target is unseen for 1 s, on `stop_looking`, on a reset,
       "stop" or "never mind" interrupt
@@ -89,6 +94,11 @@ inputs pass neither.
   distance. Something inside that circle is not seen, though. Whether the
   loop should go through `collision_monitor` instead is open
   ([HRI Task](/architecture/hri.md#open-questions)).
+- That circle holds only with the arms in. A held object can still stick
+  out of it: in the HRI task, the bag hangs from the left hand in `carry`
+  while the robot looks at seats and guests.
+- During the HRI bag hand-over the robot stays still, since the arm is out
+  ([HRI Task](/architecture/hri.md#the-bag-hand-over)).
 - A wrong track turns the robot toward the wrong person, at no more than
   the cap, until the track is lost.
 - The robot cannot drive and look at someone at once. While guiding a

@@ -597,7 +597,7 @@ BM25-only, dense-only and hybrid search, per level.
 
 | Phase | What ships (MVP) | Deferred | Done when |
 | ----- | ---------------- | -------- | --------- |
-| 0. Decisions | These ADRs. `artifact_database.pkl` in `.gitignore`. A draft `config/arm_poses.toml` copying the seven SRDF arm presets, plus `carry`, with `travel_safe` flags ([Pose configuration](manipulation.md#pose-configuration)). `robot_check.sh` run on the robot PC. `/etc/walkie/sim-host` installed on dev machines | — | ADRs reviewed. The `robot_check.sh` result is known |
+| 0. Decisions | These ADRs. `artifact_database.pkl` in `.gitignore`. A draft `config/arm_poses.toml` copying the seven SRDF arm presets, plus `carry` and `receive`, with `travel_safe` flags ([Pose configuration](manipulation.md#pose-configuration)). `robot_check.sh` run on the robot PC. `/etc/walkie/sim-host` installed on dev machines | — | ADRs reviewed. The `robot_check.sh` result is known |
 | 1. Host, todos, roles | `graph.py` and the base swap, the `_run_agent` override, `todo.py`, seeding, `/walkie/todos`, `models.py`, `FORBIDDEN_NAMES` additions, the `--access-level` flag and profile plumbing, per-role keys, Ollama with an sm_120 check | — | All 65 existing tests pass, plus `test_todo.py` and `test_graph.py`. An eval with the chosen local fallback model. A seeded run on `agent-sim` |
 | 2. Typed atomics, mocks, bundles, levels | `toolbox/` core, linker L01 to L06, `core()` for today's tools, perception and arm atomics, internal `navigate_to_pose`, the four presets, `META.requires`, `walkie_toolbox_facade`, the level policy, interlock checks 1, 2, 3, 5 and 6, the local speech gate, `play_sound`, `tell_time`, `tell_date`. `agent-sim` passes `--access-level standard` | Interlock checks 4 and 7 to 9, periodic re-checks | `test_dsl`, `test_linker`, `test_runner`, `test_nav_interlock`, `test_levels`, `test_interlock`, `test_play_sound` and `test_speech_gate` pass. A mock fetch with injected faults on `agent-sim`. The interlock grants Standard on a marked dev machine, and Competition without the marker or with the robot marker |
 | 3. Index and atomic agent | `find_tools`, `request_tool` with compose, linker L07 to L13 and L15, stamped drafts, run traces, the cloud embedder with its pinned provider and startup check, 100 spoken requests for the eval | A second embedding provider | `test_index`, `test_atomic_agent` and `test_names` pass. Hybrid beats BM25-only on Recall@5, or the team decides. Embedding latency measured from the robot PC |
@@ -607,9 +607,10 @@ BM25-only, dense-only and hybrid search, per level.
 | 6. Competition level | See [Competition Mode](competition.md), ending with the Competition coder | — | Red-team set: 0 escapes. A booth dry run with no audible test failures. Offline, creation is refused within 2 s. `Say <slur>` is refused. 20 long-tail questions answered with site-name attribution. `look_up_online` returns `UNAVAILABLE` within 1 s when search is blocked. A red-team snippet does not change the next tool call |
 | Real backends, from phase 2 | walkie-vision `DetectObjects` and `EmbedText` clients, the skill server ([ADR-0027](decisions/0027-runskill-action.md)), the commander ([ADR-0021](decisions/0021-arm-control-through-commander.md), [ADR-0023](decisions/0023-motion-supervisor.md)), ROS-level fakes | — | Bundle tests rerun on real clients |
 
-The HRI task is the first end-to-end test. It needs phase 1 and the
-people and seat atomics from phase 2, but not the bundle runtime, the
-linker or the level checks ([HRI Task](hri.md#delivery-order)).
+The HRI task is the first end-to-end test. It needs phase 1, and the
+people, seat and arm atomics from phase 2, but not the bundle runtime, the
+linker or the level checks. On the robot it also needs the commander
+client from the real backends ([HRI Task](hri.md#delivery-order)).
 
 Deferred until something needs them: a runs table, the rest of the toolbox
 CLI (`deprecate`, `gc`, evidence export), a circuit breaker that switches

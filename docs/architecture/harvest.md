@@ -80,7 +80,7 @@ records served by oracle perception.
 !!! warning "The world's home is still moving"
     On 22 October 2026 the assets sit in walkie-ros's `robot_simulation`
     package, under `simulation/gazebo/worlds/chula_pat14_6/`, on the branch
-    `codex/chula-pat14-6-simulation` (commit `7370c90`), not on main. For a
+    `codex/chula-pat14-6-simulation`, not on main. For a
     few commits they lived in a walkie-worlds repository, which has no
     remote and now keeps only local history. The migration is in progress,
     so paths here may change. Phase 5 should start only once the world and
@@ -164,11 +164,10 @@ runs in real time with a 7-minute limit, and records a trace.
 ### The world file
 
 Once per run, the harness writes its own world file, and the report header
-records how it was built and its hash. At walkie-ros's branch commit
-`2d60dcb`, `integrate_world.py` built the file from
-`<world folder>/scene.xml` with `--spawn-pose 0 0 0`. Branch commit
-`c33e373` replaced that script and `prepare_world.py` with
-`robot_bringup.world_loader.prepare_world()`. It takes a world name, a
+records how it was built and its hash. Earlier on walkie-ros's branch,
+`integrate_world.py` built the file from `<world folder>/scene.xml` with
+`--spawn-pose 0 0 0`. A later branch commit replaced that script and
+`prepare_world.py` with `robot_bringup.world_loader.prepare_world()`. It takes a world name, a
 variant, an output directory, and a named spawn or a spawn pose, writes
 `<output dir>/<world>/<variant>/world.xml`, and runs in walkie-ros's sourced
 environment. The proposed harness passes:

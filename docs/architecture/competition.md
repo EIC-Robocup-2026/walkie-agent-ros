@@ -27,9 +27,8 @@ library is in [Sim Harvest](harvest.md).
   the `audios` field of `/to_human`, so a sound waits for earlier speech and
   obeys half-duplex, stop and pause
   ([ADR-0045](decisions/0045-play-sound-through-to-human.md)).
-- **A speech gate on everything said.** Local checks always run, plus a
-  cloud check on risky text at Competition. If that check fails, creation
-  and search are off.
+- **A speech gate on everything said.** Local checks run on every
+  utterance and sound, at every level. There is no cloud check.
 - **Search without a text argument.** `look_up_online` queries only with the
   person's own words, returns at most three short snippets and taints the
   turn.
@@ -98,10 +97,10 @@ are written and reviewed before the event, so they sit on rung 1:
   (often skipped), and the coder the rest, at most 10 s per LLM call. The
   whole request stops at 40 s with "Sorry, I couldn't get that right now"
   and an alternative.
-- A spoken "stop" goes through `/voice_commands`, replaces the speech ID and
-  aborts creation. Whether "never mind" or other speech during creation
-  queues or interrupts is open
-  ([Self-Evolving Agent](self-evolving-agent.md#open-questions), question 1).
+- A spoken "stop" or "never mind" replaces the speech ID and aborts
+  creation. Anything else said during creation waits in the queue until the
+  request ends
+  ([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
 
 ## Example: "Say Meow!"
 
@@ -110,7 +109,7 @@ are written and reviewed before the event, so they sit on rung 1:
 | 0.0 s        | A visitor says "Say Meow!".                                                               |
 | 0.3 to 0.8 s | ASR finishes the transcription.                                                           |
 | 0.8 to 2.5 s | One agent turn, rung 0: `speak(text="Meow!")`.                                            |
-| about 2.5 s  | The speech gate. The text echoes the visitor, so it also gets the cloud check when online. |
+| about 2.5 s  | The speech gate's local checks.                                                           |
 | 2.5 to 3.5 s | TTS speaks, and `/walkie/speaking` mutes ASR meanwhile.                                   |
 
 If the agent calls `request_tool("say meow", kind="behaviour")` anyway,
@@ -218,20 +217,29 @@ strings computed by code.
   counting.
 - The audio budget.
 
-**At Competition, when online,** a cloud check also runs when the text
-echoes the last human utterance, comes from a generated or session tool, or
-is tainted. Every utterance in a turn that used `look_up_online` counts as
-tainted. Plain answers skip the cloud call, so normal conversation pays no
-extra latency. On a hit, the robot refuses politely with an alternative, and
-the log records which source produced the text.
+On a hit, the robot refuses politely with an alternative, and the log
+records where the text came from: the task agent, an echo of the visitor, a
+generated or session tool, or a tainted turn.
 
-The moderation service is still open ([question 2](#open-questions)). The
-recommendation is a classifier call through OpenRouter on the toolsmith key,
-with a target of 500 ms or less, still to be measured.
+**No cloud check.** A cloud moderation call on echoed, generated and tainted
+text was considered and dropped
+([ADR-0049](decisions/0049-competition-internet-egress.md)). The gate needs
+no network, so it never switches creation or `look_up_online` off. The cost
+is that the local checks catch listed words, however they are spelled, but
+not harm built from clean words: an insult, a defamatory line about a named
+person or team, or bad advice in a snippet. What limits that instead:
 
-**Fail closed.** If the moderation check fails at startup or in the network
-probe, creating code and `look_up_online` are off. The local checks keep
-running, so conversation and reuse still work.
+- the query writer refuses medical dosing, legal advice and emergencies;
+- strict safe search, `config/search_denylist.txt` and short snippets;
+- the 200-character cap, and spoken site names instead of bare claims;
+- the red-team set in phase 6, which must include clean-word insults and
+  harmful snippets.
+
+If practice or the red-team set shows such text reaching the speaker, a
+guard model on OpenRouter is the drop-in: `meta-llama/llama-guard-4-12b`,
+with `openai/gpt-oss-safeguard-20b` as a fallback through OpenRouter's
+`models` parameter, on the toolsmith key. It adds no new service to
+declare.
 
 ## Turn taint and the history scrub
 
@@ -296,7 +304,7 @@ venue measurements.
 
 | Code                     | Cause                                          | What the robot says                                |
 | ------------------------ | ---------------------------------------------- | -------------------------------------------------- |
-| `UNAVAILABLE`            | offline, timeout, kill switch, moderation down | It can't look that up right now.                   |
+| `UNAVAILABLE`            | offline, timeout, kill switch, both providers failed | It can't look that up right now.             |
 | `NOT_FOUND`              | no results, or all denylisted                  | It couldn't find an answer.                        |
 | `REFUSED` `QUERY_SOURCE` | the provenance check failed                    | It can't look that up.                             |
 | `REFUSED` `TOPIC`        | medical dosing, legal advice, emergencies      | A fixed pointer to staff or the right service.     |
@@ -315,12 +323,13 @@ Pose and locations count as sensing.
 
 ```toml title="config.toml"
 [walkie.search]
-enabled = true          # kill switch: false makes look_up_online and ctx.http.web_search return UNAVAILABLE
-provider = "brave"      # still open, see ADR-0049
-robot_key_env = "WALKIE_SEARCH_KEY_ROBOT"
-sim_key_env = "WALKIE_SEARCH_KEY_SIM"
-connect_timeout_s = 2.0
-total_timeout_s = 3.0
+enabled = true                  # kill switch: false makes look_up_online and ctx.http.web_search return UNAVAILABLE
+providers = ["brave", "tavily"] # in order; the second is tried only after a fast failure of the first
+robot_key_env = { brave = "WALKIE_BRAVE_KEY_ROBOT", tavily = "WALKIE_TAVILY_KEY_ROBOT" }
+sim_key_env = { brave = "WALKIE_BRAVE_KEY_SIM", tavily = "WALKIE_TAVILY_KEY_SIM" }
+connect_timeout_s = 2.0         # per provider
+total_timeout_s = 3.0           # per provider
+search_timeout_s = 4.0          # the whole search, fallback included
 ```
 
 Only the parent reads the keys. Snippets are never stored. Traces keep the
@@ -346,9 +355,11 @@ pins `openai<2`, against `langchain_openai` 1.7.0. OpenRouter's web plugin
 returns prose, not snippets. The sim coder gets the same client as a plain
 `langchain_core` function tool, which `ToolCallLimitMiddleware` counts.
 
-**The provider is still open** ([question 1](#open-questions)). Brave alone
-is recommended: its own index, strict safe search, one GET, about 0.6 s. The
-options are compared in
+**Brave first, Tavily as the fallback.** Brave has its own index, strict
+safe search, one GET and about 0.6 s per search. Tavily is tried only after
+a fast Brave failure, never after a timeout, and a failed provider is
+skipped for 60 s. A search that falls back takes about 1 to 2 s longer. The
+templates and the rules are in
 [ADR-0049](decisions/0049-competition-internet-egress.md).
 
 ## Named sources
@@ -356,7 +367,9 @@ options are compared in
 Generated and pre-baked tools reach the internet only through these. Every
 request is a GET over HTTPS on port 443: 5 per invocation, 30 per minute, 1
 at a time per host, bodies up to 1 MiB, connect 3 s, total 8 s. These apply
-to `web_snippets` too, under its own tighter search caps. Only people edit
+to `web_snippets` too, under its own tighter search caps. The one exception
+is Tavily's fallback search, a POST with a fixed JSON body that only the
+parent's search client makes. Only people edit
 the list. The broker's checks are described in
 [ADR-0049](decisions/0049-competition-internet-egress.md).
 
@@ -368,13 +381,12 @@ the list. The broker's checks are described in
 | `wikipedia_summary`  | `en.wikipedia.org/api/rest_v1/page/summary/<one path segment>`                             | needs a User-Agent                                       |
 | `commons_search`     | `commons.wikimedia.org/w/api.php`: `action=query`, `format=json`, `generator=search` or `list=search`, namespace 6, `prop=imageinfo`, `iiprop=url|mime|size|extmetadata` | no other `action` or `prop`; `action=parse` and `prop=revisions` return editable wikitext |
 | `commons_media`      | `upload.wikimedia.org/`                                                                    | returns a handle only                                    |
-| `web_snippets`       | the search provider's endpoint, with count, strict safe search and language fixed          | no extra snippets, page content or images; no redirects; key added by the parent |
+| `web_snippets`       | Brave: GET `api.search.brave.com/res/v1/web/search`, `q` only, with `count`, `safesearch=strict` and `search_lang` fixed. Tavily (fallback): POST `api.tavily.com/search`, `query` and `language` only, with `search_depth = "basic"`, `max_results`, `chunks_per_source = 1` and `safe_search = true` fixed | no extra snippets, answers, page content or images; no redirects; keys added by the parent |
 
 ## Offline behavior
 
 A network probe runs at startup and every 30 s: a DNS lookup and a TLS
-handshake to OpenRouter and to the search provider, and a check of the
-moderation endpoint.
+handshake to OpenRouter and to each search provider.
 
 | Piece                                   | Offline                                                             |
 | --------------------------------------- | ------------------------------------------------------------------- |
@@ -385,8 +397,7 @@ moderation endpoint.
 | A request that needs creation           | An immediate refusal with an alternative                            |
 | Speech gate                             | Local checks only                                                   |
 
-If moderation fails while the network is up, creating code and
-`look_up_online` are off too. `search_robot_docs` embeds through OpenRouter
+`search_robot_docs` embeds through OpenRouter
 today, so it likely fails offline until the tool-index work moves it to the
 local embedder.
 
@@ -453,7 +464,7 @@ against the 2027 rulebook, expected around December.
 | Rule                                                                      | What it means here                                                                      |
 | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | No rule on code generated at runtime                                      | Creation is allowed, within the profiles.                                               |
-| Cloud services over the Arena Network are external computing, declared to the Technical Committee one month ahead | Declare the cloud LLM (coder included), the moderation service and the search provider. |
+| Cloud services over the Arena Network are external computing, declared to the Technical Committee one month ahead | Declare the cloud LLM (coder included) and both search providers, Brave and Tavily. |
 | Up to five external computing resources, with Technical Committee approval | How cloud APIs are counted is unknown.                                                 |
 | Internet is not guaranteed; the robot must be safe without it             | The network probe and the offline table.                                                |
 | No remote control and no keyboard input from the team                     | No approvals at Competition; policy decides everything.                                 |
@@ -476,16 +487,15 @@ Phase 6 builds the rest, in this order:
 2. The pre-baked tools, then the named sources with their templates and
    API notes.
 3. `look_up_online` with the query writer, the denylist and the site names.
-4. Cloud moderation in the speech gate, then the taint filter and
-   quarantine.
+4. The taint filter and quarantine.
 5. The network probe, the profiles and progress lines.
 6. The robot-PC sandbox, with the AppArmor profile for
    `/opt/walkie/bin/bwrap` only if `scripts/robot_check.sh` (new) reports
    `BWRAP_FAILED`, and the robot marker `/etc/walkie/robot`.
 7. Last, the Competition coder.
 
-The cloud coder, the moderation service and the search provider are
-declared to the Technical Committee one month before the event.
+The cloud coder and both search providers are declared to the Technical
+Committee one month before the event.
 
 Phase 6 is done when:
 
@@ -505,8 +515,8 @@ The main risks, and what limits each:
 
 | Risk                                                 | What limits it                                                                       |
 | ---------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| The search provider is down or slow                  | One attempt, a 3 s total timeout, `UNAVAILABLE` with a fixed sentence, the kill switch |
-| A wrong or harmful answer from a snippet             | Strict safe search, the denylist, the cloud check, the site name spoken               |
+| A search provider is down or slow                    | Tavily after a fast Brave failure, a failed provider skipped for 60 s, 3 s per provider and 4 s per search, `UNAVAILABLE` with a fixed sentence, the kill switch |
+| A wrong or harmful answer from a snippet             | Strict safe search, the denylist, the query writer's topic refusals, short snippets, the site name spoken; no cloud check, so a clean-word harm can get through |
 | Visitor data in a query                              | The query writer sees only the person's words; the provenance check                   |
 | The provider's terms on attribution, storage and LLM use | Site names spoken, snippets never stored; the terms are checked before phase 6    |
 | A fetched sound's license, or hidden speech in it    | The license filter, VAD and local ASR, a license check before the pack                |
@@ -526,7 +536,7 @@ The main risks, and what limits each:
 | API notes for the named sources                | walkie-agent-ros | `src/walkie_agent/toolsmith/api_notes/` (new)                 |
 | Denylist and site names                        | walkie-agent-ros | `config/search_denylist.txt`, `config/site_names.toml` (new)  |
 | Profile, search and model roles                | walkie-agent-ros | `config.toml`: `[walkie.mode]`, `[walkie.search]`, `[walkie.models.*]` (new tables) |
-| Search keys                                    | walkie-agent-ros | `.env.example`: `WALKIE_SEARCH_KEY_ROBOT`, `WALKIE_SEARCH_KEY_SIM` (new) |
+| Search keys                                    | walkie-agent-ros | `.env.example`: `WALKIE_BRAVE_KEY_ROBOT`, `WALKIE_TAVILY_KEY_ROBOT`, `WALKIE_BRAVE_KEY_SIM`, `WALKIE_TAVILY_KEY_SIM` (new) |
 | Session tools, quarantine copies               | robot PC only    | in memory; `$WALKIE_TOOLS_HOME/quarantine/`                   |
 
 Nothing on this page changes walkie-ros, walkie-database or walkie-vision.
@@ -536,15 +546,15 @@ Nothing on this page changes walkie-ros, walkie-database or walkie-vision.
 
 ## Open questions
 
-1. **Which search provider, and which plan?** Brave alone is recommended.
-   Which Brave plan permits use with an LLM is unverified. Blocks the
-   provider code and the declaration to the Technical Committee.
-2. **Which moderation service?** Recommended: a classifier call through
-   OpenRouter on the toolsmith key. Whether OpenRouter offers
-   `/v1/moderations` or a guard model is unverified. The alternatives are
-   OpenAI's omni-moderation with a direct key, or a local Qwen3Guard-Gen
-   model (deferred). Blocks the cloud check, and so creation and
-   `look_up_online` at Competition.
+1. **Which search provider?** Settled: Brave first, Tavily after a fast
+   Brave failure ([ADR-0049](decisions/0049-competition-internet-egress.md)).
+   Still to check before phase 6: both providers' terms on LLM use and
+   storage. Brave allows storing results only on a plan with storage
+   rights, so masking snippets in traces (question 12) is required.
+2. **Which moderation service?** Settled: none. The speech gate keeps only
+   its local checks ([Speech gate](#speech-gate)). A guard model on
+   OpenRouter is the drop-in if the red-team set or practice shows harmful
+   clean-word text reaching the speaker.
 3. **How does the Technical Committee count cloud APIs** against the five
    external computing resources? Blocks the declaration, due one month
    ahead.
@@ -556,9 +566,9 @@ Nothing on this page changes walkie-ros, walkie-database or walkie-vision.
    profile table, the system prompt, the eval set and the coder's tool list.
 5. **May a tainted generated invocation call `speak`?** The recommendation
    is no. Blocks the taint filter.
-6. **Does speech during creation queue or interrupt?** Open on
-   [Self-Evolving Agent](self-evolving-agent.md#open-questions), question 1.
-   It also blocks progress lines and the creation abort.
+6. **Does speech during creation queue or interrupt?** Settled: it queues,
+   and only a reset, "stop" or "never mind" interrupts and aborts creation
+   ([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
 7. **How are trivial requests such as "say Meow!" handled?** Recommended:
    call `speak` directly, and L12 rejects wrappers. The alternative is a
    session-only phrase tool, made only when a person explicitly asks the

@@ -48,43 +48,34 @@ competition rules on [Competition Mode](competition.md), promotion on
 
 ## The loop
 
-What the creator builds is bound on the next turn. Traces and drafts flow
-to the sim harvest, where a human decides what enters git. Dotted arrows
-are caps set by the access level. Code from the tool coder lands in the
-`temporary` tier ([Tiers and folders](#tiers-and-folders)).
+A task runs in the agent's own graph, which binds the visible tools on
+every turn. When no bound tool fits, the agent finds one or has one made,
+and it is bound on the next turn. Traces and drafts go to the sim harvest,
+where a human decides what enters git. Every run starts from what is in
+git.
 
 ```mermaid
 flowchart TD
-    OP["Person on /from_human, or submit(text, todos)"] --> WA
-    subgraph WA["walkie-agent: own graph on RAI LangChainAgent"]
-        LLM["llm node<br/>binds visible tools every turn<br/>todo reminder, taint filter"] -->|tool calls| TR["WalkieToolRunner<br/>live registry lookup"]
-        TR --> LLM
-        LLM -->|"no tool call, open items, none waiting"| GATE["Completion gate<br/>at most 2"]
-        GATE --> LLM
-    end
-    LVL["Access level<br/>CLI flag, sim-host marker, interlock"] -.->|caps| RQ & HOST
-    TR --> CORE["Core atomics<br/>speak, navigate, find_objects, update_todos"]
-    TR -->|bundle call| RUN["BundleRunner<br/>validate, run, trace, cancel check"]
-    TR -->|generated tool call| HOST["Sandbox host and bwrap worker<br/>ctx.tools, ctx.ros, ctx.http"]
-    CORE & HOST --> SG["Speech gate<br/>moderation, caps"]
-    HOST --> WEB["HTTP broker<br/>named sources, web search"]
-    RUN & HOST --> ATOM["Typed atomic tools"]
-    ATOM --> BE["ROS 2 clients or mocks"]
-    TR -->|"find_tools(query)"| IDX[("Tool index<br/>BM25 + vectors")]
-    TR --> RQ["request_tool(need, kind)"]
-    RQ --> IDX
-    RQ -->|reuse| ACT["Activate for this task"]
-    RQ -->|"compose: 1 LLM call"| LINK["Linker + dry run<br/>at most 2 repairs"]
-    RQ -->|write code| CODER["Tool coder agent"]
-    CODER --> LINT["Lint, name, level stamp,<br/>dedup, sandbox test"]
-    LINK & LINT --> DRAFT["Stamped draft<br/>or session tool at Competition"]
-    DRAFT --> ACT
-    ACT -->|bound next turn| LLM
-    RUN & HOST --> TRACES[("Traces in $WALKIE_TOOLS_HOME/runs/")]
-    TRACES & DRAFT --> HV["Sim harvest"]
-    HV --> HUMAN["Human review<br/>toolbox promote + PR"]
-    HUMAN --> GIT["atomic/ and bundled_preset/ in git"]
+    P["Person on /from_human,<br/>or submit(text, todos)"] --> HG["Host graph<br/>llm node and tools node"]
+    HG -->|"tool call"| RUN["Tool runs<br/>atomic, bundle or generated"]
+    RUN -->|"result"| HG
+    HG -->|"find_tools,<br/>request_tool"| NEW["Tool search<br/>and tool creator"]
+    NEW -->|"bound next turn"| HG
+    RUN -->|"traces"| HV["Sim harvest"]
+    NEW -->|"drafts"| HV
+    HV -->|"human review and PR"| GIT["atomic/ and<br/>bundled_preset/ in git"]
+    GIT -->|"loaded when the agent starts"| HG
 ```
+
+Each box has its own diagram where it is described:
+
+- [The host graph](#the-host-graph-and-interrupts): the llm node, the
+  tools node and the completion gate.
+- [How a tool call runs](#how-a-tool-call-runs): the three paths, the
+  speech gate and the HTTP broker.
+- [The tool creator](#the-tool-creator): reuse, compose or write code, as
+  the access level allows.
+- [Sim Harvest](harvest.md#pipeline): from traces to a pull request.
 
 ## One task, end to end
 
@@ -152,6 +143,27 @@ no generated file, so a sim draft cannot reach a competition by accident.
 Today's `navigation.py`, `memory.py` and `speech.py` gain a typed `core()`
 in place and keep their sentences. The registry scans them and
 `tools/atomic/`, so there is one catalogue without a large file move.
+
+### How a tool call runs
+
+`WalkieToolRunner` sends each call down one of three paths. Everything
+spoken passes the [speech gate](competition.md#speech-gate). Generated code
+reaches tools, ROS and the web only through a `ctx` that the parent checks
+on every call ([The shared ctx API](access-levels.md#the-shared-ctx-api)).
+
+```mermaid
+flowchart TD
+    TR["WalkieToolRunner"] -->|"atomic"| ATOM["Atomic tools<br/>typed, reviewed, in git"]
+    TR -->|"bundle"| RUN["BundleRunner<br/>checks, runs and traces each step"]
+    TR -->|"generated Python"| HOST["Sandbox host<br/>bwrap worker, every ctx call checked"]
+    RUN --> ATOM
+    HOST -->|"ctx.tools"| ATOM
+    HOST -->|"ctx.http"| WEB["HTTP broker<br/>named sources, web search"]
+    HOST -->|"ctx.ros: Unrestricted, Standard"| BE
+    ATOM -->|"speak, play_sound"| SG["Speech gate<br/>word list, caps"]
+    ATOM --> BE["ROS 2 clients or mocks"]
+    SG --> BE
+```
 
 ## Effects
 
@@ -358,12 +370,28 @@ names in the registry and reports each result to the error ledger. With no
 tool call while items are open and none is waiting, a **completion gate**
 sends the LLM back, at most twice.
 
-**A new utterance today.** RAI's default, `interrupt_keep_last`, is checked
-only between graph steps, so a running tool or bundle finishes first. A
-break right after the llm node leaves tool calls with no results, which
-OpenAI-compatible endpoints reject. Phase 1 adds a **history repair** that
-answers each with an error ToolMessage, whatever behaviour is kept.
-Switching to RAI's `queue` behaviour is [open question 1](#open-questions).
+```mermaid
+flowchart TD
+    IN["Utterance, or<br/>submit(text, todos),<br/>queued while a task runs"] --> LLM["llm node<br/>binds the visible tools, repairs the history,<br/>adds the todo reminder"]
+    LLM -->|"tool calls"| TR["tools node: WalkieToolRunner<br/>looks up unknown names in the registry"]
+    TR -->|"results"| LLM
+    TR -->|"after wait_for_person"| DONE(["Run ends"])
+    LLM -->|"no tool call"| GATE{"Items open,<br/>none waiting?"}
+    GATE -->|"yes: completion gate,<br/>at most twice per task"| LLM
+    GATE -->|"no, or already twice"| DONE
+```
+
+**A new utterance.** Phase 1 switches from RAI's default,
+`interrupt_keep_last`, to its `queue` behaviour: an utterance that arrives
+mid-task waits until the task ends. Only a reset, or an utterance that is
+just "stop" or "never mind", interrupts. It sets the interrupt event and
+the cancel token, so it also aborts a running tool creation. A correction
+such as "no, the red one" waits, but overheard booth speech can no longer
+cancel a pick. RAI checks the interrupt only between graph steps, so a
+running tool or bundle finishes first. A break right after the llm node
+leaves tool calls with no results, which OpenAI-compatible endpoints
+reject, so phase 1 also adds a **history repair** that answers each with an
+error ToolMessage.
 
 **Reset.** `reset()` keeps clearing the history and starting a new Langfuse
 session. It also trips the cancel token; clears the todo list (publishing
@@ -444,6 +472,20 @@ fails on spoken requests: "can you make a cat noise" shares no word with
 `request_tool(need, kind)` takes a need of at most 200 characters and a
 `kind` (`data`, `sound`, `computation`, `perception` or `behaviour`). It is
 a fixed pipeline, not an agent loop, and no task depends on it succeeding.
+The access level decides which stages are on (the table below). Code from
+the tool coder lands in the `temporary` tier.
+
+```mermaid
+flowchart TD
+    RQ["request_tool(need, kind)"] --> S["1. Search the tool index<br/>no LLM"]
+    S -->|"a clear match"| OFFER["6. Activate and offer<br/>bound next turn"]
+    S -->|"no match"| C["2. Compose<br/>atomic agent, one LLM call"]
+    C -->|"a bundle"| L["3. Link and dry run<br/>at most 2 repairs"]
+    C -->|"needs code"| W["4. Tool coder<br/>then lint, name, level stamp,<br/>dedup, sandbox test"]
+    L --> SAVE["5. Save a stamped draft,<br/>or at Competition<br/>a session tool"]
+    W --> SAVE
+    SAVE --> OFFER
+```
 
 1. **Search**, no LLM. An exact name, or a top hit both branches rank
    first above a calibrated cosine, is reused.
@@ -595,7 +637,7 @@ not on main, so those paths may change
 | Levels | Policy lists drift from the real launch graphs | Competition allow-lists generated from the robot launch graph, a property test with a captured name list, review on interface ADRs |
 | Competition | Prompt injection through web content | Named sources with templates, typed results, turn taint, the speech gate, the Rule of Two, the query writer, small snippets and the history scrub |
 | Competition | No internet at the venue | An offline probe, creation off, reuse only, the local embedder, pre-baked tools and the sound pack. `look_up_online` fails fast with `UNAVAILABLE` |
-| Competition | The moderation service is unavailable or unsuitable | Fail closed for creation and `look_up_online`. Local checks are always on |
+| Competition | Harmful text built from clean words reaches the speaker, since the speech gate has no cloud check | The query writer's topic refusals, strict safe search, the denylist, short snippets, the 200-character cap, clean-word cases in the red-team set. A guard model on OpenRouter is the drop-in if they get through |
 | Harvest | The interlock demotes during harvest runs by mistake | A pause is not a demotion, viewers do not count as drivers, the agent stops before each relaunch and starts once the new sim is ready, check values are logged, a smoke run over consecutive episodes |
 | Harvest | Low or costly yield | Start at 100 episodes, the harvest key's limit, tool-step scoring. Expect a minority of drafts to survive |
 | Harvest | Sim localization distorts navigation results | Position checks read `/mujoco_ground_truth/odom`. Each check and every Nav2 abort logs the localization error, and the relaunch from the origin resets drift. Ask walkie-ros for ground-truth localization if more than about 10% of first-run episodes fail on localization |
@@ -632,13 +674,9 @@ ADR-0037, ADR-0038, ADR-0041 and ADR-0043 propose the recommended answers
 to questions 2, 3, 4 and 5, so reviewing them settles those. ADR-0046 lists
 the embedder options and leaves question 6 open.
 
-1. **What does a new utterance do mid-task?** Recommended: RAI's `queue`
-   behaviour, with only reset, "stop" or "never mind" as interrupts. They
-   set the interrupt event and the cancel token, so they also abort a
-   running tool creation. Overheard speech then cannot abort a pick, but a
-   correction waits until the task ends. The alternative keeps
-   `interrupt_keep_last` with the history repair: more responsive, but at a
-   noisy booth creation rarely finishes. Blocks the phase 1 graph.
+1. **What does a new utterance do mid-task?** Settled: RAI's `queue`
+   behaviour, with only reset, "stop" or "never mind" as interrupts
+   ([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
 2. **Bundle syntax.** Proposed: the `ast`-parsed DSL, over YAML (no IDE
    help) or plain Python (every bundle needs the sandbox). Blocks phase 2.
 3. **Host.** Proposed: our own graph on `LangChainAgent`, over

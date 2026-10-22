@@ -182,8 +182,8 @@ sequenceDiagram
 | `find_people(gesture=None)` | P | The newest `/walkie_vision/people` message, waiting at most 1 s | Person handles such as `per_51c0.1`, left to right, each with its gestures and postures. `NOT_FOUND` when no one matches |
 | `refind_person(person)` | P | The newest message again | A new handle for the same person: same track id, else the closest appearance embedding over a limit. `NOT_FOUND` otherwise |
 | `localize_person(person)`, internal | P | The person's depth, which the message lacks ([question 1](#open-questions)) | A pose handle for `navigate_to_pose`, as `localize_object` gives ([ADR-0043](decisions/0043-navigate-to-pose-provenance.md)) |
-| `recognize_person(person)` | R | walkie-database's face table, then its appearance table | A name, or `UNKNOWN`. Fails when the handle has no face |
-| `remember_person(person, name)` | write ([question 3](#open-questions)) | Writes the person, face and appearance through walkie-database | Confirmation. The person is forgotten with the session (walkie-database ADR-0010) |
+| `recognize_person(person)` | R | walkie-database's face table, then its appearance table | A name and stored facts, or `UNKNOWN`. Fails when the handle has no face. Also takes a whole set, giving each name to one person at most ([HRI Task](hri.md#atomics)) |
+| `remember_person(person, name, facts={})` | write ([question 3](#open-questions)) | Writes the person, its facts such as a drink, and every face and appearance vector kept for the track, through walkie-database | Confirmation. The person is forgotten with the session (walkie-database ADR-0010) |
 
 - **Why gestures live in the agent.** They are task words, not model
   output. Keeping them agent-side needs no message change, and the
@@ -262,6 +262,9 @@ flowchart TB
     classDef proposed stroke-dasharray: 5 5;
 ```
 
+- **The HRI task goes first.** It needs only the people half of this graph,
+  plus seats from the streaming detector, and skips `DetectObjects`, the
+  bake-off and person depth ([HRI Task](hri.md#delivery-order)).
 - **Unblocked now.** walkie-vision is on GitHub, so `walkie_vision_msgs` can
   be pinned in `ros2_ws.repos`, which
   [ADR-0034](decisions/0034-vision-models-in-walkie-vision.md) was waiting
@@ -292,8 +295,10 @@ flowchart TB
    `ObjectDetection` has. The alternative is a robot-side service, which
    needs the image the detection came from. Blocks: `localize_person`.
 2. **walkie-database's people services.** Their requests, the session rules
-   of walkie-database ADR-0010, and who tunes the face distance limit.
-   Blocks: `recognize_person` and `remember_person`.
+   of walkie-database ADR-0010, and who tunes the face distance limit. The
+   HRI task needs a person stored with facts and several vectors, and a
+   set of faces recognized at once. Blocks: `recognize_person` and
+   `remember_person`, and so the HRI task on the robot.
 3. **No effect covers a memory write.** R, P, S, N and M cover reading,
    perceiving, speaking and moving. Proposed: `remember_person` stays a
    reviewed atomic that generated tools cannot call at any level, until a

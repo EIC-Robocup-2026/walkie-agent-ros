@@ -330,7 +330,9 @@ generic tool: `/navigate_to_pose`, `/set_joint_position`,
 | Controller manager           | `/controller_manager/switch_controller`                                                                                                                                                                                                                        |
 
 These lists guard the agent's own ROS tools
-([ADR-0009](decisions/0009-forbidden-names-guard-rail.md)). Generated code
+([ADR-0009](decisions/0009-forbidden-names-guard-rail.md)). One reviewed
+component outside the tools, the gaze loop, publishes rotation only on
+`/cmd_vel` ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). Generated code
 goes through a separate never-list in `config/access_levels.toml`, which
 uses glob patterns such as `/*_joint_trajectory_controller/*`
 ([The never-list](access-levels.md#the-never-list)).

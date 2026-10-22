@@ -10,6 +10,7 @@ costs later.
 | [The Agent](agent.md)                            | The agent node, its topics and tools, how it reaches the robot, and what lives where |
 | [Arm Manipulation (Proposed)](manipulation.md)   | How the agent will move the arms and grippers, and run skills such as a VLA policy |
 | [Perception (Proposed)](perception.md)           | How the agent will use walkie-vision's models and walkie-database's memory to find objects and people |
+| [HRI Task (Proposed)](hri.md)                    | The first task the new agent runs end to end: greeting, seating and introducing guests, and the gaze loop |
 | [Self-Evolving Agent (Proposed)](self-evolving-agent.md) | The redesigned agent: the todo list, atomic and bundled tools, tool search, and the tool creator |
 | [Access Levels and Generated Tools (Proposed)](access-levels.md) | The Unrestricted, Standard and Competition levels, the sim interlock, and the sandbox for generated code |
 | [Competition Mode (Proposed)](competition.md)    | What the agent may create at a competition, run profiles, sounds, web search and the speech gate |

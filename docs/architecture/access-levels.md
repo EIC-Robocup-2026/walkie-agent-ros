@@ -171,7 +171,9 @@ choice is still open on
 
 No level puts `update_todos`, `wait_for_person`, `find_tools`, `request_tool`
 or `look_up_online` in `ctx.tools`: no tool may steer the agent or create
-tools. Generated code searches through `ctx.http.web_search` instead. A
+tools. `look_at` and `stop_looking` stay out too, because they drive the
+only publisher allowed on `/cmd_vel`
+([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). Generated code searches through `ctx.http.web_search` instead. A
 Competition creation reaches git only through the quarantine lane, sim
 re-verification and a human pull request.
 

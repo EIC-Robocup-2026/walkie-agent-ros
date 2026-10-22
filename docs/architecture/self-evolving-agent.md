@@ -173,7 +173,7 @@ flowchart TD
 | R | reads stored or robot state | `list_locations`, `find_objects`, `get_current_pose`, `get_arm_state` |
 | P | perceives or computes | `detect_objects`, `search_detections`, `relate_objects`, `localize_object` |
 | S | speaks or plays a sound ([ADR-0007](decisions/0007-speak-tool-and-console.md)) | `speak`, `play_sound` |
-| N | moves the base | `navigate_to_location`, `move_relative`, `navigate_to_pose` |
+| N | moves the base | `navigate_to_location`, `move_relative`, `navigate_to_pose`, `look_at` |
 | M | moves an arm or gripper | `move_arm_to_pose`, `set_gripper`, `run_skill` |
 
 A bundle's effects are the union of its steps, and retries are allowed only
@@ -606,6 +606,10 @@ BM25-only, dense-only and hybrid search, per level.
 | 5. Harvest v0 | See [Sim Harvest](harvest.md). Needs the walkie-ros world change merged to main and pinned | Harvest v1, start poses away from the origin, keepout in sim Nav2, an object-pose publisher | One 100-episode run with a report a human has read, failures split into agent, navigation and localization. At least one candidate promoted by pull request |
 | 6. Competition level | See [Competition Mode](competition.md), ending with the Competition coder | — | Red-team set: 0 escapes. A booth dry run with no audible test failures. Offline, creation is refused within 2 s. `Say <slur>` is refused. 20 long-tail questions answered with site-name attribution. `look_up_online` returns `UNAVAILABLE` within 1 s when search is blocked. A red-team snippet does not change the next tool call |
 | Real backends, from phase 2 | walkie-vision `DetectObjects` and `EmbedText` clients, the skill server ([ADR-0027](decisions/0027-runskill-action.md)), the commander ([ADR-0021](decisions/0021-arm-control-through-commander.md), [ADR-0023](decisions/0023-motion-supervisor.md)), ROS-level fakes | — | Bundle tests rerun on real clients |
+
+The HRI task is the first end-to-end test. It needs phase 1 and the
+people and seat atomics from phase 2, but not the bundle runtime, the
+linker or the level checks ([HRI Task](hri.md#delivery-order)).
 
 Deferred until something needs them: a runs table, the rest of the toolbox
 CLI (`deprecate`, `gc`, evidence export), a circuit breaker that switches

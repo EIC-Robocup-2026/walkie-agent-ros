@@ -94,6 +94,7 @@ nav:
       - The Agent: architecture/agent.md
       - Arm Manipulation (Proposed): architecture/manipulation.md
       - Perception (Proposed): architecture/perception.md
+      - HRI Task (Proposed): architecture/hri.md
       - Self-Evolving Agent (Proposed): architecture/self-evolving-agent.md
       - Access Levels and Generated Tools (Proposed): architecture/access-levels.md
       - Competition Mode (Proposed): architecture/competition.md

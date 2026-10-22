@@ -325,7 +325,7 @@ flowchart LR
 | Detect | YOLOE through a new on-demand `DetectObjects` service (walkie-vision's ADR-0009, proposed) | The streaming detector's classes, which walkie-database reads, never change |
 | Rank | Cosine against `EmbedText` of the request, top-1 to top-2 margin 0.05 (to be tuned) | The model is open in walkie-vision's ADR-0008: SigLIP 2 proposed, EmbeddingGemma 2 the challenger, CLIP ViT-B/16 the baseline, chosen by a bake-off |
 | Relate | Positions in `base_footprint` (REP-103: +y is left) | CLIP-family models are near chance on spatial words |
-| Locate | Robot-side 3D position | Through a walkie-ros interface that is not settled |
+| Locate | Robot-side 3D position | Through a walkie-ros interface that is not settled. Its `/get_3d_poses` service samples its own newest depth image, not the detection's image |
 
 ## The todo list
 

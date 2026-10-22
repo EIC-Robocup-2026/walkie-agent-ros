@@ -106,8 +106,8 @@ is up. The `FakeSkillServer` mirrors picks and places with
 `SetFreeJointState` too, and parks a held object away from the rooms until
 it is placed.
 
-**Ground truth and perception.** No component publishes object poses today,
-so object ground truth comes from the spec and the `FakeSkillServer`'s
+**Ground truth and perception.** No component publishes ground-truth object
+poses in sim today, so object ground truth comes from the spec and the `FakeSkillServer`'s
 record. The arms and grippers collide with object bodies, so an object that
 an arm knocks goes unrecorded until walkie-ros configures its installed
 `FreeJointStatePublisherPlugin`, a config-only request

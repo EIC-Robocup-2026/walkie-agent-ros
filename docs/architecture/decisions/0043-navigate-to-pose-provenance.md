@@ -20,7 +20,9 @@ it", or an object position from memory
 A new atomic, `localize_object`, gives the 3D position robot-side, with TF
 looked up at the image stamp. Which walkie-ros interface serves it is not
 settled: walkie-ros's `cloud_to_map` node republishes the whole cloud in
-`map` and offers no service. Two problems come with that:
+`map` and offers no service, and its `/get_3d_poses` service
+(`walkie_perception/srv/GetObPose`) samples its own newest depth image, not
+the detection's image. Two problems come with that:
 
 - **Where the pose comes from.** Today `find_objects` returns plain
   sentences to the LLM. In the proposed toolbox, perception and memory

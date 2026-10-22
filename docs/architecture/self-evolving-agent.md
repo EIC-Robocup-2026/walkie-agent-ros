@@ -10,7 +10,8 @@ also combine its tools into larger ones and create new tools while it runs.
 The tools that work can later join the reviewed set. The levels and the
 sandbox are on [Access Levels and Generated Tools](access-levels.md), the
 competition rules on [Competition Mode](competition.md), promotion on
-[Sim Harvest](harvest.md), and the arms on [Arm Manipulation](manipulation.md).
+[Sim Harvest](harvest.md), the arms on [Arm Manipulation](manipulation.md),
+and the vision models on [Perception](perception.md).
 
 ## Summary
 
@@ -339,6 +340,9 @@ flowchart LR
 | Relate | Positions in `base_footprint` (REP-103: +y is left) | CLIP-family models are near chance on spatial words |
 | Locate | Robot-side 3D position | Through a walkie-ros interface that is not settled. Its `/get_3d_poses` service samples its own newest depth image, not the detection's image |
 
+How these stages reach walkie-vision and walkie-database, which model feeds
+each one, and the people atomics are on [Perception](perception.md).
+
 ## The todo list
 
 The LLM edits the list by id with `update_todos(ops)`.
@@ -665,8 +669,9 @@ T12 on [Access Levels](access-levels.md#safety-model).
 | Client package for sandboxed code | walkie-agent-ros | `src/walkie_toolbox_facade/` (new) |
 | Templates, level policy, arm poses | walkie-agent-ros | `config/task_templates.toml`, `config/access_levels.toml`, `config/arm_poses.toml` (new) |
 | Generated tools, index, traces | each machine, never git | `$WALKIE_TOOLS_HOME` |
-| `DetectObjects`, `EmbedText` | walkie-vision | `walkie_vision_msgs`. `DetectObjects` is proposed |
+| `DetectObjects`, `EmbedText`, `/walkie_vision/people` | walkie-vision | `walkie_vision_msgs`. `DetectObjects` is proposed ([Perception](perception.md)) |
 | Object memory | walkie-database | `/walkie_database/find_objects` (exists) |
+| Face and appearance matching, vector search | walkie-database | Services not designed yet ([Perception](perception.md#open-questions)) |
 | Skill server, commander, grasps | walkie-ros | robot-side. The commander and `/grasp/from_cloud` exist. The skill server is proposed ([ADR-0027](decisions/0027-runskill-action.md)) |
 | Embedding model | none, a cloud service | `qwen/qwen3-embedding-8b` through OpenRouter, set in `[walkie.toolbox.embedder]` |
 

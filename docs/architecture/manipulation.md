@@ -22,8 +22,9 @@ names in full, for example "phase 2 of the self-evolving agent".
 ## Summary
 
 - **Named poses only.** The LLM picks a pose by name, such as `home`. It
-  never sees joint values. Poses live agent-side in `config/arm_poses.toml`
-  and are checked at startup against the robot's joint limits
+  never sees joint values. Poses live agent-side in `config/arm_poses.toml`,
+  start as copies of the SRDF presets the team used in competition, and are
+  checked at startup against the robot's joint limits
   ([ADR-0022](decisions/0022-named-arm-poses.md)).
 - **Through the commander.** The agent sends poses with the commander's
   `/set_joint_position`, so MoveIt plans every motion with collision checking
@@ -123,8 +124,8 @@ sequenceDiagram
 
 | Tool                  | Arguments                                         | Effect | What it does                                                                 |
 | --------------------- | ------------------------------------------------- | ------ | ---------------------------------------------------------------------------- |
-| `list_arm_poses`      | none                                              | R      | Lists the named poses, which arms each moves, and whether it is safe for driving |
-| `move_arm_to_pose`    | `pose`                                            | M      | Moves to a named pose, waits, and checks the joints                          |
+| `list_arm_poses`      | none                                              | R      | Lists the named poses, which arms each can move, and whether it is safe for driving |
+| `move_arm_to_pose`    | `pose`; `arm`: left, right, both (default both)   | M      | Moves one arm or both to a named pose, waits, and checks the joints          |
 | `set_gripper`         | `arm`: left, right, both; `state`: open, half, close | M   | Moves the grippers; after a close, says whether it is holding something   |
 | `get_arm_state`       | none                                              | R      | Reports the nearest named pose for each arm and how far each gripper is open |
 | `list_skills`         | none                                              | R      | Phase 3. Lists the skills the robot offers. Not in the first, mocked set of atomics |
@@ -158,43 +159,103 @@ at most once, and never improvise a pick from poses and grippers.
 
 ## Pose configuration
 
-```toml title="config/arm_poses.toml (example)"
+The first draft of `config/arm_poses.toml` copies the arm presets in
+walkie-ros's SRDF
+(`manipulate/openarm_bimanual_moveit_config/config/openarm_bimanual.srdf`).
+The team tuned them on the robot, and walkie-agent-v2 used them in
+competition through the commander's `/go_to_home`.
+
+| Pose          | Arms in the SRDF                 | What it is                                                                                          | Lift when tuned | Offered to the LLM            | `travel_safe` (proposed) |
+| ------------- | -------------------------------- | --------------------------------------------------------------------------------------------------- | --------------- | ----------------------------- | ------------------------ |
+| `home`        | left, right, both                | Arms down at the sides, elbows almost straight. walkie-agent-v2 drove and carried objects in it, since it is narrower than `standby` | top, 0.7435 m | yes       | true                     |
+| `hands_up`    | left, right, both                | Shoulders out, elbows bent up. walkie-agent-v2 raised a grasped object clear with it                | top             | yes                           | false                    |
+| `standby`     | left, right, both                | `hands_up` with joint 7 at ±90° instead of ±12°. walkie-agent-v2 stopped driving in it because the elbows stick out and clipped door frames | top | yes         | false                    |
+| `pre_place`   | left; both keeps the right arm in `standby` | The left arm's approach before a place, used by walkie-agent-v2's place skill            | 0.735 m         | no: a step of the place skill | false                    |
+| `tray`        | both only                        | Both arms set for a tray. walkie-agent-v2's code never calls it                                     | top             | yes                           | to be confirmed          |
+| `basket`      | left, right; both keeps the right arm in `standby` | The left arm at a basket, with the lift lowered                                  | 0.303 m         | no: needs the lift            | false                    |
+| `basket_hold` | left, right, both                | The same left arm as `basket` with the lift at the top, so the lift raised the basket. Its own right-arm pose | top   | no: needs the lift            | to be confirmed          |
+
+The SRDF's three gripper states also carry over: `open` (0.044 m) and
+`closed` (0) as they are, and `half_closed` (0.022 m) replaced, as the
+example below explains.
+
+```toml title="config/arm_poses.toml (first draft, excerpt)"
 [grippers]
 # Travel of one finger, in metres. The jaw opens about twice as wide.
-open_position = 0.044
+open_position = 0.044    # the SRDF's "open"
 half_position = 0.036    # above 0.03, or it counts as a close (the SRDF's
-                         # "half" state, 0.022, does)
-closed_position = 0.0    # must be at most 0.03, so grasp detection runs
+                         # "half_closed", 0.022, does)
+closed_position = 0.0    # the SRDF's "closed". At most 0.03, so grasp
+                         # detection runs
 
 [poses.home]
-group = "both_arms"
 srdf_state = "home"
-travel_safe = true       # to be confirmed by the team
+travel_safe = true       # walkie-agent-v2 drove in it; to be confirmed
 description = "Both arms down beside the body. Safe for driving."
 
-[poses.home.joints]
+[poses.home.left]        # radians, by joint name, copied without rounding
 openarm_left_joint1 = 0.2618
 openarm_left_joint2 = 0.0
-# ... every joint of the group, by name
+openarm_left_joint3 = 0.0
+openarm_left_joint4 = 0.2618
+openarm_left_joint5 = 0.0
+openarm_left_joint6 = 0.0
+openarm_left_joint7 = 0.0
+
+[poses.home.right]
+openarm_right_joint1 = -0.2618
+openarm_right_joint2 = 0.0
+# ... joints 3 to 7 as on the left
+
+[poses.pre_place]
+srdf_state = "pre-place"
+travel_safe = false
+offered = false          # a step of the place skill, which runs robot-side
+description = "Left hand raised over a surface, before placing."
+# [poses.pre_place.left] only. The SRDF has no right-arm pre-place.
 
 [poses.carry]
-group = "both_arms"      # one pose, whichever arm holds the object
 travel_safe = true       # required: the pick presets end here, then drive
 description = "Holding an object close to the body. Safe for driving."
-# No SRDF state. Joint values are chosen and tried on the robot first.
-# [poses.carry.joints]: every joint of the group, by name
-
-[poses.standby]
-group = "both_arms"
-srdf_state = "standby"
-travel_safe = false      # to be confirmed by the team
-description = "Elbows bent, hands in front of the body."
-# [poses.standby.joints]: every joint of the group, by name
+# No SRDF state. Open question 3: start from home, or drop carry.
 ```
 
-- The first draft has three poses. `home` and `standby` copy the SRDF
-  states of the same name. `carry` is new and has no SRDF state. Every pose
-  has its own joints table; `srdf_state` only records which state it copies.
+- **One table per arm.** Each pose has a `left` and a `right` joint table,
+  copied from the SRDF's `left_arm` and `right_arm` states.
+  `move_arm_to_pose(pose, arm)` sends one table as a `left_arm` or
+  `right_arm` goal, or both as one `both_arms` goal, so MoveIt plans the two
+  arms together. A pose with no table for an arm refuses it: "'pre_place'
+  is for the left arm only."
+- **Both-arm states.** The SRDF's both-arm states are its two single-arm
+  states together, with three exceptions. Both-arm `basket` and `pre-place`
+  keep the right arm in `standby`, which the agent gets by moving the right
+  arm to `standby` and the left to `basket` or `pre_place`. `tray` exists
+  only for both arms, so its left and right tables are cut from that state.
+  Moving both arms to `basket` is a pairing the SRDF never had, and is tried
+  on the robot like a new pose.
+- **Not offered.** `offered = false` keeps a pose out of `list_arm_poses`
+  and `move_arm_to_pose`. It still passes the startup check, so it is ready
+  once its blocker clears.
+- **No lift.** Lift heights are not copied
+  ([ADR-0026](decisions/0026-exclude-lift.md)). The agent does not move the
+  lift, so a pose runs at whatever height the lift is at. Only `basket` was
+  tuned well below the top. walkie-agent-v2 often sent the `*_lift` states,
+  which also moved the lift to the top.
+- **Kept in step.** `srdf_state` names the SRDF state a pose copies.
+  `test_arm_poses` checks those tables against the state in
+  `config/robot_model.toml`, so a retune in walkie-ros fails the test until
+  someone copies it on purpose. A pose retuned agent-side drops
+  `srdf_state`.
+- **Right joint 2.** `real_omnibot.launch.py` defaults `right_joint2_fixed`
+  to false, and the snapshot is generated the same way.
+  Every right-arm preset has joint 2 at 0, so the presets hold either way.
+  When `/get_joint_states` lists no `openarm_right_joint2`, the tool drops
+  that joint, and a pose with a non-zero value there fails.
+- **Joint limits.** The loader checks against `joint_limits.yaml`, which
+  widens joint 7 by 0.02 rad past the URDF's ±1.570796. `standby`,
+  `pre_place` and `tray` need that margin: `tray`'s right joint 7 is
+  −1.5882. `basket`'s left joint 2, 0.1745, sits 0.00003 rad under its
+  limit, so the values are copied without rounding.
 - `pick_object` and `pickup_object_in_view` end in `carry`, and the robot
   then drives. So `carry` must have `travel_safe = true`, or the
   [ADR-0025](decisions/0025-travel-safe-interlock.md) interlock refuses the
@@ -207,8 +268,11 @@ description = "Elbows bent, hands in front of the body."
   every pose against it, and lists every error at once.
 - Poses of the `*_lift` groups are rejected, so the LLM never gets one
   ([ADR-0026](decisions/0026-exclude-lift.md)).
-- Poses copied from walkie-agent-v2 must be tried on the robot first. It
-  sent some of them with collision checking turned off.
+- Every pose is tried on the robot through `/set_joint_position`, with
+  collision checking on, before the LLM gets it. walkie-agent-v2 also sent
+  joint arrays written inline in its task code, with collision checking
+  off, to drag the laundry basket and open a door. They are not in the SRDF
+  and are not copied.
 
 ## Safety
 
@@ -350,8 +414,9 @@ are reached through `find_tools`, and `run_skill` usually through a preset
   and `holding`. In the pick presets its `target` is an object handle from
   perception, such as `obj_3f2a.0`, never a literal (linker rule L08).
 - The linker checks literal arguments against the tool's validator (L06). A
-  `pose` that is not in `config/arm_poses.toml` fails to link, for example
-  `both_arms_lift`, since lift groups are barred.
+  `pose` that `config/arm_poses.toml` does not offer fails to link, for
+  example `basket`, which needs the lift. So does an `arm` the pose has no
+  table for, such as `pre_place` on the right.
 - The bundle runner retries only idempotent R or P steps, so it never
   retries an arm step on its own (L07). The prompt rule above still allows
   the agent one retry.
@@ -386,7 +451,7 @@ contracts:
 
 | Mock              | File (new)                          | What it does |
 | ----------------- | ----------------------------------- | ------------ |
-| `MockArmBackend`  | `src/walkie_agent/sim/mock_arm.py`  | Serves `move_arm_to_pose`, `set_gripper` and `get_arm_state` as this page describes them. It checks pose names against a test `arm_poses.toml`, tracks the pose, whether it is travel-safe and whether a gripper holds something, and ends every answer with the "Arms: ..." sentence from [Tools](#tools). A reset gives "Stopped by reset. Arms: state unknown." |
+| `MockArmBackend`  | `src/walkie_agent/sim/mock_arm.py`  | Serves `move_arm_to_pose`, `set_gripper` and `get_arm_state` as this page describes them. It checks pose names and arms against a test `arm_poses.toml`, tracks each arm's pose, whether both are travel-safe and whether a gripper holds something, and ends every answer with the "Arms: ..." sentence from [Tools](#tools). A reset gives "Stopped by reset. Arms: state unknown." |
 | `MockSkillServer` | `src/walkie_agent/sim/mock_skill.py` | Serves `run_skill` with the seven ADR-0027 outcomes. Each skill has fault knobs: a forced outcome and a delay. A successful pick attaches the `FakeScene` object to the arm. |
 | `FakeScene`       | `src/walkie_agent/sim/fake_scene.py` | Loads a TOML scene of objects (label, description, map pose, size, graspable) for the perception mocks and the picks. |
 
@@ -634,7 +699,7 @@ the `FakeSkillServer` serves in the sim harvest
 | ----- | ------------------------------------------------------------------------------------------ | --------------------- |
 | 0     | Zenoh, the walkie-ros pin, tests on Fast DDS, a "run on the robot PC" page                 | nothing               |
 | 1     | Poses and snapshot, MotionSupervisor, the four arm tools, the navigation arm check, forbidden names, FakeCommander, `arms.md` | nothing (W2, W8, W9 for hardware tests) |
-| 2     | Named lift heights                                                                         | W1                    |
+| 2     | Named lift heights, then the lift-dependent presets `basket` and `basket_hold`             | W1                    |
 | 3     | Skills: `list_skills`, `run_skill`, a scripted pick                                        | W4, W5                |
 | 4     | VLA policies                                                                               | W7, maybe W6          |
 
@@ -645,7 +710,7 @@ above line up with its phases like this:
 
 | Self-evolving agent phase | Arm work | Arm phase it covers |
 | ------------------------- | -------- | ------------------- |
-| 0. Decisions | A first draft of `config/arm_poses.toml` with `home`, `carry` and `standby`, each with a `travel_safe` flag | part of 1 |
+| 0. Decisions | A first draft of `config/arm_poses.toml`: the seven SRDF presets in [Pose configuration](#pose-configuration) and the three gripper positions, copied by joint name, plus `carry`, each pose with a `travel_safe` flag | part of 1 |
 | 2. Typed atomics, mocks, bundles | ADR-0044. The five arm atomics on `MockArmBackend` and `MockSkillServer`, the presets, `META.requires`, the navigation arm check against the mock, the controller patterns in `config/access_levels.toml`, `test_runner`, `test_nav_interlock`, a mocked fetch on `agent-sim` | 1 and 3, mocked |
 | 3. Index and atomic agent | `find_tools` reaches `set_gripper`, `list_arm_poses` and `run_skill`. Linker rules L07, L08 and L13 | none |
 | 4a. Sandbox and coder (sim) | The ROS bridge refuses every arm, gripper, head and lift controller at every level (`test_ros_bridge`). Fresh interlock checks before every M call | none |
@@ -671,16 +736,22 @@ above line up with its phases like this:
 2. **Which walkie-ros commit is checked out on the robot PC?** Message
    definitions must match exactly. Blocks phase 0.
 3. **Which poses should the LLM get, and which are safe for driving?** The
-   pick presets end in `carry`, so a carry pose is needed, and it must be
-   travel-safe. What are its joint values, and is one `both_arms` pose
-   enough whichever arm holds the object? Is the SRDF's `home` safe to drive
-   with? The runtime stow relies on it. Is `standby`? Blocks phase 1, and
-   the presets on the real arms.
+   draft copies the SRDF presets and proposes flags from how walkie-agent-v2
+   used them ([Pose configuration](#pose-configuration)): `home` safe,
+   `standby` and `hands_up` not, since their elbows stick out. The runtime
+   stow relies on `home`. Is `tray` safe to drive with? And `basket_hold`,
+   once the lift lands? The pick presets end in `carry`, which must be
+   travel-safe. walkie-agent-v2 carried objects in `home` (its
+   `WALKIE_CARRY_POSE`). The recommendation is to drop `carry` and end the
+   presets in `home`. The alternative is a `carry` that starts as a copy of
+   `home`, retuned if held objects tilt. Blocks phase 1, and the presets on
+   the real arms.
 4. **Will W2 (speed scaling) land before arm hardware tests,** or do we test
    at full speed with an operator at the emergency stop?
-5. **Is `right_joint2_fixed` ever true on the real robot?** The commander
-   builds its robot model without that setting, so it and `move_group` could
-   disagree.
+5. **Is `right_joint2_fixed` ever true on the real robot?**
+   `real_omnibot.launch.py` defaults it to false. The commander builds its
+   robot model without that setting, so it and `move_group` could disagree.
+   The poses do not depend on it: every right-arm preset has joint 2 at 0.
 6. **Is `getCurrentState()` really unsafe to call during motion?** If not,
    `get_arm_state` can answer while the arms move.
 7. **Should walkie-ros enforce the drive-with-arms-out rule itself?** The

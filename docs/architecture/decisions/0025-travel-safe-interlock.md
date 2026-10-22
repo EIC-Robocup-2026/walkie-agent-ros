@@ -14,9 +14,11 @@ an outstretched arm can hit people, furniture or door frames.
 Before sending a navigation goal, `navigate_to_location` reads both arms'
 joint states (3 s limit):
 
-- If the arms match a pose with `travel_safe = true`, it drives.
-- If they match no such pose, it refuses, and tells the LLM to move them to
-  one first, for example `home`.
+- If each arm matches a pose with `travel_safe = true`, it drives. Arms are
+  matched one at a time, since a pose can move one arm
+  ([ADR-0022](/architecture/decisions/0022-named-arm-poses.md)).
+- If either arm matches no such pose, it refuses, and tells the LLM to move
+  the arms to one first, for example `home`.
 - If the commander does not answer, it drives anyway, and says that the arm
   state is unknown.
 

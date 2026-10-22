@@ -11,8 +11,8 @@ complex_model = "openai"
 embeddings_model = "openai"
 
 [openai]
-simple_model = "google/gemini-3-flash-preview"
-complex_model = "google/gemini-3-flash-preview"
+simple_model = "qwen/qwen3.8-27b:nitro"
+complex_model = "deepseek/deepseek-v4.1-flash:nitro"
 embeddings_model = "openai/text-embedding-3-small"
 base_url = "https://openrouter.ai/api/v1"
 

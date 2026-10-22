@@ -31,7 +31,8 @@ At Competition, the parent process makes every outbound request. Generated
 code never opens a socket. Each request goes through one broker to one of
 these:
 
-- **OpenRouter**, for the LLM calls, as today.
+- **OpenRouter**, for the LLM calls, as today, and for the tool-search
+  embeddings ([ADR-0046](/architecture/decisions/0046-hybrid-tool-index.md)).
 - **Named sources with pinned templates.** A template fixes the host, the
   path, the method and the allowed query parameters. Only GET over HTTPS
   on port 443. The six data sources are:
@@ -106,8 +107,8 @@ provider's outage does not switch web search off for an event.
 
 Prices were checked on the providers' pages on 2026-10-22. The latencies
 are third-party benchmark means measured in the US, not at the venue. The
-cloud LLM (the Competition coder included) and both search providers are
-declared to the Technical Committee one month ahead.
+cloud LLM (the Competition coder included), the cloud embedder and both
+search providers are declared to the Technical Committee one month ahead.
 
 Rejected:
 
@@ -139,7 +140,7 @@ Rejected:
   the robot PC. It also holds the robot's search key, and its outbound
   traffic is limited to the hosts above.
 - Offline, composing, creating, `fetch_sound` and `look_up_online` fail
-  closed. Reusing existing tools keeps working. With the network up, only
+  closed. Reusing existing tools keeps working, found by BM25 alone. With the network up, only
   the kill switch, the caps, or both search providers failing turn
   `look_up_online` off.
 - Each search costs one provider request, or two when it falls back. 120

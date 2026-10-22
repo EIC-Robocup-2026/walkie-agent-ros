@@ -71,7 +71,10 @@ and silently drops both (checked with langchain-ollama 1.1.0).
   `ToolCallLimitMiddleware`. The coder's `web_search` is an ordinary
   function tool that the parent runs on the sim search keys.
 - **Embedder.** It has its own table, `[walkie.toolbox.embedder]`, because
-  RAI's `[ollama] embeddings_model` is a chat model
+  RAI's `[ollama] embeddings_model` is a chat model and RAI's embeddings
+  role has no timeout or provider pin. It calls `qwen/qwen3-embedding-8b`
+  through OpenRouter on `OPENAI_API_KEY`, with a 1 s timeout and no retry,
+  everywhere, Competition included
   ([ADR-0046](/architecture/decisions/0046-hybrid-tool-index.md)).
 - **No moderation role.** The speech gate has no cloud check
   ([ADR-0049](/architecture/decisions/0049-competition-internet-egress.md)).
@@ -94,7 +97,7 @@ and silently drops both (checked with langchain-ollama 1.1.0).
 The agent no longer reads `complex_model`, and two more OpenRouter keys
 join `OPENAI_API_KEY`. The `[vendor]` and `[openai]` tables stay, with the
 OpenRouter `base_url`, for RAI's own roles: the whoami build's LLM call,
-and its embeddings until ADR-0046 moves them to the local embedder.
+and the embeddings behind `search_robot_docs`.
 
 **Consequences**
 

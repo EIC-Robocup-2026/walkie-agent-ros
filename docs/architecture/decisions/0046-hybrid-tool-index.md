@@ -59,40 +59,78 @@ files, run traces and utterances from real runs are not embedded.
 3. BM25: FTS5 top 30, with column weights name 3, description 2,
    questions 1.5, params 1 and types 0.5. Every query token is quoted, so
    user text cannot inject FTS5 syntax. Stopwords are dropped.
-4. Dense: the query is embedded with a fixed instruction ("Given a spoken
-   request to a service robot, retrieve the tool that fulfils it"), top 30.
+4. Dense: the query is embedded with a fixed instruction, as
+   `Instruct: Given a spoken request to a service robot, retrieve the tool
+   that fulfils it\nQuery:<query>`, top 30. Tool views are embedded
+   without an instruction.
 5. Reciprocal rank fusion, score = Σ 1/(60 + rank). Ties break by tier,
    then by success count. At most 2 results per namespace in the top 5.
 
 There is no rewrite or rerank call. The task LLM already writes a
 docstring-style query, and the coder reads the top 8 cards and chooses. A
 reranker is revisited only if the eval shows correct tools at ranks 6 to
-15. A query costs an estimated 20 to 100 ms to embed on CPU, under 15 ms in
-numpy and about 1 ms in FTS5. BM25 alone is used when the embedder is
-unreachable, when the model digest does not match the index, or when an
-embedding takes longer than 300 ms.
+15. A query costs one embedding call to OpenRouter, under 15 ms in numpy
+and about 1 ms in FTS5. The call's latency from the robot PC is not
+measured yet. From the development machine, OpenRouter's edge answered a
+plain request in 60 to 110 ms, before any provider was involved. BM25 runs
+while the embedding is in flight, and answers alone when:
 
-**Embedder.** This is an open choice, configured in `[walkie.toolbox.embedder]`
-([ADR-0042](/architecture/decisions/0042-per-role-models.md)). It runs on
-the CPU, to keep the robot's GPU (an RTX 5090, expected) for vision and the
-local LLM.
+- the network probe finds no internet, so no call is made;
+- the embedding fails, or takes longer than 1 s;
+- the startup check below fails.
 
-| Option | Cost |
-| ------ | ---- |
-| **`qwen3-embedding:0.6b` on Ollama, CPU only, 1024 dimensions, `num_ctx` 2048, `keep_alive` -1, warmed at startup (recommended)** | The only small model measured directly on tool retrieval, where it beat BM25 on every slice. The same model runs in sim and on the robot, so vectors can be cached by content hash and copied. Needs Ollama on the robot, which the local LLM needs anyway, in a build that supports the RTX 5090. Apache-2.0, about 640 MB. Without `keep_alive` -1, Ollama unloads after 5 minutes and the next query falls back to BM25 silently |
-| The same model through ONNX Runtime, in process | No daemon, and `onnxruntime` 1.24 and `tokenizers` 0.23 are already in the lock. Needs an export, its own `model_id`, and a cosine of at least 0.99 against reference vectors on 20 fixed strings |
-| Cloud `openai/text-embedding-3-small` | Already configured, but the dense branch is lost offline. Allowed only as the interim in sim, under its own `model_id`, never mixed with another model |
+The trace records whether the dense branch answered.
+
+**Embedder.** `qwen/qwen3-embedding-8b` through OpenRouter, in sim and on
+the robot, Competition included. It is configured in
+`[walkie.toolbox.embedder]`
+([ADR-0042](/architecture/decisions/0042-per-role-models.md)) and called
+with `OPENAI_API_KEY`, a 1 s timeout and no retry.
+
+- **One provider, pinned.** OpenRouter serves this model from Nebius,
+  DeepInfra and SiliconFlow, the last in fp8. Vectors from two providers
+  differ slightly, enough to move the duplicate cut-offs below. The index
+  pins one provider that is not fp8, with `allow_fallbacks = false` and
+  `data_collection = "deny"`. Phase 3 picks it by latency measured from
+  the robot PC.
+- **1024 dimensions.** The model returns 4096. It is trained for
+  Matryoshka truncation, so the client keeps the first 1024 and
+  re-normalizes, rather than rely on each provider honouring the
+  `dimensions` parameter. The store stays at the size measured below.
+- **A startup check.** 20 fixed strings are embedded at startup and
+  compared with their stored vectors. Below a cosine of 0.99, the model
+  behind the name has changed, and the dense branch stays off until a
+  re-embed.
+- `model_id` is the model, the provider and the dimensions.
+
+Internet is available this season, and OpenRouter is already the host the
+LLM calls reach
+([ADR-0049](/architecture/decisions/0049-competition-internet-egress.md)).
+With a cloud embedder, no embedding model is installed, warmed or kept
+loaded on any machine, and the robot's CPU and GPU stay free for vision
+and the local LLM. The same model runs in sim and on the robot, so cached
+vectors copy across. At $0.01 per million tokens (OpenRouter's listed
+price on 2026-10-22), embedding a catalogue of a few thousand drafts costs
+about a cent.
+
+Rejected:
+
+| Option | Why not |
+| ------ | ------- |
+| `qwen3-embedding:0.6b` on Ollama, CPU only | The earlier recommendation, and the only small model measured directly on tool retrieval, where it beat BM25 on every slice. It works offline. It needs the model installed, warmed and kept loaded (`keep_alive` -1) on every machine, and CPU time on the robot. OpenRouter does not serve it |
+| The same model through ONNX Runtime, in process | No daemon, but it needs an export, its own `model_id`, and a reference check on every machine |
+| `openai/text-embedding-3-small`, RAI's embeddings model today | Twice the price, and it takes no query instruction |
 
 RAI's `get_embeddings_model()` is not used: `[ollama] embeddings_model` is
-`llama3.2`, a chat model, and its OpenRouter path may need
+`llama3.2`, a chat model; the RAI role has no timeout, provider pin or
+truncation; and its OpenRouter path may need
 `check_embedding_ctx_length=False` (not verified). walkie-vision's
 `EmbedText` is not used either: it is an image-text model, and it would tie
 tool search to the vision service.
 
 **Store.** `$WALKIE_TOOLS_HOME` is the folder for generated tools outside
 the repository, by default `~/.local/share/walkie/tools`. `embed_cache` is
-a table of vectors keyed by text hash and `model_id`, which is runtime, tag
-and weight digest.
+a table of vectors keyed by text hash and `model_id`.
 
 | | In sim | At Competition |
 | - | ------ | -------------- |
@@ -115,21 +153,30 @@ rejected and pointed to the existing tool, and τ_review, above which a
 draft is kept with a `similar_to` edge. First guesses are 0.92 and 0.80.
 
 **Amends [ADR-0005](/architecture/decisions/0005-openrouter-via-openai-vendor.md).**
-On the robot, run-time embeddings leave RAI's embeddings role and
-OpenRouter. Only the interim sim index may still use OpenRouter.
-**Amends [ADR-0011](/architecture/decisions/0011-whoami-identity.md).**
-`search_robot_docs` and its index move to the local embedder together,
-because vectors from two models live in different spaces. rai_whoami's
-`QueryDatabaseTool` and `FAISSBuilder` both accept an embeddings object.
-The `build-whoami` command does not, so `whoami-build` needs a small new
-script around rai_whoami's pipeline.
+The tool index embeds through OpenRouter with its own client and model,
+not through RAI's embeddings role. That role keeps
+`openai/text-embedding-3-small` for `search_robot_docs`, whose index is
+separate, so the two models never share a vector space.
 
 **Consequences**
 
 - Spoken requests can find tools whose names share no words with them.
   Exact names still win through BM25 and the exact-match step.
-- Offline, tool search and the robot docs search keep working, with the
-  dense branch if the embedder is local.
+- Offline, tool search keeps working on BM25 alone, which misses requests
+  that share no word with a tool, such as "can you make a cat noise".
+  `META.questions` puts spoken phrasings into BM25 to narrow that gap.
+  `search_robot_docs` needs the network.
+- Every `find_tools` call can wait up to 1 s on the network. One of five
+  plain requests to OpenRouter's edge took 2.9 s from the development
+  machine, so the cap will trip at times. The eval reports how often BM25
+  answered alone.
+- An outage at the pinned provider turns the dense branch off. A second
+  provider can be allowed once its vectors pass the startup check against
+  the first's.
+- Query text leaves the robot: the task LLM's tool description, or a
+  `request_tool` need. The same text already reaches OpenRouter in the LLM
+  calls, but the embedding provider is one more party, declared with the
+  others ([ADR-0049](/architecture/decisions/0049-competition-internet-egress.md)).
 - A new `pixi run eval-toolbox` task reports Recall@5 and MRR for BM25,
   dense and hybrid, per level, on about 100 spoken requests, sim logs and
   held-out questions. Hybrid must beat BM25 on Recall@5 before it is used

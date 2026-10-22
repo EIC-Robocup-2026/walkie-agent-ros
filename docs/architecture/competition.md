@@ -69,7 +69,7 @@ person's speech and are estimates until measured on the robot PC.
 | Rung              | When                                                                                                    | Time         |
 | ----------------- | ------------------------------------------------------------------------------------------------------- | ------------ |
 | 0. Act directly   | 3 or fewer calls of tools already bound, with literal arguments                                         | 1.5 to 3 s   |
-| 1. Retrieve       | Hybrid search (under 0.1 s) finds a tool above the threshold, pre-baked tools included; one or two turns | 3 to 5 s; `look_up_online` about 7 to 8 s, filler first |
+| 1. Retrieve       | Hybrid search (BM25 under 0.1 s, the cloud embedding at most 1 s) finds a tool above the threshold, pre-baked tools included; one or two turns | 3 to 5 s; `look_up_online` about 7 to 8 s, filler first |
 | 1b. Fetch a sound | `play_sound` returns `NOT_FOUND` and `fetch_sound` finds a clip on Wikimedia Commons; no LLM call        | 6 to 9 s     |
 | 2. Compose        | A bundle of exposed atomic tools passes the linker, with effects within R, P and S                       | 6 to 10 s    |
 | 3. Create code    | Rungs 1 and 2 failed, and the request needs live data, exact computation, aggregation over perception or a bounded timing loop; online, with budget left | 20 to 35 s |
@@ -391,15 +391,16 @@ handshake to OpenRouter and to each search provider.
 | Piece                                   | Offline                                                             |
 | --------------------------------------- | ------------------------------------------------------------------- |
 | Compose, create, `fetch_sound`          | Off; `request_tool` is unbound; reuse only                          |
-| `find_tools`                            | Works; BM25 and dense search both run locally                       |
+| `find_tools`                            | Works on BM25 alone; the cloud embedder is skipped                  |
 | Session tools that need `ctx.http`      | Fail fast with `UNAVAILABLE`                                        |
 | `look_up_online`, `ctx.http.web_search` | Fail fast with `UNAVAILABLE`; `look_up_online` stays visible        |
 | A request that needs creation           | An immediate refusal with an alternative                            |
 | Speech gate                             | Local checks only                                                   |
 
-`search_robot_docs` embeds through OpenRouter
-today, so it likely fails offline until the tool-index work moves it to the
-local embedder.
+`search_robot_docs` embeds through OpenRouter, so it likely fails offline.
+Whether it fails fast is checked in phase 3. Offline, BM25 alone misses
+requests that share no word with a tool, such as "can you make a cat
+noise" ([ADR-0046](decisions/0046-hybrid-tool-index.md)).
 
 If bwrap or the resource scope cannot start on the robot PC, the runner
 refuses generated tools and sandboxed atomics rather than run them

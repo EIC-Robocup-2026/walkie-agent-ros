@@ -299,7 +299,7 @@ on reset and when a new task replaces the todo list.
 | RAI's `WaitForSecondsTool` | core, bound as `wait_for_seconds` | Its tool name today is `WaitForSecondsTool`. The rename to the name that the lint and level policy use is planned |
 | RAI's `get_current_pose` | reached through `find_tools` | Exposed to generated code through `ctx.tools` at every level. Counts as local sensing for the Rule of Two |
 | RAI's `get_ros2_topics_names_and_types` | never shown to the task LLM | The tool coder gets level-filtered `ros_list` and `ros_describe` instead |
-| `search_robot_docs` | reached through `find_tools` | Moves to the local embedder in phase 3 |
+| `search_robot_docs` | reached through `find_tools` | Keeps today's OpenRouter embeddings, so it needs the network |
 
 The early design named some tools differently:
 
@@ -458,10 +458,11 @@ fails on spoken requests: "can you make a cat noise" shares no word with
 - **Query path.** Exact name match, then a filter on stamp, tier and
   effects. BM25 (FTS5, tokens quoted) and cosine each take a top 30, fused
   by 1/(60 + rank), with at most 2 per namespace in the top 5.
-- **Embedder, proposed ([open question 6](#open-questions)).**
-  `qwen3-embedding:0.6b` on Ollama on the CPU, kept loaded for a 300 ms
-  budget, else BM25 only. Ollama is not confirmed on the robot PC, so its
-  install, with an RTX 5090 (sm_120) check, moves to phase 1.
+- **Embedder ([open question 6](#open-questions), settled).**
+  `qwen/qwen3-embedding-8b` through OpenRouter, in sim and on the robot,
+  with one provider pinned and vectors cut to 1024 dimensions. BM25 runs
+  alongside, and answers alone when the embedding takes over 1 s or the
+  network probe finds no internet.
 - **Store.** `index.sqlite` in sim, in memory at Competition. Numpy brute
   force took 10.7 ms for 15,000 × 1024 vectors on the dev machine.
 - **Eval.** `pixi run eval-toolbox` (planned) reports Recall@5 and MRR.
@@ -593,9 +594,9 @@ BM25-only, dense-only and hybrid search, per level.
 | Phase | What ships (MVP) | Deferred | Done when |
 | ----- | ---------------- | -------- | --------- |
 | 0. Decisions | These ADRs. `artifact_database.pkl` in `.gitignore`. A draft `config/arm_poses.toml` with `home`, `carry`, `standby` and `travel_safe`. `robot_check.sh` run on the robot PC. `/etc/walkie/sim-host` installed on dev machines | — | ADRs reviewed. The `robot_check.sh` result is known |
-| 1. Host, todos, roles | `graph.py` and the base swap, the `_run_agent` override, `todo.py`, seeding, `/walkie/todos`, `models.py`, `FORBIDDEN_NAMES` additions, the `--access-level` flag and profile plumbing, per-role keys, Ollama with an sm_120 check, the embedder warm-up | — | All 65 existing tests pass, plus `test_todo.py` and `test_graph.py`. An eval with the chosen local fallback model. A seeded run on `agent-sim` |
+| 1. Host, todos, roles | `graph.py` and the base swap, the `_run_agent` override, `todo.py`, seeding, `/walkie/todos`, `models.py`, `FORBIDDEN_NAMES` additions, the `--access-level` flag and profile plumbing, per-role keys, Ollama with an sm_120 check | — | All 65 existing tests pass, plus `test_todo.py` and `test_graph.py`. An eval with the chosen local fallback model. A seeded run on `agent-sim` |
 | 2. Typed atomics, mocks, bundles, levels | `toolbox/` core, linker L01 to L06, `core()` for today's tools, perception and arm atomics, internal `navigate_to_pose`, the four presets, `META.requires`, `walkie_toolbox_facade`, the level policy, interlock checks 1, 2, 3, 5 and 6, the local speech gate, `play_sound`, `tell_time`, `tell_date`. `agent-sim` passes `--access-level standard` | Interlock checks 4 and 7 to 9, periodic re-checks | `test_dsl`, `test_linker`, `test_runner`, `test_nav_interlock`, `test_levels`, `test_interlock`, `test_play_sound` and `test_speech_gate` pass. A mock fetch with injected faults on `agent-sim`. The interlock grants Standard on a marked dev machine, and Competition without the marker or with the robot marker |
-| 3. Index and atomic agent | `find_tools`, `request_tool` with compose, linker L07 to L13 and L15, stamped drafts, run traces, `search_robot_docs` on the local embedder, 100 spoken requests for the eval | The embedder bake-off | `test_index`, `test_atomic_agent` and `test_names` pass. Hybrid beats BM25-only on Recall@5, or the team decides |
+| 3. Index and atomic agent | `find_tools`, `request_tool` with compose, linker L07 to L13 and L15, stamped drafts, run traces, the cloud embedder with its pinned provider and startup check, 100 spoken requests for the eval | A second embedding provider | `test_index`, `test_atomic_agent` and `test_names` pass. Hybrid beats BM25-only on Recall@5, or the team decides. Embedding latency measured from the robot PC |
 | 4a. Sandbox and coder (sim) | Sandbox, bridges, lint, the tool coder and the assets store at Standard and Unrestricted, interlock checks 4 and 7 to 9 and the fresh checks before motion | `restrict_self` (Landlock, seccomp) | `test_sandbox`, `test_http_policy`, `test_web_search`, `test_ros_bridge`, `test_stamps` and `test_coder` pass. In sim the coder makes a scan-reading tool at Standard and an action-using navigation tool at Unrestricted. The Unrestricted one never loads at Standard |
 | 4b. Unrestricted extras | Raw base commands with a stop on cleanup, `ctx.handles.load`, `cv2` in the lint, only on harvest evidence. Arm controllers stay on the never-list | — | A raw-publish tool is cleaned up on worker death in a test |
 | 5. Harvest v0 | See [Sim Harvest](harvest.md). Needs the walkie-ros world change merged to main and pinned | Harvest v1, start poses away from the origin, keepout in sim Nav2, an object-pose publisher | One 100-episode run with a report a human has read, failures split into agent, navigation and localization. At least one candidate promoted by pull request |
@@ -624,8 +625,9 @@ not on main, so those paths may change
 | Core | Scope too large for the season | MVP and deferred items per phase, harvest v0 before v1, Unrestricted extras only on evidence, real backends in parallel |
 | Core | A reset during a long step | Cancel checks between steps. A running skill or Nav2 goal stops only when its own wait checks the token. [ADR-0023](decisions/0023-motion-supervisor.md) is the real fix |
 | Core | Coupling to private RAI members | `_run_agent`, `_interrupt_event` and the `ToolRunner` internals stay under the `<2.13` pin. `create_agent` stays in reserve |
-| Core | Ollama missing or unsupported on the robot (RTX 5090, sm_120) | Install and check in phase 1. An ONNX Runtime fallback. BM25-only keeps tool search working |
-| Core | The embedding model or its digest changes silently | The model id includes the digest. A mismatch disables the dense branch until re-embedded |
+| Core | Ollama missing or unsupported on the robot (RTX 5090, sm_120) | Install and check in phase 1. Only the local fallback model needs it |
+| Core | The cloud embedder is slow, down or unreachable | BM25 runs alongside and answers alone after 1 s, or at once when the network probe fails. `META.questions` keeps spoken phrasings in BM25. The trace counts BM25-only answers |
+| Core | The model behind the embedder's name changes silently | The startup check re-embeds 20 fixed strings. Below a cosine of 0.99, the dense branch stays off until re-embedded |
 | Core | Drafts crowd retrieval | Cluster representatives only, per-namespace caps, stamps and level filters, deprecation flags |
 | Core | Cloud LLM dependency for creation | Creation is never on a scored task's success path. Separate keys with their own limits, fixed hard stops |
 | Levels | The interlock grants a sim level on the real robot | The CLI flag only, a sim-host marker that fails closed, robot-marker and domain-23 vetoes, fresh checks before motion, sticky demotion. Tests per signal |
@@ -636,7 +638,7 @@ not on main, so those paths may change
 | Levels | Unrestricted code mistaken for a promotion candidate | Stamped Unrestricted and reported as a wishlist only. `toolbox promote` refuses it for `--tier atomic` without `--rewrite`. A CI check |
 | Levels | Policy lists drift from the real launch graphs | Competition allow-lists generated from the robot launch graph, a property test with a captured name list, review on interface ADRs |
 | Competition | Prompt injection through web content | Named sources with templates, typed results, turn taint, the speech gate, the Rule of Two, the query writer, small snippets and the history scrub |
-| Competition | No internet at the venue | An offline probe, creation off, reuse only, the local embedder, pre-baked tools and the sound pack. `look_up_online` fails fast with `UNAVAILABLE` |
+| Competition | No internet at the venue | An offline probe, creation off, reuse only, BM25-only tool search, pre-baked tools and the sound pack. `look_up_online` fails fast with `UNAVAILABLE` |
 | Competition | Harmful text built from clean words reaches the speaker, since the speech gate has no cloud check | The query writer's topic refusals, strict safe search, the denylist, short snippets, the 200-character cap, clean-word cases in the red-team set. A guard model on OpenRouter is the drop-in if they get through |
 | Harvest | The interlock demotes during harvest runs by mistake | A pause is not a demotion, viewers do not count as drivers, the agent stops before each relaunch and starts once the new sim is ready, check values are logged, a smoke run over consecutive episodes |
 | Harvest | Low or costly yield | Start at 100 episodes, the harvest key's limit, tool-step scoring. Expect a minority of drafts to survive |
@@ -666,13 +668,12 @@ T12 on [Access Levels](access-levels.md#safety-model).
 | `DetectObjects`, `EmbedText` | walkie-vision | `walkie_vision_msgs`. `DetectObjects` is proposed |
 | Object memory | walkie-database | `/walkie_database/find_objects` (exists) |
 | Skill server, commander, grasps | walkie-ros | robot-side. The commander and `/grasp/from_cloud` exist. The skill server is proposed ([ADR-0027](decisions/0027-runskill-action.md)) |
-| Embedding model | Ollama on each machine | `qwen3-embedding:0.6b` (to install, if question 6 goes that way) |
+| Embedding model | none, a cloud service | `qwen/qwen3-embedding-8b` through OpenRouter, set in `[walkie.toolbox.embedder]` |
 
 ## Open questions
 
 ADR-0037, ADR-0038, ADR-0041 and ADR-0043 propose the recommended answers
-to questions 2, 3, 4 and 5, so reviewing them settles those. ADR-0046 lists
-the embedder options and leaves question 6 open.
+to questions 2, 3, 4 and 5, so reviewing them settles those.
 
 1. **What does a new utterance do mid-task?** Settled: RAI's `queue`
    behaviour, with only reset, "stop" or "never mind" as interrupts
@@ -687,9 +688,10 @@ the embedder options and leaves question 6 open.
    stand-off, used by presets and, in sim at Standard and Unrestricted, by
    generated code through `ctx.tools`. The alternative gives the LLM
    coordinates and supersedes ADR-0010. Blocks phase 2.
-6. **Embedder.** Recommended: `qwen3-embedding:0.6b` on Ollama, over the
-   same model through ONNX Runtime in-process, or a cloud model with
-   BM25-only offline. Blocks phase 3.
+6. **Embedder.** Settled: `qwen/qwen3-embedding-8b` through OpenRouter
+   everywhere, Competition included, with BM25 alone when offline or after
+   1 s. The local `qwen3-embedding:0.6b` on Ollama was dropped
+   ([ADR-0046](decisions/0046-hybrid-tool-index.md)).
 7. **Search inside a generated tool.** Open on
    [Access Levels](access-levels.md#open-questions), question 2.
 8. **Trivial requests such as "say Meow!".** Open on
@@ -697,13 +699,14 @@ the embedder options and leaves question 6 open.
 9. **The local fallback model.** 7 to 14B, chosen by a phase 1 eval.
    Blocks phase 1.
 10. **Ollama on the robot PC.** Whether a build with RTX 5090 (sm_120)
-    support runs there is unverified. Blocks the local fallback model and
-    the local embedder in phase 1.
+    support runs there is unverified. Blocks the local fallback model in
+    phase 1.
 11. **Hybrid against BM25-only.** Not measured until the phase 3 eval.
     Blocks enabling vectors at Competition.
-12. **`search_robot_docs` offline.** It embeds queries through OpenRouter
-    today and probably fails offline (unverified). Phase 3 moves it to the
-    local embedder. Blocks relying on docs search offline until then.
+12. **`search_robot_docs` offline.** Settled with question 6: it keeps
+    embedding through OpenRouter, so docs search needs the network. Whether
+    it fails fast offline, rather than after a timeout, is unverified and
+    checked in phase 3.
 
 ## Decisions
 

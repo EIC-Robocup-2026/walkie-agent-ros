@@ -48,43 +48,34 @@ competition rules on [Competition Mode](competition.md), promotion on
 
 ## The loop
 
-What the creator builds is bound on the next turn. Traces and drafts flow
-to the sim harvest, where a human decides what enters git. Dotted arrows
-are caps set by the access level. Code from the tool coder lands in the
-`temporary` tier ([Tiers and folders](#tiers-and-folders)).
+A task runs in the agent's own graph, which binds the visible tools on
+every turn. When no bound tool fits, the agent finds one or has one made,
+and it is bound on the next turn. Traces and drafts go to the sim harvest,
+where a human decides what enters git. Every run starts from what is in
+git.
 
 ```mermaid
 flowchart TD
-    OP["Person on /from_human, or submit(text, todos)"] --> WA
-    subgraph WA["walkie-agent: own graph on RAI LangChainAgent"]
-        LLM["llm node<br/>binds visible tools every turn<br/>todo reminder, taint filter"] -->|tool calls| TR["WalkieToolRunner<br/>live registry lookup"]
-        TR --> LLM
-        LLM -->|"no tool call, open items, none waiting"| GATE["Completion gate<br/>at most 2"]
-        GATE --> LLM
-    end
-    LVL["Access level<br/>CLI flag, sim-host marker, interlock"] -.->|caps| RQ & HOST
-    TR --> CORE["Core atomics<br/>speak, navigate, find_objects, update_todos"]
-    TR -->|bundle call| RUN["BundleRunner<br/>validate, run, trace, cancel check"]
-    TR -->|generated tool call| HOST["Sandbox host and bwrap worker<br/>ctx.tools, ctx.ros, ctx.http"]
-    CORE & HOST --> SG["Speech gate<br/>word list, caps"]
-    HOST --> WEB["HTTP broker<br/>named sources, web search"]
-    RUN & HOST --> ATOM["Typed atomic tools"]
-    ATOM --> BE["ROS 2 clients or mocks"]
-    TR -->|"find_tools(query)"| IDX[("Tool index<br/>BM25 + vectors")]
-    TR --> RQ["request_tool(need, kind)"]
-    RQ --> IDX
-    RQ -->|reuse| ACT["Activate for this task"]
-    RQ -->|"compose: 1 LLM call"| LINK["Linker + dry run<br/>at most 2 repairs"]
-    RQ -->|write code| CODER["Tool coder agent"]
-    CODER --> LINT["Lint, name, level stamp,<br/>dedup, sandbox test"]
-    LINK & LINT --> DRAFT["Stamped draft<br/>or session tool at Competition"]
-    DRAFT --> ACT
-    ACT -->|bound next turn| LLM
-    RUN & HOST --> TRACES[("Traces in $WALKIE_TOOLS_HOME/runs/")]
-    TRACES & DRAFT --> HV["Sim harvest"]
-    HV --> HUMAN["Human review<br/>toolbox promote + PR"]
-    HUMAN --> GIT["atomic/ and bundled_preset/ in git"]
+    P["Person on /from_human,<br/>or submit(text, todos)"] --> HG["Host graph<br/>llm node and tools node"]
+    HG -->|"tool call"| RUN["Tool runs<br/>atomic, bundle or generated"]
+    RUN -->|"result"| HG
+    HG -->|"find_tools,<br/>request_tool"| NEW["Tool search<br/>and tool creator"]
+    NEW -->|"bound next turn"| HG
+    RUN -->|"traces"| HV["Sim harvest"]
+    NEW -->|"drafts"| HV
+    HV -->|"human review and PR"| GIT["atomic/ and<br/>bundled_preset/ in git"]
+    GIT -->|"loaded when the agent starts"| HG
 ```
+
+Each box has its own diagram where it is described:
+
+- [The host graph](#the-host-graph-and-interrupts): the llm node, the
+  tools node and the completion gate.
+- [How a tool call runs](#how-a-tool-call-runs): the three paths, the
+  speech gate and the HTTP broker.
+- [The tool creator](#the-tool-creator): reuse, compose or write code, as
+  the access level allows.
+- [Sim Harvest](harvest.md#pipeline): from traces to a pull request.
 
 ## One task, end to end
 
@@ -152,6 +143,27 @@ no generated file, so a sim draft cannot reach a competition by accident.
 Today's `navigation.py`, `memory.py` and `speech.py` gain a typed `core()`
 in place and keep their sentences. The registry scans them and
 `tools/atomic/`, so there is one catalogue without a large file move.
+
+### How a tool call runs
+
+`WalkieToolRunner` sends each call down one of three paths. Everything
+spoken passes the [speech gate](competition.md#speech-gate). Generated code
+reaches tools, ROS and the web only through a `ctx` that the parent checks
+on every call ([The shared ctx API](access-levels.md#the-shared-ctx-api)).
+
+```mermaid
+flowchart TD
+    TR["WalkieToolRunner"] -->|"atomic"| ATOM["Atomic tools<br/>typed, reviewed, in git"]
+    TR -->|"bundle"| RUN["BundleRunner<br/>checks, runs and traces each step"]
+    TR -->|"generated Python"| HOST["Sandbox host<br/>bwrap worker, every ctx call checked"]
+    RUN --> ATOM
+    HOST -->|"ctx.tools"| ATOM
+    HOST -->|"ctx.http"| WEB["HTTP broker<br/>named sources, web search"]
+    HOST -->|"ctx.ros: Unrestricted, Standard"| BE
+    ATOM -->|"speak, play_sound"| SG["Speech gate<br/>word list, caps"]
+    ATOM --> BE["ROS 2 clients or mocks"]
+    SG --> BE
+```
 
 ## Effects
 
@@ -358,6 +370,17 @@ names in the registry and reports each result to the error ledger. With no
 tool call while items are open and none is waiting, a **completion gate**
 sends the LLM back, at most twice.
 
+```mermaid
+flowchart TD
+    IN["Utterance, or<br/>submit(text, todos),<br/>queued while a task runs"] --> LLM["llm node<br/>binds the visible tools, repairs the history,<br/>adds the todo reminder"]
+    LLM -->|"tool calls"| TR["tools node: WalkieToolRunner<br/>looks up unknown names in the registry"]
+    TR -->|"results"| LLM
+    TR -->|"after wait_for_person"| DONE(["Run ends"])
+    LLM -->|"no tool call"| GATE{"Items open,<br/>none waiting?"}
+    GATE -->|"yes: completion gate,<br/>at most twice per task"| LLM
+    GATE -->|"no, or already twice"| DONE
+```
+
 **A new utterance.** Phase 1 switches from RAI's default,
 `interrupt_keep_last`, to its `queue` behaviour: an utterance that arrives
 mid-task waits until the task ends. Only a reset, or an utterance that is
@@ -449,6 +472,20 @@ fails on spoken requests: "can you make a cat noise" shares no word with
 `request_tool(need, kind)` takes a need of at most 200 characters and a
 `kind` (`data`, `sound`, `computation`, `perception` or `behaviour`). It is
 a fixed pipeline, not an agent loop, and no task depends on it succeeding.
+The access level decides which stages are on (the table below). Code from
+the tool coder lands in the `temporary` tier.
+
+```mermaid
+flowchart TD
+    RQ["request_tool(need, kind)"] --> S["1. Search the tool index<br/>no LLM"]
+    S -->|"a clear match"| OFFER["6. Activate and offer<br/>bound next turn"]
+    S -->|"no match"| C["2. Compose<br/>atomic agent, one LLM call"]
+    C -->|"a bundle"| L["3. Link and dry run<br/>at most 2 repairs"]
+    C -->|"needs code"| W["4. Tool coder<br/>then lint, name, level stamp,<br/>dedup, sandbox test"]
+    L --> SAVE["5. Save a stamped draft,<br/>or at Competition<br/>a session tool"]
+    W --> SAVE
+    SAVE --> OFFER
+```
 
 1. **Search**, no LLM. An exact name, or a top hit both branches rank
    first above a calibrated cosine, is reused.

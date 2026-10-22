@@ -4,22 +4,26 @@ import copy
 import secrets
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage
 from langchain_core.tools import BaseTool
 from rai.agents.langchain import LangChainAgent
 from rai.communication.hri_connector import HRIConnector, HRIMessage
 from rai.communication.ros2 import ROS2Connector
 from rai.messages import SystemMultimodalMessage
-from std_msgs.msg import Empty
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Empty, String
 
 from walkie_agent.graph import ToolSet, build_walkie_graph
 from walkie_agent.locations import Location
-from walkie_agent.todo import TodoList
+from walkie_agent.tasks import TaskTemplate, match_template, parse_task_message
+from walkie_agent.todo import TodoItem, TodoList, console_line
 from walkie_agent.tools import build_walkie_tools
 from walkie_agent.whoami import build_system_prompt
 
@@ -91,7 +95,12 @@ class WalkieAgent(LangChainAgent):
       the task ends. Only reset(), or an utterance that is just "stop" or
       "never mind", interrupts a task. RAI checks the interrupt between graph
       steps, so a running tool call finishes first.
-    - submit() sends a task with a seeded todo list (ADR-0041).
+    - submit() sends a task with a seeded todo list (ADR-0041). A message
+      without a seed that starts while no todo item is open, and contains a
+      template's keyword, starts with the template's task and todos.
+    - subscribe_task() takes seeded tasks from the operator's task topic,
+      and publish_todos() publishes the list on a latched topic. Every status
+      change also goes to the target connectors as one console line.
     - reset() forgets the conversation and the todo list without restarting
       the agent.
     - An error from the LLM or the graph is logged, and the agent keeps
@@ -116,9 +125,12 @@ class WalkieAgent(LangChainAgent):
         system_prompt: str | SystemMultimodalMessage | None = None,
         stream_response: bool = True,
         todos: TodoList | None = None,
+        templates: Mapping[str, TaskTemplate] | None = None,
     ):
         self.todos = todos if todos is not None else TodoList()
         self.tools = ToolSet(tools or [])
+        self.templates = dict(templates or {})
+        self._target_connectors = dict(target_connectors)
         graph = build_walkie_graph(llm, self.tools, self.todos, system_prompt)
         super().__init__(
             target_connectors=target_connectors,
@@ -134,6 +146,7 @@ class WalkieAgent(LangChainAgent):
         self._seeds: dict[int, tuple[HRIMessage, _Seed]] = {}
         self.session_id = ""
         self._start_session()
+        self.todos.add_listener(self._send_status_lines)
 
     def __call__(self, msg: HRIMessage) -> None:
         """Queues a message. RAI calls this for every message on a subscribed source."""
@@ -187,6 +200,41 @@ class WalkieAgent(LangChainAgent):
     def subscribe_reset(self, connector: ROS2Connector, topic: str) -> None:
         """Call reset() whenever a std_msgs/Empty message arrives on `topic`."""
         connector.node.create_subscription(Empty, topic, lambda _msg: self.reset(), 10)
+
+    def subscribe_task(self, connector: ROS2Connector, topic: str) -> None:
+        """Submit a seeded task for every std_msgs/String message on `topic`.
+
+        The message holds JSON, `{"task": ..., "todos": [...]}` or `{"task":
+        ..., "template": name}` (see walkie_agent.tasks); its seed's source is
+        "operator". A malformed message is logged as a warning and ignored.
+        """
+        connector.node.create_subscription(
+            String, topic, lambda msg: self._submit_task_message(msg.data, topic), 10
+        )
+
+    def publish_todos(self, connector: ROS2Connector, topic: str) -> None:
+        """Publish the todo list as a JSON array on `topic`, now and after every change.
+
+        The topic is latched: reliable and transient-local with depth 1, so a
+        viewer that starts late, with a transient-local subscription, still
+        gets the current list. A reset publishes "[]".
+        """
+        qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        publisher = connector.node.create_publisher(String, topic, qos)
+
+        def publish(*_: Any) -> None:
+            # to_json() reads the current list, never older than the snapshot
+            # the listener gets, so the last message is always the current list.
+            publisher.publish(String(data=self.todos.to_json()))
+
+        # Listening first, so a change made before the first message still
+        # gets published.
+        self.todos.add_listener(publish)
+        publish()
 
     def _enqueue(self, msg: HRIMessage, seed: _Seed | None) -> None:
         # Replaces RAI's __call__. The seed is stored under the same lock as
@@ -256,10 +304,10 @@ class WalkieAgent(LangChainAgent):
 
         try:
             self.logger.info("Running agent...")
-            self._prepare_todos(seed)
+            text = self._prepare_todos(msg.text, seed)
             # The trailing newline keeps the format of RAI's _reduce_messages.
             message = HRIMessage(
-                text=f"{msg.text}\n",
+                text=f"{text}\n",
                 images=msg.images,
                 audios=msg.audios,
                 message_author="human",
@@ -279,16 +327,64 @@ class WalkieAgent(LangChainAgent):
         finally:
             self._agent_ready_event.set()
 
-    def _prepare_todos(self, seed: _Seed | None) -> None:
+    def _prepare_todos(self, text: str, seed: _Seed | None) -> str:
+        """Set up the todo list for the task that starts now; return its text."""
         if seed is not None:
             self.todos.seed(seed.items, seed.source)
-            return
+            return text
         # A message without a seed may be the answer to a wait_for_person
         # question.
         self.todos.resume_waiting()
         # A finished list does not carry into the next task.
         if not self.todos.is_empty and not self.todos.open_ids():
             self.todos.clear()
+        # With items open, the message belongs to the current task. The check
+        # runs here, when the message starts, and not when it arrives: a task
+        # queued before it may still open or finish items.
+        if self.todos.open_ids():
+            return text
+        template = match_template(text, self.templates)
+        if template is None:
+            return text
+        self.logger.info(f"The message matches task template '{template.name}'.")
+        self.todos.seed(template.todos, "seed")
+        return template.prompt(text)
+
+    def _submit_task_message(self, data: str, topic: str) -> None:
+        # Runs in the connector's executor, where an exception would end the
+        # executor's thread and with it every subscription of the node.
+        try:
+            text, todos = parse_task_message(data, self.templates)
+            self.submit(text, todos, source="operator")
+        except ValueError as e:  # TodoRejected included
+            self.logger.warning(f"Ignored a message on {topic}: {e}")
+        except Exception:
+            self.logger.exception(f"Ignored a message on {topic} that could not be read.")
+
+    def _send_status_lines(self, _items: list[TodoItem], changed: list[TodoItem]) -> None:
+        # A TodoList listener: one console line per item whose status changed.
+        for item in changed:
+            line = console_line(item)
+            if line:
+                self._send_to_targets(line)
+
+    def _send_to_targets(self, text: str) -> None:
+        """Send one complete line to every target connector.
+
+        Sent as RAI's HRICallbackHandler sends the LLM's replies, so the line
+        goes where those replies go: the operator console, not the speaker,
+        which only the speak tool reaches (ADR-0007).
+        """
+        for target, connector in self._target_connectors.items():
+            try:
+                message = connector.build_message(
+                    AIMessage(content=text),
+                    communication_id=HRIMessage.generate_communication_id(),
+                    seq_end=True,
+                )
+                connector.send_message(message, target)
+            except Exception:
+                self.logger.exception(f"Could not send a todo status line to {target}.")
 
     def _start_session(self) -> None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -307,9 +403,11 @@ def create_walkie_agent(
     target_connectors: dict[str, HRIConnector[HRIMessage]],
     stream_response: bool = True,
     whoami_dir: Path | None = None,
+    templates: Mapping[str, TaskTemplate] | None = None,
 ) -> WalkieAgent:
     """Build the agent. `whoami_dir` adds the robot description and documentation
-    search from `pixi run whoami-build`, when they have been built (see whoami.py)."""
+    search from `pixi run whoami-build`, when they have been built (see whoami.py).
+    `templates` are the task templates (see tasks.py)."""
     # One list, shared by the todo tools and the graph.
     todos = TodoList()
     return WalkieAgent(
@@ -319,4 +417,5 @@ def create_walkie_agent(
         system_prompt=build_system_prompt(SYSTEM_PROMPT, whoami_dir),
         stream_response=stream_response,
         todos=todos,
+        templates=templates,
     )

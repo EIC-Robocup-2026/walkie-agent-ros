@@ -24,12 +24,15 @@ it over ROS 2.
   writes the steps with `update_todos` and marks them as it goes. The rules
   are enforced in code: for example, a step whose tool failed cannot be
   marked completed until that tool succeeds, unless a note explains why.
-  A task can also arrive with its steps already seeded
+  A task can also arrive with its steps already seeded, from the operator
+  on `/walkie/task` or from a template that an utterance names
   ([ADR-0041](decisions/0041-todo-list-and-seeding.md)).
 - **Tasks in, speech and console out.** Tasks arrive on `/from_human`, typed
-  or from speech recognition. The agent speaks only through the `speak` tool
-  on `/to_human`. Its plain-text replies go to the operator on
-  `/walkie/console` ([ADR-0007](decisions/0007-speak-tool-and-console.md)).
+  or from speech recognition, or on `/walkie/task` with their steps. The
+  agent speaks only through the `speak` tool on `/to_human`. Its plain-text
+  replies, and one line per change of a step's status, go to the operator
+  on `/walkie/console` ([ADR-0007](decisions/0007-speak-tool-and-console.md)).
+  The whole todo list is published on `/walkie/todos`.
 - **Narrow tools.** Each tool does one named thing, such as "drive to the
   kitchen". There is no raw ROS access, and a forbidden list keeps generic
   tools away from motion topics
@@ -82,7 +85,7 @@ flowchart TB
   person -- speech --> voice
   voice -- speaker --> person
   voice <-- "in: /from_human<br/>out: /to_human (speak tool)" --> agent
-  operator <-- "in: /from_human, /walkie/reset<br/>out: /walkie/console" --> agent
+  operator <-- "in: /from_human, /walkie/task, /walkie/reset<br/>out: /walkie/console, /walkie/todos" --> agent
   whoami --> agent
   agent <--> llm
   agent -.-> langfuse
@@ -139,7 +142,7 @@ work on the same history as the graph.
 
 ```mermaid
 flowchart TD
-  IN["Next message from the queue,<br/>an utterance or submit(text, todos)"] --> LLM["llm node<br/>repairs the history, binds the tools,<br/>adds the todo reminder"]
+  IN["Next message from the queue: an utterance,<br/>/walkie/task or submit(text, todos)"] --> LLM["llm node<br/>repairs the history, binds the tools,<br/>adds the todo reminder"]
   LLM -->|"tool calls"| TR["tools node: WalkieToolRunner<br/>runs the calls one at a time"]
   TR -->|"results"| LLM
   TR -->|"wait_for_person asked its question"| DONE(["Task ends"])
@@ -213,8 +216,89 @@ example while the agent waits for an answer.
 written. The seed replaces the list when that task starts, before the first
 LLM call. Seeded steps cannot be reworded or removed. A bad seed raises
 `TodoRejected` from `submit()` at once, not later on the agent thread.
-Seeding over ROS, from `/walkie/task` or a template, is proposed
+The operator can seed a task over ROS on `/walkie/task`, and an utterance
+can start a template
 ([ADR-0041](decisions/0041-todo-list-and-seeding.md)).
+
+### Seeding a task on /walkie/task
+
+`/walkie/task` takes a `std_msgs/msg/String` that holds a JSON object in
+one of two forms:
+
+```json title="With its steps"
+{"task": "Bring me a cup from the kitchen.",
+ "todos": ["Go to the kitchen",
+           {"content": "Pick up a cup", "active_form": "Picking up a cup"},
+           "Come back"]}
+```
+
+```json title="With a template"
+{"task": "Two guests are on their way.", "template": "hri"}
+```
+
+- **`todos`** is the same list that `submit()` takes. A step is a string,
+  or an object with `content` and, optionally, `active_form` and
+  `requires_tool`.
+- **`template`** names a template in `config/task_templates.toml`. The LLM
+  gets the message's task, a blank line and the template's task text. The
+  template's steps are seeded.
+- **Seeded steps from this topic have the source `operator`.** The task
+  joins the same queue as an utterance.
+- **A malformed message is logged as a warning and ignored.** Examples are
+  text that is not JSON, an unknown key, both or neither of `todos` and
+  `template`, an unknown template or a bad step. The topic keeps working.
+
+### Task templates
+
+`config/task_templates.toml` holds named templates, one
+`[templates.<name>]` table each. The shipped file has only a commented
+example. `--task-templates` points the agent at another file.
+
+```toml title="config/task_templates.toml"
+[templates.tour]
+keywords = ["house tour", "show me around"]
+task = """
+Show the person the main rooms. In each room, say what it is for.
+"""
+todos = [
+  "Go to the kitchen",
+  { content = "Say what the kitchen is for", requires_tool = "speak" },
+  "Come back to the person",
+]
+```
+
+- **`task` and `todos` are required.** `todos` uses the seed format above.
+- **`keywords` is optional.** A template without keywords can only be
+  started on `/walkie/task`.
+- **Matching happens when a task starts.** A task without a seed is matched
+  only when no step is open. Its text is checked against each template's
+  keywords, in file order, and the first match wins. A keyword matches as
+  whole words in any case, so "house tour" matches "Give me a House Tour!"
+  but not "a lighthouse tour".
+- **A match seeds the template.** The LLM gets the utterance, a blank line
+  and the template's task text. The steps get the source `seed`.
+- **Why at task start.** A task that is still queued must not start a
+  template while an earlier task may still open or finish steps. While a
+  step is open, for example while the agent waits for an answer, an answer
+  that contains a keyword is just an answer.
+- **The file is checked at startup.** A missing file means no templates. A
+  bad template, such as an unknown key, no task text or a bad step, stops
+  the agent with an error that names the file and the template.
+
+### Following the list
+
+- **`/walkie/todos`** carries the whole list as a JSON array of steps, in a
+  `std_msgs/msg/String`, after every change. Each step has all its fields,
+  such as `id`, `content`, `status`, `note` and `source`. It is reliable,
+  transient-local and keeps one message, so a viewer that starts late
+  still gets the current list. The agent publishes `[]` at startup and
+  after a reset.
+- **`/walkie/console`** gets one line for each change of a step's status.
+  A step that goes in progress shows its active form, or its content when
+  it has none: `t1: Going to the kitchen`. A step that is completed,
+  failed, cancelled or waiting shows its content:
+  `t1 completed: Go to the kitchen`. A new pending step shows no line.
+  These lines are never spoken.
 
 ### Stop, reset and errors
 
@@ -226,7 +310,8 @@ Seeding over ROS, from `/walkie/task` or a template, is proposed
   steps and say so. While the agent is idle, "stop" is an ordinary message.
 - **Reset.** A message on `/walkie/reset` drops the queued messages and
   their seeds, and stops the running task. Before the next task, the agent
-  clears the history and the todo list and starts a new Langfuse session
+  clears the history and the todo list, publishes `[]` on `/walkie/todos`
+  and starts a new Langfuse session
   ([ADR-0008](decisions/0008-reset-topic.md)).
 - **Both act between steps.** All tool calls from one LLM answer run inside
   one step of the graph, and a stop or a reset is noticed only between
@@ -322,7 +407,7 @@ robot PC does not touch the live robot
 | Piece                                                        | Repository                 |
 | ------------------------------------------------------------ | -------------------------- |
 | Agent, tools, system prompt, forbidden names                 | walkie-agent-ros           |
-| Named locations, named arm poses                             | walkie-agent-ros           |
+| Named locations, task templates, named arm poses             | walkie-agent-ros           |
 | Voice nodes, whoami sources, Langfuse setup                  | walkie-agent-ros           |
 | Fake robot nodes for tests                                   | walkie-agent-ros           |
 | Drivers, ros2_control, Nav2, MoveIt, `bimanual_commander`    | walkie-ros                 |

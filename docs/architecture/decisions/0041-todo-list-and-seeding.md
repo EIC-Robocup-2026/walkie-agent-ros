@@ -1,7 +1,7 @@
 # ADR-0041: Keep a seedable todo list for every task
 
 <!-- --8<-- [start:body] -->
-**Status:** Proposed · **Date:** 2026-10-22
+**Status:** Accepted · **Date:** 2026-10-22
 
 **Context**
 
@@ -100,11 +100,10 @@ copied, because one robot runs one serial plan.
   cannot carry a seed. Free-form commands (GPSR) have no seed: the first
   turn writes one.
 
-How to seed over ROS is an open choice. The recommendation is the topic
-now and a typed `RunTask` action later, if it is needed: cheap now, typed
-later. The alternative is `RunTask` from the start, which is typed but
-needs a new message package to pass the build allow-list and the
-`ros2_ws.repos` pins first.
+Seeding over ROS uses the `/walkie/task` topic now, and a typed `RunTask`
+action later if it is needed: cheap now, typed later. `RunTask` from the
+start was rejected because it needs a new message package to pass the
+build allow-list and the `ros2_ws.repos` pins first.
 
 **Consequences**
 

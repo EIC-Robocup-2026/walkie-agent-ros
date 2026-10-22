@@ -1,20 +1,43 @@
 """The full Walkie agent (Walkie's graph on RAI's LangChainAgent + tools) with a scripted
 LLM and the fake robot."""
 
+import json
+import logging
+import random
 import threading
 import time
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
-from rai.communication.ros2 import ROS2HRIConnector, ROS2HRIMessage
-from std_msgs.msg import Empty
+from rai.communication.ros2 import ROS2Connector, ROS2HRIConnector, ROS2HRIMessage
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Empty, String
 
 from scripted_llm import ScriptedChatModel, tool_call
 from walkie_agent.agent import SYSTEM_PROMPT, WalkieAgent, create_walkie_agent
+from walkie_agent.tasks import TaskTemplate
 
 # The agent's plain-text replies; speech goes to /to_human instead.
 CONSOLE = "/walkie/console"
+TASK = "/walkie/task"
+TODOS = "/walkie/todos"
+# A late subscriber needs transient-local durability to get the latched list.
+# Its depth is above 1, so it would get every older message the publisher kept.
+LATCHED = QoSProfile(
+    depth=10,
+    reliability=ReliabilityPolicy.RELIABLE,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+)
+TOUR = TaskTemplate(
+    name="tour",
+    keywords=("house tour",),
+    task="Show the person the house.",
+    todos=["Go to the kitchen", {"content": "Describe the kitchen", "requires_tool": "speak"}],
+)
+TOUR_REMINDER = (
+    "<todos>\n[ ] t1 Go to the kitchen\n[ ] t2 Describe the kitchen  needs: speak\n</todos>"
+)
 
 
 def wait_until(predicate, timeout=5.0):
@@ -24,6 +47,23 @@ def wait_until(predicate, timeout=5.0):
             return True
         time.sleep(0.05)
     return False
+
+
+@pytest.fixture
+def operator():
+    """The operator's own node, apart from the agent's, for the control topics."""
+    conn = ROS2Connector(node_name=f"test_operator_{random.randint(0, 1_000_000)}")
+    yield conn
+    conn.shutdown()
+
+
+def listen_to_todos(connector: ROS2Connector) -> list[str]:
+    """Subscribes to the todo topic as a late viewer; returns the messages as they arrive."""
+    received: list[str] = []
+    connector.node.create_subscription(
+        String, TODOS, lambda msg: received.append(msg.data), LATCHED
+    )
+    return received
 
 
 def fetch_drink_script() -> list[AIMessage]:
@@ -208,3 +248,195 @@ def test_reset_stops_task_after_current_tool(connector):
         agent.stop()
 
     assert len(llm.received) == 1
+
+
+# -- The operator's task topic and the todo topic (ADR-0041) ---------------------
+
+
+@pytest.mark.parametrize(
+    ("message", "text"),
+    [
+        (
+            {"task": "Show me around.", "todos": TOUR.todos},
+            "Show me around.\n",
+        ),
+        (
+            {"task": "Show me around.", "template": "tour"},
+            "Show me around.\n\nShow the person the house.\n",
+        ),
+    ],
+    ids=["todos", "template"],
+)
+def test_task_topic_starts_a_seeded_task(connector, operator, locations, message, text):
+    # The steps stay open, so the gate sends the LLM back twice.
+    llm = ScriptedChatModel(responses=[AIMessage(content=f"On it {n}.") for n in range(3)])
+    agent = create_walkie_agent(
+        llm, connector, locations, target_connectors={}, templates={"tour": TOUR}
+    )
+    agent.subscribe_task(connector, TASK)
+    publisher = operator.node.create_publisher(String, TASK, 10)
+
+    agent.run()
+    try:
+        assert wait_until(lambda: publisher.get_subscription_count() > 0)
+        publisher.publish(String(data=json.dumps(message)))
+        assert wait_until(lambda: len(llm.received) == 3 and agent.ready())
+    finally:
+        agent.stop()
+
+    assert llm.received[0][1].content == text
+    assert llm.reminders[0] == TOUR_REMINDER
+    assert [(i.source, i.locked) for i in agent.todos.snapshot()] == [("operator", True)] * 2
+
+
+def test_malformed_task_messages_are_ignored(connector, operator, locations, caplog):
+    llm = ScriptedChatModel(responses=[AIMessage(content="Hello.")])
+    agent = create_walkie_agent(
+        llm, connector, locations, target_connectors={}, templates={"tour": TOUR}
+    )
+    agent.subscribe_task(connector, TASK)
+    publisher = operator.node.create_publisher(String, TASK, 10)
+    malformed = [
+        "Go to the kitchen.",  # not JSON
+        json.dumps({"todos": ["Say hello"]}),  # no task
+        json.dumps({"task": "Show me around.", "template": "garage"}),  # unknown template
+        json.dumps({"task": "Say hello.", "todos": [{"content": ""}]}),  # a seed the list rejects
+    ]
+
+    agent.run()
+    try:
+        assert wait_until(lambda: publisher.get_subscription_count() > 0)
+        with caplog.at_level(logging.WARNING):
+            for data in malformed:
+                publisher.publish(String(data=data))
+            # The subscriber outlives them all and still takes a good message.
+            publisher.publish(String(data=json.dumps({"task": "Say hello.", "todos": []})))
+            assert wait_until(lambda: len(llm.received) == 1 and agent.ready())
+    finally:
+        agent.stop()
+
+    assert llm.received[0][1].content == "Say hello.\n"
+    warnings = [
+        r for r in caplog.records if r.levelno == logging.WARNING and TASK in r.getMessage()
+    ]
+    assert len(warnings) == len(malformed)
+
+
+def test_todos_topic_is_latched_and_cleared_on_reset(connector, operator, locations):
+    complete = {"op": "update", "id": "t1", "status": "completed"}
+    llm = ScriptedChatModel(
+        responses=[tool_call("update_todos", {"ops": [complete]}), AIMessage(content="Hello.")]
+    )
+    agent = create_walkie_agent(llm, connector, locations, target_connectors={})
+    agent.publish_todos(connector, TODOS)
+    agent.subscribe_reset(connector, "/walkie/reset")
+    reset_pub = operator.node.create_publisher(Empty, "/walkie/reset", 10)
+
+    # A viewer that starts before any task gets the empty list.
+    early = listen_to_todos(operator)
+    assert wait_until(lambda: early == ["[]"])
+
+    agent.run()
+    try:
+        agent.submit("Say hello.", todos=["Say hello"])
+        assert wait_until(lambda: len(llm.received) == 2 and agent.ready())
+        current = agent.todos.to_json()
+        assert [i["status"] for i in json.loads(current)] == ["completed"]
+        assert wait_until(lambda: early[-1] == current)
+
+        # A viewer that starts late gets only the current list.
+        late = listen_to_todos(operator)
+        assert wait_until(lambda: late)
+        time.sleep(0.3)
+        assert late == [current]
+
+        assert wait_until(lambda: reset_pub.get_subscription_count() > 0)
+        reset_pub.publish(Empty())
+        assert wait_until(lambda: early[-1] == "[]" and late[-1] == "[]")
+    finally:
+        agent.stop()
+
+    assert agent.todos.is_empty
+
+
+def test_todo_status_changes_go_to_the_console(fake_walkie, connector, locations):
+    agent_hri = ROS2HRIConnector(node_name="walkie_agent_hri_status_test")
+    human_hri = ROS2HRIConnector(node_name="human_console_status_test")
+    lines: list[str] = []
+    # RAI's own QoS matching would give the subscription a depth of 1, and one
+    # change can send several lines at once. ros2 topic echo keeps 5.
+    human_hri.register_callback(
+        CONSOLE,
+        lambda msg: lines.append(msg.text),
+        qos_profile=QoSProfile(depth=50),
+        auto_qos_matching=False,
+    )
+
+    def update(item_id: str, status: str, note: str = "") -> dict:
+        return {"op": "update", "id": item_id, "status": status, "note": note}
+
+    llm = ScriptedChatModel(
+        responses=[
+            tool_call("update_todos", {"ops": [update("t1", "in_progress")]}, "c1"),
+            tool_call(
+                "update_todos", {"ops": [update("t1", "completed"), update("t2", "in_progress")]}, "c2"
+            ),
+            tool_call("wait_for_person", {"question": "Which mug?"}, "c3"),
+            # The answer, "The red one.", puts t2 back in progress.
+            tool_call(
+                "update_todos",
+                {
+                    "ops": [
+                        update("t2", "failed", "There is no red mug."),
+                        update("t3", "cancelled", "There is nothing to bring."),
+                    ]
+                },
+                "c4",
+            ),
+            AIMessage(content="I could not find a red mug."),
+        ]
+    )
+    agent = create_walkie_agent(
+        llm, connector, locations, target_connectors={CONSOLE: agent_hri}, stream_response=False
+    )
+
+    # RAI creates the console publisher on the first send. Until discovery has
+    # matched it to the test's subscriber, a message can be lost, so the test
+    # waits until one gets through before the task starts.
+    def console_works() -> bool:
+        agent_hri.send_message(ROS2HRIMessage(text="ready", message_author="ai"), CONSOLE)
+        return wait_until(lambda: "ready" in lines, timeout=0.2)
+
+    agent.run()
+    try:
+        assert wait_until(console_works)
+        agent.submit(
+            "Bring me the red mug.",
+            todos=[
+                {"content": "Go to the kitchen", "active_form": "Going to the kitchen"},
+                "Pick up the mug",
+                "Bring it back",
+            ],
+        )
+        assert wait_until(lambda: len(llm.received) == 3 and agent.ready())
+        agent.submit("The red one.")
+        assert wait_until(lambda: "I could not find a red mug." in lines)
+    finally:
+        agent.stop()
+        agent_hri.shutdown()
+        human_hri.shutdown()
+
+    # The seed adds no line: pending steps are not news. Each tool-call message
+    # also sends its empty text, as RAI does for every LLM answer.
+    assert [line for line in lines if line not in ("", "ready")] == [
+        "t1: Going to the kitchen",
+        "t1 completed: Go to the kitchen",
+        "t2: Pick up the mug",
+        "t2 waiting: Pick up the mug",
+        "t2: Pick up the mug",
+        "t2 failed: Pick up the mug",
+        "t3 cancelled: Bring it back",
+        "I could not find a red mug.",
+    ]
+    # The lines went to the console only, never to the speaker.
+    assert fake_walkie.heard == ["Which mug?"]

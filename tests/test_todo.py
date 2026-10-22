@@ -13,7 +13,7 @@ from langchain_core.tools import ToolException, tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from rai.agents.langchain.core.tool_runner import ToolRunner
 
-from walkie_agent.todo import TodoItem, TodoList, TodoOp, TodoRejected
+from walkie_agent.todo import TodoItem, TodoList, TodoOp, TodoRejected, console_line
 from walkie_agent.tools.todos import UpdateTodosTool, WaitForPersonTool
 
 # The task from ADR-0041.
@@ -609,6 +609,23 @@ def test_snapshot_is_a_copy():
     assert item(todos, "t1").evidence == []
 
 
+@pytest.mark.parametrize(
+    ("status", "active_form", "line"),
+    [
+        ("in_progress", "Going to the kitchen", "t1: Going to the kitchen"),
+        ("in_progress", "", "t1: Go to the kitchen"),
+        ("completed", "Going to the kitchen", "t1 completed: Go to the kitchen"),
+        ("failed", "Going to the kitchen", "t1 failed: Go to the kitchen"),
+        ("cancelled", "Going to the kitchen", "t1 cancelled: Go to the kitchen"),
+        ("waiting", "Going to the kitchen", "t1 waiting: Go to the kitchen"),
+        ("pending", "Going to the kitchen", ""),
+    ],
+)
+def test_console_line(status, active_form, line):
+    entry = TodoItem(id="t1", content="Go to the kitchen", active_form=active_form, status=status)
+    assert console_line(entry) == line
+
+
 # -- Listeners ----------------------------------------------------------------------
 
 
@@ -634,6 +651,24 @@ def test_listener_gets_the_list_and_the_changed_items():
         (["t1", "t2", "t3"], ["t1"]),
         ([], []),
     ]
+
+
+def test_listener_hears_of_new_evidence_only():
+    # /walkie/todos publishes from a listener, so new evidence must reach it,
+    # or the latched list would lack it while an item waits.
+    todos = TodoList()
+    todos.seed(["Go to the kitchen"])
+    calls: list[tuple[list[list[str]], list[str]]] = []
+    todos.add_listener(
+        lambda items, changed: calls.append(([i.evidence for i in items], [i.id for i in changed]))
+    )
+
+    todos.record_tool_result("navigate_to_location", "call_0", ok=True)  # nothing in progress
+    todos.apply([update("t1", status="in_progress")])
+    todos.record_tool_result("navigate_to_location", "call_1", ok=False)
+    todos.record_tool_result("navigate_to_location", "call_2", ok=True)
+
+    assert calls == [([[]], ["t1"]), ([["call_2"]], [])]
 
 
 def test_raising_listener_does_not_break_the_list():

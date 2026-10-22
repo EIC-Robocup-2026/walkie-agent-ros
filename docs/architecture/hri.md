@@ -280,11 +280,12 @@ flowchart TB
 ## The template
 
 A template in `config/task_templates.toml` seeds the todo list
-([ADR-0041](decisions/0041-todo-list-and-seeding.md)). The file's format is
-not designed yet; this is a sketch:
+([ADR-0041](decisions/0041-todo-list-and-seeding.md)). The format is on
+[The Agent](agent.md#task-templates). The template is not in the file yet,
+because it needs the atomics above:
 
 ```toml title="config/task_templates.toml"
-[hri]
+[templates.hri]
 keywords = ["hri", "receptionist", "guests"]
 task = """
 Receive two guests, one at a time, at the door. Learn each guest's name and

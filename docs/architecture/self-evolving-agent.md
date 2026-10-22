@@ -3,8 +3,8 @@
 !!! note "Status: Proposed"
     The host graph and the todo list are partly built: see
     [The Agent](agent.md#how-a-task-runs) for how they work today. Levels,
-    taint, tool search, the cancel token and the todo topics are not built
-    yet. The rest of this page is the design for team review. Each of the
+    taint, tool search and the cancel token are not built yet. The rest of
+    this page is the design for team review. Each of the
     [open questions](#open-questions) says which phase it blocks.
 
 Today's agent has a fixed set of tools, built once at startup (see
@@ -43,7 +43,7 @@ and the vision models on [Perception](perception.md).
 | ---- | ----- | -------- |
 | Host | `WalkieAgent` subclasses RAI's `LangChainAgent` and runs its own graph, which binds every tool every turn (phase 1) | The same graph binds only the visible tools, filtered by access level and taint |
 | Tools | Ten tools from `build_walkie_tools()`, `update_todos` and `wait_for_person` included, plus `search_robot_docs` after `pixi run whoami-build`. Most return one sentence | Typed atomics and reviewed bundles in git, plus generated tools outside it, in four tiers |
-| Planning | A todo list with rules in code, seedable through `submit()` (phase 1) | Also seedable from templates or `/walkie/task`, and published on `/walkie/todos` |
+| Planning | A todo list with rules in code, seedable through `submit()`, templates or `/walkie/task`, and published on `/walkie/todos` (phase 1) | The same list. In a turn tainted by web content, only a status can change |
 | Tool choice | Every tool is bound | At most 20 bound. The rest are found with `find_tools` |
 | New tools | None at runtime | `request_tool`: reuse, compose or write code, as the access level allows |
 | Models | One agent model in `config.toml` | A model, fallbacks, a timeout and an API key per role |
@@ -685,8 +685,8 @@ T12 on [Access Levels](access-levels.md#safety-model).
 
 ## Open questions
 
-ADR-0037, ADR-0041 and ADR-0043 propose the recommended answers to
-questions 2, 4 and 5, so reviewing them settles those.
+ADR-0037 and ADR-0043 propose the recommended answers to questions 2
+and 5, so reviewing them settles those.
 
 1. **What does a new utterance do mid-task?** Settled: RAI's `queue`
    behaviour, with only reset, "stop" or "never mind" as interrupts
@@ -696,8 +696,9 @@ questions 2, 4 and 5, so reviewing them settles those.
 3. **Host.** Settled: our own graph on `LangChainAgent`, over
    `create_agent` with middleware, built in phase 1
    ([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
-4. **Seeding.** Recommended: templates, `submit()` and `/walkie/task` now,
-   a typed `RunTask` action later. Blocks phase 1.
+4. **Seeding.** Settled: `submit()`, templates and the `/walkie/task`
+   topic, built in phase 1, with a typed `RunTask` action later only if
+   it is needed ([ADR-0041](decisions/0041-todo-list-and-seeding.md)).
 5. **`move_absolute`.** Proposed: an internal `navigate_to_pose` with a
    stand-off, used by presets and, in sim at Standard and Unrestricted, by
    generated code through `ctx.tools`. The alternative gives the LLM
@@ -735,7 +736,7 @@ proposed. See [Architecture](index.md) for how decisions work.
 
     --8<-- "architecture/decisions/0038-own-graph-per-turn-binding.md:body"
 
-??? note "ADR-0041: Keep a seedable todo list for every task · Proposed"
+??? success "ADR-0041: Keep a seedable todo list for every task · Accepted"
 
     --8<-- "architecture/decisions/0041-todo-list-and-seeding.md:body"
 

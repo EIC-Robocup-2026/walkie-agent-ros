@@ -1,0 +1,255 @@
+# The named arm poses the LLM may ask for (ADR-0022, docs/architecture/
+# manipulation.md, "Pose configuration"). The LLM sees names and
+# descriptions, never joint values.
+#
+# Joint values are radians, keyed by joint name: the order sent to the
+# commander comes from /get_joint_states at run time. Poses never set the
+# lift (ADR-0026), so a pose runs at whatever height the lift is at. At
+# startup, walkie_agent.arm.poses checks every pose against
+# config/robot_model.toml, the snapshot of the pinned walkie-ros commit, and
+# lists every error at once.
+#
+# Keys of a pose:
+#   description     shown to the LLM
+#   travel_safe     true when the robot may drive with an arm in this pose
+#                   (ADR-0025)
+#   srdf_state      the SRDF group state the tables copy. The loader checks
+#                   that they still equal it, so a retune in walkie-ros is
+#                   copied on purpose. Drop it when retuning a pose here.
+#   offered         false keeps the pose from the LLM (default true)
+#   both_arms       false when the two tables cannot be sent together as one
+#                   both_arms goal (default true)
+#   tried_on_robot  true once the pose has run on the robot through
+#                   /set_joint_position with collision checking on. Until
+#                   then only the simulation offers it (default false).
+#   timeout_s       how long a move to the pose may take (default 30)
+#   left, right     the joint table of each arm the pose can move
+
+[grippers]
+# Travel of one finger, in metres. The jaw opens about twice as wide.
+open_position = 0.044    # the SRDF's "open"
+half_position = 0.036    # above 0.03, or it counts as a close (the SRDF's
+                         # "half_closed", 0.022, does)
+closed_position = 0.0    # the SRDF's "closed". At most 0.03, so grasp
+                         # detection runs
+
+[poses.home]
+srdf_state = "home"
+travel_safe = true       # walkie-agent-v2 drove and carried objects in it
+tried_on_robot = true
+description = "Both arms down beside the body, elbows almost straight."
+
+[poses.home.left]
+openarm_left_joint1 = 0.2618
+openarm_left_joint2 = 0.0
+openarm_left_joint3 = 0.0
+openarm_left_joint4 = 0.2618
+openarm_left_joint5 = 0.0
+openarm_left_joint6 = 0.0
+openarm_left_joint7 = 0.0
+
+[poses.home.right]
+openarm_right_joint1 = -0.2618
+openarm_right_joint2 = 0.0
+openarm_right_joint3 = 0.0
+openarm_right_joint4 = 0.2618
+openarm_right_joint5 = 0.0
+openarm_right_joint6 = 0.0
+openarm_right_joint7 = 0.0
+
+[poses.hands_up]
+srdf_state = "hands_up"
+travel_safe = false
+tried_on_robot = true
+description = "Shoulders out and elbows bent up, to raise a held object clear."
+
+[poses.hands_up.left]
+openarm_left_joint1 = 0.6458
+openarm_left_joint2 = 0.0
+openarm_left_joint3 = 0.0
+openarm_left_joint4 = 2.0769
+openarm_left_joint5 = 0.0
+openarm_left_joint6 = 0.0
+openarm_left_joint7 = -0.2094
+
+[poses.hands_up.right]
+openarm_right_joint1 = -0.6458
+openarm_right_joint2 = 0.0
+openarm_right_joint3 = 0.0
+openarm_right_joint4 = 2.0769
+openarm_right_joint5 = 0.0
+openarm_right_joint6 = 0.0
+openarm_right_joint7 = 0.2094
+
+[poses.standby]
+srdf_state = "standby"
+travel_safe = false      # the elbows stick out and clipped door frames
+tried_on_robot = true
+description = "Arms raised as in hands_up, with the wrists turned a quarter turn."
+
+[poses.standby.left]
+openarm_left_joint1 = 0.6458
+openarm_left_joint2 = 0.0
+openarm_left_joint3 = 0.0
+openarm_left_joint4 = 2.0769
+openarm_left_joint5 = 0.0
+openarm_left_joint6 = 0.0
+openarm_left_joint7 = -1.5708
+
+[poses.standby.right]
+openarm_right_joint1 = -0.6458
+openarm_right_joint2 = 0.0
+openarm_right_joint3 = 0.0
+openarm_right_joint4 = 2.0769
+openarm_right_joint5 = 0.0
+openarm_right_joint6 = 0.0
+openarm_right_joint7 = 1.5708
+
+# The SRDF has tray only for both arms; the two tables are cut from that
+# state.
+[poses.tray]
+srdf_state = "tray"
+travel_safe = false      # to be confirmed on the robot
+tried_on_robot = false   # walkie-agent-v2's code never called it
+description = "Both arms set to hold a tray in front of the body."
+
+[poses.tray.left]
+openarm_left_joint1 = 0.5934
+openarm_left_joint2 = -0.4712
+openarm_left_joint3 = 0.1396
+openarm_left_joint4 = 1.4661
+openarm_left_joint5 = -1.5707
+openarm_left_joint6 = -0.7853
+openarm_left_joint7 = 1.0821
+
+[poses.tray.right]
+openarm_right_joint1 = -0.5934
+openarm_right_joint2 = 0.0
+openarm_right_joint3 = 0.3665
+openarm_right_joint4 = 1.3614
+openarm_right_joint5 = 1.5707
+openarm_right_joint6 = 0.576
+openarm_right_joint7 = -1.5882
+
+# Left arm only: the SRDF has no right-arm pre-place. Its both-arm state
+# keeps the right arm in standby.
+[poses.pre_place]
+srdf_state = "pre-place"
+travel_safe = false
+offered = false          # a step of the place skill, which runs robot-side
+tried_on_robot = true
+description = "Left hand raised over a surface, before placing."
+
+[poses.pre_place.left]
+openarm_left_joint1 = 0.6458
+openarm_left_joint2 = 0.0
+openarm_left_joint3 = 0.0
+openarm_left_joint4 = 1.2392
+openarm_left_joint5 = 1.5707
+openarm_left_joint6 = -0.5585
+openarm_left_joint7 = -1.5708
+
+# The SRDF's both-arm basket keeps the right arm in standby, so moving both
+# arms here is a new pairing, to be tried before it is offered.
+[poses.basket]
+srdf_state = "basket"
+travel_safe = false
+offered = false          # needs the lift: tuned with it lowered to 0.303 m
+tried_on_robot = true
+description = "Left arm at a basket, for use with the lift lowered."
+
+[poses.basket.left]
+openarm_left_joint1 = -0.6807
+openarm_left_joint2 = 0.1745
+openarm_left_joint3 = 0.5061
+openarm_left_joint4 = 0.192
+openarm_left_joint5 = -0.4712
+openarm_left_joint6 = 0.2443
+openarm_left_joint7 = 0.6981
+
+[poses.basket.right]
+openarm_right_joint1 = 0.6109
+openarm_right_joint2 = 0.0
+openarm_right_joint3 = -0.2618
+openarm_right_joint4 = 0.2269
+openarm_right_joint5 = 0.3316
+openarm_right_joint6 = 0.0
+openarm_right_joint7 = -0.733
+
+[poses.basket_hold]
+srdf_state = "basket_hold"
+travel_safe = false
+offered = false          # needs the lift: raising it is what lifts the basket
+tried_on_robot = true
+description = "Left arm holding a basket, for use with the lift at the top."
+
+[poses.basket_hold.left]
+openarm_left_joint1 = -0.6807
+openarm_left_joint2 = 0.1745
+openarm_left_joint3 = 0.5061
+openarm_left_joint4 = 0.192
+openarm_left_joint5 = -0.4712
+openarm_left_joint6 = 0.2443
+openarm_left_joint7 = 0.6981
+
+[poses.basket_hold.right]
+openarm_right_joint1 = -0.2793
+openarm_right_joint2 = 0.0
+openarm_right_joint3 = -0.0873
+openarm_right_joint4 = 0.8727
+openarm_right_joint5 = 0.1047
+openarm_right_joint6 = -0.0175
+openarm_right_joint7 = -0.8378
+
+# No SRDF state: the HRI bag hand-over (hri.md, "The bag hand-over").
+# Recorded in the MuJoCo simulation on 2026-10-23: with the lift raised to
+# 0.7435 m, walkie-agent-v2's Cartesian target for the hand-over (x 0.45,
+# y 0.16, z 1.15, roll -0.8, pitch 0, yaw -1.57 in base_footprint) was sent
+# once through /go_to_pose, and the joints were read with /get_joint_states.
+# The agent never sends Cartesian goals itself. Re-record it on the robot,
+# the same way, before the robot run.
+[poses.receive]
+travel_safe = false
+tried_on_robot = false
+description = "Left hand held out in front, to take a bag from a person."
+
+[poses.receive.left]
+openarm_left_joint1 = -0.0658863214414044
+openarm_left_joint2 = -0.07971820689149219
+openarm_left_joint3 = 0.015474061909107776
+openarm_left_joint4 = 1.8928851211307536
+openarm_left_joint5 = 1.5010163287531721
+openarm_left_joint6 = 0.3812924696543403
+openarm_left_joint7 = 0.027460132968568748
+
+# No SRDF state: where the hand-over ends, holding the bag. Recorded like
+# receive, reached from receive, from walkie-agent-v2's carry target (x 0.1413,
+# y 0.0481, z 0.9640, roll -1.2972, pitch -0.3040, yaw -3.0219). The right
+# table mirrors the left: every joint negated except joint 4, as in the SRDF
+# presets and the mirrored limits of joints 1 and 2. In the simulation the
+# right hand landed within 6 mm of the left hand's position with y negated.
+# Re-record both tables on the robot before the robot run.
+[poses.carry]
+travel_safe = true       # required: the robot guides the guest holding the bag
+both_arms = false        # both in carry, the hands meet in front of the body
+                         # and MoveIt finds no plan
+tried_on_robot = false
+description = "Holding an object close to the body."
+
+[poses.carry.left]
+openarm_left_joint1 = 0.502319611786006
+openarm_left_joint2 = -0.49939831397427176
+openarm_left_joint3 = 0.8376006267167734
+openarm_left_joint4 = 1.5558171542209278
+openarm_left_joint5 = 1.1509266972060037
+openarm_left_joint6 = 0.743132906887623
+openarm_left_joint7 = -0.7650041056352623
+
+[poses.carry.right]
+openarm_right_joint1 = -0.502319611786006
+openarm_right_joint2 = 0.49939831397427176
+openarm_right_joint3 = -0.8376006267167734
+openarm_right_joint4 = 1.5558171542209278
+openarm_right_joint5 = -1.1509266972060037
+openarm_right_joint6 = -0.743132906887623
+openarm_right_joint7 = 0.7650041056352623

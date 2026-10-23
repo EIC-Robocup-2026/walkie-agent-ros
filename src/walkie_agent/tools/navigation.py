@@ -5,8 +5,9 @@ config/locations.toml, and relative moves are bounded in length.
 """
 
 import math
+import threading
 import time
-from typing import Type
+from typing import Any, Type
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, Quaternion, Transform
@@ -28,6 +29,12 @@ from walkie_agent.tools.waiters import wait_for_future
 # base_footprint, so headings read from base_link would be off by a quarter turn.
 MAP_FRAME = "map"
 ROBOT_FRAME = "base_footprint"
+
+# The arm check before a drive reads the joints once, bounded like every arm
+# read (ADR-0024).
+ARM_CHECK_TIMEOUT_S = 3.0
+# Added to a drive's answer when the arm check could not read the arms.
+ARMS_UNKNOWN = "Arm state unknown: the commander did not answer."
 
 _STATUS_NAMES = {
     GoalStatus.STATUS_UNKNOWN: "UNKNOWN",
@@ -75,6 +82,10 @@ class Nav2GoalTool(BaseROS2Tool):
     exception's message, so the LLM reads the same sentence and the todo
     list's ledger counts the call as failed (ADR-0041). Called with a plain
     dict instead of a tool call, the tool returns that sentence as a string.
+
+    With `arm`, the agent's CommanderClient, every drive first checks that
+    both arms are in travel-safe poses (ADR-0025). Without it, as on a robot
+    run without --arms, there is no check.
     """
 
     handle_tool_error: bool = True
@@ -82,6 +93,9 @@ class Nav2GoalTool(BaseROS2Tool):
     action_name: str = "navigate_to_pose"
     server_timeout_sec: float = 2.0
     navigation_timeout_sec: float = 120.0
+    # A walkie_agent.arm.commander.CommanderClient, or None. Typed Any: the
+    # arm package imports walkie_agent.toolbox, which imports this module.
+    arm: Any = None
 
     _client: ActionClient | None = PrivateAttr(default=None)
 
@@ -92,12 +106,16 @@ class Nav2GoalTool(BaseROS2Tool):
             )
         return self._client
 
-    def _navigate(self, target: str, x: float, y: float, yaw: float) -> None:
+    def _navigate(self, target: str, x: float, y: float, yaw: float) -> str:
         """Drive to (x, y, yaw) in `frame_id`. Returns on arrival, or raises
         ToolException with a message for the LLM that names `target` and says
-        what went wrong."""
+        what went wrong.
+
+        Returns "" or, when the arms could not be checked, a note with a
+        leading space for the caller to add to its answer."""
         if not self.is_writable(self.action_name):
             raise ToolException(f"Action {self.action_name} is not writable by this agent.")
+        note = self._check_arms()
 
         client = self._get_client()
         if not client.wait_for_server(timeout_sec=self.server_timeout_sec):
@@ -127,6 +145,41 @@ class Nav2GoalTool(BaseROS2Tool):
             status = _STATUS_NAMES.get(response.status, str(response.status))
             detail = f" {response.result.error_msg}" if response.result.error_msg else ""
             raise ToolException(f"Navigation to {target} failed ({status}).{detail}")
+        return note
+
+    def _check_arms(self) -> str:
+        """The interlock: refuse to drive with an arm out (ADR-0025).
+
+        Raises ToolException when an arm is known to be out of every
+        travel-safe pose, or still moving. When the commander is missing or
+        does not answer, the robot drives, and the returned note says the
+        arms were not checked: failing open keeps navigation working while
+        the arm stack is down, at the cost that a crashed commander disables
+        the check (ADR-0025). Returns "" after a check that passed.
+        """
+        if self.arm is None:
+            return ""
+        # Here, not at the top: walkie_agent.toolbox imports this module.
+        from walkie_agent.toolbox.types import StepError
+
+        unknown = f" {ARMS_UNKNOWN}"
+        # available() never waits, so a run with no commander drives at once
+        # instead of after the read's timeout.
+        if not self.arm.available():
+            return unknown
+        try:
+            # The tool has no cancel event; a fresh one is never set, so only
+            # the timeout ends the read.
+            state = self.arm.read_arms(threading.Event(), timeout_s=ARM_CHECK_TIMEOUT_S)
+        except StepError as e:
+            if e.code == "PRECONDITION_FAILED":
+                raise ToolException(f"Not driving: an arm is still moving. {e.message}") from e
+            return unknown
+        if state.unsafe_arms:
+            raise ToolException(_arms_not_safe(state.unsafe_arms))
+        if state.travel_safe is None:
+            return unknown
+        return ""
 
     def _make_pose(self, x: float, y: float, yaw: float) -> PoseStamped:
         pose = PoseStamped()
@@ -162,8 +215,8 @@ class NavigateToLocationTool(Nav2GoalTool):
             known = ", ".join(self.locations) or "none"
             raise ToolException(f"Unknown location '{location}'. Known locations: {known}.")
 
-        self._navigate(target.name, target.x, target.y, target.yaw)
-        return f"Arrived at {target.name}."
+        note = self._navigate(target.name, target.x, target.y, target.yaw)
+        return f"Arrived at {target.name}.{note}"
 
 
 class MoveRelativeToolInput(BaseModel):
@@ -240,12 +293,12 @@ class MoveRelativeTool(Nav2GoalTool):
         target_yaw = _normalize_angle(yaw + math.radians(turn_deg))
 
         target = f"the point {_describe_move(forward_m, left_m, turn_deg)}"
-        self._navigate(target, x, y, target_yaw)
+        note = self._navigate(target, x, y, target_yaw)
         return (
             f"Moved {_describe_move(forward_m, left_m, turn_deg)}. "
             f"Now at x={_round(x, 2):.2f} m, y={_round(y, 2):.2f} m, "
             f"heading {_round(math.degrees(target_yaw), 0):.0f} degrees "
-            f"in the {self.frame_id} frame."
+            f"in the {self.frame_id} frame.{note}"
         )
 
     def _tf_publisher_hint(self) -> str:
@@ -289,6 +342,19 @@ def tf_publisher_hint(node: Node) -> str:
     return (
         " No node publishes /tf: either the robot is not running, or the "
         "agent uses a different ROS_DOMAIN_ID or Zenoh router than the robot."
+    )
+
+
+def _arms_not_safe(arms: tuple[str, ...]) -> str:
+    """The refusal for `arms`, the arms out of every travel-safe pose, left first."""
+    if len(arms) == 1:
+        return (
+            f"Not driving: the {arms[0]} arm is not in a pose that is safe for driving. "
+            "Move it with move_arm_to_pose first, for example 'home'."
+        )
+    return (
+        "Not driving: the arms are not in a pose that is safe for driving. Move them with "
+        "move_arm_to_pose first, for example 'home'."
     )
 
 

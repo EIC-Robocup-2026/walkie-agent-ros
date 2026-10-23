@@ -23,8 +23,9 @@ from walkie_agent.tools.speech import SpeakTool
 from walkie_agent.tools.todos import UpdateTodosTool, WaitForPersonTool
 
 if TYPE_CHECKING:
-    # Only for the annotation: walkie_agent.toolbox imports FORBIDDEN_NAMES
-    # from this module.
+    # Only for the annotations: walkie_agent.toolbox imports FORBIDDEN_NAMES
+    # from this module, and walkie_agent.arm imports walkie_agent.toolbox.
+    from walkie_agent.arm.commander import CommanderClient
     from walkie_agent.toolbox import Toolbox
 
 __all__ = [
@@ -58,19 +59,22 @@ def build_walkie_tools(
     whoami_dir: Path | None = None,
     todos: TodoList | None = None,
     toolbox: "Toolbox | None" = None,
+    arm: "CommanderClient | None" = None,
 ) -> list[BaseTool]:
     """The agent's tools. With `todos`, also update_todos and wait_for_person,
     which act on that list; wait_for_person speaks through the same speak tool.
-    With `toolbox`, also its atomic tools."""
+    With `toolbox`, also its atomic tools. With `arm`, the agent's
+    CommanderClient, both navigation tools refuse to drive with an arm out
+    (ADR-0025)."""
     speak = SpeakTool(connector=connector, forbidden=FORBIDDEN_NAMES)
     tools: list[BaseTool] = [
         # Walkie-specific tools.
         speak,
         ListLocationsTool(locations=locations),
         NavigateToLocationTool(
-            connector=connector, locations=locations, forbidden=FORBIDDEN_NAMES
+            connector=connector, locations=locations, forbidden=FORBIDDEN_NAMES, arm=arm
         ),
-        MoveRelativeTool(connector=connector, forbidden=FORBIDDEN_NAMES),
+        MoveRelativeTool(connector=connector, forbidden=FORBIDDEN_NAMES, arm=arm),
         FindObjectsTool(connector=connector, forbidden=FORBIDDEN_NAMES),
         # Premade RAI tools, used as-is.
         GetCurrentPoseTool(

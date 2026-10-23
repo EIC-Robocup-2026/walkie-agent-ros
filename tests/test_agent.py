@@ -14,8 +14,10 @@ from rai.communication.ros2 import ROS2Connector, ROS2HRIConnector, ROS2HRIMessa
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Empty, String
 
+from conftest import PROJECT_ROOT
 from scripted_llm import ScriptedChatModel, tool_call
-from walkie_agent.agent import SYSTEM_PROMPT, WalkieAgent, create_walkie_agent
+from walkie_agent.agent import ARM_RULES, SYSTEM_PROMPT, WalkieAgent, create_walkie_agent
+from walkie_agent.arm.commander import CommanderClient
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory, ModelVector
 from walkie_agent.perception.vision_feed import VisionFeed
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, hash_vector
@@ -124,13 +126,17 @@ def test_the_agent_gets_a_toolbox_with_only_the_vision_atomics(connector, locati
     assert agent.toolbox.ctx.connector is connector
     assert isinstance(agent.toolbox.ctx.backend("vision"), VisionFeed)
     assert not agent.toolbox.ctx.has_backend("people_memory")
-    # recognize_person and remember_person need people_memory, so a robot
-    # run without the mock never offers them.
+    # recognize_person and remember_person need people_memory, and the arm
+    # atomics need the arm backend, which only --arms adds, so a robot run
+    # without them never offers those tools, nor checks the arms before a drive.
+    assert not agent.toolbox.ctx.has_backend("arm")
     assert [t.name for t in agent.toolbox.tools()] == ["find_people", "find_seats"]
     assert [t.name for t in agent.tools.visible() if isinstance(t, AtomicTool)] == [
         "find_people",
         "find_seats",
     ]
+    assert agent.tools.get("navigate_to_location").arm is None
+    assert agent.tools.get("move_relative").arm is None
 
 
 def test_the_mock_people_memory_loads_the_people_atomics_and_clears_on_a_new_task(
@@ -147,6 +153,7 @@ def test_the_mock_people_memory_loads_the_people_atomics_and_clears_on_a_new_tas
     memory.remember("Sam", {}, [ModelVector(FAKE_FACE_MODEL, hash_vector("sam", 512))], [])
 
     assert isinstance(memory, InMemoryPeopleMemory)
+    # No arm atomic: the mock does not imply --arms.
     assert [t.name for t in agent.toolbox.tools()] == [
         "find_people",
         "find_seats",
@@ -156,6 +163,50 @@ def test_the_mock_people_memory_loads_the_people_atomics_and_clears_on_a_new_tas
     assert len(memory) == 1
     agent.toolbox.new_task()
     assert len(memory) == 0
+
+
+def test_arms_loads_the_arm_atomics_the_arm_rules_and_the_drive_check(
+    fake_walkie, connector, locations, monkeypatch
+):
+    """--arms adds a CommanderClient as the arm backend, shared by the atomics and the drives.
+
+    No commander runs here, so the drive goes ahead and says the arms were
+    not checked (ADR-0025).
+    """
+    # CommanderClient reads config/arm_poses.toml from the working
+    # directory, as main.py's other config files are read.
+    monkeypatch.chdir(PROJECT_ROOT)
+    llm = ScriptedChatModel(
+        responses=[
+            tool_call("navigate_to_location", {"location": "kitchen"}),
+            AIMessage(content="At the kitchen."),
+        ]
+    )
+    agent = create_walkie_agent(llm, connector, locations, target_connectors={}, arms=True)
+    commander = agent.toolbox.ctx.backend("arm")
+    try:
+        assert isinstance(commander, CommanderClient)
+        assert [t.name for t in agent.toolbox.tools()] == [
+            "find_people",
+            "find_seats",
+            "get_arm_state",
+            "list_arm_poses",
+            "move_arm_to_pose",
+            "set_gripper",
+        ]
+        assert agent.tools.get("navigate_to_location").arm is commander
+        assert agent.tools.get("move_relative").arm is commander
+
+        agent.agent.invoke({"messages": [HumanMessage(content="Go to the kitchen.")]})
+
+        final_input = llm.received[-1]
+        assert final_input[0].content == SYSTEM_PROMPT + ARM_RULES
+        tool_outputs = [m.content for m in final_input if isinstance(m, ToolMessage)]
+        assert tool_outputs == [
+            "Arrived at kitchen. Arm state unknown: the commander did not answer."
+        ]
+    finally:
+        commander.destroy()
 
 
 def test_todo_tools_and_the_graph_share_one_list(connector, locations):

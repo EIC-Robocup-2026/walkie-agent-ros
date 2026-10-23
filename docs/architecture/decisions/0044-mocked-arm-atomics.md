@@ -1,4 +1,4 @@
-# ADR-0044: Mock the arm atomics, and let generated tools move the arms only through them
+# ADR-0044: Mock run_skill first, and let generated tools move the arms only through the arm atomics
 
 <!-- --8<-- [start:body] -->
 **Status:** Proposed · **Date:** 2026-10-22
@@ -19,10 +19,10 @@ the contracts:
 - each walkie-ros node the agent calls gets a ROS-level fake for tests
   ([ADR-0019](/architecture/decisions/0019-test-fakes-fast-dds.md)).
 
-None of the clients exists yet. walkie-ros has no `RunSkill` interface (W4)
-and no skill server (W5). `src/walkie_agent/sim/` holds only
-`fake_walkie.py`, so there is no `FakeCommander` either. The team has
-decided not to call MoveIt 2 yet.
+walkie-ros has no `RunSkill` interface (W4) and no skill server (W5), so
+`run_skill` has no real backend. The commander does run, with MoveIt, in
+walkie-ros's MuJoCo simulation (checked on 2026-10-23), and the agent pins
+its `my_robot_interfaces` messages.
 
 Generated tools raise a second question. The MuJoCo simulation spawns the
 arm, gripper, lift and head controllers, so generated code at the
@@ -40,21 +40,22 @@ Unrestricted level could command them directly through `ctx.ros`.
   `PRECONDITION_FAILED`, `CANCELED`, `SAFETY_STOP` and `TIMED_OUT` raise
   `SKILL_FAILED`, `PRECONDITION_FAILED`, `CANCELLED`, `SAFETY_STOP` and
   `TIMEOUT`.
-- The atomics reach the arms through backend protocols. The first backends
-  are mocks at the ADR-0021 and ADR-0027 contracts: `MockArmBackend` and
-  `MockSkillServer`. MoveIt 2 is not called. The commander client (ADR-0021,
-  [ADR-0023](/architecture/decisions/0023-motion-supervisor.md)) and the
-  skill-server client (ADR-0027) are built on the real-backends track, from
-  phase 2 of the self-evolving agent. It is done when the bundle tests rerun
-  against the real clients.
+- The atomics reach the arms through backends. `move_arm_to_pose`,
+  `set_gripper`, `get_arm_state` and `list_arm_poses` call the real
+  commander through `CommanderClient`, the `arm` backend (ADR-0021). Their
+  tests run against the ROS-level `FakeCommander` (ADR-0019). `run_skill`'s
+  first backend is `MockSkillServer`, a mock at the ADR-0027 contract. The
+  skill-server client (ADR-0027) and the MotionSupervisor
+  ([ADR-0023](/architecture/decisions/0023-motion-supervisor.md)) are built
+  on the real-backends track, from phase 2 of the self-evolving agent. It is
+  done when the bundle tests rerun against the real clients.
 - Each atomic declares its backends in `META.requires`. The registry hides a
   tool whose backend is a mock unless the agent runs in simulation, and a
   real run refuses to start if a required backend is a mock.
-- The sim harvest serves the arms with a ROS-level `FakeSkillServer`
+- The sim harvest serves `run_skill` with a ROS-level `FakeSkillServer`
   (`src/walkie_agent/sim/fake_skill_server.py`). It answers with the
   ADR-0027 outcomes, and mirrors picked and placed objects into MuJoCo
-  through `SetFreeJointState`. A `FakeCommander` follows once the
-  commander's interface is pinned.
+  through `SetFreeJointState`.
 - Generated tools are to move the arms only through these atomics. At
   Standard and Unrestricted they call `run_skill`, `move_arm_to_pose` and
   `set_gripper` through `ctx.tools`. At Competition they have no M effect,
@@ -74,34 +75,38 @@ We rejected:
 | ------ | ------- |
 | Raw sim arm controllers at Unrestricted | They would show which arm atomics are missing. But code that drives the controllers skips MoveIt's planning and collision checking (ADR-0021), so it is never promotable as-is. Cleaning up after it needs controller-aware stops, and the ROS bridge only knows stop messages for `Twist` and `TwistStamped`. Phase 4b, which ships only on harvest evidence, therefore adds no raw arm controllers. They can be reopened on evidence from the harvest's atomic wishlist. |
 | Grasp planning in the agent, from poses and grippers | ADR-0021 and ADR-0027 put picks robot-side, and the system prompt says never to improvise a pick. The code would be thrown away when the skill server lands. walkie-ros already serves `/grasp/from_cloud` (GraspNet), which belongs behind the robot-side pick skill. |
-| Building the real commander and skill-server clients first | Presets, bundles and the harvest would wait for W4, W5 and a `FakeCommander`, for W9 before any test of the real commander on mock hardware, and for W8 before a dry run on the real robot. The mocks let that work start now, at the same contracts. |
+| Building the real skill-server client first | Presets, bundles and the harvest would wait for W4 and W5. The mock lets that work start now, at the same contract. |
+| A `MockArmBackend` for the pose and gripper atomics | The commander already runs with MoveIt in the MuJoCo simulation, so a mock would only add a second behavior to keep in step. The `FakeCommander` gives the tests the commander's interface without MoveIt. |
 
 This ADR does not change ADR-0021 or ADR-0027, which stay the contracts for
 the real backends. It changes the build order, with one narrowing: the
 presets give `run_skill` an object handle as `target`, while `RunSkill`'s
 `target` is free text. How the real client passes the handle is open (open
 question 10 on the [manipulation page](/architecture/manipulation.md#open-questions)).
-Unit tests use protocol mocks, not the ROS-level fakes ADR-0019 asks for;
-ADR-0037 records that gap, and the `FakeSkillServer` and the later
-`FakeCommander` close it.
+`run_skill`'s unit tests use a protocol mock, not the ROS-level fake
+ADR-0019 asks for; ADR-0037 records that gap, and the `FakeSkillServer`
+closes it.
 
 **Consequences**
 
 - Presets with arm steps (`pick_object`, `pickup_object_in_view`,
-  `hand_over`) can be built, linted and tested now, with no robot, no MoveIt
-  and no walkie-ros change.
-- A mocked success says nothing about real grasps. Harvest results measure
-  the agent's choices, not manipulation. The presets stay hidden on the real
-  robot until their backends are real.
-- The mocks can drift from the real interfaces. They follow the ADR-0027
-  outcomes and the manipulation page's sentences, and the real-client reruns
-  catch the rest.
+  `hand_over`) can be built, linted and tested now, with no robot and no
+  walkie-ros change. Their pose and gripper steps run on the `FakeCommander`
+  in tests.
+- A mocked `run_skill` success says nothing about real grasps. Harvest
+  results measure the agent's choices, not manipulation. The presets stay
+  hidden on the real robot until their backends are real.
+- `MockSkillServer` can drift from the real interface. It follows the
+  ADR-0027 outcomes and the manipulation page's sentences, and the
+  real-client reruns catch the rest.
 - "Pick, then drive" exercises the
   [ADR-0025](/architecture/decisions/0025-travel-safe-interlock.md) interlock
-  against the mock. The pick presets end in `carry`, so it must be travel-safe.
-- Until the MotionSupervisor lands with the commander client, a reset trips
-  the session's cancel token. The bundle runner checks it between steps, and
-  a running step stops only when its own wait checks the token.
+  against the commander. The pick presets end in `carry`, so it must be
+  travel-safe.
+- Until the MotionSupervisor lands, a reset trips the session's cancel token.
+  The bundle runner checks it between steps. A running arm atomic cancels its
+  commander goal; any other running step stops only when its own wait checks
+  the token.
 - Through the atomics, generated tools can do with the arms only what the
   atomics express. A new arm capability needs a human to add an atomic, a
   skill or a named pose; the harvest's atomic wishlist reports the need.

@@ -25,3 +25,20 @@ repositories:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-vision.git
     version: b050ea107ef5f22ba8cc3bcfb83212d70cb8bb96
+  # my_robot_interfaces, the interfaces of the arm commander:
+  # SetJointPosition, ControlGripper and GetJointStates (ADR-0018, ADR-0021).
+  # The type names must match walkie-ros exactly, so the package is built from
+  # this clone rather than copied under another name. The whole repository is
+  # cloned; build-ros2 builds only my_robot_interfaces. It is a full clone: it
+  # downloads about 115 MB, every branch's objects with the MuJoCo world
+  # assets included, and takes about 250 MB on disk with the checked-out
+  # files, which is acceptable for a clone made once. config/robot_model.toml
+  # is generated from this clone and a test compares them (ADR-0022). Move the
+  # pin when the commander's interface changes, for the same reason as
+  # walkie-database. This is origin/main of 2026-10-23, the commit the
+  # simulation check used; ADR-0018 asks for the commit on the robot PC, so
+  # compare the two before the first robot run.
+  ros2_ws/src/walkie-ros:
+    type: git
+    url: https://github.com/EIC-Robocup-2026/walkie-ros.git
+    version: 6b26daab15d935a19621e51ebe8c10d81a3d8224

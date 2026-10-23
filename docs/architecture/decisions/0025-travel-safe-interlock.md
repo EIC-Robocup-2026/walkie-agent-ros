@@ -11,16 +11,21 @@ an outstretched arm can hit people, furniture or door frames.
 
 **Decision**
 
-Before sending a navigation goal, `navigate_to_location` reads both arms'
-joint states (3 s limit):
+Before sending a navigation goal, `navigate_to_location` and
+`move_relative` read both arms' joint states (3 s limit):
 
 - If each arm matches a pose with `travel_safe = true`, it drives. Arms are
   matched one at a time, since a pose can move one arm
   ([ADR-0022](/architecture/decisions/0022-named-arm-poses.md)).
 - If either arm matches no such pose, it refuses, and tells the LLM to move
   the arms to one first, for example `home`.
+- If an arm goal is still running, it refuses, and says an arm is still
+  moving.
 - If the commander does not answer, it drives anyway, and says that the arm
-  state is unknown.
+  state is unknown. When the commander's service or actions are not
+  discovered, it drives at once, without the 3 s wait.
+
+The check runs only when the agent has an arm backend (`--arms`).
 
 **Consequences**
 

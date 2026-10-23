@@ -697,17 +697,25 @@ def test_atomics_load_only_with_their_backends(make_package, caplog):
     assert tools[1].invoke(call({}, name="lift_box")).content == "3 chairs."
 
 
-def test_the_shipped_package_has_the_people_and_seat_atomics():
-    """vision alone loads find_people and find_seats; people_memory adds the other two."""
+def test_the_shipped_package_has_the_people_seat_and_arm_atomics():
+    """vision alone loads find_people and find_seats; people_memory adds two; arm adds four."""
     atomics = discover()
     vision_only = ToolContext(None, backends={"vision": object()})
     both = ToolContext(None, backends={"vision": object(), "people_memory": object()})
+    arm_only = ToolContext(None, backends={"arm": object()})
+    everything = ToolContext(
+        None, backends={"vision": object(), "people_memory": object(), "arm": object()}
+    )
 
     assert [atomic.META.name for atomic in atomics] == [
         "find_people",
         "find_seats",
+        "get_arm_state",
+        "list_arm_poses",
+        "move_arm_to_pose",
         "recognize_person",
         "remember_person",
+        "set_gripper",
     ]
     assert [tool.name for tool in build_atomic_tools(vision_only, atomics)] == [
         "find_people",
@@ -719,6 +727,13 @@ def test_the_shipped_package_has_the_people_and_seat_atomics():
         "recognize_person",
         "remember_person",
     ]
+    assert [tool.name for tool in build_atomic_tools(arm_only, atomics)] == [
+        "get_arm_state",
+        "list_arm_poses",
+        "move_arm_to_pose",
+        "set_gripper",
+    ]
+    assert len(build_atomic_tools(everything, atomics)) == len(atomics)
 
 
 # -- ToolContext -----------------------------------------------------------------

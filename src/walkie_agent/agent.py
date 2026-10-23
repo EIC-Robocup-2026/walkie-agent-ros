@@ -20,6 +20,7 @@ from rai.messages import SystemMultimodalMessage
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Empty, String
 
+from walkie_agent.arm.commander import CommanderClient
 from walkie_agent.graph import ToolSet, build_walkie_graph
 from walkie_agent.locations import Location
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory
@@ -62,6 +63,20 @@ Rules:
   with a note, and say so briefly with `speak`.
 - Keep spoken sentences short and friendly. They are read out by a
   text-to-speech voice, so never use markdown, lists or code in them.
+"""
+
+# Added to the rules when the arm atomics load (--arms), so a run without
+# arms is not told about tools it does not have (manipulation.md, Tools).
+ARM_RULES = """\
+- You also have two arms with grippers. `list_arm_poses` lists the poses
+  `move_arm_to_pose` takes; `set_gripper` opens and closes a hand.
+- Before you move an arm or a gripper, tell the people near you with `speak`.
+- Before you drive, move both arms to a pose that is safe for driving, such as
+  `home`. Every arm tool ends by saying whether the arms are safe for driving.
+- If an arm or gripper tool fails, call `get_arm_state`, then try again at most
+  once.
+- Never pick up an object by combining poses and gripper commands yourself.
+  Taking an object a person hands you is fine.
 """
 
 # LangGraph stops a run after this many steps and raises GraphRecursionError.
@@ -461,12 +476,16 @@ def create_walkie_agent(
     whoami_dir: Path | None = None,
     templates: Mapping[str, TaskTemplate] | None = None,
     mock_people_memory: bool = False,
+    arms: bool = False,
 ) -> WalkieAgent:
     """Build the agent. `whoami_dir` adds the robot description and documentation
     search from `pixi run whoami-build`, when they have been built (see whoami.py).
     `templates` are the task templates (see tasks.py). `mock_people_memory` adds
     an in-memory people memory, so recognize_person and remember_person load;
-    for sim and tests only."""
+    for sim and tests only. `arms` adds the commander client as the `arm`
+    backend, so the arm atomics load and the navigation tools refuse to drive
+    with an arm out; it loads config/arm_poses.toml, and raises ArmPoseError
+    when that file is wrong."""
     # One list, shared by the todo tools and the graph.
     todos = TodoList()
     # VisionFeed is always created: without a walkie-vision publisher it only
@@ -480,16 +499,27 @@ def create_walkie_agent(
         # a mock that forgets them on restart.
         memory = InMemoryPeopleMemory()
         backends["people_memory"] = memory
+    commander = None
+    if arms:
+        # Without an arm backend, no arm atomic loads and the robot drives
+        # without the arm check, as on the robot until the MotionSupervisor
+        # exists (manipulation.md). Without a commander running it does no
+        # harm: the arm atomics fail with UNAVAILABLE, and the check drives.
+        commander = CommanderClient(connector)
+        backends["arm"] = commander
     toolbox = Toolbox(connector, backends)
     if memory is not None:
         # Each task starts with no guests, so a guest remembered in one sim
         # run is not recognized in the next.
         toolbox.on_new_task(memory.clear)
+    prompt = SYSTEM_PROMPT + ARM_RULES if arms else SYSTEM_PROMPT
     return WalkieAgent(
         target_connectors=target_connectors,
         llm=llm,
-        tools=build_walkie_tools(connector, locations, whoami_dir, todos=todos, toolbox=toolbox),
-        system_prompt=build_system_prompt(SYSTEM_PROMPT, whoami_dir),
+        tools=build_walkie_tools(
+            connector, locations, whoami_dir, todos=todos, toolbox=toolbox, arm=commander
+        ),
+        system_prompt=build_system_prompt(prompt, whoami_dir),
         stream_response=stream_response,
         todos=todos,
         templates=templates,

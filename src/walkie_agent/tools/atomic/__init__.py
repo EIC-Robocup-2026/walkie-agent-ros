@@ -9,5 +9,6 @@ whose names start with "_" are helpers and are not loaded as tools.
 An atomic reaches ROS, its backends and the handle store only through ctx,
 a walkie_agent.toolbox.ToolContext. The first atomics are HRI's people and
 seat tools (docs/architecture/hri.md), with _perception holding what they
-share, and the arm tools (docs/architecture/manipulation.md), with _arm.
+share, the arm tools (docs/architecture/manipulation.md), with _arm, and
+HRI's gaze tools, look_at and stop_looking (ADR-0051), with _gaze.
 """

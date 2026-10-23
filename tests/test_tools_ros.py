@@ -1,6 +1,7 @@
 """Walkie tools against the fake robot over real ROS 2 (no LLM)."""
 
 import math
+import re
 import time
 
 import pytest
@@ -166,7 +167,10 @@ def test_tools_hide_forbidden_topics(connector, locations):
     assert wait_until(lambda: "/walkie/visible_test_topic" in lister.invoke({}))
     topics = lister.invoke({})
     for forbidden in ("/cmd_vel", "/walkie/reset", "/walkie/task", "/walkie/todos"):
-        assert forbidden not in topics
+        # The name alone. An earlier test's /cmd_vel action client can outlive
+        # its test until garbage collection, and its /cmd_vel/_action/* topics
+        # are other names.
+        assert re.search(rf"{re.escape(forbidden)}(?![\w/])", topics) is None
 
 
 def test_rai_get_current_pose_reads_fake_tf(fake_walkie, connector):

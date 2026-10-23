@@ -49,6 +49,15 @@ def build_walkie_tools(connector, locations, whoami_dir=None):
 - `/cmd_vel`: the robot should only move through Nav2.
 - `/walkie/reset`: the agent must not wipe its own memory.
 
+!!! note "Later: the gaze loop"
+    The gaze loop, `GazeLoop` in `src/walkie_agent/gaze.py`, is the one
+    exception
+    ([ADR-0051](../architecture/decisions/0051-agent-side-gaze-loop.md)).
+    It turns the base in place toward a person by publishing rotation only
+    on `/cmd_vel`, `twist_mux`'s lowest-priority input, and names that topic
+    in `allow_forbidden`. `/cmd_vel` stays in `FORBIDDEN_NAMES`, so every
+    other tool is still refused it.
+
 We use `forbidden` and not `writable` here. When only `writable` is set,
 the topic list tool shows **only** the writable topics, so the agent could
 no longer see the topics it is allowed to read.

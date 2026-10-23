@@ -105,4 +105,8 @@ inputs pass neither.
   guest it faces where it drives, as Nav2 already does.
 - When this is built, the `FORBIDDEN_NAMES` comment in
   `src/walkie_agent/tools/__init__.py` names the exception.
+- As built, `look_at` takes person and seat handles, not object handles,
+  and its arm check fails open as the drives' does: with the arm state
+  unknown, the base turns
+  ([HRI Task](/architecture/hri.md#gaze)).
 <!-- --8<-- [end:body] -->

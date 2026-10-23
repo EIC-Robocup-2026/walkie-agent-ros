@@ -64,8 +64,15 @@ NOTE = KindPolicy(prefix="note", max_translation_m=None, max_rotation_deg=None, 
 
 @pytest.fixture(autouse=True)
 def kinds(monkeypatch):
-    """A private copy of the kind registry, with the kinds these tests use."""
-    monkeypatch.setattr(handles_module, "_kinds", dict(handles_module._kinds))
+    """A private kind registry, with only the built-in kind and the kinds these tests use.
+
+    The shipped atomics register their own person and seat kinds when first
+    imported. They are imported here, before the swap, so that a test which
+    discovers them registers nothing into this registry, and the real kinds
+    are left out of it, so these tests can use their own policies.
+    """
+    importlib.import_module("walkie_agent.tools.atomic._perception")
+    monkeypatch.setattr(handles_module, "_kinds", {"object": handles_module.OBJECT_POLICY})
     register_kind("person", PERSON)
     register_kind("seat", SEAT)
     register_kind("note", NOTE)
@@ -690,8 +697,28 @@ def test_atomics_load_only_with_their_backends(make_package, caplog):
     assert tools[1].invoke(call({}, name="lift_box")).content == "3 chairs."
 
 
-def test_the_shipped_package_has_no_atomic_yet():
-    assert discover() == []
+def test_the_shipped_package_has_the_people_and_seat_atomics():
+    """vision alone loads find_people and find_seats; people_memory adds the other two."""
+    atomics = discover()
+    vision_only = ToolContext(None, backends={"vision": object()})
+    both = ToolContext(None, backends={"vision": object(), "people_memory": object()})
+
+    assert [atomic.META.name for atomic in atomics] == [
+        "find_people",
+        "find_seats",
+        "recognize_person",
+        "remember_person",
+    ]
+    assert [tool.name for tool in build_atomic_tools(vision_only, atomics)] == [
+        "find_people",
+        "find_seats",
+    ]
+    assert [tool.name for tool in build_atomic_tools(both, atomics)] == [
+        "find_people",
+        "find_seats",
+        "recognize_person",
+        "remember_person",
+    ]
 
 
 # -- ToolContext -----------------------------------------------------------------

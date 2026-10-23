@@ -22,6 +22,8 @@ from std_msgs.msg import Empty, String
 
 from walkie_agent.graph import ToolSet, build_walkie_graph
 from walkie_agent.locations import Location
+from walkie_agent.perception.people_memory import InMemoryPeopleMemory
+from walkie_agent.perception.vision_feed import VisionFeed
 from walkie_agent.tasks import TaskTemplate, match_template, parse_task_message
 from walkie_agent.todo import TodoItem, TodoList, console_line
 from walkie_agent.toolbox import Toolbox
@@ -40,6 +42,10 @@ Rules:
   "turn around", use `move_relative`.
 - To find where you last saw an object, such as "where is my cup?", use
   `find_objects`. It only knows objects you have already seen.
+- Never call a person "he" or "she". Call people by their name, and before you
+  know it by where they are, such as "the person on the left".
+- A person or seat handle, such as per_51c0.0 or seat_51c0.1, comes only from
+  `find_people` or `find_seats`. Never make one up.
 - If a tool reports a failure, tell the person what went wrong with `speak`
   and do not pretend the action succeeded.
 - For a task with more than one step, write the steps with `update_todos`
@@ -454,15 +460,31 @@ def create_walkie_agent(
     stream_response: bool = True,
     whoami_dir: Path | None = None,
     templates: Mapping[str, TaskTemplate] | None = None,
+    mock_people_memory: bool = False,
 ) -> WalkieAgent:
     """Build the agent. `whoami_dir` adds the robot description and documentation
     search from `pixi run whoami-build`, when they have been built (see whoami.py).
-    `templates` are the task templates (see tasks.py)."""
+    `templates` are the task templates (see tasks.py). `mock_people_memory` adds
+    an in-memory people memory, so recognize_person and remember_person load;
+    for sim and tests only."""
     # One list, shared by the todo tools and the graph.
     todos = TodoList()
-    # No backends yet, so only atomics that require none load; with no
-    # atomic in walkie_agent.tools.atomic, the LLM sees the same tools.
-    toolbox = Toolbox(connector)
+    # VisionFeed is always created: without a walkie-vision publisher it only
+    # holds two idle subscriptions, and find_people and find_seats then fail
+    # with UNAVAILABLE.
+    backends: dict[str, Any] = {"vision": VisionFeed(connector)}
+    memory = None
+    if mock_people_memory:
+        # Without a people_memory backend, recognize_person and
+        # remember_person do not load, so a robot run never stores guests in
+        # a mock that forgets them on restart.
+        memory = InMemoryPeopleMemory()
+        backends["people_memory"] = memory
+    toolbox = Toolbox(connector, backends)
+    if memory is not None:
+        # Each task starts with no guests, so a guest remembered in one sim
+        # run is not recognized in the next.
+        toolbox.on_new_task(memory.clear)
     return WalkieAgent(
         target_connectors=target_connectors,
         llm=llm,

@@ -80,9 +80,9 @@ two each of six object kinds as free bodies named `task_<kind>_<i>`:
 records served by oracle perception.
 
 !!! warning "The world's home is still moving"
-    On 22 October 2026 the assets sit in walkie-ros's `robot_simulation`
-    package, under `simulation/gazebo/worlds/chula_pat14_6/`, on the branch
-    `codex/chula-pat14-6-simulation`, not on main. For a
+    On 23 October 2026 the assets sit in walkie-ros's `walkie_mujoco_worlds`
+    package, under `simulation/mujoco/worlds/chula_pat14_6/`, on the branch
+    `feat/chula-pat14-6-simulation` (walkie-ros PR #58), not on main. For a
     few commits they lived in a walkie-worlds repository, which has no
     remote and now keeps only local history. The migration is in progress,
     so paths here may change. Phase 5 should start only once the world and
@@ -114,10 +114,14 @@ record. The arms and grippers collide with object bodies, so an object that
 an arm knocks goes unrecorded until walkie-ros configures its installed
 `FreeJointStatePublisherPlugin`, a config-only request
 ([ADR-0015](decisions/0015-repository-boundary.md)). Until the walkie-vision
-nodes exist, an `oracle_perception` node in `src/walkie_agent/sim/`
-publishes detections from the spec, with configurable noise and dropout.
-Whether it also answers `DetectObjects` and `EmbedText` in sim, and how it
-derives detection embeddings that `search_detections` can match, is still
+nodes exist, `OraclePerception` in `src/walkie_agent/sim/oracle_perception.py`
+publishes detections from a scene, with configurable noise and dropout
+([Perception](perception.md#in-simulation)). It is built and knows
+nothing of a task: it projects map-frame people and object boxes into each
+camera image by TF, with no occlusion, and the HRI scenario already feeds
+it. The harvest still owns its scenario fields above, and has to build the
+`Scene` from them. Whether it also answers `DetectObjects` and `EmbedText`
+in sim, and how it derives detection embeddings that `search_detections` can match, is still
 open. walkie-vision's architecture page records the constraint: its fake
 embedder's text and image vectors never match, so both sides must hash the
 same key.
@@ -494,13 +498,13 @@ Each of these is a request, not a change made here
 | Piece | Repository | Location |
 |---|---|---|
 | Harness: scenarios, task sources, relaunch and readiness wait, position checkers, dedup, report, promote | walkie-agent-ros | `src/walkie_agent/toolsmith/harvest/` (new) |
-| Oracle perception and `FakeSkillServer` | walkie-agent-ros | `src/walkie_agent/sim/oracle_perception.py`, `src/walkie_agent/sim/fake_skill_server.py` (new) |
-| Named places of the harvest world, and of `agent-sim` | walkie-agent-ros | `config/locations.chula_pat14_6.toml` (new), `config/locations.sim.toml` (unchanged) |
+| Oracle perception and `FakeSkillServer` | walkie-agent-ros | `src/walkie_agent/sim/oracle_perception.py` (built, with `scene.py` and `projection.py`; the harvest's scenario feeds it), `src/walkie_agent/sim/fake_skill_server.py` (new) |
+| Named places of the harvest world, and of `agent-sim` | walkie-agent-ros | `config/locations.chula_pat14_6.toml` (built for HRI with `door`, `living_room` and `kitchen`; the harvest adds its own names), `config/locations.sim.toml` (unchanged) |
 | Harvest-only environment with the pinned GPSR generator, and the `harvest-smoke` and `toolbox` tasks | walkie-agent-ros | `pixi.toml` (new environment and tasks) |
 | Promoted tools | walkie-agent-ros | `src/walkie_agent/tools/atomic/`, `src/walkie_agent/tools/bundled_preset/` (new) |
 | Reports, per-worker drafts, indexes and episode database files, quarantine lane | local, never in git | `$WALKIE_TOOLS_HOME/harvest/<run-id>/`, `$WALKIE_TOOLS_HOME/quarantine_lane/` (new) |
-| World assets: scenes, map, keepout mask, `world.toml` | walkie-ros, `robot_simulation` package | `simulation/gazebo/worlds/chula_pat14_6/`, on a branch, moving (see [The world file](#the-world-file)) |
-| World manifest and world loader | walkie-ros | `bringup/config/mujoco/worlds/chula_pat14_6.toml`, `bringup/robot_bringup/world_loader.py`, on a branch |
+| World assets: scenes, map, keepout mask, `world.toml` | walkie-ros, `walkie_mujoco_worlds` package | `simulation/mujoco/worlds/chula_pat14_6/`, on a branch, moving (see [The world file](#the-world-file)) |
+| World loader | walkie-ros | `bringup/robot_bringup/world_loader.py`, on a branch |
 | Sim launch and ground-truth odometry | walkie-ros | `nav_mujoco_omnibot.launch.py`, MuJoCo hardware plugin (no change requested here) |
 | Sim memory seed builder | walkie-database | `pixi run db-seed-sim`, `walkie_database.seed_sim` (new) |
 | GPSR generator | RoboCupAtHome/CommandGenerator | a pinned commit, harvest environment only |

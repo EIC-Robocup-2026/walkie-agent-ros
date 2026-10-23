@@ -278,11 +278,13 @@ the robot's start pose, so all points are relative to where it started.
 `agent-sim` also passes `--mock-people-memory`, so `recognize_person` and
 `remember_person` load. They keep people in memory, and forget them on a
 reset or when a new task replaces the todo list. `pixi run agent` leaves
-the flag out, so those two tools do not load there. Nothing in the
-simulation publishes
-`/walkie_vision/people` or `/walkie_vision/objects` yet, so `find_people`
-and `find_seats` answer that vision is unavailable
-([HRI Task](architecture/hri.md#atomics)).
+the flag out, so those two tools do not load there. walkie-ros's
+simulation itself publishes no `/walkie_vision/people` or
+`/walkie_vision/objects`, so on the blank map `find_people` and
+`find_seats` answer that vision is unavailable
+([HRI Task](architecture/hri.md#atomics)). `pixi run hri-scenario`
+publishes both, in the `chula_pat14_6` room
+([Run the HRI scenario](#run-the-hri-scenario)).
 
 ### Arms in the simulation
 
@@ -314,6 +316,71 @@ where the commander is built.
 - **Lift height.** The simulation's lift starts at 0.507 m, and the agent
   never moves it, so the hands sit lower than on the robot. The poses are
   joint poses, so they work at any lift height.
+
+### Run the HRI scenario in the chula_pat14_6 room { #run-the-hri-scenario }
+
+The HRI task runs in walkie-ros's MuJoCo world `chula_pat14_6`, a
+reconstruction of a real living room and kitchen with a captured map, AMCL
+and Nav2. A scenario plays the guests, answers the robot and publishes the
+vision arrays for them ([HRI Task](architecture/hri.md#in-simulation)). The
+world is on walkie-ros's branch `feat/chula-pat14-6-simulation` until its
+PR #58 merges. Check it out in your walkie-ros checkout, and build it:
+
+```bash title="walkie-ros: the world's branch"
+git fetch origin
+git checkout feat/chula-pat14-6-simulation
+pixi run build
+```
+
+Use one `ROS_DOMAIN_ID` in every terminal below, and never 23. Leaving it
+unset everywhere, as above, works. Start the router, then the room.
+
+```bash title="walkie-ros, terminal 1: Zenoh router (the only one)"
+pixi run ros2 run rmw_zenoh_cpp rmw_zenohd
+```
+
+```bash title="walkie-ros, terminal 2: the room, AMCL and Nav2"
+pixi run ros2 launch robot_bringup nav_mujoco_omnibot.launch.py world:=chula_pat14_6 headless:=true use_rviz:=false
+```
+
+Wait until its log shows `Managed nodes are active`, about 10 s after the
+start. Until then AMCL publishes no `map` frame, so the robot's pose is
+unknown. Then start MoveIt and the commander, as in terminals 5 and 6 of
+[Arms in the simulation](#arms-in-the-simulation). The scenario hangs the
+guest's bag through the commander. In this project, start the scenario and
+the agent:
+
+```bash title="Terminal 3: the scenario"
+pixi run hri-scenario
+```
+
+```bash title="Terminal 4: the agent"
+pixi run agent-sim-hri
+```
+
+- **The scenario** publishes `/walkie_vision/people` and
+  `/walkie_vision/objects` for each image of the head camera, and answers
+  the robot's questions on `/from_human`. Until AMCL runs, it logs once
+  that it waits for AMCL, and publishes no arrays. It writes its event log
+  to `logs/hri_scenario_<time>.jsonl`, or to the file given with `--log`.
+  `pixi run hri-scenario-early-bag` plays the variant in which guest 2
+  answers the first hand-over request before the bag hangs.
+- **Faces count.** The faces the scenario draws clear the agent's angular
+  face gate on the simulation's camera, so recognition in the simulation
+  uses faces and appearance, as on the robot.
+- **The agent** is `agent-sim` on `config/locations.chula_pat14_6.toml`,
+  with `door`, `living_room` and `kitchen`. The map frame there is the
+  captured map, not the start pose.
+- **The task.** Send it on `/from_human` as in the blank map's terminal 4.
+  The HRI template is not in `config/task_templates.toml` yet, so use the
+  task text from [The template](architecture/hri.md#the-template).
+
+!!! warning "One simulation per machine, unless you separate them"
+    Every launch rewrites the generated world files under
+    `$ROS_HOME/mujoco_worlds/chula_pat14_6/<variant>/`
+    (`~/.ros/mujoco_worlds/` by default). A second simulation on the same
+    machine needs its own `world_output_dir:=` on the launch, and its own
+    `ROS_DOMAIN_ID` in all of its terminals.
 
 ## 7. Open the docs locally
 

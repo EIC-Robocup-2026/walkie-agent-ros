@@ -118,8 +118,9 @@ These parts are proposed but not built yet.
   phase 1 row:** `models.py` and per-role keys, the `--access-level` flag,
   and Ollama with an eval of the local model. None is in the code yet.
 - **The HRI template.** It is not in `config/task_templates.toml` yet. Its
-  atomics are built, and it comes with the sim run, which needs
-  `oracle_perception` ([HRI Task](../architecture/hri.md#the-template)).
+  atomics and the simulated scenario in `src/walkie_agent/sim/` are built,
+  and it comes with the sim run and its pass check
+  ([HRI Task](../architecture/hri.md#the-template)).
 
 ## Exercises
 

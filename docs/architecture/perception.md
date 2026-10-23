@@ -247,17 +247,63 @@ caption text at Competition. Whether reviewed atomics do is
 
 ## In simulation
 
-Until the walkie-vision nodes exist, `oracle_perception` in
-`src/walkie_agent/sim/` publishes both arrays from the scenario's spec, in
-`walkie_vision_msgs` types ([Sim Harvest](harvest.md)). People come only
-from it, because the sim world has no person bodies, so the gesture ids and
-keypoints come from the spec too. The tests use walkie-vision's
-`hash_vector`, so rankings are deterministic. It is copied exactly into
-`src/walkie_agent/sim/fake_vectors.py`, with the fake model names
-`fake_face` and `fake_reid`, and `oracle_perception` will use the same
-file. Hash vectors match only on equal input, so a sim detection's
-embedding and the query text must hash the same key (walkie-vision's open
-question 7).
+Until the walkie-vision nodes exist, `OraclePerception` in
+`src/walkie_agent/sim/oracle_perception.py` stands in for them. It
+publishes both arrays in `walkie_vision_msgs` types, one of each per image
+of the robot's camera, also when empty. People come only from it, because
+walkie-ros's MuJoCo worlds have no person bodies. It knows nothing of a
+task: a simulation tool attaches it to its own node and gives it a
+callable that returns a `Scene` (`src/walkie_agent/sim/scene.py`), the
+people and objects in the map frame at an image's stamp. The HRI scenario
+does so now ([HRI Task](hri.md#in-simulation)). The harvest still owns its
+scenario fields ([Sim Harvest](harvest.md#h0-scenarios)).
+
+- **Projection.** For each `camera_info` on the head camera's topic,
+  `/zed_head/zed_node/depth/camera_info` by default, it looks up TF from
+  `map` to the camera's frame at that stamp, waiting up to 0.1 s. It then
+  projects the scene with a pinhole model from `camera_info.k`, ignoring
+  lens distortion, in `src/walkie_agent/sim/projection.py`, which has no
+  ROS. An image with no transform is skipped with a throttled warning that
+  names the missing transform. Until the simulation's AMCL runs, every
+  image is.
+- **TF, not ground truth.** The agent turns and judges headings with the
+  same TF, so the boxes always agree with its frame. AMCL's error then
+  moves the whole virtual scene against the simulated room, which nothing
+  here looks at.
+- **People** are flat figures of the 17 COCO keypoints, standing or
+  sitting, with walkie-agent-v2's gestures. A test checks that
+  `classify_gestures` reads each gesture back from the projected
+  keypoints at 1.2 m and at 3 m, so the oracle and the classifier cannot
+  drift apart. The person box is the keypoints' bounds, padded, and the
+  face box is the projection of a 0.18 m square around the head.
+- **Faces** are drawn only for a person who faces the camera within 60°.
+  The oracle never enlarges a face to pass the face gate, but the gate is
+  an angle, so on the simulation's 640 × 360 camera a guest at the door
+  and the seated people give trusted faces. Otherwise the face fields stay
+  empty with score 0, and the face keypoints score 0.2.
+- **Objects** are map-frame boxes, each detected as the bounds of its 8
+  projected corners, only for a class in the configured list. The default
+  is the seat classes, since `find_seats` is the only reader so far.
+- **No occlusion.** Furniture, walls and door frames hide nobody, and
+  people do not hide each other. A box partly in the image is clipped to
+  it, and one with no part in it is not detected.
+- **Noise,** all from one seeded `numpy` generator, so a run repeats image
+  by image: Gaussian noise of 2 px on boxes and keypoints, 0.005 on each
+  vector element before the vector is made unit length again, 5% of
+  vectors replaced by a random unit vector for the outlier rejection to
+  drop, and a per-person dropout rate, 0 by default. `OracleConfig` sets
+  each, and a scenario file's `oracle` section overrides them. Its comment
+  gives the arithmetic: the default moves a vector by a cosine distance of
+  about 0.013 from another of the same person, far from the fake models'
+  limit of 0.2.
+
+The vectors are walkie-vision's `hash_vector`, copied exactly into
+`src/walkie_agent/sim/fake_vectors.py`, under the fake model names
+`fake_face` and `fake_reid`: a face hashes `"face:"` and the person's face
+key, an appearance `"reid:"` and its appearance key. So rankings are
+deterministic in the tests and in the simulation. Hash vectors match only
+on equal input, so a sim detection's embedding and the query text must
+hash the same key (walkie-vision's open question 7).
 
 ## Delivery order
 

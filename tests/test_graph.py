@@ -1353,7 +1353,9 @@ def test_reset_cancels_a_waiting_atomic_at_once(start):
 
 
 # Toolbox.interrupt() is public and safe from any thread, without the agent's
-# buffer lock, so it must hold the next run back as a reset does.
+# buffer lock, so it must hold the next run back as a reset does. Here the
+# listeners are already running when the message arrives; the next test has
+# the interrupt land just before the run starts.
 @pytest.mark.parametrize("source", ["reset", "toolbox"])
 def test_a_run_waits_until_the_interrupt_listeners_are_done(start, source):
     def check(ctx, args):
@@ -1396,6 +1398,58 @@ def test_a_run_waits_until_the_interrupt_listeners_are_done(start, source):
     assert llm.received == []
     release.set()
     interrupter.join(timeout=5)
+
+    assert late == [True]
+    assert settle(agent, llm, 2)
+    assert result_of(agent.state["messages"], "call_check").content == "Not cancelled."
+
+
+def test_an_interrupt_just_before_the_run_starts_holds_the_run_back(start):
+    def check(ctx, args):
+        ctx.check_cancelled()
+        return Done(summary="Not cancelled.")
+
+    toolbox = toolbox_without_ros()
+    entered = threading.Event()
+    release = threading.Event()
+    late: list[bool] = []
+
+    def slow() -> None:
+        entered.set()
+        release.wait(timeout=10)
+
+    toolbox.on_interrupt(slow)
+    toolbox.on_interrupt(lambda: late.append(toolbox.ctx.cancel.is_set()))
+    agent, llm = make_agent(
+        [tool_call("check_arm", {}, "call_check"), AIMessage("The arm is fine.")],
+        tools=[atomic_tool(toolbox, "check_arm", check)],
+        toolbox=toolbox,
+    )
+
+    # The interrupt lands at the last moment before the run-start decision,
+    # once a message is waiting: cancel() now, the listeners on another
+    # thread, as Toolbox.interrupt() from another thread would do. Any check
+    # of the pending count made before this point would miss it.
+    real_begin_task = toolbox.begin_task
+    interrupters: list[threading.Thread] = []
+
+    def interrupted_begin_task() -> bool:
+        if not interrupters:
+            toolbox.cancel()
+            interrupters.append(threading.Thread(target=toolbox.notify_interrupt))
+            interrupters[0].start()
+        return real_begin_task()
+
+    toolbox.begin_task = interrupted_begin_task
+    start(agent)
+    agent(human("Check the arm."))
+
+    assert entered.wait(timeout=5)
+    # A negative check needs some time to pass; a run would start within 0.1 s.
+    time.sleep(0.5)
+    assert llm.received == []
+    release.set()
+    interrupters[0].join(timeout=5)
 
     assert late == [True]
     assert settle(agent, llm, 2)

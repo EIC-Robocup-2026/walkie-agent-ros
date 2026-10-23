@@ -362,6 +362,23 @@ def test_a_set_holds_at_most_max_set_members():
         store.put_set("note", ["milk"] * (limit + 1))
 
 
+def test_a_set_is_the_payloads_as_put_not_as_they_change_later():
+    world = World()
+    payloads = ["milk"] * handles_module.MAX_SET_MEMBERS
+
+    # The caller's list grows while the pose provider runs, as it may while
+    # it waits for TF. The set keeps what was passed, so every id resolves.
+    def growing_pose() -> Pose2D:
+        payloads.append("tea")
+        return world.pose_provider()
+
+    store = HandleStore(growing_pose, world.clock, id_source=lambda: 0x51C0)
+    full = store.put_set("note", payloads)
+
+    assert len(full.member_ids) == handles_module.MAX_SET_MEMBERS
+    assert all(store.get(member).payload == "milk" for member in full.member_ids)
+
+
 @pytest.mark.parametrize(
     "handle_id",
     # The last is longer than int() converts: still NOT_FOUND, not a ValueError.

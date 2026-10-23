@@ -176,15 +176,16 @@ class HandleStore:
         ValueError, because their ids could not be looked up.
         """
         policy = kind_policy(kind)
-        if len(payloads) > MAX_SET_MEMBERS:
+        # Copied first and the copy checked, so a caller's list that changes
+        # while the pose provider waits cannot grow past the limit.
+        members = tuple(payloads)
+        if len(members) > MAX_SET_MEMBERS:
             raise ValueError(
-                f"A handle set holds at most {MAX_SET_MEMBERS} members, not {len(payloads)}."
+                f"A handle set holds at most {MAX_SET_MEMBERS} members, not {len(members)}."
             )
         if pose is None:
             pose = self._pose_provider()
-        stored = _StoredSet(
-            kind=kind, payloads=tuple(payloads), pose=pose, captured_at=self._clock()
-        )
+        stored = _StoredSet(kind=kind, payloads=members, pose=pose, captured_at=self._clock())
         with self._lock:
             set_id = self._new_set_id(policy.prefix)
             self._sets[set_id] = stored

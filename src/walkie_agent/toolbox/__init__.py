@@ -99,7 +99,11 @@ class Toolbox:
         return list(self._tools)
 
     def on_interrupt(self, callback: Listener) -> None:
-        """Call `callback()` on every interrupt, after `ctx.cancel` is set."""
+        """Call `callback()` on every interrupt, after `ctx.cancel` is set.
+
+        The callback must return promptly: no run starts until every
+        listener of the interrupt has returned (begin_task).
+        """
         with self._lock:
             self._interrupt_listeners.append(callback)
 
@@ -122,9 +126,10 @@ class Toolbox:
         It never waits on a listener, so a caller may hold a lock. Each
         cancel() is followed by exactly one notify_interrupt().
         """
+        # Both under the lock, so begin_task() sees either neither or both.
         with self._lock:
             self._pending_interrupts += 1
-        self.ctx.cancel.set()
+            self.ctx.cancel.set()
 
     def notify_interrupt(self) -> None:
         """Call the interrupt listeners. They may block, so call it without locks held."""
@@ -135,21 +140,25 @@ class Toolbox:
                 self._pending_interrupts = max(0, self._pending_interrupts - 1)
 
     def interrupt_pending(self) -> bool:
-        """True while an interrupt's listeners are still running or not yet called.
-
-        A run must not start then: a listener that runs late, such as the
-        gaze loop stopping, would act on the new run instead of the old one.
-        """
+        """True while an interrupt's listeners are still running or not yet called."""
         with self._lock:
             return self._pending_interrupts > 0
 
-    def begin_task(self) -> None:
-        """A run starts: clear `ctx.cancel`, so it does not inherit an old cancel.
+    def begin_task(self) -> bool:
+        """Start a run: clear `ctx.cancel`, so it does not inherit an old cancel.
 
-        The caller checks interrupt_pending() first and starts no run while
-        it is True.
+        Returns False, and changes nothing, while an interrupt is pending:
+        the run must wait, because a listener that runs late, such as the
+        gaze loop stopping, would act on the new run instead of the old one.
+        The check and the clear are one step under the lock, so an
+        interrupt() from any thread lands either before it (and the run
+        waits) or after it (and cancels the new run).
         """
-        self.ctx.cancel.clear()
+        with self._lock:
+            if self._pending_interrupts > 0:
+                return False
+            self.ctx.cancel.clear()
+            return True
 
     def new_task(self) -> None:
         """A new task replaced the todo list: forget the handles, call the listeners."""

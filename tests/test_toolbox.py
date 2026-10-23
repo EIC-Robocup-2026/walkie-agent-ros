@@ -349,6 +349,19 @@ def test_a_handle_of_another_kind_is_not_found():
     assert error_of(store.get_set, "seat_09ab", kind="person").code == "NOT_FOUND"
 
 
+def test_a_set_holds_at_most_max_set_members():
+    world = World()
+    store = world.store()
+    limit = handles_module.MAX_SET_MEMBERS
+
+    # The last member of a full set can still be looked up.
+    full = store.put_set("note", ["milk"] * limit)
+    assert full.member_ids[-1] == f"{full.id}.{limit - 1}"
+    assert store.get(full.member_ids[-1]).payload == "milk"
+    with pytest.raises(ValueError, match=f"at most {limit} members"):
+        store.put_set("note", ["milk"] * (limit + 1))
+
+
 @pytest.mark.parametrize(
     "handle_id",
     # The last is longer than int() converts: still NOT_FOUND, not a ValueError.
@@ -716,12 +729,16 @@ def test_wait_returns_the_result_or_times_out():
 def test_the_tools_wait_for_future_sees_a_future_of_an_idle_executor():
     # tools/waiters.py, which the navigation and memory tools use, has the
     # same reason as ctx.wait() to look at the future itself.
-    owned: Future = Future(executor=IdleExecutor())
+    # The future holds its executor by weak reference, so the test keeps it
+    # alive; without one, rclpy runs the callbacks at once.
+    idle = IdleExecutor()
+    owned: Future = Future(executor=idle)
     owned.set_result("arrived")
 
     started = time.monotonic()
     assert wait_for_future(owned, 2.0) == "arrived"
     assert time.monotonic() - started < 1.0
+    assert idle.scheduled == 1
     assert wait_for_future(Future(), 0.1) is None
 
 
@@ -866,15 +883,21 @@ def test_an_interrupt_is_pending_until_its_listeners_have_run():
 
     toolbox.cancel()
     assert toolbox.interrupt_pending()
+    # No run starts while it is pending, and the cancel stays set.
+    assert toolbox.begin_task() is False
+    assert toolbox.ctx.cancel.is_set()
     toolbox.cancel()  # a second interrupt before the first is delivered
     toolbox.notify_interrupt()
     assert toolbox.interrupt_pending()
+    assert toolbox.begin_task() is False
     toolbox.notify_interrupt()
 
     # Pending while the listeners ran, and no longer once they are done,
     # even though the listener failed.
     assert pending == [True, True]
     assert not toolbox.interrupt_pending()
+    assert toolbox.begin_task() is True
+    assert not toolbox.ctx.cancel.is_set()
 
 
 def test_new_task_clears_the_handles_and_tells_the_listeners():

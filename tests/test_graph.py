@@ -1352,7 +1352,10 @@ def test_reset_cancels_a_waiting_atomic_at_once(start):
     assert len(llm.received) == 1
 
 
-def test_a_run_waits_until_the_interrupt_listeners_are_done(start):
+# Toolbox.interrupt() is public and safe from any thread, without the agent's
+# buffer lock, so it must hold the next run back as a reset does.
+@pytest.mark.parametrize("source", ["reset", "toolbox"])
+def test_a_run_waits_until_the_interrupt_listeners_are_done(start, source):
     def check(ctx, args):
         ctx.check_cancelled()
         return Done(summary="Not cancelled.")
@@ -1367,8 +1370,8 @@ def test_a_run_waits_until_the_interrupt_listeners_are_done(start):
         release.wait(timeout=10)
 
     toolbox.on_interrupt(slow)
-    # Stands in for the gaze loop stopping: it must act on the run the reset
-    # interrupted, never on the next one.
+    # Stands in for the gaze loop stopping: it must act on the run the
+    # interrupt was meant for, never on the next one.
     toolbox.on_interrupt(lambda: late.append(toolbox.ctx.cancel.is_set()))
     agent, llm = make_agent(
         [tool_call("check_arm", {}, "call_check"), AIMessage("The arm is fine.")],
@@ -1378,18 +1381,21 @@ def test_a_run_waits_until_the_interrupt_listeners_are_done(start):
     start(agent)
     first_session = agent.session_id
 
-    resetter = threading.Thread(target=agent.reset)
-    resetter.start()
+    interrupter = threading.Thread(
+        target=agent.reset if source == "reset" else toolbox.interrupt
+    )
+    interrupter.start()
     assert entered.wait(timeout=5)
-    assert wait_until(lambda: agent.session_id != first_session)
+    if source == "reset":
+        assert wait_until(lambda: agent.session_id != first_session)
     agent(human("Check the arm."))
 
-    # The reset is applied, but the message waits for the listeners. A
-    # negative check needs some time to pass; a run would start within 0.1 s.
+    # The message waits for the listeners. A negative check needs some time
+    # to pass; a run would start within 0.1 s.
     time.sleep(0.5)
     assert llm.received == []
     release.set()
-    resetter.join(timeout=5)
+    interrupter.join(timeout=5)
 
     assert late == [True]
     assert settle(agent, llm, 2)

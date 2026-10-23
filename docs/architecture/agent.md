@@ -656,10 +656,14 @@ one place.
   released, because one may block. A listener that raises is logged, and
   the others still run.
 - **No run starts during the listeners.** The interrupt counts as
-  pending from the cancel until its last listener returns, and the agent
-  leaves the next message queued until then. Otherwise a slow listener
-  could act on the new run, such as stopping a `look_at` the new task
-  just started.
+  pending from the cancel until its last listener returns. Until then
+  `Toolbox.begin_task()` refuses, and the agent leaves the next message
+  queued. Otherwise a slow listener could act on the new run, such as
+  stopping a `look_at` the new task just started. The check and the clear
+  of the cancel are one step under the toolbox's lock, so this holds for
+  `Toolbox.interrupt()` from any thread too. The cost: a listener that
+  never returns holds back every later task, so listeners must return
+  promptly.
 
 ### Where atomics live
 

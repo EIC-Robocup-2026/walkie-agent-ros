@@ -321,14 +321,14 @@ class WalkieAgent(LangChainAgent):
             # Once stop() is called, no new run starts, because a new run
             # clears the interrupt that stop() set. stop() sets both events
             # under this lock, so it cannot land between this check and the
-            # clear below. While the listeners of an earlier interrupt are
-            # still running, the run waits for the next pass, so a late
-            # listener cannot act on it; the count is raised under this lock.
+            # clear below. begin_task() refuses while the listeners of an
+            # earlier interrupt are still running, so a late listener cannot
+            # act on this run; the run waits for a later pass instead.
             if (
                 self._received_messages
                 and not self._reset_requested.is_set()
                 and not self._stop_event.is_set()
-                and not (self.toolbox is not None and self.toolbox.interrupt_pending())
+                and (self.toolbox is None or self.toolbox.begin_task())
             ):
                 # "queue": one message per task, oldest first.
                 msg = self._received_messages.popleft()
@@ -336,8 +336,6 @@ class WalkieAgent(LangChainAgent):
                 seed = entry[1] if entry is not None else None
                 # An interrupt meant for the previous run must not end this one.
                 self._interrupt_event.clear()
-                if self.toolbox is not None:
-                    self.toolbox.begin_task()
                 self._agent_ready_event.clear()
 
         if msg is None:

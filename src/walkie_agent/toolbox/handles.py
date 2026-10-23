@@ -60,9 +60,11 @@ OBJECT_POLICY = KindPolicy(
 
 _KIND = re.compile(r"^[a-z]+( [a-z]+)*$")
 _PREFIX = re.compile(r"^[a-z]{2,8}$")
-# The index is bounded so int() never sees a number too long to convert:
-# a malformed id is NOT_FOUND, never a ValueError.
-_HANDLE_ID = re.compile(r"^(?P<set>[a-z]{2,8}_[0-9a-f]{4})\.(?P<index>\d{1,6})$")
+# At most this many members per set, far more than a camera image holds.
+# It bounds the index in an id, so int() never sees a number too long to
+# convert and a malformed id is NOT_FOUND, never a ValueError.
+MAX_SET_MEMBERS = 1000
+_HANDLE_ID = re.compile(r"^(?P<set>[a-z]{2,8}_[0-9a-f]{4})\.(?P<index>\d{1,3})$")
 _SET_ID = re.compile(r"^[a-z]{2,8}_[0-9a-f]{4}$")
 # How many random ids put_set tries before it gives up. With at most a few
 # hundred live sets among 65536 ids, a second try is already rare.
@@ -170,9 +172,14 @@ class HandleStore:
 
         With no `pose`, the store asks the pose provider; None is stored when
         the pose is unknown, and a kind with motion limits then reports
-        UNAVAILABLE on lookup.
+        UNAVAILABLE on lookup. More than MAX_SET_MEMBERS payloads raise
+        ValueError, because their ids could not be looked up.
         """
         policy = kind_policy(kind)
+        if len(payloads) > MAX_SET_MEMBERS:
+            raise ValueError(
+                f"A handle set holds at most {MAX_SET_MEMBERS} members, not {len(payloads)}."
+            )
         if pose is None:
             pose = self._pose_provider()
         stored = _StoredSet(

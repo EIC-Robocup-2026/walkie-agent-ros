@@ -415,14 +415,21 @@ flowchart TB
   and `ray_heading` in `perception/geometry.py`.
 - **Control.** walkie-agent-v2's loop at 15 Hz: gain 1.2, 0.15 to
   0.6 rad/s, no command inside 6°, acceleration capped at 3.2 rad/s².
-- **Stops.** After 1 s without the target, on `stop_looking`, before any
-  drive or arm motion, when any `navigate_to_pose` goal becomes active,
-  on reset, "stop" or "never mind", at a new task, and on shutdown. If
-  the agent dies, `twist_mux` drops `/cmd_vel` after 0.5 s.
+  0.6 rad/s and 3.2 rad/s² are hard ceilings in `gaze.py`: the config
+  may set lower values, never higher ones.
+- **Stops.** 1 s after the person's last sighting, on `stop_looking`,
+  before any drive or arm motion, when any `navigate_to_pose` goal
+  becomes active, on reset, on "stop" or "never mind" during a task or
+  between tasks, at a new task, and on shutdown. If the agent dies, or a
+  publish blocks, `twist_mux` drops `/cmd_vel` 0.5 s after its last
+  message, and the drive controller stops the base 0.5 s after its last
+  command.
 - **Arms in.** `look_at` refuses with an arm out of every travel-safe
-  pose, with the check the drives make
-  ([ADR-0025](decisions/0025-travel-safe-interlock.md)). Like that check,
-  it fails open: when the arm state is unknown, the base turns.
+  pose, while a commander goal may still move an arm or a gripper, and on
+  a reading that cannot show the arms are safe, with the check the drives
+  make ([ADR-0025](decisions/0025-travel-safe-interlock.md)). Like that
+  check, it fails open when the commander is not found, does not answer
+  or gives no reading: the base turns.
 - **Why `/cmd_vel`.** It is `twist_mux`'s lowest priority, so Nav2 and a
   person holding the joystick always win. The cost: it bypasses
   `collision_monitor` ([question 4](#open-questions)).
@@ -458,19 +465,32 @@ flowchart TB
   people array as it arrives, and it keeps those that show that key. A
   track id that comes back under a new generation, after `VisionFeed`
   dropped it, may be someone else, and the loop does not follow it.
-- **The start.** The base turns first toward the handle's `heading_map`.
-  A handle without one starts from the newest array, at most 1 s old, if
-  that shows the person. Otherwise `look_at` fails with `UNAVAILABLE`.
+- **The start.** The base turns first toward the newer of two
+  sightings: the handle's `heading_map` at its stamp, and the newest
+  array's, if that array is at most 1 s old and shows the person. With
+  neither, `look_at` fails with `UNAVAILABLE`. With only the handle's,
+  and that more than 1 s old, it fails with `STALE` and turns nothing,
+  since the loop would lose the person at once.
+- **Lost at the start.** `follow_person` checks the sighting's age before
+  it sets the target, and the newest array's before its wait for TF, of
+  up to 0.2 s, so the sighting can be more than 1 s old once the loop
+  takes the person. Before it answers, `look_at` reads
+  the loop's status and applies the loop's own rule once. For a person
+  last seen more than 1 s ago, it stops the loop for `lost` and fails with
+  `STALE`, saying how long ago they were last seen and to call
+  `find_people`. A person the loop has already stopped for another
+  reason, such as a navigation goal that became active, fails as a seat's
+  ended turn does. Only a person the loop still follows gets "Looking at".
 - **Each sighting.** The gaze thread looks up the camera's transform at
   the array's stamp without waiting. An array whose stamp TF has not
   reached yet is tried again on the next ticks, for up to 0.2 s after it
   arrived, and at most 4 wait at once. Only a sighting newer than the
   last moves the setpoint, so a late array cannot turn the base back. An
   array without the transform gives no sighting.
-- **Lost.** A person is lost after 1 s without a sighting, by the arrays'
-  stamps against the node clock. The second counts from the handle's
-  stamp or from the `look_at` call, whichever is later, so an old handle
-  still gets a full second. A seat's heading is never lost.
+- **Lost.** A person is lost 1 s after their last sighting, by the
+  arrays' stamps against the node clock, with no allowance for the
+  `look_at` call. A clock that jumps back by more than 1 s, as at a
+  simulation restart, loses them too. A seat's heading is never lost.
 - **The live heading.** Each tick reads the newest `map` ->
   `base_footprint`. Without one, or when its stamp is more than 0.5 s
   from the node clock, the command is 0 for that tick, so a TF that
@@ -479,12 +499,20 @@ flowchart TB
   stamped with the node clock, in `base_footprint`, with only `angular.z`
   set. One command per tick while a target runs, three zeros at every
   stop, then nothing. The publisher is reliable and volatile and keeps
-  the last 10, so a stop never blocks on a slow subscriber, and one that
-  joins late never gets an old command.
+  the last 10, so a slow subscriber costs old samples rather than a
+  growing queue, and one that joins late never gets an old command.
+- **One writer, on a fixed schedule.** Only the gaze thread publishes,
+  outside the loop's lock. A new target takes effect at the next tick
+  rather than at once, and a tick that runs late moves the schedule
+  rather than catching up, so two commands never go out back to back.
+  Each command differs from the last by at most 3.2 rad/s² times the time
+  since the last went out, counted as at most one tick. A stop's zeros
+  are not capped.
 - **Only rotation, only `/cmd_vel`.** `RotationPublisher` is the loop's
-  one way onto `/cmd_vel`. Its `publish(angular_z)` takes nothing else,
-  and raises `ValueError` for a value that is not finite or above
-  0.6 rad/s. It is made through the ctx helper with
+  one way onto `/cmd_vel`. Its `publish(angular_z)` takes nothing else.
+  It raises `ValueError` for a value that is not finite, and sends one
+  above 0.6 rad/s either way as 0.6 rad/s, with a warning, whatever its
+  config says. It is made through the ctx helper with
   `allow_forbidden=("/cmd_vel",)`. The config refuses any other topic,
   and the publisher checks the name as the node resolved it, so a remap
   onto another `twist_mux` input stops the agent at startup. `/cmd_vel`
@@ -496,30 +524,51 @@ flowchart TB
 | When | Stopped by | Reason in `status()` |
 | ---- | ---------- | -------------------- |
 | The LLM calls `stop_looking` | `stop_looking` | `stop_looking` |
-| A stop, "never mind" or a reset | the Toolbox's interrupt listener | `interrupt` |
+| "stop" or "never mind", during a task or between tasks, before the stop is queued. During a task the interrupt listener runs next; with the loop already stopped, it changes nothing | the Toolbox's stop-heard listener | `stop heard` |
+| A reset | the Toolbox's interrupt listener | `interrupt` |
 | A new task replaces the todo list, and with it the handles | the new-task listener | `new task` |
 | `navigate_to_location` or `move_relative` is called, before its arm check, so also for a drive that the check refuses | the drive | `navigation` |
 | A `navigate_to_pose` goal becomes active, from any client | the loop | `navigation goal active` |
 | `move_arm_to_pose` has passed its argument checks, before its first commander call for the move. `set_gripper` does not stop the loop | `move_arm_to_pose` | `arm motion` |
 | The commander's last reading shows an arm out of every travel-safe pose | the loop | `arm out` |
 | An arm that the commander's reading knew at the start becomes unknown, as when a goal is sent for it | the loop | `arm motion` |
-| The person is unseen for 1 s | the loop | `lost` |
+| A commander goal runs, or one an earlier call gave up on may still run (`busy()`), while an arm is unknown. A gripper goal with both arms known does not stop the loop | the loop | `arm motion` |
+| 1 s has passed since the person's last sighting | the loop | `lost` |
 | The base does not face a seat within 10 s | `look_at` | `turn timeout` |
 | A tick raises | the loop | `error` |
-| The agent stops. `WalkieAgent.stop()` runs the interrupt listeners, then calls `GazeLoop.shutdown()`, which refuses later targets and waits up to 2 s for the thread | the agent | `interrupt`, or `shutdown` when nothing stopped the loop first |
+| The agent stops. `WalkieAgent.stop()` runs the interrupt listeners, then calls `GazeLoop.shutdown()`, which refuses later targets, has the gaze thread send the zeros, and waits up to 2 s for it to end | the agent | `interrupt`, or `shutdown` when nothing stopped the loop first |
 
-- **A stop returns at once.** `stop()` takes the loop's one lock,
-  publishes the zeros and returns. It never waits for the gaze thread,
-  and no holder of the lock waits while holding it. Only `shutdown()`
-  waits, for the thread to end. So the interrupt listener
-  returns promptly, as the Toolbox requires
-  ([The Agent](agent.md#stop-reset-and-the-cancel)). A test holds the gaze
-  thread in the middle of a tick and measures `Toolbox.interrupt()` under
-  50 ms.
+- **A stop returns at once.** `stop()` takes the loop's one lock only to
+  mark the target stopped and queue its three zeros, wakes the gaze
+  thread and returns. The thread sends the zeros when it next wakes,
+  after any command it computed before the stop. No holder of the lock
+  publishes or waits while holding it, so a publish that blocks in the
+  transport holds up no stop, no executor callback and no listener. The
+  interrupt and stop-heard listeners return promptly, as the Toolbox
+  requires ([The Agent](agent.md#stop-reset-and-the-cancel)). Tests hold
+  the gaze thread in a tick, and in a publish, and measure
+  `Toolbox.interrupt()`, `Toolbox.stop_heard()`, the new-task listener,
+  both callbacks and `stop()` under 50 ms.
+- **A drive and an arm motion wait for the zeros.** The drives and
+  `move_arm_to_pose` call `stop()` with `wait_s=0.5`: it returns once the
+  zeros are published, or after 0.5 s with a warning, and the stop
+  stands. The listeners and the callbacks never wait. `shutdown()` waits
+  up to 2 s for the thread to end, and logs when it has not.
 - **Nothing after the zeros.** A tick that overlapped a stop or a new
-  target drops its command.
+  target drops its command. A `look_at` that a stop overtook while it
+  prepared, as during its wait for TF, starts nothing and fails with
+  `CANCELLED`, even when nothing was running to stop.
 - **The last reason stays.** `stop()` with nothing running changes
   nothing, so `stop_looking` after a loss still says the person was lost.
+- **A stop between tasks.** While the agent is idle, "stop" interrupts
+  nothing and waits as an ordinary message
+  ([The Agent](agent.md#stop-reset-and-errors)), but the loop outlives the
+  task and may still turn the base. So every "stop" or "never mind" goes
+  to the Toolbox's stop-heard listeners first, on the thread that
+  delivered it and before it is queued, and the loop stops for
+  `stop heard`. The stop's own run starts after that. If it calls
+  `stop_looking`, the answer says the last target was stopped because
+  someone said "stop" or "never mind".
 - **Goals the agent did not send.** ADR-0051 does not say how the loop
   learns of them. It subscribes to `/navigate_to_pose/_action/status`,
   which lists the goals of every client, an operator's included. A goal
@@ -536,23 +585,34 @@ flowchart TB
 
 - **The drives' check.** `look_at` calls `check_arms` in
   `tools/navigation.py`, the check `navigate_to_location` and
-  `move_relative` make, with "turning" for "driving". It refuses with
+  `move_relative` make. Where a drive's refusal says "Not driving", it
+  says "Not starting a turn toward" and the handle. It refuses with
   `PRECONDITION_FAILED` while an arm is out of every travel-safe pose, or
-  still moving.
+  while a commander goal may still move an arm or a gripper (`busy()`).
+  It refuses with `INTERNAL` when the commander answers with a reading
+  that cannot show the arms are safe, such as one that lacks an arm's
+  joints.
+- **A refusal names this call's turn.** A gripper goal with both arms
+  known does not stop the loop, so during one the loop may still follow
+  a target from an earlier call, even the same person. "Not starting a
+  turn toward per_51c0.1" stays true then, where "Not turning" would not.
+  The refusal says nothing of that target, since the loop may stop it at
+  its next tick, on the reading the check has just made.
 - **It fails open, as the drives do.** Without `--arms` there is no
-  check. When the commander is not discovered or does not answer, or its
-  reading leaves an arm unknown, the base turns, and the answer ends with
-  "Arm state unknown: the commander did not answer."
+  check. When the commander is not discovered, does not answer, or gives
+  no reading of the arms, the base turns, and the answer ends with a
+  note, such as "Arm state unknown: the commander did not answer."
 - **Never a commander call while running.** A goal may hold the
   commander client's call lock for many seconds, so the loop reads only
-  the client's last reading. Arms unknown from the start, as when no
-  commander runs, do not stop it.
+  the client's last reading and `busy()`, which take only the client's
+  short state lock. Arms unknown from the start, as when no commander
+  runs, do not stop it, unless a commander goal runs.
 
 ### What the LLM reads
 
 ```text
 look_at(target="per_51c0.1")
-Looking at per_51c0.1. The robot turns to keep them in view, and stops if it loses them for 1 s.
+Looking at per_51c0.1. The robot turns to keep them in view, and stops once it has not seen them for 1 s.
 
 look_at(target="seat_7a1e.2")
 Turned toward seat_7a1e.2 (sofa, middle).
@@ -570,7 +630,8 @@ Not looking at anyone. The last target, per_51c0.1, was lost 12 s ago.
   "Stopped looking at per_51c0.1." With none, it says what ran last, as
   above, or "Not looking at anyone." before the first `look_at`. A stop
   other than a loss reads "was stopped 2 s ago" and its cause, such as
-  "before a drive".
+  "when a drive was asked for" or 'because someone said "stop" or "never
+  mind"'.
 - **The prompt.** The system prompt tells the LLM to look at the person
   it is talking to with `look_at`, and to stop with `stop_looking` before
   it does something else. With `--arms`, the arm rules add: never call
@@ -585,15 +646,21 @@ How `look_at` fails:
 | The handle is stale, as after a drive | The store's `STALE`, ending with where a new handle comes from, such as "Person handles come from find_people." |
 | An untracked person | `REFUSED: per_51c0.1 is not tracked, cannot follow. Call find_people again for a handle the robot can follow.` |
 | A person with no stored heading, and not in view now | `UNAVAILABLE: No heading toward per_51c0.1: none was stored when they were seen, and they are not in view now. Call find_people again.` |
+| A person seen more than 1 s ago, and not in the newest array | `STALE: Not turning toward per_51c0.1: the handle saw them 5.2 s ago, and the newest people array does not show them. The robot stops following a person 1 s after the last sighting. Call find_people for a current handle.` The reason may instead be that no people array came in the last 1 s, or that the newest array gives no heading toward them |
+| A person last seen more than 1 s ago once the loop takes them, as after a slow wait for TF | `STALE: Not turning toward per_51c0.1: they were last seen 1.3 s ago. The robot stops following a person 1 s after the last sighting. Call find_people for a current handle.` The loop is stopped for `lost`. After a clock that moved back, the reason is instead that their last sighting is stamped ahead of the robot's clock |
 | A seat with no stored heading | `UNAVAILABLE: No heading toward seat_7a1e.2: TF had no camera position when it was seen. Call find_seats again.` |
-| One arm out | `PRECONDITION_FAILED: Not turning: the left arm is not in a pose that is safe for driving. Move it with move_arm_to_pose first, for example 'carry' or 'home'.` |
-| Both arms out | `PRECONDITION_FAILED: Not turning: the arms are not in a pose that is safe for driving. Move them with move_arm_to_pose first, for example 'home'.` |
-| An arm still moving | `PRECONDITION_FAILED: Not turning: an arm is still moving.`, then the commander's message |
+| One arm out | `PRECONDITION_FAILED: Not starting a turn toward per_51c0.1: the left arm is not in a pose that is safe for driving. Move it with move_arm_to_pose first, for example 'carry' or 'home'.` |
+| Both arms out | `PRECONDITION_FAILED: Not starting a turn toward per_51c0.1: the arms are not in a pose that is safe for driving. Move them with move_arm_to_pose first, for example 'home'.` |
+| A commander goal runs (`busy()`) | `PRECONDITION_FAILED: Not starting a turn toward per_51c0.1. Cannot check the arms for driving while the left_gripper command is running. Wait for it to finish.` |
+| A goal from an earlier call has not ended, or the arms are unverified | `PRECONDITION_FAILED: Not starting a turn toward per_51c0.1.`, then the commander's message, which says why an arm or a gripper may still be moving and to try again in a few seconds |
+| Another arm call keeps the commander past the check's timeout | `TIMEOUT: Not starting a turn toward per_51c0.1.`, then the commander's message, and "Try again in a few seconds." |
+| A reading that cannot show the arms are safe | `INTERNAL: Not starting a turn toward per_51c0.1: the commander's reading does not show that the arms are safe for driving.`, then the commander's message, such as "The commander's reading of both_arms lacks openarm_left_joint3, so it cannot say where the left arm is.", and "Tell the person that the arms cannot be checked." |
 | A navigation goal is active | `REFUSED: Not turning toward per_51c0.1: a navigation goal is active.` |
 | The loop has shut down | `UNAVAILABLE: The gaze loop has shut down.` |
 | A stop or a reset during the call | `CANCELLED: A stop or a reset interrupted the call.` |
+| Any other stop of the loop during the call, as when "stop" is heard while it waits for TF, just before the interrupt | `CANCELLED: Not turning toward per_51c0.1: the gaze loop was stopped (stop heard) during the call. Call look_at again if the robot should still look at per_51c0.1.`, with the stop's reason |
 | The base does not face a seat within 10 s | `TIMEOUT: The robot did not face seat_7a1e.2 within 10 s, so it stopped turning.` |
-| The loop ends a seat's turn first | "Stopped turning toward seat_7a1e.2" and the cause: `REFUSED` for a navigation goal, `PRECONDITION_FAILED` for an arm, `UNAVAILABLE` at shutdown, `INTERNAL` after an error in the loop, else `CANCELLED`. A newer target gives `CANCELLED: Stopped turning toward seat_7a1e.2: another target replaced it.` |
+| The loop ends a seat's turn first, or stops a person before `look_at` answers, as when a navigation goal becomes active | "Stopped turning toward seat_7a1e.2" and the cause: `REFUSED` for a navigation goal, `PRECONDITION_FAILED` for an arm, `UNAVAILABLE` at shutdown, `INTERNAL` after an error in the loop, else `CANCELLED`. A newer target gives `CANCELLED: Stopped turning toward seat_7a1e.2: another target replaced it.` |
 
 The handle checks come first, so a handle that cannot be looked at never
 calls the commander.
@@ -603,9 +670,12 @@ calls the commander.
 - **No handle yet.** `look_at` and `stop_looking` load under `agent-sim`,
   but until `oracle_perception` exists, `find_people` and `find_seats`
   fail, so `look_at` has nothing to look at.
-- **Tested on fakes.** `tests/test_gaze.py` covers the control law with a
-  fake clock, and the loop over ROS with static TF or a fake base that
-  turns at the last `/cmd_vel` command. `tests/test_gaze_atomics.py` runs
+- **Tested on fakes.** `tests/test_gaze.py` covers the control law with
+  fake clocks, and the loop over ROS with static TF or a fake base that
+  turns at the last `/cmd_vel` command. A spy on the loop's publisher
+  records when each command went out, for the acceleration cap and the
+  schedule, and can block it as a stuck transport would.
+  `tests/test_gaze_atomics.py` runs
   both atomics through a real `Toolbox`, with the fake walkie-vision
   publisher, a fake goal status, FakeWalkie's `navigate_to_pose` and the
   `FakeCommander`. Every test runs on Fast DDS on a random domain, so its

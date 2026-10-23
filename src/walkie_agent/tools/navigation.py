@@ -130,12 +130,14 @@ class Nav2GoalTool(BaseROS2Tool):
             raise ToolException(f"Action {self.action_name} is not writable by this agent.")
         if self.gaze is not None:
             # Here, not at the top: walkie_agent.gaze imports this module.
-            from walkie_agent.gaze import NAVIGATION
+            from walkie_agent.gaze import NAVIGATION, STOP_WAIT_S
 
             # Before the arm check, which may wait 3 s for the commander:
             # the base stops turning as soon as a drive is asked for, even
-            # one the check then refuses.
-            self.gaze.stop(NAVIGATION)
+            # one the check then refuses. The gaze thread publishes the
+            # stop's zeros; the wait, of at most STOP_WAIT_S, lets them go
+            # out before the goal.
+            self.gaze.stop(NAVIGATION, wait_s=STOP_WAIT_S)
         note = self._check_arms()
 
         client = self._get_client()
@@ -355,7 +357,8 @@ def check_arms(
     """The arm interlock before the base moves: refuse with an arm out (ADR-0025, ADR-0051).
 
     One decision for every base motion, so a drive and a gaze turn agree:
-    the drives call it with `action` "driving", look_at with "turning".
+    the drives call it with `action` "driving", look_at with "starting a
+    turn toward" and the handle, such as "starting a turn toward per_51c0.1".
     `arm` is the agent's CommanderClient, or None for no check, as on a run
     without --arms. `example` names the poses the refusal suggests for one
     arm, quoted, such as "'home'"; for both arms it is always 'home', the

@@ -106,7 +106,34 @@ inputs pass neither.
 - When this is built, the `FORBIDDEN_NAMES` comment in
   `src/walkie_agent/tools/__init__.py` names the exception.
 - As built, `look_at` takes person and seat handles, not object handles,
-  and its arm check fails open as the drives' does: with the arm state
-  unknown, the base turns
+  and its arm check fails open as the drives' does: when the commander is
+  not found, does not answer or gives no reading, the base turns. It
+  refuses while a commander goal may still move an arm or a gripper, and
+  on a reading that cannot show the arms are safe
   ([HRI Task](/architecture/hri.md#gaze)).
+- As built, 0.6 rad/s and 3.2 rad/s² are hard ceilings in `gaze.py`,
+  apart from the adjustable config, which may only go lower. The
+  publisher clamps every command to 0.6 rad/s whatever its config says,
+  and the acceleration cap counts the time since the last command went
+  out, so a new target cannot jump the command.
+- As built, one thread is the only writer of `/cmd_vel`, and it publishes
+  outside the loop's lock. A stop queues its zeros and returns at once, so
+  a publish that blocks in the transport holds up no stop and no
+  callback. If the publish stays blocked, `twist_mux` drops the input
+  0.5 s after its last message, and the drive controller stops the base
+  0.5 s after its last command.
+- As built, a person is lost 1 s after their last sighting, with no
+  allowance for the `look_at` call. `look_at` refuses with `STALE` a
+  handle whose sighting is already older than that, unless the newest
+  people array shows the person. It also stops the loop and refuses with
+  `STALE` when the sighting the loop starts from has passed that age by
+  the time the loop takes it, as after a slow wait for TF. So it never
+  answers "Looking at" for a person the loop has already lost.
+- As built, every "stop" or "never mind" stops the loop, during a task
+  or between tasks. Between tasks it interrupts nothing and waits as an
+  ordinary message
+  ([ADR-0038](/architecture/decisions/0038-own-graph-per-turn-binding.md)),
+  but the loop outlives the turn. So the agent hands every such stop to
+  the Toolbox's stop-heard listeners before it queues it, and the loop
+  stops for `stop heard`.
 <!-- --8<-- [end:body] -->

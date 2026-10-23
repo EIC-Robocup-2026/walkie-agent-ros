@@ -2,7 +2,8 @@
 
 Toolbox finds the atomics in walkie_agent.tools.atomic, builds one ctx for
 them and turns each into a LangChain tool. WalkieAgent tells it when a stop
-or a reset interrupts a task and when a new task replaces the todo list.
+or a reset interrupts a task, when a new task replaces the todo list, and
+when it hears "stop" or "never mind", during a task or not.
 Bundles, their linker and runner, access levels and tool search come later
 (self-evolving-agent.md).
 """
@@ -74,8 +75,8 @@ class Toolbox:
     agent does not start. The tools are built once, here.
 
     Listeners let later parts react to the task's lifecycle, such as the gaze
-    loop stopping on an interrupt. A listener that raises is logged and does
-    not stop the others.
+    loop stopping on an interrupt, or on a "stop" heard between tasks. A
+    listener that raises is logged and does not stop the others.
     """
 
     def __init__(
@@ -90,6 +91,7 @@ class Toolbox:
         self._lock = threading.Lock()
         self._interrupt_listeners: list[Listener] = []
         self._new_task_listeners: list[Listener] = []
+        self._stop_heard_listeners: list[Listener] = []
         # Interrupts whose cancel is set but whose listeners have not all
         # run yet. Guarded by _lock.
         self._pending_interrupts = 0
@@ -111,6 +113,18 @@ class Toolbox:
         """Call `callback()` whenever a new task replaces the todo list."""
         with self._lock:
             self._new_task_listeners.append(callback)
+
+    def on_stop_heard(self, callback: Listener) -> None:
+        """Call `callback()` for every utterance that is just "stop" or "never mind".
+
+        During a task or not: while the agent is idle, such a stop interrupts
+        nothing and waits as an ordinary message (ADR-0038), so only these
+        listeners hear it. They are for what runs between tasks, such as the
+        gaze loop. The callback must return promptly: it runs on the thread
+        that delivered the utterance, before the stop is queued.
+        """
+        with self._lock:
+            self._stop_heard_listeners.append(callback)
 
     def interrupt(self) -> None:
         """A stop or a reset: set `ctx.cancel`, then call the interrupt listeners.
@@ -164,6 +178,15 @@ class Toolbox:
         """A new task replaced the todo list: forget the handles, call the listeners."""
         self.ctx.handles.clear()
         self._notify(self._new_task_listeners, "new task")
+
+    def stop_heard(self) -> None:
+        """Call the stop-heard listeners: someone said "stop" or "never mind".
+
+        Sets no cancel and holds back no run: during a task, the interrupt
+        follows, and while idle there is nothing to interrupt. Call it
+        without locks held.
+        """
+        self._notify(self._stop_heard_listeners, "stop-heard")
 
     def _notify(self, listeners: list[Listener], event: str) -> None:
         with self._lock:

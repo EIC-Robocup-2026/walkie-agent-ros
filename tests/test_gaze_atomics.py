@@ -35,10 +35,12 @@ from test_gaze import (
     wait_until,
 )
 from test_people_atomics import CAMERA_FRAME, CX, FX, HEIGHT, WIDTH, FakeVision, person, thing
+from walkie_agent import gaze as gaze_module
 from walkie_agent.arm.commander import CommanderClient
 from walkie_agent.arm.poses import load_arm_poses, load_robot_model
 from walkie_agent.gaze import (
     ARM_MOTION,
+    ARM_OUT,
     HEADING,
     INTERRUPT,
     LOST,
@@ -47,6 +49,7 @@ from walkie_agent.gaze import (
     NEW_TASK,
     PERSON,
     SHUTDOWN,
+    STOP_HEARD,
     STOP_LOOKING,
     GazeLoop,
     wrap_angle,
@@ -59,13 +62,18 @@ from walkie_agent.tools import FORBIDDEN_NAMES, build_walkie_tools
 from walkie_agent.tools.atomic import look_at as look_at_module
 from walkie_agent.tools.atomic._gaze import TURN_TIMEOUT
 from walkie_agent.tools.atomic._perception import SeatPayload
-from walkie_agent.tools.navigation import Nav2GoalTool
+from walkie_agent.tools.navigation import Nav2GoalTool, NavigateToLocationTool
 
 TRACK_ID = 7
 # How far past the deadband a base that has just stopped may be: it turns at
 # the old command until the loop's zero reaches it.
 SETTLE = 0.02
-LOOKING = "The robot turns to keep them in view, and stops if it loses them for 1 s."
+LOOKING = "The robot turns to keep them in view, and stops once it has not seen them for 1 s."
+# look_at's STALE for a person last seen too long ago, with the reason in {why}.
+NOT_SEEN = (
+    r"Not turning toward {target}: {why}\. The robot stops following a person 1 s after the "
+    r"last sighting\. Call find_people for a current handle\."
+)
 ARMS_NOT_FOUND = "Arm state unknown: the commander was not found."
 
 
@@ -209,12 +217,17 @@ def recorder():
 
 @pytest.fixture
 def make_world(connector, recorder):
-    """A World factory; `arm` is the CommanderClient for the arm backend, if any."""
+    """A World factory; `arm` is the CommanderClient for the arm backend, if any.
+
+    `clock` is the gaze loop's clock, the node clock by default.
+    """
     made: list[World] = []
 
-    def make(arm: CommanderClient | None = None) -> World:
+    def make(
+        arm: CommanderClient | None = None, clock: Callable[[], float] | None = None
+    ) -> World:
         feed = VisionFeed(connector)
-        gaze = GazeLoop(connector, vision=feed, arm=arm)
+        gaze = GazeLoop(connector, vision=feed, arm=arm, clock=clock)
         backends = {"vision": feed, "gaze": gaze}
         if arm is not None:
             backends["arm"] = arm
@@ -322,6 +335,98 @@ def test_look_at_a_person_stops_once_they_are_out_of_view_for_one_second(world):
         out.summary,
     )
     assert (out.stopped, out.last_target, out.reason) == (None, target, LOST)
+
+
+def test_look_at_refuses_a_person_lost_by_the_time_the_loop_takes_them(
+    make_world, connector, monkeypatch
+):
+    # The loop's clock moves on 1.5 s during follow_person's wait for TF: the
+    # newest array was fresh when follow_person read it, and the sighting it
+    # gives is too old once the loop takes the person.
+    ahead = 0.0
+    node_clock = connector.node.get_clock()
+    world = make_world(clock=lambda: node_clock.now().nanoseconds / 1e9 + ahead)
+    place_base(connector, 0.0)
+    target = world.show_person(0.4)
+
+    def slow_tf(header, buffer, timeout):
+        nonlocal ahead
+        if timeout > 0:
+            ahead = 1.5
+        return camera_transform(header, buffer, timeout)
+
+    monkeypatch.setattr(gaze_module, "camera_transform", slow_tf)
+
+    error = world.fails("look_at", target=target)
+
+    assert (error.code, error.data) == ("STALE", {"handle": target})
+    assert re.fullmatch(
+        NOT_SEEN.format(target=re.escape(target), why=r"they were last seen \d+\.\d s ago"),
+        error.message,
+    )
+    status = world.gaze.status()
+    assert (status.running, status.target, status.stop_reason) == (False, target, LOST)
+    assert status.now - status.last_seen > 1.0
+    assert_silent_after_stop(world.recorder)
+    assert not world.turning()
+    out = world.call("stop_looking")
+    assert re.fullmatch(
+        rf"Not looking at anyone\. The last target, {re.escape(target)}, was lost \d+ s ago\.",
+        out.summary,
+    )
+
+
+def test_look_at_refuses_an_old_handle_of_a_person_out_of_view(make_world, connector):
+    ahead = 0.0
+    node_clock = connector.node.get_clock()
+    world = make_world(clock=lambda: node_clock.now().nanoseconds / 1e9 + ahead)
+    place_base(connector, 0.0)
+    target = world.show_person(0.4)
+    # They leave the image, and the handle's sighting is 5 s old on the loop's clock.
+    world.vision.show(people=[])
+    ahead = 5.0
+
+    error = world.fails("look_at", target=target)
+
+    assert (error.code, error.data) == ("STALE", {"handle": target})
+    assert re.fullmatch(
+        NOT_SEEN.format(
+            target=re.escape(target),
+            why=r"the handle saw them \d+\.\d s ago, and the newest people array does not "
+            r"show them",
+        ),
+        error.message,
+    )
+    # Nothing started, so nothing turned.
+    assert world.gaze.status().target is None
+    time.sleep(0.2)
+    assert world.recorder.count() == 0
+    assert world.call("stop_looking").summary == "Not looking at anyone."
+
+
+def test_look_at_does_not_say_looking_at_a_person_the_loop_stopped_before_it_answered(
+    world, connector, monkeypatch
+):
+    place_base(connector, 0.0)
+    target = world.show_person(0.4)
+    follow_person = world.gaze.follow_person
+
+    def follow_then_goal(*args, **kwargs) -> None:
+        follow_person(*args, **kwargs)
+        # An operator's navigation goal becomes active before look_at answers.
+        world.recorder.publish_goal_status(GoalStatus.STATUS_EXECUTING)
+        assert wait_until(lambda: world.gaze.status().navigation_active)
+
+    monkeypatch.setattr(world.gaze, "follow_person", follow_then_goal)
+
+    error = world.fails("look_at", target=target)
+
+    assert (error.code, error.message) == (
+        "REFUSED",
+        f"Stopped turning toward {target} because a navigation goal became active.",
+    )
+    assert error.data == {"handle": target, "reason": NAVIGATION_ACTIVE}
+    assert_silent_after_stop(world.recorder)
 
 
 def test_look_at_refuses_an_untracked_person(world, connector):
@@ -460,6 +565,31 @@ def test_an_interrupt_stops_a_person_look_at(world):
     status = world.gaze.status()
     assert (status.running, status.stop_reason) == (False, INTERRUPT)
     assert_silent_after_stop(world.recorder)
+
+
+def test_a_stop_heard_between_tasks_stops_a_person_look_at(world):
+    base = world.base(0.0)
+    world.camera(lambda: base.yaw, heading=0.5)
+    target = world.find_person()
+    world.call("look_at", target=target)
+    assert wait_until(world.turning)
+
+    # "stop" while the agent is idle: no interrupt, only the stop-heard listeners.
+    world.toolbox.stop_heard()
+
+    status = world.gaze.status()
+    assert (status.running, status.stop_reason) == (False, STOP_HEARD)
+    assert not world.toolbox.ctx.cancel.is_set()
+    assert_silent_after_stop(world.recorder)
+    out = world.call("stop_looking")
+    assert re.fullmatch(
+        rf"Not looking at anyone\. The last target, {re.escape(target)}, was stopped \d+ s ago "
+        r'because someone said "stop" or "never mind"\.',
+        out.summary,
+    )
+    assert out.reason == STOP_HEARD
+    # The LLM learns it from look_at's description too.
+    assert 'someone says "stop" or "never mind"' in world.tools["look_at"].description
 
 
 def test_an_interrupt_during_a_turn_to_a_seat_cancels_look_at(world):
@@ -617,10 +747,89 @@ def test_look_at_refuses_to_turn_with_the_left_arm_in_receive(arm_world, fake, p
 
     assert (error.code, error.message) == (
         "PRECONDITION_FAILED",
-        "Not turning: the left arm is not in a pose that is safe for driving. Move it with "
-        "move_arm_to_pose first, for example 'carry' or 'home'.",
+        f"Not starting a turn toward {target}: the left arm is not in a pose that is safe for "
+        "driving. Move it with move_arm_to_pose first, for example 'carry' or 'home'.",
     )
     assert error.data == {"arms": ["left"]}
+    assert arm_world.gaze.status().target is None
+    time.sleep(0.2)
+    assert arm_world.recorder.count() == 0
+
+
+def test_look_at_refuses_while_a_gripper_command_runs(arm_world, fake, connector):
+    place_base(connector, 0.0)
+    target = arm_world.show_person(0.4)
+    client = arm_world.ctx.backend("arm")
+    fake.gripper_time_s = 1.0
+    closing = threading.Thread(
+        target=lambda: arm_world.call("set_gripper", arm="left", state="close")
+    )
+    closing.start()
+    try:
+        assert wait_until(lambda: client.busy() is not None, 5.0)
+        running = client.busy()
+
+        error = arm_world.fails("look_at", target=target)
+    finally:
+        closing.join(timeout=5)
+
+    assert (error.code, error.message) == (
+        "PRECONDITION_FAILED",
+        f"Not starting a turn toward {target}. Cannot check the arms for driving while "
+        f"{running} is running. Wait for it to finish.",
+    )
+    assert error.data == {"running": running}
+    assert arm_world.gaze.status().target is None
+    assert arm_world.recorder.count() == 0
+
+
+def test_a_look_at_refused_during_a_gripper_command_does_not_say_the_robot_stopped_turning(
+    arm_world, fake
+):
+    base = arm_world.base(0.0)
+    arm_world.camera(lambda: base.yaw, heading=0.5)
+    target = arm_world.find_person()
+    arm_world.call("look_at", target=target)
+    client = arm_world.ctx.backend("arm")
+    fake.gripper_time_s = 1.0
+    closing = threading.Thread(
+        target=lambda: arm_world.call("set_gripper", arm="left", state="close")
+    )
+    closing.start()
+    try:
+        assert wait_until(lambda: client.busy() is not None, 5.0)
+        running = client.busy()
+
+        error = arm_world.fails("look_at", target=target)
+        status = arm_world.gaze.status()
+    finally:
+        closing.join(timeout=5)
+
+    # The gripper leaves both arms known, so the loop still follows the
+    # person from the first call, and the refusal must not deny it.
+    assert (status.running, status.target) == (True, target)
+    assert (error.code, error.message) == (
+        "PRECONDITION_FAILED",
+        f"Not starting a turn toward {target}. Cannot check the arms for driving while "
+        f"{running} is running. Wait for it to finish.",
+    )
+    arm_world.call("stop_looking")
+
+
+def test_look_at_refuses_on_a_reading_that_cannot_show_the_arms(arm_world, fake, connector):
+    place_base(connector, 0.0)
+    target = arm_world.show_person(0.4)
+    fake.missing_joints = {"openarm_left_joint3"}
+
+    error = arm_world.fails("look_at", target=target)
+
+    assert (error.code, error.message) == (
+        "INTERNAL",
+        f"Not starting a turn toward {target}: the commander's reading does not show that the "
+        "arms are safe for driving. The commander's reading of both_arms lacks "
+        "openarm_left_joint3, so it cannot say where the left arm is. Tell the person that "
+        "the arms cannot be checked.",
+    )
     assert arm_world.gaze.status().target is None
     time.sleep(0.2)
     assert arm_world.recorder.count() == 0
@@ -669,7 +878,62 @@ def test_move_arm_to_pose_stops_the_loop_before_the_commander_and_set_gripper_do
     [status] = at_first_call
     assert (status.running, status.stop_reason) == (False, ARM_MOTION)
     assert_silent_after_stop(arm_world.recorder)
-    assert arm_world.call("stop_looking").summary.endswith("before an arm moved.")
+    assert arm_world.call("stop_looking").summary.endswith(
+        "because an arm or a gripper was about to move, or may have been moving."
+    )
+
+
+def test_a_drive_the_arm_check_refuses_stops_the_loop_and_stop_looking_does_not_say_it_drove(
+    arm_world, fake, poses, connector, locations
+):
+    base = arm_world.base(0.0)
+    arm_world.camera(lambda: base.yaw, heading=0.5)
+    target = arm_world.find_person()
+    arm_world.call("look_at", target=target)
+    assert wait_until(arm_world.turning)
+    drive = NavigateToLocationTool(
+        connector=connector,
+        locations=locations,
+        forbidden=FORBIDDEN_NAMES,
+        arm=arm_world.ctx.backend("arm"),
+        gaze=arm_world.gaze,
+    )
+    # No read since look_at's, so the loop still has both arms home and goes on.
+    fake.teleport(targets(poses, "receive", "left"))
+
+    answer = drive.invoke({"location": "kitchen"})
+
+    assert answer.startswith("Not driving: the left arm is not in a pose that is safe for")
+    status = arm_world.gaze.status()
+    assert (status.running, status.stop_reason) == (False, NAVIGATION)
+    assert_silent_after_stop(arm_world.recorder)
+    # The drive was asked for, and the loop stopped, but the robot never drove.
+    assert arm_world.call("stop_looking").summary.endswith("when a drive was asked for.")
+
+
+def test_an_arm_out_from_the_start_stops_the_loop_once_read_and_stop_looking_does_not_say_it_moved(
+    arm_world, fake, poses
+):
+    # The left arm is out before look_at, but the commander gives no reading,
+    # so the check fails open and the base turns with both arms unknown.
+    fake.teleport(targets(poses, "receive", "left"))
+    fake.read_failure = "Failed to get current robot state"
+    base = arm_world.base(0.0)
+    arm_world.camera(lambda: base.yaw, heading=0.5)
+    target = arm_world.find_person()
+    assert arm_world.call("look_at", target=target).arms_unknown is True
+    assert wait_until(arm_world.turning)
+
+    # The first reading shows the arm where it has been all along.
+    fake.read_failure = None
+    arm_world.call("get_arm_state")
+
+    assert wait_until(lambda: not arm_world.gaze.status().running)
+    assert arm_world.gaze.status().stop_reason == ARM_OUT
+    assert_silent_after_stop(arm_world.recorder)
+    assert arm_world.call("stop_looking").summary.endswith(
+        "because an arm was out of every pose that is safe for driving."
+    )
 
 
 def test_look_at_turns_and_says_so_when_no_commander_is_found(make_world, connector, poses):

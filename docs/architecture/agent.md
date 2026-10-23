@@ -324,6 +324,9 @@ todos = [
   the music" do not. Messages queued before it are dropped, with their
   seeds. The stop message itself runs next, so the LLM can cancel the open
   steps and say so. While the agent is idle, "stop" is an ordinary message.
+  Either way, it first goes to the Toolbox's stop-heard listeners
+  ([Stop, reset and the cancel](#stop-reset-and-the-cancel)), so the gaze
+  loop stops turning the base between tasks too.
 - **Reset.** A message on `/walkie/reset` drops the queued messages and
   their seeds, and stops the running task. Before the next task, the agent
   clears the history, the todo list and the handles, publishes `[]` on
@@ -716,12 +719,20 @@ one place.
   lock, the same lock under which a starting run clears it. A cancel set
   after a run started cancels that run. One set before is cleared when the
   next run starts, so a new task never inherits an old cancel.
-- **Listeners.** `Toolbox.on_interrupt(callback)` and
-  `on_new_task(callback)` let other parts react. The gaze loop registers
-  both, so a stop, a reset or a new task stops the base turning. The mock
-  people memory clears on a new task. Interrupt listeners run after the
-  lock is released, because one may block. A listener that raises is
-  logged, and the others still run.
+- **Listeners.** `Toolbox.on_interrupt(callback)`,
+  `on_new_task(callback)` and `on_stop_heard(callback)` let other parts
+  react. The gaze loop registers all three, so a stop, a reset or a new
+  task stops the base turning. The mock people memory clears on a new
+  task. Interrupt listeners run after the lock is released, because one
+  may block. A listener that raises is logged, and the others still run.
+- **Stop-heard listeners.** `Toolbox.stop_heard()` runs them for every
+  utterance that is just "stop" or "never mind", during a task or not.
+  They run on the thread that delivered the utterance, before the agent
+  takes its buffer lock and queues it, so the stop's own run cannot start
+  before they return. They are for what runs between tasks, such as the
+  gaze loop: while the agent is idle, the stop interrupts nothing. They
+  set no cancel and hold back no run. During a task, the interrupt
+  follows them.
 - **No run starts during the listeners.** The interrupt counts as
   pending from the cancel until its last listener returns. Until then
   `Toolbox.begin_task()` refuses, and the agent leaves the next message

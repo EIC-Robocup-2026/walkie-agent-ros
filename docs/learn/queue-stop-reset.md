@@ -32,9 +32,13 @@ result must be exactly `stop`, `never mind` or `nevermind`.
 
 ```
 
-A stop counts only while a task runs. `_enqueue` then drops the older queued
-messages and their seeds, keeps the stop itself queued, and sets
+A stop interrupts only while a task runs. `_enqueue` then drops the older
+queued messages and their seeds, keeps the stop itself queued, and sets
 `_interrupt_event`. While the agent is idle, "stop" is an ordinary message.
+Either way, `_enqueue` first calls `Toolbox.stop_heard()`, before it takes
+`_buffer_lock` and queues the stop. The gaze loop listens there, so it stops
+turning the base between tasks too
+([HRI Task](../architecture/hri.md#stops)).
 
 ```mermaid
 sequenceDiagram

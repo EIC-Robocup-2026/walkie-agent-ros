@@ -15,7 +15,9 @@ from walkie_agent.gaze import (
     NAVIGATION_ACTIVE,
     NEW_TASK,
     SHUTDOWN,
+    STOP_HEARD,
     STOP_LOOKING,
+    STOP_WAIT_S,
     GazeLoop,
 )
 from walkie_agent.toolbox import ToolContext
@@ -32,11 +34,17 @@ TURN_TIMEOUT = "turn timeout"
 _CAUSES = {
     STOP_LOOKING: "with stop_looking",
     INTERRUPT: "by a stop or a reset",
+    STOP_HEARD: 'because someone said "stop" or "never mind"',
     NEW_TASK: "when a new task started",
-    NAVIGATION: "before a drive",
+    # Before the drive's arm check, so also for a drive that never ran.
+    NAVIGATION: "when a drive was asked for",
     NAVIGATION_ACTIVE: "because a navigation goal became active",
-    ARM_MOTION: "before an arm moved",
-    ARM_OUT: "because an arm left the poses that are safe for driving",
+    # Before an arm atomic's first commander call, and from the loop when an
+    # arm became unknown, or a commander goal ran with an arm unknown, which
+    # may be a gripper's (busy()).
+    ARM_MOTION: "because an arm or a gripper was about to move, or may have been moving",
+    # From the commander's last reading, which does not say when the arm went out.
+    ARM_OUT: "because an arm was out of every pose that is safe for driving",
     SHUTDOWN: "at shutdown",
     ERROR: "after an error in the gaze loop",
     TURN_TIMEOUT: "because the turn took too long",
@@ -53,10 +61,13 @@ def stop_before_arm_motion(ctx: ToolContext) -> None:
     The loop turns the base only with both arms in travel-safe poses
     (ADR-0051). Stopping before the goal is sent, rather than when the
     commander's next reading shows the arm moving, keeps the base still for
-    the whole motion. The grippers do not move the arm and do not stop it.
+    the whole motion. The gaze thread publishes the stop's zeros, and this
+    waits up to STOP_WAIT_S for them, so the base has been told to stop
+    before the arm leaves its pose. The grippers do not move the arm and do
+    not stop it.
     """
     if ctx.has_backend(GAZE):
-        gaze_loop(ctx).stop(ARM_MOTION)
+        gaze_loop(ctx).stop(ARM_MOTION, wait_s=STOP_WAIT_S)
 
 
 def stop_cause(reason: str) -> str:

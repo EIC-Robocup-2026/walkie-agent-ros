@@ -4,12 +4,14 @@ LLM and the fake robot."""
 import json
 import logging
 import random
+import re
 import threading
 import time
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
+from rai.communication.hri_connector import HRIMessage
 from rai.communication.ros2 import ROS2Connector, ROS2HRIConnector, ROS2HRIMessage
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Empty, String
@@ -18,7 +20,7 @@ from conftest import PROJECT_ROOT
 from scripted_llm import ScriptedChatModel, tool_call
 from walkie_agent.agent import ARM_RULES, SYSTEM_PROMPT, WalkieAgent, create_walkie_agent
 from walkie_agent.arm.commander import CommanderClient
-from walkie_agent.gaze import GazeLoop
+from walkie_agent.gaze import STOP_HEARD, GazeLoop
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory, ModelVector
 from walkie_agent.perception.vision_feed import VisionFeed
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, hash_vector
@@ -175,6 +177,34 @@ def test_stopping_the_agent_stops_the_gaze_loop_and_shuts_it_down(connector, loc
     with pytest.raises(StepError) as error:
         gaze.hold_heading("seat_77aa.2", 0.5, cancel=threading.Event())
     assert error.value.code == "UNAVAILABLE"
+
+
+def test_a_stop_while_the_agent_is_idle_stops_the_gaze_loop(connector, locations):
+    llm = ScriptedChatModel(responses=[AIMessage("There is nothing to stop.")])
+    agent = create_walkie_agent(llm, connector, locations, target_connectors={})
+    gaze = agent.gaze
+    agent.run()
+    try:
+        assert wait_until(agent.ready)
+        # As after a look_at at a seat that ended its task.
+        gaze.hold_heading("seat_77aa.2", 0.5, cancel=threading.Event())
+
+        agent(HRIMessage(text="stop", message_author="human"))
+
+        # Stopped before agent() returned, though there was no run to interrupt.
+        status = gaze.status()
+        assert (status.running, status.stop_reason) == (False, STOP_HEARD)
+        stop_looking = next(t for t in agent.toolbox.tools() if t.name == "stop_looking")
+        assert re.fullmatch(
+            r"Not looking at anyone\. The last target, seat_77aa\.2, was stopped \d+ s ago "
+            r'because someone said "stop" or "never mind"\.',
+            stop_looking.call().summary,
+        )
+        # The stop still reaches the LLM as an ordinary message.
+        assert wait_until(lambda: llm.received and agent.ready())
+        assert "stop\n" in [m.content for m in llm.received[0]]
+    finally:
+        agent.stop()
 
 
 def test_the_mock_people_memory_loads_the_people_atomics_and_clears_on_a_new_task(

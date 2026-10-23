@@ -4,8 +4,10 @@ The head only tilts, so the robot looks at someone by turning its base, and
 the gaze loop (walkie_agent.gaze) does the turning on a thread of its own.
 A person handle starts the loop on the person's track: it turns toward each
 new sighting until stop_looking, a stop or a reset, a new task, a drive, an
-arm motion, or 1 s without the person. The answer comes at once, since the
-loop follows the person for as long as the conversation lasts.
+arm motion, or 1 s after the last sighting. The answer comes at once, since
+the loop follows the person for as long as the conversation lasts. A person
+already lost when the loop takes them, last seen more than 1 s before, is
+refused with STALE rather than answered with "Looking at".
 
 A seat handle turns the base to the seat's heading, fixed in the map when
 find_seats saw it, so it is never looked up again after the TF buffer has
@@ -15,7 +17,10 @@ right place.
 
 The base turns only with both arms in travel-safe poses: the check is
 navigation.check_arms, the one the drives make, and it fails open the same
-way when the commander does not answer.
+way when the commander is not found, does not answer or gives no reading,
+except while the arms are unverified. It refuses while a commander goal may
+still move an arm or a gripper, and on a reading that cannot show the arms
+are safe.
 """
 
 import time
@@ -31,6 +36,7 @@ from walkie_agent.gaze import (
     DEFAULT_CONFIG,
     ERROR,
     INTERRUPT,
+    LOST,
     NAVIGATION_ACTIVE,
     SHUTDOWN,
     GazeLoop,
@@ -48,7 +54,8 @@ META = ToolMeta(
     description=(
         "Turn to face a person or a seat. target is one person handle from find_people, "
         "such as per_51c0.1, or one seat handle from find_seats. For a person, the robot "
-        "keeps turning to follow them until you call stop_looking, they are out of view for "
+        "keeps turning to follow them until you call stop_looking, someone says "
+        '"stop" or "never mind", they are out of view for '
         f"{DEFAULT_CONFIG.lost_after_s:g} s, or you drive or move an arm; the answer comes at "
         "once. For a seat, the robot turns to it and stays facing it; the answer comes once "
         "it faces the seat. Look at the person you are talking to, and stop with "
@@ -75,9 +82,10 @@ TURN_TIMEOUT_S = 10.0
 # How often the wait for a seat turn reads TF and the loop's status.
 _POLL_S = 0.05
 
-# The error for a turn to a seat that the loop ended early, by its stop
+# The error for a target that the loop stopped before look_at answered, a
+# seat before the base faced it or a person at the start, by its stop
 # reason. Any other reason, such as an interrupt or a newer target, is
-# CANCELLED.
+# CANCELLED. A person lost at the start is STALE (_lost_at_start).
 _ENDED_CODES = {
     NAVIGATION_ACTIVE: "REFUSED",
     ARM_OUT: "PRECONDITION_FAILED",
@@ -102,8 +110,9 @@ class Out(ToolOutput):
     kind: str
     # The map-frame yaw the base turns toward now, in radians.
     heading: float | None
-    # True when the arm backend is present but the commander did not
-    # answer, so the base turns with the arms unchecked.
+    # True when the arm backend is present but the arms were not checked:
+    # the commander was not found, did not answer or gave no reading. The
+    # base turns with the arms unchecked.
     arms_unknown: bool
 
 
@@ -129,15 +138,24 @@ def run(ctx: ToolContext, args: Args) -> Out:
         )
 
     arm = ctx.backend(ARM) if ctx.has_backend(ARM) else None
-    note = check_arms(arm, "turning", "'carry' or 'home'", ctx.cancel)
+    # The action is this call's turn: a refusal reads "Not starting a turn
+    # toward per_51c0.1", which stays true while the loop still follows a
+    # target from an earlier call, this one included, as it does during a
+    # gripper command with both arms known. It says nothing of that target,
+    # which the loop may stop at its next tick, on the reading this check
+    # just made.
+    note = check_arms(
+        arm, f"starting a turn toward {handle.id}", "'carry' or 'home'", ctx.cancel
+    )
 
     if handle.kind == "person":
         gaze.follow_person(
             handle.id, payload.track, payload.heading_map, payload.stamp_ns, cancel=ctx.cancel
         )
+        _check_following(gaze, handle.id)
         summary = (
-            f"Looking at {handle.id}. The robot turns to keep them in view, and stops if it "
-            f"loses them for {gaze.config.lost_after_s:g} s.{note}"
+            f"Looking at {handle.id}. The robot turns to keep them in view, and stops once it "
+            f"has not seen them for {gaze.config.lost_after_s:g} s.{note}"
         )
     else:
         gaze.hold_heading(handle.id, payload.heading_map, cancel=ctx.cancel)
@@ -181,6 +199,49 @@ def _seat_words(seat: SeatPayload) -> str:
     return seat.label if seat.part is None else f"{seat.label}, {seat.part}"
 
 
+def _check_following(gaze: GazeLoop, name: str) -> None:
+    """Raise unless the loop follows `name` from a sighting it has not already lost.
+
+    follow_person checks the age of the sighting it starts from before it
+    sets the target, and the newest array's before its wait for TF, so by
+    the time the target is set, that sighting may be more than
+    lost_after_s old, and the loop's first tick would lose the person. This applies the loop's rule (GazeControl._lost) once, now: a
+    target lost at the start is stopped for LOST, as that tick would stop
+    it, and refused with STALE. A target that the loop already stopped for
+    another reason, or that another target replaced, gets the error
+    _turn_ended gives.
+    """
+    status = gaze.status()
+    lost_after_s = gaze.config.lost_after_s
+    if status.running and status.target == name and status.last_seen is not None:
+        if abs(status.now - status.last_seen) <= lost_after_s:
+            return
+        gaze.stop(LOST)
+    elif status.target != name or status.stop_reason != LOST or status.last_seen is None:
+        raise _turn_ended(name, status)
+    raise _lost_at_start(name, status.now - status.last_seen, lost_after_s)
+
+
+def _lost_at_start(name: str, age: float, lost_after_s: float) -> StepError:
+    """STALE for a person last seen `age` seconds ago, too long ago for the loop to follow."""
+    if age < 0:
+        # As GazeControl._lost: a clock that moved back loses the person too.
+        why = (
+            f"their last sighting is stamped {-age:.1f} s ahead of the robot's clock, which "
+            "has moved back, as at a simulation restart."
+        )
+    else:
+        why = (
+            f"they were last seen {age:.1f} s ago. The robot stops following a person "
+            f"{lost_after_s:g} s after the last sighting."
+        )
+    return StepError(
+        "STALE",
+        f"Not turning toward {name}: {why} Call find_people for a current handle.",
+        {"handle": name},
+    )
+
+
 def _face(ctx: ToolContext, gaze: GazeLoop, name: str) -> None:
     """Wait until the base faces the loop's setpoint for `name`, within the loop's deadband.
 
@@ -218,7 +279,7 @@ def _face(ctx: ToolContext, gaze: GazeLoop, name: str) -> None:
 
 
 def _turn_ended(name: str, status: GazeStatus) -> StepError:
-    """The error for a turn to `name` that the loop ended before the base faced it."""
+    """The error for a target `name` that the loop ended before look_at answered."""
     reason = status.stop_reason if status.target == name else None
     if reason is None:
         return StepError(

@@ -993,6 +993,31 @@ def test_new_task_clears_the_handles_and_tells_the_listeners():
     assert toolbox.ctx.cancel.is_set()
 
 
+def test_stop_heard_tells_its_listeners_and_cancels_nothing(caplog):
+    toolbox = Toolbox(None)
+    heard: list[str] = []
+
+    def failing() -> None:
+        heard.append("failing")
+        raise RuntimeError("listener broke")
+
+    toolbox.on_stop_heard(lambda: heard.append("first"))
+    toolbox.on_stop_heard(failing)
+    toolbox.on_stop_heard(lambda: heard.append("last"))
+    toolbox.on_interrupt(lambda: heard.append("interrupt"))
+    toolbox.on_new_task(lambda: heard.append("new task"))
+
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.toolbox"):
+        toolbox.stop_heard()
+
+    assert heard == ["first", "failing", "last"]
+    assert "A toolbox stop-heard listener failed." in caplog.messages
+    # Only an interrupt cancels the run and holds the next one back.
+    assert not toolbox.ctx.cancel.is_set()
+    assert not toolbox.interrupt_pending()
+    assert toolbox.begin_task() is True
+
+
 def test_toolbox_builds_its_tools_once(make_package):
     toolbox = Toolbox(None, package=make_package({"count_chairs": atomic_source("count_chairs")}))
 

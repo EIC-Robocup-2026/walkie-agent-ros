@@ -1329,6 +1329,76 @@ def test_a_stop_utterance_cancels_a_waiting_atomic_at_once(start):
     assert not toolbox.ctx.cancel.is_set()
 
 
+def test_a_stop_during_a_task_goes_to_the_stop_heard_listeners_then_interrupts(start):
+    toolbox = Toolbox(connector=None)
+    arm = WaitingArm(toolbox)
+    order: list[tuple[str, bool]] = []
+    toolbox.on_stop_heard(lambda: order.append(("stop heard", toolbox.ctx.cancel.is_set())))
+    toolbox.on_interrupt(lambda: order.append(("interrupt", toolbox.ctx.cancel.is_set())))
+    agent, llm = make_agent(
+        [tool_call("move_arm", {}, "call_arm"), AIMessage("Stopped.")],
+        tools=[arm.tool],
+        toolbox=toolbox,
+    )
+    start(agent)
+
+    agent(human("Raise the arm."))
+    assert arm.started.wait(timeout=5)
+    agent(human("stop"))
+
+    # Each once, before agent() returned: the stop-heard listeners, then the
+    # interrupt, which comes with the cancel.
+    assert order == [("stop heard", False), ("interrupt", True)]
+    assert arm.ended.wait(timeout=5)
+    assert settle(agent, llm, 2)
+
+
+@pytest.mark.parametrize("when", ["before the agent starts", "between tasks"])
+def test_a_stop_while_idle_goes_to_the_stop_heard_listeners_before_it_is_queued(start, when):
+    toolbox = Toolbox(connector=None)
+    agent, llm = make_agent([AIMessage("There is nothing to stop.")], toolbox=toolbox)
+    heard: list[tuple[bool, bool, int]] = []
+    interrupted: list[bool] = []
+
+    def listener() -> None:
+        # Not under the buffer lock, so a listener may take locks of its own.
+        free = agent._buffer_lock.acquire(blocking=False)
+        if free:
+            agent._buffer_lock.release()
+        heard.append((free, toolbox.ctx.cancel.is_set(), len(agent._received_messages)))
+
+    toolbox.on_stop_heard(listener)
+    toolbox.on_interrupt(lambda: interrupted.append(True))
+    if when == "between tasks":
+        start(agent)
+        assert wait_until(agent.ready)
+
+    agent(human("Never mind."))
+
+    # Before agent() returned and before the stop was queued, with nothing cancelled.
+    assert heard == [(True, False, 0)]
+    if when == "before the agent starts":
+        start(agent)
+    assert settle(agent, llm, 1)
+    assert interrupted == []
+    # The stop is still an ordinary message.
+    assert contents(llm.received[0]) == ["Never mind.\n"]
+
+
+@pytest.mark.parametrize("text", ["Say hello.", "stop the music", "Walkie, stop"])
+def test_other_utterances_reach_no_stop_heard_listener(start, text):
+    toolbox = Toolbox(connector=None)
+    heard: list[str] = []
+    toolbox.on_stop_heard(lambda: heard.append(text))
+    agent, llm = make_agent([AIMessage("Okay.")], toolbox=toolbox)
+    start(agent)
+
+    agent(human(text))
+
+    assert settle(agent, llm, 1)
+    assert heard == []
+
+
 def test_reset_cancels_a_waiting_atomic_at_once(start):
     toolbox = Toolbox(connector=None)
     arm = WaitingArm(toolbox)

@@ -134,7 +134,9 @@ class WalkieAgent(LangChainAgent):
       the agent.
     - With a `toolbox`, a stop or a reset also cancels the running atomic
       tool at once, and a new task that replaces the todo list forgets the
-      handles of the old one.
+      handles of the old one. Every "stop" or "never mind", during a task
+      or not, first goes to the toolbox's stop-heard listeners, so the gaze
+      loop stops turning the base even while the agent is idle.
     - With a `gaze` loop, stop() also shuts it down, so the base stops
       turning and its thread ends with the agent.
     - An error from the LLM or the graph is logged, and the agent keeps
@@ -288,7 +290,10 @@ class WalkieAgent(LangChainAgent):
     def _enqueue(self, msg: HRIMessage, seed: _Seed | None) -> None:
         # Replaces RAI's __call__. The seed is stored under the same lock as
         # the message, so a reset can never separate the two.
-        stop_heard = False
+        stop = is_stop_utterance(msg.text)
+        if stop:
+            self._notify_toolbox_stop_heard()
+        interrupted = False
         with self._buffer_lock:
             if self.max_size is not None and len(self._received_messages) >= self.max_size:
                 self.logger.warning("Buffer overflow. Dropping the oldest message.")
@@ -303,7 +308,7 @@ class WalkieAgent(LangChainAgent):
             # lock, so this check cannot race with the start of a run: a stop
             # either interrupts the run or waits as an ordinary message.
             running = self._thread is not None and not self._agent_ready_event.is_set()
-            if running and is_stop_utterance(msg.text):
+            if running and stop:
                 for queued in list(self._received_messages)[:-1]:
                     self._seeds.pop(id(queued), None)
                 self._received_messages.clear()
@@ -312,9 +317,9 @@ class WalkieAgent(LangChainAgent):
                 self._received_messages.append(msg)
                 self._interrupt_event.set()
                 self._cancel_atomics()
-                stop_heard = True
+                interrupted = True
                 self.logger.info("Stop heard: interrupting the task, dropping older messages.")
-        if stop_heard:
+        if interrupted:
             self._notify_toolbox_interrupt()
 
     def _cancel_atomics(self) -> None:
@@ -331,6 +336,16 @@ class WalkieAgent(LangChainAgent):
         # may block, and must not hold up the agent thread or a ROS callback.
         if self.toolbox is not None:
             self.toolbox.notify_interrupt()
+
+    def _notify_toolbox_stop_heard(self) -> None:
+        # For every stop utterance, during a task or not: while idle, a stop
+        # interrupts nothing and stays an ordinary message, but the gaze
+        # loop, which turns the base between tasks too, must still stop.
+        # Outside _buffer_lock, as for an interrupt, and before the stop is
+        # queued, so the stop's own run cannot start before the listeners
+        # are done, and they never stop a target that run sets.
+        if self.toolbox is not None:
+            self.toolbox.stop_heard()
 
     def _toolbox_new_task(self) -> None:
         if self.toolbox is not None:

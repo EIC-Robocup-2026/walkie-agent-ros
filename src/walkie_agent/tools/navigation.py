@@ -15,6 +15,7 @@ from nav2_msgs.action import NavigateToPose
 from pydantic import BaseModel, Field, PrivateAttr
 from rai.tools.ros2.base import BaseROS2Tool
 from rclpy.action import ActionClient
+from rclpy.node import Node
 from rclpy.time import Time
 from tf2_ros import TransformException
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
@@ -248,20 +249,7 @@ class MoveRelativeTool(Nav2GoalTool):
         )
 
     def _tf_publisher_hint(self) -> str:
-        """Names the likely cause when no node in reach publishes TF at all.
-
-        Under rmw_zenoh, nodes on another ROS_DOMAIN_ID or behind another
-        router are invisible, so an empty TF buffer looks the same as a robot
-        that is not running. A frame missing from a TF tree that does exist
-        has other causes, such as localization not having started.
-        """
-        node = self.connector.node
-        if node.count_publishers("/tf") or node.count_publishers("/tf_static"):
-            return ""
-        return (
-            " No node publishes /tf: either the robot is not running, or the "
-            "agent uses a different ROS_DOMAIN_ID or Zenoh router than the robot."
-        )
+        return tf_publisher_hint(self.connector.node)
 
     def _current_transform(self) -> Transform | None:
         """The robot's pose from a transform stamped no earlier than this call.
@@ -285,6 +273,23 @@ class MoveRelativeTool(Nav2GoalTool):
             if time.monotonic() > deadline:
                 return None
             time.sleep(0.02)
+
+
+def tf_publisher_hint(node: Node) -> str:
+    """Names the likely cause when no node in reach publishes TF at all.
+
+    Under rmw_zenoh, nodes on another ROS_DOMAIN_ID or behind another
+    router are invisible, so an empty TF buffer looks the same as a robot
+    that is not running. A frame missing from a TF tree that does exist
+    has other causes, such as localization not having started. Returns ""
+    when TF is published, or the hint with a leading space.
+    """
+    if node.count_publishers("/tf") or node.count_publishers("/tf_static"):
+        return ""
+    return (
+        " No node publishes /tf: either the robot is not running, or the "
+        "agent uses a different ROS_DOMAIN_ID or Zenoh router than the robot."
+    )
 
 
 def _describe_move(forward_m: float, left_m: float, turn_deg: float) -> str:

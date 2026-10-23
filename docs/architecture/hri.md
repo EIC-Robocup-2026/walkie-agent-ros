@@ -1,8 +1,10 @@
 # HRI Task (Proposed)
 
-!!! note "Status: Proposed"
-    Nothing on this page is built yet. It is the design for team review. Each
-    of the [open questions](#open-questions) says what it blocks.
+!!! note "Status: Proposed, four atomics built"
+    The four people and seat atomics are built and tested on fakes. Their
+    status is in the [Atomics](#atomics) table. The rest of this page is the
+    design for team review. Each of the [open questions](#open-questions)
+    says what it blocks.
 
 The HRI task (RoboCup@Home 2026 rulebook, section 5.1) is the first task
 the [self-evolving agent](self-evolving-agent.md) will run end to end. It
@@ -20,8 +22,9 @@ test on the robot. This page plans that first slice, on top of
   walkie-database's migration after it, person depth, the bundle runtime
   and the skill server.
 - **On its path:** walkie-vision's torch and face nodes, walkie-database's
-  people services, and in this repository phase 1, six atomics, the arm
-  atomics and an HRI template. On the robot, also the real arm clients.
+  people services, and in this repository phase 1, six atomics (four are
+  built), the arm atomics and an HRI template. On the robot, also the real
+  arm clients.
 - **The bag goes in the left hand.** The robot holds out its hand, the
   guest says when the bag is in it, and the gripper closes. The two poses
   it needs, `receive` and `carry`, come from walkie-agent-v2's hand-over.
@@ -117,10 +120,10 @@ flowchart TB
 
 | Atomic | Effect | Status | What it does |
 | ------ | ------ | ------ | ------------ |
-| `find_people(gesture=None)` | P | As on [Perception](perception.md#people) | Person handles, left to right. Each one also has its box height as a share of the image, so the LLM can pick the nearest |
-| `recognize_person(person)` | R | Changed | Also takes the whole set from one `find_people` call. Names then go to people closest match first, so no name is given twice |
-| `remember_person(person, name, facts={})` | W | Changed | Adds `facts` such as `{"drink": "milk"}`, stored in walkie-database's `person.attributes`. Sends every face and appearance vector kept for the track. Declares the code's provisional `W` effect until [Perception question 3](perception.md#open-questions) is decided |
-| `find_seats()` | P | New | Seat handles, left to right, each `free` or `taken` |
+| `find_people(gesture=None)` | P | Built (sim) | Person handles, left to right. Each line gives where the person is in the image (left, centre or right), their box height as a share of the image height, their posture and gestures, and whether the face is seen well enough to recognize them. The height lets the LLM pick the nearest. The first line names the set. With `gesture`, only the people who show it |
+| `recognize_person(person)` | R | Built (sim) | Takes one handle or the whole set from one `find_people` call. Matches the face first, else the appearance, each within its model's distance limit, else `UNKNOWN`. Over a set, names go to people closest match first, so no name is given twice |
+| `remember_person(person, name, facts={})` | W | Built (sim) | Stores the name, `facts` such as `{"drink": "milk"}`, and every face and appearance vector collected for the track, minus outliers. On the robot, walkie-database will keep the facts in `person.attributes`. Takes one handle, not a set. Declares the code's provisional `W` effect until [Perception question 3](perception.md#open-questions) is decided |
+| `find_seats()` | P | Built (sim) | Seat handles, left to right, one per place to sit. A sofa gives a left, a middle and a right place. Each is `free` or `taken`, and the last line counts the free places |
 | `look_at(target)` | N | New ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)) | Starts the gaze loop on a person, or turns to a seat and holds. Returns at once |
 | `stop_looking()` | N | New | Stops the gaze loop |
 | `wait_for_person(question)` | — | Phase 1, a core tool | Speaks, marks the todo item waiting and ends the turn |
@@ -131,35 +134,111 @@ flowchart TB
 needed: the gaze loop follows the track, and the face is matched again at
 the introductions.
 
+**Built (sim)** means built and tested in this repository, not yet run on
+the robot or with walkie-vision:
+
+- **Where the code is.** Each atomic is a module in
+  `src/walkie_agent/tools/atomic/`, with what they share in
+  `_perception.py`. The rules they use, ported from walkie-agent-v2 with
+  its defaults, are plain functions in `src/walkie_agent/perception/`:
+  `gestures.py`, `seating.py`, `identity.py` and `geometry.py`.
+- **Two backends.** `vision` is a `VisionFeed`, which subscribes to
+  `/walkie_vision/people` and `/walkie_vision/objects`.
+  `create_walkie_agent` always adds it. `people_memory` is an
+  `InMemoryPeopleMemory`, a mock of walkie-database's proposed people
+  services. The agent adds it only with the `--mock-people-memory` flag,
+  which `pixi run agent-sim` passes, and clears it at every new task.
+  Without the flag, `recognize_person` and `remember_person` do not load
+  ([The Agent](agent.md#where-atomics-live)).
+- **Tested over ROS.** The tests run all four against a fake publisher of
+  both arrays, with vectors from `src/walkie_agent/sim/fake_vectors.py`
+  and the transforms from `map` to the camera on `/tf_static`.
+- **Nothing publishes in sim yet.** All four load under `agent-sim`, but
+  until `oracle_perception` exists, `find_people` and `find_seats` fail
+  with `UNAVAILABLE`. So no handle exists for the other two.
+- **Handles.** Person and seat handles go stale after 5 cm of base
+  translation or 10 minutes. A turn does not stale them, because the gaze
+  loop turns the base. Each keeps `heading_map`, the map-frame heading of
+  the face, the body or the place, computed from `camera_info` and TF at
+  the image's stamp. The gaze loop and `look_at` will turn to it.
+
+What the LLM reads from three calls, with two guests remembered:
+
+```text
+find_people()
+per_51c0: 3 people in view, left to right.
+per_51c0.0: left, height 0.83, standing, waving, face seen
+per_51c0.1: centre, height 0.62, sitting, face seen
+per_51c0.2: right, height 0.41, sitting, no face seen
+
+recognize_person(person="per_51c0")
+per_51c0.0 (left): UNKNOWN
+per_51c0.1 (centre): Sam, drink: milk
+per_51c0.2 (right): Ana, drink: tea
+
+find_seats()
+seat_7a1e.0: chair, free, left
+seat_7a1e.1: sofa, left place, taken, centre
+seat_7a1e.2: sofa, middle place, free, centre
+seat_7a1e.3: sofa, right place, taken, right
+Free places: 2 of 4.
+```
+
+Ana's face is not seen, so her appearance names her.
+
 ### Seats
 
 - **Seat classes.** The torch node's streaming class list includes
   `chair`, `sofa`, `armchair` and `stool`, the classes walkie-agent-v2
   used (`HRI_SEAT_CLASSES`). How a task sets that list is
-  [question 1](#open-questions).
+  [question 1](#open-questions). `find_seats` reads the seat classes from
+  `SeatingConfig` in `perception/seating.py`. When the objects message's
+  class list holds none of them, its `NOT_FOUND` says the detector is not
+  looking for seats.
 - **People from the same image.** `find_seats` takes the newest
-  `/walkie_vision/objects` message and the `/walkie_vision/people` message
-  with the same `header.stamp`.
+  `/walkie_vision/objects` message, at most 1 s old, and the
+  `/walkie_vision/people` message with the same `header.stamp`. It waits
+  up to 0.5 s more for that one, then fails with `UNAVAILABLE`.
 - **Occupancy.** A seat is taken when a person's seating anchor lies in
   its box: the hips, or else the lower centre of the person's box. A sofa
   splits into left, middle and right places, each with its own handle.
   This and its tests are ported from walkie-agent-v2's
   `tasks/skills/seating.py`.
+- **Everyone in view counts as seated,** as in walkie-agent-v2. The guest
+  the robot brought stands beside it, outside the view of the seats. A
+  person whose anchor is on no seat takes none.
 - **One view.** The robot looks from one living-room pose that sees every
   seat. walkie-agent-v2 turned to several headings and merged what it saw.
   Whether slice 1 needs that is [question 2](#open-questions).
 - **Showing the seat.** The robot turns to the free place with `look_at`
   and says which one it is, for example "the left side of the sofa". A
-  pointing arm pose comes with the real arms.
+  pointing arm pose comes with the real arms. A seat handle keeps its
+  heading from when the image was seen, because the handle outlives the
+  TF buffer's 10 s.
 
 ### Faces collected while talking
 
-While the gaze loop follows a track, the handle store keeps that track's
-face and appearance vectors: up to 20, from faces above a detection
-score. `remember_person` sends all of them, minus the ones far from their
-mean, as walkie-agent-v2's enrollment did. The guest turns while pacing, so
-walkie-database gets faces from several angles. That helps at the
-introductions, when the guest is seated and seen from elsewhere.
+`VisionFeed` collects face and appearance vectors for every visible
+track, not only the one the gaze loop follows, so the collection works
+before the gaze loop exists. For each track it keeps, with each vector's
+model name:
+
+- **the newest 20 face vectors** of faces that walkie-agent-v2 trusted: a
+  detection score of at least 0.5 and a face box of at least 2,500 px²;
+- **the newest 20 appearance vectors;**
+- **for at most 32 tracks,** dropping a track unseen for 60 s. Track id 0
+  means untracked and is never collected.
+
+`remember_person` sends all of a track's vectors, minus the ones far from
+their mean, as walkie-agent-v2's enrollment did. The handle's own vectors
+are used only when the track has none: the person is untracked, or the
+track was dropped.
+
+Faces from several angles help at the introductions, when the guest is
+seated and seen from elsewhere. At the camera's 15 Hz, though, 20 vectors
+are only the last 1.3 s or so before the call, so they show the angles of
+that moment. Faces from the whole conversation would need `VisionFeed` to
+space its samples out.
 
 ### Introductions
 
@@ -172,7 +251,9 @@ introductions, when the guest is seated and seen from elsewhere.
   other guest's name, drink and side. Sides are from the listener's view,
   the mirror of the camera's left to right.
 - **Names, not pronouns.** The robot calls guests by name and never says
-  "he" or "she", since it cannot know their pronouns.
+  "he" or "she", since it cannot know their pronouns. The system prompt
+  has this rule, and another: a person or seat handle comes only from
+  `find_people` or `find_seats`.
 
 ## The bag hand-over
 
@@ -260,7 +341,8 @@ flowchart TB
 
 - **Setpoint.** A map-frame heading toward the face's column. It comes
   from `camera_info` and TF at the message's stamp, so turning during
-  detection does not skew it.
+  detection does not skew it. `box_heading` in `perception/geometry.py`
+  computes it, and `find_people` already keeps it in each handle.
 - **Control.** walkie-agent-v2's loop at 15 Hz: gain 1.2, 0.15 to
   0.6 rad/s, no command inside 6°, acceleration capped at 3.2 rad/s².
 - **Stops.** After 1 s without the target, on `stop_looking`, before any
@@ -389,7 +471,8 @@ flowchart LR
 ([Perception](perception.md#in-simulation)):
 
 - **Guests** with a name, a drink, and face and appearance vectors from
-  `hash_vector`, under `fake_...` model names. One guest paces about
+  `hash_vector` in `src/walkie_agent/sim/fake_vectors.py`, under the model
+  names `fake_face` and `fake_reid`. One guest paces about
   0.3 m left and right while talking, and a bystander walks behind them.
 - **The living room** with seats, a passive guest on the sofa, and a
   switch of seats before the introductions.
@@ -406,7 +489,8 @@ flowchart LR
 
 A run passes when:
 
-- walkie-database holds each guest's name and drink as in the scenario;
+- the people memory, the mock in sim, holds each guest's name and drink
+  as in the scenario;
 - the heading stays within 10° of the talking guest for at least 80% of
   each conversation;
 - each seat offer faces a free place, never a taken one;
@@ -422,9 +506,10 @@ A run passes when:
   while a Nav2 goal is active or an arm is out of a travel-safe pose;
 - it finishes within 6 minutes of sim time.
 
-The 10° and 80% are first targets, to be tuned. Unit tests cover the gaze
-loop with a fake clock and fake TF, the seating predicates ported from
-walkie-agent-v2, and the name assignment in `recognize_person`.
+The 10° and 80% are first targets, to be tuned. Unit tests in
+`tests/test_perception.py` cover the seating and gesture rules ported from
+walkie-agent-v2, and the name assignment of `recognize_person`. The gaze
+loop's tests, with a fake clock and fake TF, come with the loop.
 
 ## What changes in other repositories
 

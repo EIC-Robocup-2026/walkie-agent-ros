@@ -7,6 +7,6 @@ every module here at startup and refuses to start if one is broken. Modules
 whose names start with "_" are helpers and are not loaded as tools.
 
 An atomic reaches ROS, its backends and the handle store only through ctx,
-a walkie_agent.toolbox.ToolContext. No atomic ships yet; the HRI atomics
-come first (docs/architecture/hri.md).
+a walkie_agent.toolbox.ToolContext. The first atomics are HRI's people and
+seat tools (docs/architecture/hri.md); _perception holds what they share.
 """

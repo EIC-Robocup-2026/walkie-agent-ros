@@ -9,8 +9,9 @@ it over ROS 2.
 !!! info "Redesign in progress"
     The agent is being redesigned into a self-evolving agent: see
     [Self-Evolving Agent (Proposed)](self-evolving-agent.md). Phase 1's host
-    graph and todo list are built, and so is the toolbox core of phase 2.
-    The rest of the redesign is proposed.
+    graph and todo list are built, and so are the toolbox core of phase 2
+    and the HRI task's four people and seat atomics. The rest of the
+    redesign is proposed.
     This page describes the agent as it is today. For a guided tour with
     runnable examples, start at [Learn the Agent](../learn/index.md).
 
@@ -40,10 +41,12 @@ it over ROS 2.
   tools away from motion topics
   ([ADR-0009](decisions/0009-forbidden-names-guard-rail.md),
   [ADR-0010](decisions/0010-bounded-navigation-tool.md)).
-- **Typed atomic tools, none shipped yet.** An atomic declares its
-  arguments, output and effects, and fails with one of 13 error codes. It
-  runs with a shared `ctx` and passes handles, short ids for what it saw
-  ([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)).
+- **Typed atomic tools.** An atomic declares its arguments, output and
+  effects, and fails with one of 13 error codes. It runs with a shared
+  `ctx` and passes handles, short ids for what it saw
+  ([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). The first
+  four find people and seats, and recognize and remember people
+  ([HRI Task](hri.md#atomics)).
 - **Knows what it is.** rai_whoami adds a description of Walkie to the system
   prompt and a search tool over its documents
   ([ADR-0011](decisions/0011-whoami-identity.md)).
@@ -108,7 +111,9 @@ hear itself ([ADR-0029](decisions/0029-half-duplex-voice.md)). See
 `pixi run fake-walkie` stands in for the robot during development: it
 serves the Nav2 action and TF, and listens on the speech topic. It has no
 memory. `find_objects` needs the walkie-database node, see
-[Getting Started](../getting-started.md#ask-walkies-memory).
+[Getting Started](../getting-started.md#ask-walkies-memory). It publishes
+no `/walkie_vision/people` or `/walkie_vision/objects`, so `find_people`
+and `find_seats` fail with `UNAVAILABLE`.
 
 ## How a task runs
 
@@ -346,6 +351,10 @@ todos = [
 | `get_ros2_topics_names_and_types` | RAI        | Lists ROS topics, minus the forbidden ones                      |
 | `WaitForSecondsTool`              | RAI        | Waits a number of seconds                                       |
 | `search_robot_docs`               | rai_whoami | Searches Walkie's documentation (only after `pixi run whoami-build`) |
+| `find_people`                     | atomic     | Lists the people in view, left to right, as person handles with their posture and gestures |
+| `find_seats`                      | atomic     | Lists the places to sit in view, left to right, as seat handles, each free or taken |
+| `recognize_person`                | atomic     | Names people met before, by face, else by appearance. Only with `--mock-people-memory` |
+| `remember_person`                 | atomic     | Stores a person's name, facts, and face and appearance vectors. Only with `--mock-people-memory` |
 
 `find_objects` calls `/walkie_database/find_objects` with a label and asks
 for at most 5 objects. It returns each object's room and position on the
@@ -371,9 +380,13 @@ speech node is listening, it fails and the task goes on.
 The [arm manipulation design](manipulation.md) proposes four arm tools and,
 later, two skill tools.
 
-Typed atomic tools from `src/walkie_agent/tools/atomic/` are added after
-the tools above. None ships yet, see
-[Typed atomic tools](#typed-atomic-tools).
+The four atomic tools come from `src/walkie_agent/tools/atomic/` and are
+added after the others. A failure reaches the LLM as `CODE: message`, see
+[Typed atomic tools](#typed-atomic-tools). `find_people` and `find_seats`
+always load. `recognize_person` and `remember_person` need the
+`people_memory` backend, which only `--mock-people-memory` adds today, see
+[Where atomics live](#where-atomics-live). The HRI task's page shows what
+each one returns ([HRI Task](hri.md#atomics)).
 
 For the full list of topics, see
 [Getting Started](../getting-started.md).
@@ -382,9 +395,9 @@ For the full list of topics, see
 
 The toolbox core of phase 2 is built in `src/walkie_agent/toolbox/`: typed
 atomic tools, the `ctx` they run with, and handles
-([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). No atomic ships
-yet, so the LLM sees the same tools as before. The first atomics will be
-the HRI task's, such as `find_people` and `find_seats`
+([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). Four atomics
+ship, the HRI task's people and seat tools: `find_people`, `find_seats`,
+`recognize_person` and `remember_person`
 ([HRI Task](hri.md#atomics)). Bundles, the linker, access levels and tool
 search are not built
 ([Self-Evolving Agent](self-evolving-agent.md#tiers-and-folders)).
@@ -486,8 +499,9 @@ An atomic declares what it does to the world in `META.effects`.
   none, so a retry is safe.
 - **Nothing checks effects yet.** The linker and the access levels that use
   them are not built ([ADR-0039](decisions/0039-access-levels.md)).
-- **`W` is provisional.** The planned `remember_person` writes to
-  walkie-database, and no decided effect covers that
+- **`W` is provisional.** `remember_person` writes to the people memory,
+  the mock today and walkie-database later, and no decided effect covers
+  that
   ([Perception question 3](perception.md#open-questions)). Until the
   question is decided, a `W` tool is a reviewed atomic that generated tools
   may never call.
@@ -558,13 +572,23 @@ spoken question. `ctx.handles` is the `HandleStore` that keeps them.
 - **At most 64 sets** are kept. The oldest is dropped first.
 
 Each kind has a `KindPolicy`: its id prefix, three limits and, optionally,
-the tool its handles come from. A limit of `None` is not checked. Only
-`object` is registered: prefix `obj`,
-5 cm or 3 degrees of base motion, and 600 s, which leaves time for a spoken
-question. Later PRs register `person` and `seat` with
-`register_kind(kind, policy)` when their atomics load. How long a person
-handle stays valid is
-[Perception question 8](perception.md#open-questions).
+the tool its handles come from. A limit of `None` is not checked. Three
+kinds are registered:
+
+| Kind | Prefix | Stale after | Source | Registered by |
+| ---- | ------ | ----------- | ------ | ------------- |
+| `object` | `obj` | 5 cm or 3 degrees of base motion, or 600 s | none | the store itself |
+| `person` | `per` | 5 cm of base translation, or 600 s | `find_people` | `tools/atomic/_perception.py` |
+| `seat` | `seat` | 5 cm of base translation, or 600 s | `find_seats` | `tools/atomic/_perception.py` |
+
+- **600 s leaves time for a spoken question.**
+- **A turn does not stale a person or seat handle.** The gaze loop turns
+  the base, a person handle names a track, and a seat handle keeps a
+  map-frame heading.
+- **Kinds register at import,** with `register_kind(kind, policy)`, when
+  the atomics load. Registering the same policy twice is fine.
+- **Still open.** How long a person handle stays valid is
+  [Perception question 8](perception.md#open-questions).
 
 A lookup checks, in this order:
 
@@ -600,7 +624,8 @@ replaces the todo list:
 
 The answer keeps them because the question may be about one of them: the
 HRI task calls `find_people`, asks the guest's name, and calls
-`remember_person` on the same handle in the next turn.
+`remember_person` on the same handle in the next turn. The mock people
+memory is cleared at the same moments, through `Toolbox.on_new_task`.
 
 ### The ctx
 
@@ -617,6 +642,7 @@ one place.
 | `wait(future, timeout_s, what="The call")` | Waits for a future that the connector's executor completes, and returns its result. Raises `TIMEOUT: <what> did not finish within <timeout_s> s.`, or `CANCELLED` within 50 ms of a stop or a reset |
 | `now()` | The node clock's time, which follows `/clock` under sim time |
 | `robot_pose(timeout_s=1.0)` | A `Pose2D` (`x`, `y`, `yaw`) from the latest TF `map` -> `base_footprint`. Raises `UNAVAILABLE`, with `move_relative`'s hint when no node publishes `/tf` |
+| `tf_buffer` | The node's TF buffer, for a transform at an image's stamp, as `box_heading` needs. It is RAI's private `connector._tf_buffer`, reused so that each node keeps one buffer and one listener. Recheck it on every rai-core upgrade |
 | `subscription(msg_type, topic, callback, qos)`, `publisher(msg_type, topic, qos)`, `service_client(srv_type, name)`, `action_client(action_type, name)` | The node's entity for that name, created on the first call |
 
 - **`wait()` leaves the future alone.** After a `TIMEOUT` or `CANCELLED`,
@@ -671,8 +697,9 @@ one place.
   like its `META.name`. Modules whose names start with `_` are helpers and
   are not loaded as tools.
 - **Checked at startup.** `create_walkie_agent` builds one
-  `Toolbox(connector)`, which imports every module and checks it: `META`
-  is a `ToolMeta` named like the module, `Args` is a pydantic model, `Out`
+  `Toolbox(connector, backends)`, which imports every module and checks
+  it: `META` is a `ToolMeta` named like the module, `Args` is a pydantic
+  model, `Out`
   is a `ToolOutput` subclass, `run` is a plain function that can be called
   as `run(ctx, args)`, every example fits `Args`, and no two atomics share
   a name. All problems
@@ -681,12 +708,26 @@ one place.
   startup, not at its first call in the middle of a task.
 - **Backends.** An atomic whose `META.requires` names a backend the ctx
   lacks is skipped, with one info line in the log. `create_walkie_agent`
-  passes no backends yet.
+  builds every backend before the `Toolbox`.
+- **`vision` is always there.** It is a `VisionFeed`, which subscribes to
+  `/walkie_vision/people` and `/walkie_vision/objects` once. With no
+  publisher it only holds two idle subscriptions, and its reads fail with
+  `UNAVAILABLE`.
+- **`people_memory` comes only with `--mock-people-memory`.** It is an
+  `InMemoryPeopleMemory`, a mock of walkie-database's proposed people
+  services. `Toolbox.on_new_task` clears it, so each task starts with no
+  guests. `pixi run agent-sim` passes the flag, and `pixi run agent` does
+  not. Without it, `recognize_person` and `remember_person` do not load,
+  so a robot run never stores guests in a mock that forgets them on
+  restart.
 - **After the other tools.** `build_walkie_tools` appends the atomic
   tools. An atomic named like an existing tool stops the agent with a
   `ValueError`, because the agent keeps one tool per name and would
   silently replace the older one.
-- **None ships yet.** The package holds only its docstring.
+- **Four ship.** `find_people`, `find_seats`, `recognize_person` and
+  `remember_person`, with what they share in `_perception.py`. The rules
+  they use, ported from walkie-agent-v2, are plain functions in
+  `src/walkie_agent/perception/`, which tests run without LangChain.
 
 ## Running on the robot
 

@@ -49,6 +49,14 @@ def main() -> None:
         action="store_true",
         help="Use the simulator's /clock, so goal timestamps match the simulated robot.",
     )
+    parser.add_argument(
+        "--mock-people-memory",
+        action="store_true",
+        help=(
+            "Remember people in memory, cleared at every new task, so recognize_person "
+            "and remember_person load. For sim and tests; without it they do not load."
+        ),
+    )
     args = parser.parse_args()
 
     # Variables already set in the shell take precedence over .env.
@@ -68,6 +76,7 @@ def main() -> None:
             target_connectors={args.output_topic: hri_connector},
             whoami_dir=args.whoami_dir,
             templates=templates,
+            mock_people_memory=args.mock_people_memory,
         )
         agent.subscribe_source(args.input_topic, hri_connector)
         agent.subscribe_reset(connector, args.reset_topic)

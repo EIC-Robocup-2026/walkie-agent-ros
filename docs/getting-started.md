@@ -271,6 +271,15 @@ pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
 `config/locations.sim.toml` (start, ahead, left, corner). The map frame is
 the robot's start pose, so all points are relative to where it started.
 
+`agent-sim` also passes `--mock-people-memory`, so `recognize_person` and
+`remember_person` load. They keep people in memory, and forget them on a
+reset or when a new task replaces the todo list. `pixi run agent` leaves
+the flag out, so those two tools do not load there. Nothing in the
+simulation publishes
+`/walkie_vision/people` or `/walkie_vision/objects` yet, so `find_people`
+and `find_seats` answer that vision is unavailable
+([HRI Task](architecture/hri.md#atomics)).
+
 ## 7. Open the docs locally
 
 ```bash

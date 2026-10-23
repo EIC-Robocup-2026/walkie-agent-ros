@@ -9,6 +9,7 @@ from rai.tools.ros2.navigation.nav2_blocking import GetCurrentPoseTool
 from rai.tools.time import WaitForSecondsTool
 
 from walkie_agent.locations import Location
+from walkie_agent.todo import TodoList
 from walkie_agent.tools.memory import FindObjectsTool
 from walkie_agent.tools.navigation import (
     MAP_FRAME,
@@ -44,10 +45,14 @@ def build_walkie_tools(
     connector: ROS2Connector,
     locations: dict[str, Location],
     whoami_dir: Path | None = None,
+    todos: TodoList | None = None,
 ) -> list[BaseTool]:
+    """The agent's tools. With `todos`, also update_todos and wait_for_person,
+    which act on that list; wait_for_person speaks through the same speak tool."""
+    speak = SpeakTool(connector=connector, forbidden=FORBIDDEN_NAMES)
     tools: list[BaseTool] = [
         # Walkie-specific tools.
-        SpeakTool(connector=connector, forbidden=FORBIDDEN_NAMES),
+        speak,
         ListLocationsTool(locations=locations),
         NavigateToLocationTool(
             connector=connector, locations=locations, forbidden=FORBIDDEN_NAMES
@@ -64,6 +69,9 @@ def build_walkie_tools(
         GetROS2TopicsNamesAndTypesTool(connector=connector, forbidden=FORBIDDEN_NAMES),
         WaitForSecondsTool(),
     ]
+    if todos is not None:
+        tools.append(UpdateTodosTool(todos=todos))
+        tools.append(WaitForPersonTool(todos=todos, speak_tool=speak))
     if whoami_dir is not None:
         from walkie_agent.whoami import build_docs_tool
 

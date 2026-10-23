@@ -10,7 +10,7 @@ from typing import Type
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseStamped, Quaternion, Transform
-from langchain_core.tools import BaseTool
+from langchain_core.tools import BaseTool, ToolException
 from nav2_msgs.action import NavigateToPose
 from pydantic import BaseModel, Field, PrivateAttr
 from rai.tools.ros2.base import BaseROS2Tool
@@ -68,8 +68,15 @@ class Nav2GoalTool(BaseROS2Tool):
     RAI ships NavigateToPoseBlockingTool, but (as of rai-core 2.12.1) it waits on
     the goal with no timeout, so a stalled or crashed Nav2 freezes the agent.
     This class bounds every wait and cancels the goal when navigation times out.
+
+    A failed move raises ToolException. With handle_tool_error on, LangChain
+    turns it into a ToolMessage of status "error" whose content is the
+    exception's message, so the LLM reads the same sentence and the todo
+    list's ledger counts the call as failed (ADR-0041). Called with a plain
+    dict instead of a tool call, the tool returns that sentence as a string.
     """
 
+    handle_tool_error: bool = True
     frame_id: str = MAP_FRAME
     action_name: str = "navigate_to_pose"
     server_timeout_sec: float = 2.0
@@ -84,15 +91,16 @@ class Nav2GoalTool(BaseROS2Tool):
             )
         return self._client
 
-    def _navigate(self, target: str, x: float, y: float, yaw: float) -> str | None:
-        """Drive to (x, y, yaw) in `frame_id`. Returns None on arrival, or a
-        message for the LLM that names `target` and says what went wrong."""
+    def _navigate(self, target: str, x: float, y: float, yaw: float) -> None:
+        """Drive to (x, y, yaw) in `frame_id`. Returns on arrival, or raises
+        ToolException with a message for the LLM that names `target` and says
+        what went wrong."""
         if not self.is_writable(self.action_name):
-            return f"Action {self.action_name} is not writable by this agent."
+            raise ToolException(f"Action {self.action_name} is not writable by this agent.")
 
         client = self._get_client()
         if not client.wait_for_server(timeout_sec=self.server_timeout_sec):
-            return (
+            raise ToolException(
                 f"Navigation is unavailable: action server '{self.action_name}' "
                 "did not respond. Is Nav2 running?"
             )
@@ -102,23 +110,22 @@ class Nav2GoalTool(BaseROS2Tool):
         goal_handle = wait_for_future(client.send_goal_async(goal),
                                       self.server_timeout_sec)
         if goal_handle is None:
-            return f"Navigation to {target} failed: Nav2 did not answer the goal."
+            raise ToolException(f"Navigation to {target} failed: Nav2 did not answer the goal.")
         if not goal_handle.accepted:
-            return f"Navigation to {target} failed: Nav2 rejected the goal."
+            raise ToolException(f"Navigation to {target} failed: Nav2 rejected the goal.")
 
         response = wait_for_future(goal_handle.get_result_async(),
                                    self.navigation_timeout_sec)
         if response is None:
             goal_handle.cancel_goal_async()
-            return (
+            raise ToolException(
                 f"Navigation to {target} timed out after "
                 f"{self.navigation_timeout_sec:g} s and was cancelled."
             )
         if response.status != GoalStatus.STATUS_SUCCEEDED:
             status = _STATUS_NAMES.get(response.status, str(response.status))
             detail = f" {response.result.error_msg}" if response.result.error_msg else ""
-            return f"Navigation to {target} failed ({status}).{detail}"
-        return None
+            raise ToolException(f"Navigation to {target} failed ({status}).{detail}")
 
     def _make_pose(self, x: float, y: float, yaw: float) -> PoseStamped:
         pose = PoseStamped()
@@ -152,10 +159,10 @@ class NavigateToLocationTool(Nav2GoalTool):
         target = self.locations.get(location.strip().lower())
         if target is None:
             known = ", ".join(self.locations) or "none"
-            return f"Unknown location '{location}'. Known locations: {known}."
+            raise ToolException(f"Unknown location '{location}'. Known locations: {known}.")
 
-        error = self._navigate(target.name, target.x, target.y, target.yaw)
-        return error or f"Arrived at {target.name}."
+        self._navigate(target.name, target.x, target.y, target.yaw)
+        return f"Arrived at {target.name}."
 
 
 class MoveRelativeToolInput(BaseModel):
@@ -197,12 +204,14 @@ class MoveRelativeTool(Nav2GoalTool):
         # NaN fails every comparison, so it would pass the distance limit below.
         # json.loads and pydantic both accept NaN and infinity from the LLM.
         if not all(math.isfinite(v) for v in (forward_m, left_m, turn_deg)):
-            return "Refused: every value must be a finite number."
+            raise ToolException("Refused: every value must be a finite number.")
+        # A zero move fails too: the robot did not move, so the call must not
+        # count as evidence that it did.
         if not (forward_m or left_m or turn_deg):
-            return "Nothing to do: the move is zero."
+            raise ToolException("Nothing to do: the move is zero.")
         distance = math.hypot(forward_m, left_m)
         if distance > self.max_distance_m:
-            return (
+            raise ToolException(
                 f"Refused: a move of {distance:.2f} m is more than the "
                 f"{self.max_distance_m:g} m allowed in one move."
             )
@@ -210,12 +219,12 @@ class MoveRelativeTool(Nav2GoalTool):
         try:
             current = self._current_transform()
         except TransformException as e:
-            return (
+            raise ToolException(
                 f"Cannot move: the robot's position ({self.frame_id} -> "
                 f"{self.robot_frame_id}) is unknown. {e}{self._tf_publisher_hint()}"
-            )
+            ) from e
         if current is None:
-            return (
+            raise ToolException(
                 f"Cannot move: the robot's position ({self.frame_id} -> "
                 f"{self.robot_frame_id}) is out of date. TF is not updating, or the "
                 "agent and the robot disagree on sim time (see --use-sim-time)."
@@ -230,8 +239,8 @@ class MoveRelativeTool(Nav2GoalTool):
         target_yaw = _normalize_angle(yaw + math.radians(turn_deg))
 
         target = f"the point {_describe_move(forward_m, left_m, turn_deg)}"
-        error = self._navigate(target, x, y, target_yaw)
-        return error or (
+        self._navigate(target, x, y, target_yaw)
+        return (
             f"Moved {_describe_move(forward_m, left_m, turn_deg)}. "
             f"Now at x={_round(x, 2):.2f} m, y={_round(y, 2):.2f} m, "
             f"heading {_round(math.degrees(target_yaw), 0):.0f} degrees "

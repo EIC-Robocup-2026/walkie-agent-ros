@@ -103,6 +103,34 @@ def test_speak_without_listener_reports_failure(connector):
     assert tool.invoke({"text": "anyone?"}).startswith("Nothing was said")
 
 
+def as_tool_call(tool, **args) -> dict:
+    return {"name": tool.name, "args": args, "id": "call_1", "type": "tool_call"}
+
+
+def test_tool_failures_are_error_results_for_a_tool_call(connector, locations):
+    # As a tool call, a failure comes back as an error ToolMessage with the
+    # same sentence, so the todo list's ledger counts it as failed (ADR-0041).
+    navigate = NavigateToLocationTool(connector=connector, locations=locations)
+    unknown = navigate.invoke(as_tool_call(navigate, location="garage"))
+    assert unknown.status == "error"
+    assert unknown.content.startswith("Unknown location 'garage'.")
+
+    move = MoveRelativeTool(connector=connector)
+    zero = move.invoke(as_tool_call(move, forward_m=0.0))
+    assert (zero.content, zero.status) == ("Nothing to do: the move is zero.", "error")
+
+    speak = SpeakTool(connector=connector, subscriber_wait_sec=0.3)
+    unheard = speak.invoke(as_tool_call(speak, text="anyone?"))
+    assert unheard.status == "error"
+    assert unheard.content.startswith("Nothing was said")
+
+
+def test_a_successful_move_is_a_success_result(fake_walkie, connector, locations):
+    tool = NavigateToLocationTool(connector=connector, locations=locations)
+    result = tool.invoke(as_tool_call(tool, location="kitchen"))
+    assert (result.content, result.status) == ("Arrived at kitchen.", "success")
+
+
 def test_speak_changes_speech_id_only_on_stop(fake_walkie, connector):
     """RAI's TTS plays one speech ID until "stop"; the tool must follow the same rule."""
     tool = SpeakTool(connector=connector)

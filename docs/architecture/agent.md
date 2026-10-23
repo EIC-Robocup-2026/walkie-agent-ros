@@ -10,7 +10,8 @@ it over ROS 2.
     The agent is being redesigned into a self-evolving agent: see
     [Self-Evolving Agent (Proposed)](self-evolving-agent.md). Phase 1's host
     graph and todo list are built. The rest of the redesign is proposed.
-    This page describes the agent as it is today.
+    This page describes the agent as it is today. For a guided tour with
+    runnable examples, start at [Learn the Agent](../learn/index.md).
 
 ## Summary
 

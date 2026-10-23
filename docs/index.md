@@ -14,5 +14,7 @@ by step, so new members can learn ROS 2 and create their own packages.
    project on your computer.
 2. [Setup log](setup/index.md): every step used to build this repository,
    with explanations.
+3. [Learn the Agent](learn/index.md): how the agent works, one idea per
+   page, with examples you can run.
 
 ## Troubleshoot haven

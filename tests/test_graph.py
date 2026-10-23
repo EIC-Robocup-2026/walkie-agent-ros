@@ -13,6 +13,7 @@ from collections.abc import Iterable
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, ToolException, tool
+from langgraph.errors import GraphRecursionError
 from rai.communication.hri_connector import HRIMessage
 from rai.messages import HumanMultimodalMessage
 
@@ -26,10 +27,17 @@ from walkie_agent.graph import (
     ToolSet,
     repair_history,
 )
+from walkie_agent.tasks import TaskTemplate
 from walkie_agent.todo import TodoList, TodoRejected
 from walkie_agent.tools.todos import UpdateTodosTool, WaitForPersonTool
 
 GATE_T1_T2 = "[todo] Open items: t1, t2. Finish them, or mark them failed or cancelled with a note."
+TOUR = TaskTemplate(
+    name="tour",
+    keywords=("house tour",),
+    task="Show the person the house.",
+    todos=["Go to the kitchen", "Come back"],
+)
 
 
 def wait_until(predicate, timeout=5.0) -> bool:
@@ -47,11 +55,19 @@ def settle(agent: WalkieAgent, llm: ScriptedChatModel, calls: int) -> bool:
 
 
 def make_agent(
-    responses: list[AIMessage], tools: Iterable[BaseTool] = (), todos: TodoList | None = None
+    responses: list[AIMessage],
+    tools: Iterable[BaseTool] = (),
+    todos: TodoList | None = None,
+    templates: dict[str, TaskTemplate] | None = None,
 ) -> tuple[WalkieAgent, ScriptedChatModel]:
     llm = ScriptedChatModel(responses=list(responses))
     agent = WalkieAgent(
-        target_connectors={}, llm=llm, tools=list(tools), stream_response=False, todos=todos
+        target_connectors={},
+        llm=llm,
+        tools=list(tools),
+        stream_response=False,
+        todos=todos,
+        templates=templates,
     )
     return agent, llm
 
@@ -580,7 +596,7 @@ def test_more_than_20_tools_warns_once_per_count(caplog):
 
 
 def test_a_long_task_is_not_cut_short():
-    """LangGraph's default limit of 25 steps would stop this task and raise."""
+    """A task of 15 tool rounds finishes well inside RECURSION_LIMIT."""
     rounds = 15
     agent, llm = make_agent(
         [tool_call("noop", call_id=f"call_{n}") for n in range(rounds)] + [AIMessage("Done.")],
@@ -591,6 +607,21 @@ def test_a_long_task_is_not_cut_short():
 
     assert len(llm.received) == rounds + 1
     assert agent.agent.config["recursion_limit"] == RECURSION_LIMIT
+
+
+def test_a_runaway_tool_loop_is_stopped_at_the_limit():
+    """LangGraph's own default, 10007 steps, would let this loop run to the end."""
+    rounds = RECURSION_LIMIT
+    agent, llm = make_agent(
+        [tool_call("noop", call_id=f"call_{n}") for n in range(rounds)] + [AIMessage("Done.")],
+        tools=[make_tool("noop")],
+    )
+
+    with pytest.raises(GraphRecursionError):
+        run_graph(agent)
+
+    # Each round is two steps, llm and tools.
+    assert len(llm.received) <= RECURSION_LIMIT // 2 + 1
 
 
 # -- The completion gate ---------------------------------------------------------
@@ -1063,6 +1094,60 @@ def test_a_list_with_open_items_is_kept_for_the_next_message(start):
 
     assert llm.reminders[0] == "<todos>\n[x] t1 Go to the kitchen\n[ ] t2 Come back\n</todos>"
     assert [i.status for i in todos.snapshot()] == ["completed", "pending"]
+
+
+# -- Task templates --------------------------------------------------------------
+
+
+@pytest.mark.parametrize("before", ["empty list", "finished list"])
+def test_an_utterance_with_a_keyword_starts_the_template(start, before):
+    todos = TodoList()
+    if before == "finished list":
+        todos = seeded(["Say hello"])
+        todos.apply([update("t1", status="completed")])
+    # The template's steps stay open, so the gate sends the LLM back twice.
+    agent, llm = make_agent(
+        [AIMessage(f"On it {n}.") for n in range(3)], todos=todos, templates={"tour": TOUR}
+    )
+    start(agent)
+
+    agent(human("Walkie, give me a House Tour."))
+    assert settle(agent, llm, 3)
+
+    task = llm.received[0][0]
+    assert task.content == "Walkie, give me a House Tour.\n\nShow the person the house.\n"
+    assert llm.reminders[0] == "<todos>\n[ ] t1 Go to the kitchen\n[ ] t2 Come back\n</todos>"
+    assert [(i.source, i.locked) for i in todos.snapshot()] == [("seed", True), ("seed", True)]
+
+
+@pytest.mark.parametrize("open_item", ["pending", "waiting"])
+def test_no_template_while_items_are_open(start, open_item):
+    todos = seeded(["Go to the bedroom"], in_progress="t1" if open_item == "waiting" else "")
+    if open_item == "waiting":
+        todos.set_waiting("Which bedroom?")
+    agent, llm = make_agent(
+        [AIMessage(f"Going {n}.") for n in range(3)], todos=todos, templates={"tour": TOUR}
+    )
+    start(agent)
+
+    agent(human("The one after the house tour."))
+    assert settle(agent, llm, 3)
+
+    assert llm.received[0][0].content == "The one after the house tour.\n"
+    assert [i.content for i in todos.snapshot()] == ["Go to the bedroom"]
+
+
+def test_a_seeded_task_does_not_use_a_template(start):
+    agent, llm = make_agent(
+        [AIMessage(f"Hello {n}.") for n in range(3)], templates={"tour": TOUR}
+    )
+    start(agent)
+
+    agent.submit("Say hello before the house tour.", todos=["Say hello"])
+    assert settle(agent, llm, 3)
+
+    assert llm.received[0][0].content == "Say hello before the house tour.\n"
+    assert llm.reminders[0] == "<todos>\n[ ] t1 Say hello\n</todos>"
 
 
 # -- Errors ----------------------------------------------------------------------

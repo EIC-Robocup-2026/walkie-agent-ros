@@ -1,6 +1,6 @@
 """The agent's own LangGraph graph (ADR-0038).
 
-RAI's create_react_runnable binds the tools once, when the graph is compiled.
+RAI's create_react_runnable binds the tools once, while it builds the graph.
 Walkie needs more on every LLM call: the tools bound at that moment, the todo
 list sent as a reminder that is not saved, a history without unanswered tool
 calls, and routes for the completion gate and wait_for_person. This module

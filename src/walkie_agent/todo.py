@@ -239,7 +239,8 @@ class TodoList:
         """Add a tool result to the error ledger.
 
         A successful call also becomes evidence for the item in progress or
-        waiting, if there is one.
+        waiting, if there is one. New evidence is a change to the list, so
+        the listeners hear of it, with no item in `changed`.
         """
         if tool_name in _LEDGER_IGNORES:
             return
@@ -247,8 +248,11 @@ class TodoList:
             seq = len(self._ledger) + 1
             self._ledger.append(_LedgerEntry(seq=seq, tool=tool_name, call_id=call_id, ok=ok))
             active = self._active_item()
-            if ok and call_id and active is not None:
-                active.evidence.append(call_id)
+            if not (ok and call_id and active is not None):
+                return
+            active.evidence.append(call_id)
+            self._queue([])
+        self._deliver()
 
     def set_waiting(self, question: str) -> str | None:
         """Mark the item in progress as waiting for an answer to `question`.
@@ -297,7 +301,8 @@ class TodoList:
         """Call `callback(items, changed)` after every change to the list.
 
         `items` is a snapshot of the new list and `changed` holds the items
-        whose status changed (every item for a seed, none for a clear). A
+        whose status changed (every item for a seed, none for a clear or new
+        evidence). A
         listener that raises is logged and does not affect the list. While
         one thread is calling the listeners, a change made on another thread
         is delivered by that first thread, so the call may come after the
@@ -637,6 +642,21 @@ def _seed_item(item_id: str, entry: str | dict[str, Any], source: str) -> TodoIt
         locked=True,
         requires_tool=_one_line(entry.get("requires_tool")),
     )
+
+
+def console_line(item: TodoItem) -> str:
+    """The operator console's line for an item whose status just changed.
+
+    "t1: Going to the kitchen" when the item goes in progress, and "t1
+    completed: Go to the kitchen" when it is completed, failed, cancelled or
+    waiting. A pending item gets "", because a step that has not started yet
+    is not news on the console.
+    """
+    if item.status == "in_progress":
+        return f"{item.id}: {item.active_form or item.content}"
+    if item.status == "pending":
+        return ""
+    return f"{item.id} {item.status}: {item.content}"
 
 
 def _render_line(item: TodoItem) -> str:

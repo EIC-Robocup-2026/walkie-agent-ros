@@ -38,7 +38,9 @@ __all__ = [
 # mistakes, not a security boundary.
 #   /cmd_vel       raw velocity commands would bypass Nav2's obstacle avoidance
 #   /walkie/reset  the agent must not wipe its own memory
-FORBIDDEN_NAMES = ["/cmd_vel", "/walkie/reset"]
+#   /walkie/task   the agent must not queue its own tasks or seed locked steps
+#   /walkie/todos  the operator's view of the list; only update_todos edits it
+FORBIDDEN_NAMES = ["/cmd_vel", "/walkie/reset", "/walkie/task", "/walkie/todos"]
 
 
 def build_walkie_tools(

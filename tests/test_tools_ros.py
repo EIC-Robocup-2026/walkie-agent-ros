@@ -155,6 +155,8 @@ def test_tools_hide_forbidden_topics(connector, locations):
     node = connector.node
     node.create_publisher(Twist, "/cmd_vel", 10)
     node.create_publisher(Empty, "/walkie/reset", 10)
+    node.create_publisher(String, "/walkie/task", 10)
+    node.create_publisher(String, "/walkie/todos", 10)
     node.create_publisher(String, "/walkie/visible_test_topic", 10)
     lister = next(
         t for t in build_walkie_tools(connector, locations)
@@ -163,8 +165,8 @@ def test_tools_hide_forbidden_topics(connector, locations):
 
     assert wait_until(lambda: "/walkie/visible_test_topic" in lister.invoke({}))
     topics = lister.invoke({})
-    assert "/cmd_vel" not in topics
-    assert "/walkie/reset" not in topics
+    for forbidden in ("/cmd_vel", "/walkie/reset", "/walkie/task", "/walkie/todos"):
+        assert forbidden not in topics
 
 
 def test_rai_get_current_pose_reads_fake_tf(fake_walkie, connector):

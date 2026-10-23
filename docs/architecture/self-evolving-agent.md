@@ -3,8 +3,8 @@
 !!! note "Status: Proposed"
     The host graph and the todo list are partly built: see
     [The Agent](agent.md#how-a-task-runs) for how they work today. Levels,
-    taint, tool search, the cancel token and the todo topics are not built
-    yet. The rest of this page is the design for team review. Each of the
+    taint, tool search and the cancel token are not built yet. The rest of
+    this page is the design for team review. Each of the
     [open questions](#open-questions) says which phase it blocks.
 
 Today's agent has a fixed set of tools, built once at startup (see
@@ -43,7 +43,7 @@ and the vision models on [Perception](perception.md).
 | ---- | ----- | -------- |
 | Host | `WalkieAgent` subclasses RAI's `LangChainAgent` and runs its own graph, which binds every tool every turn (phase 1) | The same graph binds only the visible tools, filtered by access level and taint |
 | Tools | Ten tools from `build_walkie_tools()`, `update_todos` and `wait_for_person` included, plus `search_robot_docs` after `pixi run whoami-build`. Most return one sentence | Typed atomics and reviewed bundles in git, plus generated tools outside it, in four tiers |
-| Planning | A todo list with rules in code, seedable through `submit()` (phase 1) | Also seedable from templates or `/walkie/task`, and published on `/walkie/todos` |
+| Planning | A todo list with rules in code, seedable through `submit()`, templates or `/walkie/task`, and published on `/walkie/todos` (phase 1) | The same list. In a turn tainted by web content, only a status can change |
 | Tool choice | Every tool is bound | At most 20 bound. The rest are found with `find_tools` |
 | New tools | None at runtime | `request_tool`: reuse, compose or write code, as the access level allows |
 | Models | One agent model in `config.toml` | A model, fallbacks, a timeout and an API key per role |
@@ -394,7 +394,7 @@ mid-task waits until the task ends. Only a reset, or an utterance that is
 just "stop" or "never mind", interrupts. It sets the interrupt event and
 the cancel token, so it also aborts a running tool creation. A correction
 such as "no, the red one" waits, but overheard booth speech can no longer
-cancel a pick. RAI checks the interrupt only between graph steps, so a
+cancel a pick. `_run_agent` checks the interrupt only between graph steps, so a
 running tool or bundle finishes first. A break right after the llm node
 leaves tool calls with no results, which OpenAI-compatible endpoints
 reject, so phase 1 also adds a **history repair** that answers each with an
@@ -601,7 +601,7 @@ BM25-only, dense-only and hybrid search, per level.
 | Phase | What ships (MVP) | Deferred | Done when |
 | ----- | ---------------- | -------- | --------- |
 | 0. Decisions | These ADRs. `artifact_database.pkl` in `.gitignore`. A draft `config/arm_poses.toml` copying the seven SRDF arm presets, plus `carry` and `receive`, with `travel_safe` flags ([Pose configuration](manipulation.md#pose-configuration)). `robot_check.sh` run on the robot PC. `/etc/walkie/sim-host` installed on dev machines | — | ADRs reviewed. The `robot_check.sh` result is known |
-| 1. Host, todos, roles | `graph.py` and the base swap, the `_run_agent` override, `todo.py`, seeding, `/walkie/todos`, `models.py`, `FORBIDDEN_NAMES` additions, the `--access-level` flag and profile plumbing, per-role keys, Ollama with an sm_120 check | — | All 65 existing tests pass, plus `test_todo.py` and `test_graph.py`. An eval with the chosen local fallback model. A seeded run on `agent-sim` |
+| 1. Host, todos, roles | `graph.py` and the base swap, the `_run_agent` override, `todo.py`, seeding, `/walkie/todos`, `FORBIDDEN_NAMES` additions | `models.py` with per-role keys, the `--access-level` flag and profile plumbing, Ollama with an sm_120 check and the eval of the local fallback model. The HRI task does not need them; phase 2's level checks do, so they land before phase 2 | All 65 existing tests pass, plus `test_todo.py` and `test_graph.py`. A seeded run on `agent-sim` |
 | 2. Typed atomics, mocks, bundles, levels | `toolbox/` core, linker L01 to L06, `core()` for today's tools, perception and arm atomics, internal `navigate_to_pose`, the four presets, `META.requires`, `walkie_toolbox_facade`, the level policy, interlock checks 1, 2, 3, 5 and 6, the local speech gate, `play_sound`, `tell_time`, `tell_date`. `agent-sim` passes `--access-level standard` | Interlock checks 4 and 7 to 9, periodic re-checks | `test_dsl`, `test_linker`, `test_runner`, `test_nav_interlock`, `test_levels`, `test_interlock`, `test_play_sound` and `test_speech_gate` pass. A mock fetch with injected faults on `agent-sim`. The interlock grants Standard on a marked dev machine, and Competition without the marker or with the robot marker |
 | 3. Index and atomic agent | `find_tools`, `request_tool` with compose, linker L07 to L13 and L15, stamped drafts, run traces, the cloud embedder with its pinned provider and startup check, 100 spoken requests for the eval | A second embedding provider | `test_index`, `test_atomic_agent` and `test_names` pass. Hybrid beats BM25-only on Recall@5, or the team decides. Embedding latency measured from the robot PC |
 | 4a. Sandbox and coder (sim) | Sandbox, bridges, lint, the tool coder and the assets store at Standard and Unrestricted, interlock checks 4 and 7 to 9 and the fresh checks before motion | `restrict_self` (Landlock, seccomp) | `test_sandbox`, `test_http_policy`, `test_web_search`, `test_ros_bridge`, `test_stamps` and `test_coder` pass. In sim the coder makes a scan-reading tool at Standard and an action-using navigation tool at Unrestricted. The Unrestricted one never loads at Standard |
@@ -685,8 +685,8 @@ T12 on [Access Levels](access-levels.md#safety-model).
 
 ## Open questions
 
-ADR-0037, ADR-0041 and ADR-0043 propose the recommended answers to
-questions 2, 4 and 5, so reviewing them settles those.
+ADR-0037 and ADR-0043 propose the recommended answers to questions 2
+and 5, so reviewing them settles those.
 
 1. **What does a new utterance do mid-task?** Settled: RAI's `queue`
    behaviour, with only reset, "stop" or "never mind" as interrupts
@@ -696,8 +696,9 @@ questions 2, 4 and 5, so reviewing them settles those.
 3. **Host.** Settled: our own graph on `LangChainAgent`, over
    `create_agent` with middleware, built in phase 1
    ([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
-4. **Seeding.** Recommended: templates, `submit()` and `/walkie/task` now,
-   a typed `RunTask` action later. Blocks phase 1.
+4. **Seeding.** Settled: `submit()`, templates and the `/walkie/task`
+   topic, built in phase 1, with a typed `RunTask` action later only if
+   it is needed ([ADR-0041](decisions/0041-todo-list-and-seeding.md)).
 5. **`move_absolute`.** Proposed: an internal `navigate_to_pose` with a
    stand-off, used by presets and, in sim at Standard and Unrestricted, by
    generated code through `ctx.tools`. The alternative gives the LLM
@@ -735,7 +736,7 @@ proposed. See [Architecture](index.md) for how decisions work.
 
     --8<-- "architecture/decisions/0038-own-graph-per-turn-binding.md:body"
 
-??? note "ADR-0041: Keep a seedable todo list for every task · Proposed"
+??? success "ADR-0041: Keep a seedable todo list for every task · Accepted"
 
     --8<-- "architecture/decisions/0041-todo-list-and-seeding.md:body"
 

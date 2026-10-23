@@ -151,11 +151,33 @@ kitchen.`, and terminal 4 shows the agent's final text reply.
 | ----------------- | ---------- | ------------------------------------------------------------------------ |
 | `/from_human`     | to agent   | Tasks, typed or from speech recognition (`rai_interfaces/msg/HRIMessage`) |
 | `/to_human`       | from agent | What the robot says out loud, for text-to-speech (`HRIMessage`)          |
-| `/walkie/console` | from agent | The agent's text replies, for the operator (`HRIMessage`)                |
+| `/walkie/console` | from agent | The agent's text replies and a line per todo status change, for the operator (`HRIMessage`) |
+| `/walkie/task`    | to agent   | A task with its steps, or with a template, as JSON (`std_msgs/msg/String`) |
+| `/walkie/todos`   | from agent | The todo list as JSON, kept for late readers (`std_msgs/msg/String`)     |
 | `/walkie/reset`   | to agent   | Makes the agent forget the conversation (`std_msgs/msg/Empty`)           |
 | `/voice_commands` | voice      | Pause/stop speech playback (`std_msgs/msg/String`), see [Voice](setup/07-voice.md) |
 
 The places the robot can go are listed in `config/locations.toml`.
+
+### Give the agent its steps
+
+A task on `/walkie/task` arrives with its steps already on the todo list,
+so the LLM cannot drop one. Each change of a step's status shows up in
+terminal 4, such as `t1: Going to the kitchen`:
+
+```bash
+pixi run ros2 topic pub --once /walkie/task std_msgs/msg/String \
+  "{data: '{\"task\": \"Go to the kitchen and say hi.\", \"todos\": [\"Go to the kitchen\", \"Say hi\"]}'}"
+```
+
+To watch the whole list:
+
+```bash
+pixi run ros2 topic echo /walkie/todos std_msgs/msg/String --field data
+```
+
+The message format, and the templates in `config/task_templates.toml`, are
+on [The Agent](architecture/agent.md#seeding-a-task-on-walkietask).
 
 ### Start a fresh conversation
 

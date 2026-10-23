@@ -3,7 +3,8 @@
 A fake walkie-vision node publishes PersonDetectionArray and
 ObjectDetectionArray as walkie-vision does, with hash_vector vectors under
 its fake model names, as oracle_perception will. The same node publishes
-the robot's map -> base_footprint -> camera transforms on /tf_static, so the
+the robot's map -> base_footprint -> camera transforms on /tf_static, and
+the base's on /tf where a test needs its pose at an earlier stamp, so the
 headings and the handles' motion checks read real TF. The atomics run
 through a Toolbox on the `connector` fixture's node, on Fast DDS and a
 random domain (ADR-0019).
@@ -23,7 +24,11 @@ from builtin_interfaces.msg import Time as TimeMsg
 from geometry_msgs.msg import TransformStamped
 from pydantic import ValidationError
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
+from sensor_msgs.msg import CameraInfo
+from std_msgs.msg import Header
 from tf2_msgs.msg import TFMessage
+from tf2_ros import LookupException, TransformException
 from tf_transformations import quaternion_from_euler
 from walkie_vision_msgs.msg import (
     ObjectDetection,
@@ -35,18 +40,38 @@ from walkie_vision_msgs.msg import (
 from walkie_agent.perception.gestures import COCO_KEYPOINTS, GESTURES
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory, ModelVector
 from walkie_agent.perception.seating import SeatingConfig
-from walkie_agent.perception.vision_feed import OBJECTS_TOPIC, PEOPLE_TOPIC, VisionFeed
+from walkie_agent.perception.vision_feed import (
+    OBJECTS_TOPIC,
+    PEOPLE_TOPIC,
+    TrackKey,
+    VisionFeed,
+    VisionFeedConfig,
+)
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, FAKE_REID_MODEL, hash_vector
 from walkie_agent.toolbox import StepError, Toolbox
 from walkie_agent.tools.atomic import _perception
+from walkie_agent.tools.navigation import MAP_FRAME, ROBOT_FRAME
 
 CAMERA_FRAME = "head_camera_optical_frame"
 WIDTH, HEIGHT = 640, 480
 # The focal length and the principal point's column, so the ray through
 # column u is atan((CX - u) / FX) to the left of the camera's axis.
 FX, CX = 320.0, 320.0
+# A face side face_trusted rejects: 0.0469 rad is 15 px at FX.
+SMALL_FACE = 12.0
+# A face side face_trusted accepts at FX, 0.094 rad, though under v2's
+# 50 x 50 px: the gate is an angle, not a pixel area.
+SMALL_BUT_NEAR_FACE = 30.0
 # The base's yaw in the map, not 0, so a heading is checked in the map frame.
 BASE_YAW = 0.3
+# The camera's optical frame in the base's, as roll, pitch and yaw: z out of
+# the lens and x to the image's right, looking ahead, or looking straight
+# down with the image's top ahead.
+CAMERA_AHEAD = (-math.pi / 2, 0.0, -math.pi / 2)
+CAMERA_DOWN = (math.pi, 0.0, -math.pi / 2)
+# A face model with a distance limit other than the fake one, as walkie-vision
+# would switch to.
+ARCFACE_MODEL = "arcface_w600k_r50"
 DIM = 512
 NO_CANCEL = threading.Event()
 
@@ -132,15 +157,19 @@ def person(
     height: float = 400.0,
     shot: int = 0,
     face_side: float = 60.0,
+    face_score: float = 0.9,
     face_dx: float = 0.0,
     face_key: str | None = None,
     face_model: str = FAKE_FACE_MODEL,
+    appearance: bool = True,
 ) -> PersonDetection:
     """A person whose box is centred on column `cx`, with the vectors of `key`.
 
     No key means no vectors at all. `face_side` 0 means no face found in
-    the box; below 50 px the face is too small to trust. `face_key` gives
-    the face another person's vector, as a bystander caught in the box.
+    the box; below 15 px (0.0469 rad at FX), or below a `face_score` of
+    0.5, the face is found but not trusted. `face_key` gives the face
+    another person's vector, as a bystander caught in the box. Without
+    `appearance`, the person has no appearance vector.
     """
     # rclpy takes an int for a float64 field without complaint but
     # serializes it as garbage, so every coordinate is made a float first.
@@ -155,11 +184,11 @@ def person(
         msg.face_bbox.center.position.x = cx + face_dx
         msg.face_bbox.center.position.y = top + 0.08 * height
         msg.face_bbox.size_x = msg.face_bbox.size_y = face_side
-        msg.face_det_score = 0.9
+        msg.face_det_score = face_score
         if key is not None:
             msg.face_model = face_model
             msg.face_embedding = vector("face", face_key or key, shot).tolist()
-    if key is not None:
+    if key is not None and appearance:
         msg.appearance_model = FAKE_REID_MODEL
         msg.appearance_embedding = vector("reid", key, shot).tolist()
     return msg
@@ -207,6 +236,12 @@ class FakeVision:
                 durability=DurabilityPolicy.TRANSIENT_LOCAL,
             ),
         )
+        # For a base that drives: the buffer keeps a history of /tf, so a
+        # lookup at an image's stamp finds the pose at that stamp, where a
+        # static transform holds only the newest pose.
+        self.tf_dynamic_pub = self.node.create_publisher(
+            TFMessage, "/tf", QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        )
         self._count = 0
 
     def stamp(self) -> TimeMsg:
@@ -222,21 +257,20 @@ class FakeVision:
             and self.objects_pub.get_subscription_count() > 0
         ), "VisionFeed's subscriptions were not discovered."
 
-    def place_base(self, ctx, x: float = 0.0, yaw: float = BASE_YAW) -> None:
-        """Put the base at (x, 0) with `yaw` in the map, and wait until ctx sees it."""
+    def place_base(
+        self, ctx, x: float = 0.0, yaw: float = BASE_YAW, camera=CAMERA_AHEAD
+    ) -> None:
+        """Put the base at (x, 0) with `yaw` in the map, and wait until ctx sees it.
+
+        `camera` is the optical frame's roll, pitch and yaw in the base's.
+        """
         stamp = self.stamp()
+        camera_transform = transform("base_footprint", CAMERA_FRAME, (0.1, 0.0, 1.2), camera, stamp)
         self.tf_pub.publish(
             TFMessage(
                 transforms=[
                     transform("map", "base_footprint", (x, 0.0, 0.0), (0.0, 0.0, yaw), stamp),
-                    # An optical frame: z out of the lens, x to the image's right.
-                    transform(
-                        "base_footprint",
-                        CAMERA_FRAME,
-                        (0.1, 0.0, 1.2),
-                        (-math.pi / 2, 0.0, -math.pi / 2),
-                        stamp,
-                    ),
+                    camera_transform,
                 ]
             )
         )
@@ -244,11 +278,43 @@ class FakeVision:
         def placed() -> bool:
             try:
                 pose = ctx.robot_pose(0.1)
-            except StepError:
+                mounted = ctx.tf_buffer.lookup_transform("base_footprint", CAMERA_FRAME, Time())
+            except (StepError, TransformException):
                 return False
-            return abs(pose.x - x) < 1e-6 and abs(pose.yaw - yaw) < 1e-6
+            q, want = mounted.transform.rotation, camera_transform.transform.rotation
+            return (
+                abs(pose.x - x) < 1e-6
+                and abs(pose.yaw - yaw) < 1e-6
+                and abs(q.x * want.x + q.y * want.y + q.z * want.z + q.w * want.w) > 1 - 1e-9
+            )
 
         assert wait_until(placed), "The base's transform did not reach the agent's TF buffer."
+
+    def drive_base(self, ctx, xs: list[float]) -> None:
+        """Publish the base at each x of `xs` on /tf, in order and each with a newer stamp.
+
+        Waits until ctx sees the last. The first transform on /tf turns the
+        base's frame from static to dynamic in the buffer.
+        """
+        assert wait_until(lambda: self.tf_dynamic_pub.get_subscription_count() > 0)
+        self.tf_dynamic_pub.publish(
+            TFMessage(
+                transforms=[
+                    transform(
+                        "map", "base_footprint", (x, 0.0, 0.0), (0.0, 0.0, BASE_YAW), self.stamp()
+                    )
+                    for x in xs
+                ]
+            )
+        )
+
+        def driven() -> bool:
+            try:
+                return abs(ctx.robot_pose(0.1).x - xs[-1]) < 1e-6
+            except StepError:
+                return False
+
+        assert wait_until(driven), "The base's transform did not reach the agent's TF buffer."
 
     def show(self, people=None, objects=None, classes=None) -> TimeMsg:
         """Publish one image's arrays, objects first, and return once the feed has them.
@@ -310,15 +376,41 @@ class World:
 
 
 @pytest.fixture
-def world(connector):
-    feed = VisionFeed(connector)
-    memory = InMemoryPeopleMemory()
-    toolbox = Toolbox(connector, {"vision": feed, "people_memory": memory})
-    vision = FakeVision(connector, feed)
-    vision.wait_for_subscribers()
-    vision.place_base(toolbox.ctx)
-    yield World(toolbox, vision, memory)
-    vision.close()
+def make_world(connector):
+    """A World factory: the keyword arguments go to the feed's VisionFeedConfig."""
+    made: list[FakeVision] = []
+
+    def make(**feed_config) -> World:
+        feed = VisionFeed(connector, VisionFeedConfig(**feed_config))
+        memory = InMemoryPeopleMemory()
+        toolbox = Toolbox(connector, {"vision": feed, "people_memory": memory})
+        vision = FakeVision(connector, feed)
+        made.append(vision)
+        vision.wait_for_subscribers()
+        vision.place_base(toolbox.ctx)
+        return World(toolbox, vision, memory)
+
+    yield make
+    for vision in made:
+        vision.close()
+
+
+@pytest.fixture
+def world(make_world):
+    return make_world()
+
+
+def spy_on_put_set(world, monkeypatch) -> list[str]:
+    """The kinds of the handle sets stored from now on, in order."""
+    stored: list[str] = []
+    put_set = world.ctx.handles.put_set
+
+    def spy(kind, payloads, pose=None):
+        stored.append(kind)
+        return put_set(kind, payloads, pose)
+
+    monkeypatch.setattr(world.ctx.handles, "put_set", spy)
+    return stored
 
 
 def lines(out) -> list[str]:
@@ -374,14 +466,14 @@ def test_a_person_handle_keeps_the_track_and_the_heading_to_the_face(world):
             # The face is off the body's centre, so the heading shows which box it used.
             person(160, "ana", track_id=4, face_dx=40),
             person(480, "sam", track_id=5, face_side=0),
-            person(560, "bob", track_id=6, face_side=40),
+            person(560, "bob", track_id=6, face_side=SMALL_FACE),
         ]
     )
 
     out = world.call("find_people")
 
     ana, sam, bob = (world.ctx.handles.get(h, kind="person").payload for h in out.handles)
-    assert ana.track_id == 4
+    assert isinstance(ana.track, TrackKey) and ana.track.track_id == 4
     assert ana.heading_map == pytest.approx(heading_to(200), abs=1e-4)
     assert ana.bbox == pytest.approx((80.0, 40.0, 240.0, 440.0))
     assert ana.face_bbox == pytest.approx((170.0, 42.0, 230.0, 102.0))
@@ -397,7 +489,82 @@ def test_a_person_handle_keeps_the_track_and_the_heading_to_the_face(world):
     assert sam.heading_map == pytest.approx(heading_to(480), abs=1e-4)
     # A face too small to trust is not kept, and the line says so.
     assert bob.face is None and bob.face_bbox is not None
-    assert lines(out)[3].endswith("no face seen")
+    assert lines(out)[3].endswith(", face too small or unclear to recognize")
+
+
+def test_find_people_says_whether_a_face_was_seen_well_enough_to_recognize(world):
+    world.vision.show(
+        people=[
+            # Under 50 x 50 px, but a face is judged by its angle.
+            person(64, "ana", track_id=1, face_side=SMALL_BUT_NEAR_FACE),
+            # Found, but smaller than the angle face_trusted asks for.
+            person(192, "sam", track_id=2, face_side=SMALL_FACE),
+            # Found, but under the detection score that face_trusted asks for.
+            person(320, "kim", track_id=3, face_score=0.3),
+            # Found and trusted, but with no face vector to recognize it by.
+            person(448, None, track_id=5),
+            # Turned away: no face in the box.
+            person(576, "bob", track_id=4, face_side=0),
+        ]
+    )
+
+    out = world.call("find_people")
+
+    # The face is the last part of each person's line.
+    assert [line.rsplit(", ", 1)[1] for line in lines(out)[1:]] == [
+        "face seen",
+        "face too small or unclear to recognize",
+        "face too small or unclear to recognize",
+        "face too small or unclear to recognize",
+        "no face seen",
+    ]
+    assert (
+        "face seen, face too small or unclear to recognize, or no face seen"
+        in world.tools["find_people"].description
+    )
+
+
+def test_one_ray_without_a_heading_leaves_the_others_their_headings(world):
+    # A camera that looks straight down: the ray through the image's centre
+    # column is vertical and has no yaw, while a ray to either side points
+    # sideways.
+    world.vision.place_base(world.ctx, camera=CAMERA_DOWN)
+    world.vision.show(
+        people=[
+            person(100, "ana", track_id=1),
+            person(320, "sam", track_id=2),
+            person(540, "bob", track_id=3),
+        ]
+    )
+
+    out = world.call("find_people")
+
+    left, centre, right = (
+        world.ctx.handles.get(h, kind="person").payload.heading_map for h in out.handles
+    )
+    assert left == pytest.approx(BASE_YAW + math.pi / 2, abs=1e-4)
+    assert centre is None
+    assert right == pytest.approx(BASE_YAW - math.pi / 2, abs=1e-4)
+
+
+def test_without_the_camera_transform_no_box_waits_for_tf_again():
+    class NoTransform:
+        lookups = 0
+
+        def lookup_transform(self, *args, **kwargs):
+            self.lookups += 1
+            raise LookupException('"map" passed to lookupTransform does not exist.')
+
+    buffer = NoTransform()
+    info = CameraInfo(width=WIDTH, height=HEIGHT)
+    info.k = [FX, 0.0, CX, 0.0, FX, HEIGHT / 2, 0.0, 0.0, 1.0]
+
+    result = _perception.headings(
+        [(0.0, 0.0, 10.0, 10.0)] * 3, info, Header(frame_id=CAMERA_FRAME), buffer
+    )
+
+    assert result == [None, None, None]
+    assert buffer.lookups == 1
 
 
 def test_find_people_keeps_only_those_who_show_the_gesture(world):
@@ -490,6 +657,48 @@ def test_a_stop_cancels_find_people_while_it_waits(world):
     error = world.fails("find_people")
 
     assert error.code == "CANCELLED"
+
+
+def show_a_seat_and_a_person(world) -> None:
+    world.vision.show(
+        objects=[thing("chair", 80, 200, 220, 400)],
+        people=[person(320, "sam", track_id=1)],
+    )
+
+
+def test_a_stop_before_the_read_stores_no_handle_with_fresh_arrays_at_hand(world, monkeypatch):
+    show_a_seat_and_a_person(world)
+    stored = spy_on_put_set(world, monkeypatch)
+    world.ctx.cancel.set()
+
+    people = world.fails("find_people")
+    seats = world.fails("find_seats")
+
+    assert (people.code, seats.code) == ("CANCELLED", "CANCELLED")
+    assert stored == []
+
+
+def test_a_stop_after_the_read_stores_no_handle(world, monkeypatch):
+    show_a_seat_and_a_person(world)
+    stored = spy_on_put_set(world, monkeypatch)
+    headings = _perception.headings
+
+    # The stop comes while the atomic looks up the headings, after the
+    # arrays were read.
+    def stop_meanwhile(*args):
+        result = headings(*args)
+        world.ctx.cancel.set()
+        return result
+
+    monkeypatch.setattr(_perception, "headings", stop_meanwhile)
+
+    people = world.fails("find_people")
+    # As the next task would, so that find_seats reads its arrays.
+    world.ctx.cancel.clear()
+    seats = world.fails("find_seats")
+
+    assert (people.code, seats.code) == ("CANCELLED", "CANCELLED")
+    assert stored == []
 
 
 # -- remember_person and recognize_person ----------------------------------------------------
@@ -679,7 +888,7 @@ def test_remember_person_drops_a_far_vector(world):
 
 def test_remember_person_stores_no_face_too_small_to_trust(world):
     for _ in range(3):
-        world.vision.show(people=[person(320, "sam", track_id=1, face_side=40)])
+        world.vision.show(people=[person(320, "sam", track_id=1, face_side=SMALL_FACE)])
     found = world.call("find_people")
 
     out = world.call("remember_person", person=found.handles[0], name="Sam")
@@ -722,6 +931,125 @@ def test_a_stop_before_remember_person_stores_nobody(world):
 
     assert error.code == "CANCELLED"
     assert len(world.memory) == 0
+
+
+def test_a_handle_whose_track_id_went_to_someone_else_keeps_only_its_own_vectors(make_world):
+    world = make_world(track_ttl_s=0.5)
+    world.vision.show(people=[person(320, "sam", track_id=7)])
+    sam = world.call("find_people").handles[0]
+    # Sam leaves for longer than the feed keeps a track unseen, and Bob
+    # comes in on the same track id.
+    time.sleep(0.6)
+    for _ in range(3):
+        world.vision.show(people=[person(320, "bob", track_id=7)])
+    bob = world.call("find_people").handles[0]
+    world.call("remember_person", person=bob, name="Bob")
+
+    recognized = world.call("recognize_person", person=sam)
+    remembered = world.call("remember_person", person=sam, name="Sam")
+
+    # Sam's handle is still valid: its image showed Sam, whose own vectors
+    # it holds. It reads nothing of Bob's track, so it is not Bob, and Sam
+    # is stored from the image of the handle alone.
+    assert lines(recognized) == [f"{sam} (centre): UNKNOWN"]
+    assert remembered.summary == "Remembered Sam from 1 face and 1 appearance vector."
+    [nearest, other] = world.memory.match_faces(
+        [ModelVector(FAKE_FACE_MODEL, vector("face", "bob"))]
+    )[0]
+    assert (nearest.name, other.name) == ("Bob", "Sam")
+    assert other.distance > 0.5
+
+
+def test_remember_person_keeps_the_handles_own_vectors_once(make_world):
+    world = make_world(vectors_per_track=3)
+    # Each image is another shot, so a stored vector shows which image it came from.
+    world.vision.show(people=[person(320, "sam", track_id=1, shot=1)])
+    sam = world.call("find_people").handles[0]
+    for shot in (2, 3):
+        world.vision.show(people=[person(320, "sam", track_id=1, shot=shot)])
+
+    # The track's collection still holds the handle's own image.
+    while_collected = world.call("remember_person", person=sam, name="Sam")
+    for shot in (4, 5, 6):
+        world.vision.show(people=[person(320, "sam", track_id=1, shot=shot)])
+    # Three newer images have pushed the handle's own out of the collection.
+    world.memory.clear()
+    after_rollover = world.call("remember_person", person=sam, name="Sam")
+
+    assert while_collected.summary == "Remembered Sam from 3 face and 3 appearance vectors."
+    assert after_rollover.summary == "Remembered Sam from 4 face and 4 appearance vectors."
+    assert (after_rollover.dropped_faces, after_rollover.dropped_appearances) == (0, 0)
+
+    def stored(shot: int) -> bool:
+        [[match]] = world.memory.match_faces(
+            [ModelVector(FAKE_FACE_MODEL, vector("face", "sam", shot))]
+        )
+        return match.distance < 1e-6
+
+    # The handle's own image and the three newest, not the two pushed out.
+    assert [stored(shot) for shot in range(1, 7)] == [True, False, False, True, True, True]
+
+
+def unit(dim: int, *parts: tuple[int, float]) -> np.ndarray:
+    """A unit vector of `dim` with the given (index, value) parts, the rest 0."""
+    v = np.zeros(dim, dtype=np.float32)
+    for index, value in parts:
+        v[index] = value
+    return v / np.linalg.norm(v)
+
+
+@pytest.mark.parametrize(
+    "models", [(FAKE_FACE_MODEL, ARCFACE_MODEL), (ARCFACE_MODEL, FAKE_FACE_MODEL)]
+)
+def test_recognize_person_scores_each_model_by_its_own_limit(world, models):
+    # Ana is stored under ArcFace (limit 0.4), Bea under the fake model
+    # (limit 0.2). The person matches Ana at a distance of 0.20 and Bea at
+    # 0.15: Bea is nearer in raw distance, but Ana is at half her model's
+    # limit and Bea at three quarters of hers, so Ana is the better match.
+    world.memory.remember("Ana", {}, [ModelVector(ARCFACE_MODEL, unit(DIM, (0, 1.0)))], [])
+    world.memory.remember("Bea", {}, [ModelVector(FAKE_FACE_MODEL, unit(DIM, (2, 1.0)))], [])
+    seen = {
+        ARCFACE_MODEL: unit(DIM, (0, 0.8), (1, 0.6)),
+        FAKE_FACE_MODEL: unit(DIM, (2, 0.85), (3, math.sqrt(1 - 0.85**2))),
+    }
+    # The same track under each model in turn, oldest first, so a match on
+    # the newest or the oldest model alone fails one of the two orders.
+    for model in models:
+        detection = person(320, "x", track_id=7, face_model=model, appearance=False)
+        detection.face_embedding = seen[model].tolist()
+        world.vision.show(people=[detection])
+    found = world.call("find_people")
+
+    out = world.call("recognize_person", person=found.handles[0])
+
+    assert lines(out) == [f"{found.handles[0]} (centre): Ana"]
+    assert out.people[0].matched_by == "face"
+    # The distance reported is the raw cosine distance of the naming model.
+    assert out.people[0].distance == pytest.approx(0.2, abs=1e-5)
+
+
+def test_recognize_person_matches_every_face_model_with_a_limit(world):
+    assert ARCFACE_MODEL in _perception.CONFIG.identity.face_distance_limits
+    meet(world, {"Sam": {"cx": 320, "key": "sam", "track_id": 1}})
+    # Later, on a new track, Sam is seen under the fake face model, then
+    # under another, as when walkie-vision switches models. No appearance
+    # vector, so only the face can name him.
+    for model in (FAKE_FACE_MODEL, FAKE_FACE_MODEL, ARCFACE_MODEL):
+        world.vision.show(
+            people=[person(320, "sam", track_id=2, shot=1, face_model=model, appearance=False)]
+        )
+    found = world.call("find_people")
+
+    out = world.call("recognize_person", person=found.handles[0])
+
+    # The newest face is under a model Sam was never stored with, and the
+    # fake_face vectors of the track still name him.
+    assert world.ctx.handles.get(found.handles[0], kind="person").payload.face.model == (
+        ARCFACE_MODEL
+    )
+    assert lines(out) == [f"{found.handles[0]} (centre): Sam"]
+    assert out.people[0].matched_by == "face"
+    assert out.people[0].distance < 0.2
 
 
 # -- find_seats -------------------------------------------------------------------------------
@@ -867,3 +1195,67 @@ def test_handles_go_stale_when_the_base_drives_but_not_when_it_turns(world):
     assert "find_people" in person_error.message
     assert seat_error.value.code == "STALE"
     assert "find_seats" in seat_error.value.message
+
+
+def test_without_the_base_pose_at_the_stamp_nothing_is_stored(world, monkeypatch):
+    show_a_seat_and_a_person(world)
+    # The base's first pose on /tf comes after the image: TF has a pose now,
+    # but none at the image's stamp, and the pose now could hide a drive.
+    world.vision.drive_base(world.ctx, [0.01])
+    stored = spy_on_put_set(world, monkeypatch)
+
+    for tool in ("find_people", "find_seats"):
+        error = world.fails(tool)
+        assert error.code == "UNAVAILABLE"
+        assert "when the camera saw this is unknown, so nothing was stored" in error.message
+    assert stored == []
+
+
+def test_a_stop_while_the_base_pose_lookup_fails_is_a_cancel(world, monkeypatch):
+    show_a_seat_and_a_person(world)
+    world.vision.drive_base(world.ctx, [0.01])
+    stored = spy_on_put_set(world, monkeypatch)
+    lookup = world.ctx.tf_buffer.lookup_transform
+
+    # The stop comes while capture_pose waits for the pose at the stamp,
+    # which then times out.
+    def stop_meanwhile(target, source, *args, **kwargs):
+        if (target, source) == (MAP_FRAME, ROBOT_FRAME):
+            world.ctx.cancel.set()
+        return lookup(target, source, *args, **kwargs)
+
+    monkeypatch.setattr(world.ctx.tf_buffer, "lookup_transform", stop_meanwhile)
+
+    people = world.fails("find_people")
+    world.ctx.cancel.clear()
+    seats = world.fails("find_seats")
+
+    assert (people.code, seats.code) == ("CANCELLED", "CANCELLED")
+    assert stored == []
+
+
+def test_an_array_without_a_stamp_has_no_capture_pose(world):
+    header = Header(frame_id=CAMERA_FRAME)
+
+    with pytest.raises(StepError) as error:
+        _perception.capture_pose(world.ctx, header)
+
+    assert error.value.code == "UNAVAILABLE"
+    assert "has no stamp" in error.value.message
+
+
+def test_a_handle_from_an_image_seen_before_a_drive_is_stale(world):
+    world.vision.drive_base(world.ctx, [0.01])
+    show_a_seat_and_a_person(world)
+    # Still there just after the image, so TF has the pose at its stamp,
+    # then 20 cm forward before the atomics run.
+    world.vision.drive_base(world.ctx, [0.01, 0.21])
+
+    found = world.call("find_people")
+    seats = world.call("find_seats")
+
+    for handle_id, kind in ((found.handles[0], "person"), (seats.handles[0], "seat")):
+        with pytest.raises(StepError) as error:
+            world.ctx.handles.get(handle_id, kind=kind)
+        assert error.value.code == "STALE"
+        assert "moved 0.20 m" in error.value.message

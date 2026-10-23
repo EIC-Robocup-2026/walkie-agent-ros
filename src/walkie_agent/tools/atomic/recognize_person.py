@@ -1,14 +1,15 @@
 """Recognize people met before: by face, else by appearance.
 
-The vectors of each person handle, those VisionFeed collected for its
-track, are matched by the `people_memory` backend, which always returns the
-nearest stored people. The agent applies a distance limit per model
-(perception.md, People), and gives each stored person to one person in
-view at most (identity.assign_names).
+The vectors of each person handle, its own and those VisionFeed collected
+for its track, are matched by the `people_memory` backend, which always
+returns the nearest stored people. Each model is matched on its own, with
+its own distance limit (perception.md, People), and each stored person goes
+to one person in view at most (identity.assign_names).
 """
 
+import math
 from collections.abc import Callable, Mapping, Sequence
-from typing import Literal
+from typing import Literal, NamedTuple
 
 import numpy as np
 from pydantic import BaseModel, Field
@@ -62,7 +63,8 @@ class Recognition(BaseModel):
     name: str | None
     facts: dict[str, str]
     matched_by: Literal["face", "appearance"] | None
-    # The cosine distance of the match, under its model's limit.
+    # The cosine distance of the match, under its model's limit: the match
+    # of the model that named the person.
     distance: float | None
 
 
@@ -70,9 +72,23 @@ class Out(ToolOutput):
     people: list[Recognition]
 
 
-# A person's query and the distance limit of its model, or None when the
-# person has no vector of that kind or its model has no limit.
-_Query = tuple[ModelVector, float] | None
+# One query of a person, the mean of one model's vectors, and that model's
+# distance limit. A person has one per model with a limit among their
+# vectors of one kind.
+_Query = tuple[ModelVector, float]
+
+
+class _Scored(NamedTuple):
+    """A stored person near one of a person's queries, scored for assign_names.
+
+    `distance` is the score: the cosine distance over the limit of the
+    query's model, so 1 is the limit of every model, and the matches of two
+    models compare without their vectors ever being compared.
+    """
+
+    person_id: str
+    distance: float
+    match: Match
 
 
 def run(ctx: ToolContext, args: Args) -> Out:
@@ -89,7 +105,7 @@ def run(ctx: ToolContext, args: Args) -> Out:
     # Models without a limit, per person, to say why they stay UNKNOWN.
     unlimited: list[list[str]] = [[] for _ in handles]
     face_queries = [
-        _query(faces, identity.face_distance_limits, "face", unlimited[i], identity)
+        _queries(faces, identity.face_distance_limits, "face", unlimited[i], identity)
         for i, (faces, _) in enumerate(vectors)
     ]
     by_face = _assign(memory.match_faces, face_queries, given=set())
@@ -97,17 +113,15 @@ def run(ctx: ToolContext, args: Args) -> Out:
     # stored people not named already: v2's fallback for a guest whose face
     # is turned away or too far to match.
     given = {match.person_id for match in by_face if match is not None}
-    appearance_queries: list[_Query] = []
-    for i, (_, appearances) in enumerate(vectors):
-        if by_face[i] is not None:
-            appearance_queries.append(None)
-            continue
-        appearance_queries.append(
-            _query(
-                appearances, identity.appearance_distance_limits, "appearance",
-                unlimited[i], identity,
-            )
+    appearance_queries = [
+        []
+        if by_face[i] is not None
+        else _queries(
+            appearances, identity.appearance_distance_limits, "appearance",
+            unlimited[i], identity,
         )
+        for i, (_, appearances) in enumerate(vectors)
+    ]
     by_appearance = _assign(memory.match_appearances, appearance_queries, given)
 
     people: list[Recognition] = []
@@ -142,7 +156,7 @@ def run(ctx: ToolContext, args: Args) -> Out:
             reasons = [
                 f"{kind} not matched"
                 for kind, queries in (("face", face_queries), ("appearance", appearance_queries))
-                if queries[i] is not None
+                if queries[i]
             ]
             reasons.append(f"no distance limit for {' or '.join(unlimited[i])}")
             lines.append(f"{prefix}: UNKNOWN, {', '.join(reasons)}")
@@ -161,49 +175,60 @@ def run(ctx: ToolContext, args: Args) -> Out:
     return Out(summary="\n".join(lines), people=people)
 
 
-def _query(
+def _queries(
     vectors: Sequence[ModelVector],
     limits: Mapping[str, float],
     kind: str,
     unlimited: list[str],
     identity: IdentityConfig,
-) -> _Query:
-    """One query from a person's vectors: their mean, without outliers.
+) -> list[_Query]:
+    """A person's queries of one kind: per model with a limit, the mean without outliers.
 
-    Only the newest model's vectors count, since vectors of two models live
-    in different spaces; a track shows two only across a model switch. A
-    model with no limit adds "the <kind> model <name>" to `unlimited`.
+    Each model is queried on its own, since vectors of two models live in
+    different spaces. A track shows two models after a model switch, and
+    the stored person may have been met under either, so none is left out.
+    A model with no limit adds "the <kind> model <name>" to `unlimited`.
     """
-    if not vectors:
-        return None
-    model = vectors[-1].model
-    limit = limits.get(model)
-    if limit is None:
-        unlimited.append(f"the {kind} model {model}")
-        return None
-    group = [vector for name, vector in vectors if name == model]
-    mean = average_unit(reject_outliers(group, identity))
-    assert mean is not None  # group holds at least the newest vector
-    return ModelVector(model, np.asarray(mean, dtype=np.float32)), limit
+    queries: list[_Query] = []
+    for model, group in shared.group_by_model(vectors).items():
+        limit = limits.get(model)
+        if limit is None:
+            unlimited.append(f"the {kind} model {model}")
+            continue
+        mean = average_unit(reject_outliers(group, identity))
+        assert mean is not None  # a group holds at least one vector
+        queries.append((ModelVector(model, np.asarray(mean, dtype=np.float32)), limit))
+    return queries
 
 
 def _assign(
     match: Callable[[Sequence[ModelVector]], list[list[Match]]],
-    queries: Sequence[_Query],
+    queries: Sequence[Sequence[_Query]],
     given: set[str],
 ) -> list[Match | None]:
-    """The stored person each query names, under its limit, or None.
+    """The stored person each person's queries name, under the limits, or None.
 
     One call for the whole set, as walkie-database's people services take a
-    set of faces at once. The people in `given` are named already.
+    set of faces at once. Each match is scored by its distance over its
+    model's limit, and a stored person found by several of a person's
+    models keeps the best score. assign_names then names over the scores,
+    with the limit 1 for everyone. The people in `given` are named already.
     """
-    asked = [i for i, query in enumerate(queries) if query is not None]
+    asked = [(i, query, limit) for i, person in enumerate(queries) for query, limit in person]
     if not asked:
         return [None] * len(queries)
-    results = match([queries[i][0] for i in asked])
-    candidates: list[list[Match]] = [[] for _ in queries]
-    limits: list[float | None] = [None] * len(queries)
-    for i, matches in zip(asked, results, strict=True):
-        candidates[i] = [m for m in matches if m.person_id not in given]
-        limits[i] = queries[i][1]
-    return assign_names(candidates, limits)
+    results = match([query for _, query, _ in asked])
+    best: list[dict[str, _Scored]] = [{} for _ in queries]
+    for (i, _, limit), matches in zip(asked, results, strict=True):
+        for m in matches:
+            score = m.distance / limit
+            # A NaN distance is never within a limit, and would stop a
+            # finite score of the same stored person from replacing it.
+            if m.person_id in given or math.isnan(score):
+                continue
+            kept = best[i].get(m.person_id)
+            if kept is None or score < kept.distance:
+                best[i][m.person_id] = _Scored(m.person_id, score, m)
+    candidates = [sorted(scored.values(), key=lambda s: s.distance) for scored in best]
+    named = assign_names(candidates, [1.0] * len(queries))
+    return [None if scored is None else scored.match for scored in named]

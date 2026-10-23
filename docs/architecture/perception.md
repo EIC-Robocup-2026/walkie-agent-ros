@@ -183,11 +183,11 @@ sequenceDiagram
 
 | Atomic | Effect | Reads | Returns to the LLM |
 | ------ | ------ | ----- | ------------------ |
-| `find_people(gesture=None)` | P | The newest `/walkie_vision/people` message, at most 1 s old, waiting at most 1 s | Person handles such as `per_51c0.1`, left to right, each with its gestures and postures. `NOT_FOUND` when no one matches |
+| `find_people(gesture=None)` | P | The newest `/walkie_vision/people` message, at most 1 s old, waiting at most 1 s | Person handles such as `per_51c0.1`, left to right, each with its gestures and postures and whether its face is seen well enough to recognize: `face seen`, `face too small or unclear to recognize`, or `no face seen`. `NOT_FOUND` when no one matches |
 | `refind_person(person)` | P | The newest message again | A new handle for the same person: same track id, else the closest appearance embedding over a limit. `NOT_FOUND` otherwise |
 | `localize_person(person)`, internal | P | The person's depth, which the message lacks ([question 1](#open-questions)) | A pose handle for `navigate_to_pose`, as `localize_object` gives ([ADR-0043](decisions/0043-navigate-to-pose-provenance.md)) |
 | `recognize_person(person)` | R | walkie-database's face table, then its appearance table. Until its services exist, the mock people memory | A name and stored facts, or `UNKNOWN`. `NOT_FOUND` when one handle has neither a face nor an appearance vector. Also takes a whole set, giving each name to one person at most ([HRI Task](hri.md#atomics)) |
-| `remember_person(person, name, facts={})` | W, provisional ([question 3](#open-questions)) | Writes the person, its facts such as a drink, and every face and appearance vector collected for the track, through walkie-database. Until its services exist, into the mock people memory | Confirmation, with the number of face and appearance vectors stored. The person is forgotten with the session (walkie-database ADR-0010). The mock forgets everyone on a reset or when a new task replaces the todo list |
+| `remember_person(person, name, facts={})` | W, provisional ([question 3](#open-questions)) | Writes the person, its facts such as a drink, the handle's own face and appearance vectors, and those collected for its track ([HRI Task](hri.md#faces-collected-while-talking)), through walkie-database. Until its services exist, into the mock people memory | Confirmation, with the number of face and appearance vectors stored. The person is forgotten with the session (walkie-database ADR-0010). The mock forgets everyone on a reset or when a new task replaces the todo list |
 
 - **Built on a mock memory.** `find_people`, `recognize_person` and
   `remember_person` are built ([HRI Task](hri.md#atomics)).
@@ -207,6 +207,19 @@ sequenceDiagram
   tuned on the robot. The fake models `fake_face` and `fake_reid` match at
   0.2 or less. The limits live in `IdentityConfig`, in
   `perception/identity.py`.
+- **One query per model.** A track holds vectors of two models after a
+  model switch, and the stored person may have been met under either. So
+  `recognize_person` averages a person's vectors of each model with a
+  limit, minus outliers, and queries each model on its own. A model with
+  no limit is never queried, and an `UNKNOWN` line names it.
+- **Scores across models.** Each match is scored as its distance over its
+  model's limit, so 1 is every model's limit, and a stored person found
+  by two models keeps the better score. The names then go lowest score
+  first, so no name is given twice. Vectors of two models are never
+  compared. The distance in the result is the cosine distance of the
+  model that named the person.
+- **Face first.** Appearance is matched only for the people no face
+  named, and only against the stored people not named yet.
 
 - **Why gestures live in the agent.** They are task words, not model
   output. Keeping them agent-side needs no message change, and the

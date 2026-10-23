@@ -6,16 +6,30 @@ and postures come from the keypoints, by walkie-agent-v2's rules
 (walkie_agent.perception.gestures).
 """
 
+from typing import NamedTuple
+
 from pydantic import BaseModel, Field
+from rclpy.time import Time
 from walkie_vision_msgs.msg import PersonDetection, PersonDetectionArray
 
 from walkie_agent.perception.gestures import GESTURES, POSTURES, classify_gestures
 from walkie_agent.perception.seating import BBox, bbox_xyxy
-from walkie_agent.perception.vision_feed import VisionFeed, face_trusted, model_vector
+from walkie_agent.perception.vision_feed import (
+    TrackKey,
+    VisionFeed,
+    face_trusted,
+    model_vector,
+)
 from walkie_agent.toolbox import Effect, StepError, ToolContext, ToolMeta, ToolOutput
 from walkie_agent.tools.atomic import _perception as shared
 
 _GESTURE_LIST = ", ".join(GESTURES)
+
+# What each person's line says of their face. Only a seen face can name the
+# person; one too small or unclear is detected but never matched.
+FACE_SEEN = "face seen"
+FACE_UNCLEAR = "face too small or unclear to recognize"
+NO_FACE = "no face seen"
 
 META = ToolMeta(
     name="find_people",
@@ -24,7 +38,8 @@ META = ToolMeta(
         "each, such as per_51c0.0, left to right as you see them. Each line gives the "
         "handle, where the person is in the image (left, centre or right), their height "
         "in the image as a share of its height (larger is usually nearer), their posture "
-        "and gestures, and whether their face is seen well enough to recognize them. "
+        "and gestures, and whether their face is seen well enough to recognize them: "
+        f"{FACE_SEEN}, {FACE_UNCLEAR}, or {NO_FACE}. "
         "The first line names the set, such as per_51c0, which recognize_person takes "
         "to recognize everyone at once. With gesture, only the people who show it: one "
         f"of {_GESTURE_LIST}. raising_left_arm and raising_right_arm mean the person's "
@@ -59,76 +74,85 @@ class Out(ToolOutput):
     handles: list[str]
 
 
+class _Seen(NamedTuple):
+    """One person in the array, as find_people reads them."""
+
+    person: PersonDetection
+    # The key of the person's track collection, from the PeopleFrame.
+    track: TrackKey | None
+    position: str
+    gestures: frozenset[str]
+
+
 def run(ctx: ToolContext, args: Args) -> Out:
     config = shared.CONFIG
     # Checked first, so a misspelt gesture fails at once and not after a wait.
     gesture = _gesture_name(args.gesture)
     feed = shared.vision_feed(ctx)
-    msg = feed.latest_people(config.max_age_s, config.wait_s, ctx.cancel)
+    frame = feed.latest_people(config.max_age_s, config.wait_s, ctx.cancel)
+    msg = frame.msg
     if not msg.people:
         raise StepError("NOT_FOUND", "Nobody is in view.")
 
     # Left to right by the box's centre, as the LLM reads the lines. The
     # index breaks ties, so the order never depends on the sort.
-    people = [
-        person
-        for _, _, person in sorted(
-            (p.bbox.center.position.x, i, p) for i, p in enumerate(msg.people)
-        )
-    ]
+    order = sorted(
+        range(len(msg.people)), key=lambda i: (msg.people[i].bbox.center.position.x, i)
+    )
     width = msg.camera_info.width
     seen = [
-        (
-            person,
-            shared.image_position(person.bbox.center.position.x, width),
-            frozenset(
-                classify_gestures(person.keypoints, person.keypoint_scores, config.gestures)
+        _Seen(
+            person=msg.people[i],
+            track=frame.tracks[i],
+            position=shared.image_position(msg.people[i].bbox.center.position.x, width),
+            gestures=frozenset(
+                classify_gestures(
+                    msg.people[i].keypoints, msg.people[i].keypoint_scores, config.gestures
+                )
             ),
         )
-        for person in people
+        for i in order
     ]
-    chosen = [entry for entry in seen if gesture is None or gesture in entry[2]]
+    chosen = [entry for entry in seen if gesture is None or gesture in entry.gestures]
     if not chosen:
-        in_view = "; ".join(_describe(position, found) for _, position, found in seen)
+        in_view = "; ".join(_describe(entry.position, entry.gestures) for entry in seen)
         raise StepError(
             "NOT_FOUND",
             f"Nobody in view shows {gesture}. In view, left to right: {in_view}.",
-            {"gesture": gesture, "people": len(people)},
+            {"gesture": gesture, "people": len(seen)},
         )
 
-    face_boxes = [_face_box(person) for person, _, _ in chosen]
+    face_boxes = [_face_box(entry.person) for entry in chosen]
     # Toward the face when there is one, since the gaze loop looks at it.
     heading_maps = shared.headings(
         [
-            face or bbox_xyxy(person.bbox)
-            for (person, _, _), face in zip(chosen, face_boxes, strict=True)
+            face or bbox_xyxy(entry.person.bbox)
+            for entry, face in zip(chosen, face_boxes, strict=True)
         ],
         msg.camera_info,
         msg.header,
         ctx.tf_buffer,
     )
+    stamp_ns = Time.from_msg(msg.header.stamp).nanoseconds
     payloads = [
-        _payload(feed, msg, person, position, found, face_box, heading)
-        for (person, position, found), face_box, heading in zip(
-            chosen, face_boxes, heading_maps, strict=True
-        )
+        _payload(feed, msg, stamp_ns, entry, face_box, heading)
+        for entry, face_box, heading in zip(chosen, face_boxes, heading_maps, strict=True)
     ]
-    handle_set = ctx.handles.put_set("person", payloads)
+    handle_set = shared.put_handles(ctx, "person", payloads, msg.header)
 
     if gesture is None:
-        lines = [f"{handle_set.id}: {_count(len(people))} in view, left to right."]
+        lines = [f"{handle_set.id}: {_count(len(seen))} in view, left to right."]
     else:
         verb = "shows" if len(chosen) == 1 else "show"
         lines = [
-            f"{handle_set.id}: {len(chosen)} of {_count(len(people))} in view {verb} "
+            f"{handle_set.id}: {len(chosen)} of {_count(len(seen))} in view {verb} "
             f"{gesture}, left to right."
         ]
     image_height = msg.camera_info.height
-    for handle_id, payload in zip(handle_set.member_ids, payloads, strict=True):
+    for handle_id, payload, entry in zip(handle_set.member_ids, payloads, chosen, strict=True):
         share = (payload.bbox[3] - payload.bbox[1]) / image_height if image_height else None
         description = _describe(payload.position, payload.gestures, share)
-        face = "face seen" if payload.face is not None else "no face seen"
-        lines.append(f"{handle_id}: {description}, {face}")
+        lines.append(f"{handle_id}: {description}, {_face_text(payload)}")
     return Out(summary="\n".join(lines), set_id=handle_set.id, handles=list(handle_set.member_ids))
 
 
@@ -163,29 +187,40 @@ def _face_box(person: PersonDetection) -> BBox | None:
     return bbox_xyxy(person.face_bbox) if person.face_det_score > 0 else None
 
 
+def _face_text(payload: shared.PersonPayload) -> str:
+    """FACE_SEEN, FACE_UNCLEAR or NO_FACE, by what the handle can be recognized by."""
+    if payload.face_bbox is None:
+        return NO_FACE
+    # The payload keeps a face vector only when the face passed face_trusted,
+    # the gate of the track's collection too, and came with a vector: a face
+    # without one cannot be recognized however clear it is.
+    return FACE_SEEN if payload.face is not None else FACE_UNCLEAR
+
+
 def _payload(
     feed: VisionFeed,
     msg: PersonDetectionArray,
-    person: PersonDetection,
-    position: str,
-    gestures: frozenset[str],
+    stamp_ns: int,
+    entry: _Seen,
     face_box: BBox | None,
     heading: float | None,
 ) -> shared.PersonPayload:
+    person = entry.person
     face = None
-    if face_trusted(person, feed.config):
+    if face_trusted(person, msg.camera_info, feed.config):
         face = model_vector(person.face_model, person.face_embedding)
     return shared.PersonPayload(
-        track_id=int(person.track_id),
-        position=position,
+        track=entry.track,
+        position=entry.position,
         bbox=bbox_xyxy(person.bbox),
         face_bbox=face_box,
         keypoints=tuple(float(v) for v in person.keypoints),
         keypoint_scores=tuple(float(v) for v in person.keypoint_scores),
-        gestures=gestures,
+        gestures=entry.gestures,
         face=face,
         appearance=model_vector(person.appearance_model, person.appearance_embedding),
         header=msg.header,
+        stamp_ns=stamp_ns,
         image_width=int(msg.camera_info.width),
         image_height=int(msg.camera_info.height),
         heading_map=heading,

@@ -1,6 +1,6 @@
 """The pure perception logic: gestures, seating, identity and box headings.
 
-No ROS graph: messages are built in memory, and box_heading reads a
+No ROS graph: messages are built in memory, and the headings read a
 tf2_ros.Buffer filled by hand, which needs no node. The gesture, seating and
 identity cases are ported from walkie-agent-v2's tests/test_gpsr_gestures.py,
 tests/test_hri_seating.py, tests/test_hri_identity.py and
@@ -21,7 +21,7 @@ from vision_msgs.msg import BoundingBox2D
 from walkie_vision_msgs.msg import ObjectDetection, PersonDetection
 
 from walkie_agent.perception import gestures
-from walkie_agent.perception.geometry import box_heading
+from walkie_agent.perception.geometry import box_heading, camera_transform, ray_heading
 from walkie_agent.perception.identity import (
     IdentityConfig,
     assign_names,
@@ -243,8 +243,9 @@ def test_bbox_xyxy_converts_centre_and_size():
 
 
 def test_hip_anchor_is_the_midpoint():
-    person = _person(0, 0, 10, 10, hips=(40, 60))
-    assert hip_anchor(person.keypoints, person.keypoint_scores, 0.3) == (40, 60)
+    # Two distinct hips, so that returning either one fails.
+    keypoints, scores = _keypoints({"left_hip": (40, 60), "right_hip": (80, 70)})
+    assert hip_anchor(keypoints, scores, 0.3) == (60, 65)
 
 
 def test_hip_anchor_uses_one_hip_when_only_one_is_seen():
@@ -329,7 +330,7 @@ def test_seating_config_classes_ignore_case():
     assert not config.is_seat("table")
 
 
-def test_find_seat_places_orders_seats_left_to_right_and_keeps_a_sofa_together():
+def test_find_seat_places_orders_places_left_to_right():
     detections = [
         _seat("chair", (500, 0, 600, 100), score=0.8),
         _seat("table", (0, 0, 50, 50)),
@@ -349,6 +350,27 @@ def test_find_seat_places_orders_seats_left_to_right_and_keeps_a_sofa_together()
     assert [p.detection_index for p in places] == [3, 2, 2, 2, 0]
     assert places[1].box == (100, 0, 200, 100)
     assert places[4].score == pytest.approx(0.8)
+
+
+def test_find_seat_places_sorts_a_sofas_places_among_the_other_seats():
+    # The review's case: a chair centred at x 80 in front of a sofa from 0
+    # to 300. By whole seats the chair came first, before the sofa's left
+    # place at 50, so the first free handle was not the leftmost place.
+    detections = [_seat("sofa", (0, 0, 300, 100)), _seat("chair", (50, 20, 110, 120))]
+    places = find_seat_places(detections, [])
+    assert [(place.box[0] + place.box[2]) / 2 for place in places] == [50, 80, 150, 250]
+    assert [(p.label, p.part, p.detection_index) for p in places] == [
+        ("sofa", "left", 0),
+        ("chair", None, 1),
+        ("sofa", "middle", 0),
+        ("sofa", "right", 0),
+    ]
+
+
+def test_find_seat_places_keeps_the_detections_order_on_a_tie():
+    detections = [_seat("stool", (40, 0, 60, 100)), _seat("chair", (0, 0, 100, 100))]
+    places = find_seat_places(detections, [])
+    assert [p.detection_index for p in places] == [0, 1]
 
 
 def test_find_seat_places_follows_the_config():
@@ -479,11 +501,25 @@ def test_a_strict_limit_rejects_even_a_real_match():
 
 
 def test_assign_names_crossed_distances():
-    # The guests switched places: the memory lists Sam first for both, but
-    # the left person is nearer Kim, so the names follow the distances.
+    # The guests switched places since they were remembered: the left person
+    # is nearer Kim and the right one nearer Sam, so the names follow the
+    # distances, not the order the guests were stored in.
     candidates = [
         [_Match("kim", "Kim", 0.10), _Match("sam", "Sam", 0.30)],
         [_Match("sam", "Sam", 0.15), _Match("kim", "Kim", 0.20)],
+    ]
+    names = assign_names(candidates, [0.4, 0.4])
+    assert [n.name for n in names] == ["Kim", "Sam"]
+
+
+def test_assign_names_two_people_nearest_the_same_guest():
+    # Both people are nearest Sam, so naming each person by their own
+    # nearest match would call both Sam. The right person is the closer
+    # match and keeps Sam; the left person gets Kim, their second best,
+    # although the left person comes first.
+    candidates = [
+        [_Match("sam", "Sam", 0.10), _Match("kim", "Kim", 0.20)],
+        [_Match("sam", "Sam", 0.05), _Match("kim", "Kim", 0.30)],
     ]
     names = assign_names(candidates, [0.4, 0.4])
     assert [n.name for n in names] == ["Kim", "Sam"]
@@ -563,7 +599,7 @@ def test_identity_config_limits_by_model():
         config.face_distance_limits["arcface_w600k_r50"] = 1.0  # type: ignore[index]
 
 
-# -- box_heading ---------------------------------------------------------------
+# -- Headings: camera_transform, ray_heading and box_heading -------------------
 
 # A camera's optical frame against a body frame: z forward, x right, y down.
 _OPTICAL = quaternion_from_euler(-math.pi / 2, 0.0, -math.pi / 2)
@@ -577,8 +613,8 @@ def _camera_info() -> CameraInfo:
     return info
 
 
-def _camera_transform(yaw: float, sec: int = 0) -> TransformStamped:
-    """map -> camera_optical, for a level camera that faces `yaw` in the map."""
+def _camera_transform(yaw: float, sec: int = 0, pitch: float = 0.0) -> TransformStamped:
+    """map -> camera_optical, for a camera that faces `yaw` in the map, `pitch` radians down."""
     t = TransformStamped()
     t.header.frame_id = "map"
     t.header.stamp.sec = sec
@@ -587,7 +623,9 @@ def _camera_transform(yaw: float, sec: int = 0) -> TransformStamped:
     position = t.transform.translation
     position.x, position.y, position.z = 1.0, 2.0, 1.2
     rotation = t.transform.rotation
-    q = quaternion_multiply(quaternion_from_euler(0.0, 0.0, yaw), _OPTICAL)
+    # A positive pitch about the body's y axis tips its x axis, the view
+    # direction, toward the floor.
+    q = quaternion_multiply(quaternion_from_euler(0.0, pitch, yaw), _OPTICAL)
     rotation.x, rotation.y, rotation.z, rotation.w = (float(v) for v in q)
     return t
 
@@ -661,3 +699,44 @@ def test_box_heading_is_none_for_a_camera_that_looks_straight_down():
     buffer = Buffer()
     buffer.set_transform_static(t, "test")
     assert box_heading(_box(_CX, 100, 40, 80), _camera_info(), _header(), buffer) is None
+
+
+def test_camera_transform_is_the_transform_at_the_stamp():
+    buffer = Buffer()
+    buffer.set_transform(_camera_transform(0.0, sec=10), "test")
+    buffer.set_transform(_camera_transform(1.0, sec=12), "test")
+    transform = camera_transform(_header(sec=11), buffer)
+    assert transform is not None
+    assert (transform.header.frame_id, transform.child_frame_id) == ("map", "camera_optical")
+    assert transform.header.stamp.sec == 11
+    assert ray_heading(_box(_CX, 100, 40, 80), _camera_info(), transform) == pytest.approx(0.5)
+
+
+def test_camera_transform_is_none_without_the_transform():
+    buffer = _static_buffer(0.0)
+    assert camera_transform(_header(frame="other_camera"), buffer, timeout_s=0.05) is None
+    moving = Buffer()
+    moving.set_transform(_camera_transform(0.0, sec=10), "test")
+    assert camera_transform(_header(sec=20), moving, timeout_s=0.05) is None
+
+
+def test_ray_heading_of_a_camera_pitched_straight_down_depends_on_the_column():
+    # The review's case: looking straight down, the centre column's ray is
+    # vertical and has no yaw, while a ray right or left of it still points
+    # somewhere. One transform serves every box, so the first None must not
+    # stand for the others.
+    yaw = 0.3
+    down = _camera_transform(yaw, pitch=math.pi / 2)
+    info = _camera_info()
+    centre, right, left = (_box(u, 100, 40, 80) for u in (_CX, _CX + _FX, _CX - _FX))
+    assert ray_heading(centre, info, down) is None
+    # The image's right is the camera's right, a quarter turn clockwise.
+    assert ray_heading(right, info, down) == pytest.approx(yaw - math.pi / 2)
+    assert ray_heading(left, info, down) == pytest.approx(yaw + math.pi / 2)
+    # Pitched part way down, the centre column keeps the camera's yaw.
+    tilted = _camera_transform(yaw, pitch=0.5)
+    assert ray_heading(centre, info, tilted) == pytest.approx(yaw)
+
+
+def test_ray_heading_is_none_without_a_focal_length():
+    assert ray_heading(_box(_CX, 100, 40, 80), CameraInfo(), _camera_transform(0.0)) is None

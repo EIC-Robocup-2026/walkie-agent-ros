@@ -1,8 +1,8 @@
 """Remember a person with their name and facts, so recognize_person can name them.
 
-Sends every face and appearance vector VisionFeed collected for the
-person's track, without the outliers of each model, to the `people_memory`
-backend (hri.md, Faces collected while talking). Its effect is the
+Sends the handle's own face and appearance vectors and every one VisionFeed
+collected for the person's track, without the outliers of each model, to
+the `people_memory` backend (hri.md, Faces collected while talking). Its effect is the
 provisional W: no decided effect covers a memory write yet (perception.md,
 question 3).
 """

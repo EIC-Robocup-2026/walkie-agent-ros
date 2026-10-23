@@ -120,10 +120,10 @@ flowchart TB
 
 | Atomic | Effect | Status | What it does |
 | ------ | ------ | ------ | ------------ |
-| `find_people(gesture=None)` | P | Built (sim) | Person handles, left to right. Each line gives where the person is in the image (left, centre or right), their box height as a share of the image height, their posture and gestures, and whether the face is seen well enough to recognize them. The height lets the LLM pick the nearest. The first line names the set. With `gesture`, only the people who show it |
-| `recognize_person(person)` | R | Built (sim) | Takes one handle or the whole set from one `find_people` call. Matches the face first, else the appearance, each within its model's distance limit, else `UNKNOWN`. Over a set, names go to people closest match first, so no name is given twice |
-| `remember_person(person, name, facts={})` | W | Built (sim) | Stores the name, `facts` such as `{"drink": "milk"}`, and every face and appearance vector collected for the track, minus outliers. On the robot, walkie-database will keep the facts in `person.attributes`. Takes one handle, not a set. Declares the code's provisional `W` effect until [Perception question 3](perception.md#open-questions) is decided |
-| `find_seats()` | P | Built (sim) | Seat handles, left to right, one per place to sit. A sofa gives a left, a middle and a right place. Each is `free` or `taken`, and the last line counts the free places |
+| `find_people(gesture=None)` | P | Built (sim) | Person handles, left to right. Each line gives where the person is in the image (left, centre or right), their box height as a share of the image height, their posture and gestures, and whether the face is seen well enough to recognize them: `face seen`, `face too small or unclear to recognize`, or `no face seen`. The height lets the LLM pick the nearest. The first line names the set. With `gesture`, only the people who show it |
+| `recognize_person(person)` | R | Built (sim) | Takes one handle or the whole set from one `find_people` call. Matches the face first, else the appearance, else `UNKNOWN`. Each model among the person's vectors is matched on its own, within that model's distance limit. Over a set, names go to people closest match first, so no name is given twice |
+| `remember_person(person, name, facts={})` | W | Built (sim) | Stores the name, `facts` such as `{"drink": "milk"}`, the handle's own face and appearance vectors, and those collected for its track, minus outliers. On the robot, walkie-database will keep the facts in `person.attributes`. Takes one handle, not a set. Declares the code's provisional `W` effect until [Perception question 3](perception.md#open-questions) is decided |
+| `find_seats()` | P | Built (sim) | Seat handles, one per place to sit, left to right by the place's centre. A sofa gives a left, a middle and a right place. Each is `free` or `taken`, and the last line counts the free places |
 | `look_at(target)` | N | New ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)) | Starts the gaze loop on a person, or turns to a seat and holds. Returns at once |
 | `stop_looking()` | N | New | Stops the gaze loop |
 | `wait_for_person(question)` | — | Phase 1, a core tool | Speaks, marks the todo item waiting and ends the turn |
@@ -152,7 +152,8 @@ the robot or with walkie-vision:
   ([The Agent](agent.md#where-atomics-live)).
 - **Tested over ROS.** The tests run all four against a fake publisher of
   both arrays, with vectors from `src/walkie_agent/sim/fake_vectors.py`
-  and the transforms from `map` to the camera on `/tf_static`.
+  and the transforms from `map` to the camera on `/tf_static`. A test
+  that drives the base publishes it on `/tf`.
 - **Nothing publishes in sim yet.** All four load under `agent-sim`, but
   until `oracle_perception` exists, `find_people` and `find_seats` fail
   with `UNAVAILABLE`. So no handle exists for the other two.
@@ -161,6 +162,21 @@ the robot or with walkie-vision:
   loop turns the base. Each keeps `heading_map`, the map-frame heading of
   the face, the body or the place, computed from `camera_info` and TF at
   the image's stamp. The gaze loop and `look_at` will turn to it.
+- **Motion counts from the image.** A handle set is stored with the base's
+  pose at the image's stamp, so a drive between the image and the call
+  counts toward the 5 cm. If TF has no pose at the stamp within 0.2 s, or
+  the array has no stamp, the atomic stores nothing and fails with
+  `UNAVAILABLE`. The pose at the call would let up to a second of motion
+  pass unseen, and without the transform at the stamp no box has a
+  heading either.
+- **One TF lookup per image.** The camera's transform at the stamp is
+  looked up once, and each box's ray is turned with it. Without the
+  transform, no box has a heading. A ray with no yaw, such as the centre
+  ray of a camera that looks straight down, gets none, and the other
+  boxes keep theirs.
+- **A stop stores nothing.** A stop or a reset ends `find_people` and
+  `find_seats` with `CANCELLED`, also when a fresh array was at hand. They
+  check again just before they store the handles.
 
 What the LLM reads from three calls, with two guests remembered:
 
@@ -169,7 +185,7 @@ find_people()
 per_51c0: 3 people in view, left to right.
 per_51c0.0: left, height 0.83, standing, waving, face seen
 per_51c0.1: centre, height 0.62, sitting, face seen
-per_51c0.2: right, height 0.41, sitting, no face seen
+per_51c0.2: right, height 0.41, sitting, face too small or unclear to recognize
 
 recognize_person(person="per_51c0")
 per_51c0.0 (left): UNKNOWN
@@ -184,7 +200,7 @@ seat_7a1e.3: sofa, right place, taken, right
 Free places: 2 of 4.
 ```
 
-Ana's face is not seen, so her appearance names her.
+Ana's face is too small or unclear to match, so her appearance names her.
 
 ### Seats
 
@@ -204,6 +220,11 @@ Ana's face is not seen, so her appearance names her.
   splits into left, middle and right places, each with its own handle.
   This and its tests are ported from walkie-agent-v2's
   `tasks/skills/seating.py`.
+- **Left to right by place.** The places are sorted by their own box
+  centre, after each sofa is split. So a chair in front of a sofa's middle
+  comes between the sofa's left and right places, and the first free
+  handle is the leftmost free place. Places with the same centre keep the
+  detector's order.
 - **Everyone in view counts as seated,** as in walkie-agent-v2. The guest
   the robot brought stands beside it, outside the view of the seats. A
   person whose anchor is on no seat takes none.
@@ -221,18 +242,54 @@ Ana's face is not seen, so her appearance names her.
 `VisionFeed` collects face and appearance vectors for every visible
 track, not only the one the gaze loop follows, so the collection works
 before the gaze loop exists. For each track it keeps, with each vector's
-model name:
+model name and the stamp of its image:
 
-- **the newest 20 face vectors** of faces that walkie-agent-v2 trusted: a
-  detection score of at least 0.5 and a face box of at least 2,500 px²;
-- **the newest 20 appearance vectors;**
+- **20 face vectors,** the newest by stamp, of faces that walkie-agent-v2
+  trusted: a detection score of at least 0.5 and a face box that spans at
+  least 0.0469 rad, √((width / fx) × (height / fy)) with the camera's
+  focal lengths. That is v2's 2,500 px² (50 × 50 px) on the robot's ZED 2i
+  at Stereolabs' nominal fx of 1,066 px, to check against the robot's own
+  calibration. An angle holds on any camera: the simulation's 640 × 360
+  head camera has fx 224 px, where the same face needs only 10.5 px;
+- **20 appearance vectors,** the newest by stamp;
 - **for at most 32 tracks,** dropping a track unseen for 60 s. Track id 0
   means untracked and is never collected.
 
-`remember_person` sends all of a track's vectors, minus the ones far from
-their mean, as walkie-agent-v2's enrollment did. The handle's own vectors
-are used only when the track has none: the person is untracked, or the
-track was dropped.
+How a collection stays with one person:
+
+- **By stamp, not by arrival.** A late array's vectors go in their place,
+  and a full collection drops its oldest stamp first.
+- **A generation per collection.** A collection takes the next number of
+  one count when it starts: at its track's first sighting, and again after
+  it was dropped, since the track id may name someone else by then. The
+  count is never reset. A person handle keeps the track id and the
+  generation its person had in the handle's image.
+- **A clock that jumps back starts over.** A people array stamped more
+  than 5 s before the newest one, as after a simulation restart, clears
+  the history and every collection. The restarted tracker numbers its
+  tracks anew, so a new run's track does not join an old run's
+  collection. A smaller jump back is not detected: the newest array is
+  right again once the new stamps pass the old ones, but the collections
+  are not cleared. A restart less than 5 s into the old run, with the
+  tracker restarted too, can therefore put a new person in a held
+  handle's collection. The robot's clock never jumps back; a simulation
+  run that short has no handles worth keeping.
+
+The vectors of a person handle, for `recognize_person` and
+`remember_person`:
+
+- **The handle's own vectors always count,** its face only when trusted.
+  A collection keeps only its newest 20, so it may have dropped them.
+- **Plus its generation's collection,** without the sample of the
+  handle's own image, which has the handle's stamp. So no vector counts
+  twice.
+- **Only its own** when the person is untracked, or when the generation's
+  collection was dropped. A handle lasts 10 minutes, a collection 60 s
+  after its track was last seen. If the track id now names someone else,
+  the handle never reads their vectors.
+
+`remember_person` sends these vectors, minus the ones far from the mean of
+their model, as walkie-agent-v2's enrollment did.
 
 Faces from several angles help at the introductions, when the guest is
 seated and seen from elsewhere. At the camera's 15 Hz, though, 20 vectors
@@ -342,7 +399,9 @@ flowchart TB
 - **Setpoint.** A map-frame heading toward the face's column. It comes
   from `camera_info` and TF at the message's stamp, so turning during
   detection does not skew it. `box_heading` in `perception/geometry.py`
-  computes it, and `find_people` already keeps it in each handle.
+  computes it for one box. `find_people` already keeps it in each
+  handle, with `camera_transform` once per image and `ray_heading` per
+  box.
 - **Control.** walkie-agent-v2's loop at 15 Hz: gain 1.2, 0.15 to
   0.6 rad/s, no command inside 6°, acceleration capped at 3.2 rad/s².
 - **Stops.** After 1 s without the target, on `stop_looking`, before any

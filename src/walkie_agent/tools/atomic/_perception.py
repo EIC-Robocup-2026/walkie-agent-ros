@@ -3,26 +3,44 @@
 find_people and find_seats read walkie-vision's newest arrays from the
 `vision` backend, a VisionFeed, and keep what they saw as person and seat
 handles. recognize_person and remember_person take a person handle back,
-with the vectors VisionFeed collected for the person's track, and call the
-`people_memory` backend, a PeopleMemory (hri.md, Atomics). The module's
-name starts with "_", so the registry does not load it as a tool.
+with its own vectors and those VisionFeed collected for the person's track,
+and call the `people_memory` backend, a PeopleMemory (hri.md, Atomics). The
+module's name starts with "_", so the registry does not load it as a tool.
 """
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import numpy as np
+from rclpy.duration import Duration
+from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header
-from tf2_ros import Buffer
+from tf2_ros import Buffer, TransformException
+from tf_transformations import euler_from_quaternion
 
 from walkie_agent.perception.gestures import DEFAULT_GESTURE_CONFIG, GestureConfig
-from walkie_agent.perception.geometry import box_heading
+from walkie_agent.perception.geometry import camera_transform, ray_heading
 from walkie_agent.perception.identity import DEFAULT_IDENTITY_CONFIG, IdentityConfig
 from walkie_agent.perception.people_memory import ModelVector
 from walkie_agent.perception.seating import DEFAULT_SEATING_CONFIG, BBox, SeatingConfig
-from walkie_agent.perception.vision_feed import VisionFeed
-from walkie_agent.toolbox import Handle, KindPolicy, StepError, ToolContext, register_kind
+from walkie_agent.perception.vision_feed import (
+    PUBLISHER_HINT,
+    CollectedVectors,
+    Sample,
+    TrackKey,
+    VisionFeed,
+)
+from walkie_agent.toolbox import (
+    Handle,
+    HandleSet,
+    KindPolicy,
+    Pose2D,
+    StepError,
+    ToolContext,
+    register_kind,
+)
+from walkie_agent.tools.navigation import MAP_FRAME, ROBOT_FRAME, tf_publisher_hint
 
 # The backend names in META.requires and ctx.backend().
 VISION = "vision"
@@ -47,9 +65,10 @@ class PerceptionConfig:
     # How much longer find_seats waits for the people array of the objects
     # array's image, which walkie-vision may publish after the objects.
     pair_wait_s: float = 0.5
-    # How long a heading waits for the camera's transform at the image's
-    # stamp. TF can lag the image a little on the robot; no longer, since
-    # each person or place waits again.
+    # How long a lookup at the image's stamp waits for TF: the camera's
+    # transform for the headings, and the base's for the handles' capture
+    # pose. TF can lag the image a little on the robot; no longer, since a
+    # call makes both lookups.
     tf_timeout_s: float = 0.2
     gestures: GestureConfig = DEFAULT_GESTURE_CONFIG
     identity: IdentityConfig = DEFAULT_IDENTITY_CONFIG
@@ -91,13 +110,17 @@ class PersonPayload:
     """What find_people keeps for one person, behind a person handle.
 
     Boxes are x1, y1, x2, y2 in pixels of the image that `header` and the
-    image size describe. The gaze loop follows `track_id`, and turns to
-    `heading_map` until it sees the track. The message objects are shared
-    with VisionFeed and must not be modified.
+    image size describe. The gaze loop follows the track id of `track`, and
+    turns to `heading_map` until it sees the track. The message objects are
+    shared with VisionFeed and must not be modified.
     """
 
-    # walkie-vision's track id; 0 means the person is not tracked.
-    track_id: int
+    # The person's track collection when the image came, from its
+    # PeopleFrame; None when the person is not tracked (track id 0). The
+    # key, not the bare track id: VisionFeed drops a track unseen for a
+    # minute, after which the id can name someone else, while the handle
+    # lasts ten minutes.
+    track: TrackKey | None
     # The third of the image that holds the box's centre: "left", "centre"
     # or "right", as the robot sees it.
     position: str
@@ -114,10 +137,14 @@ class PersonPayload:
     face: ModelVector | None
     appearance: ModelVector | None
     header: Header
+    # header.stamp in nanoseconds, the stamp VisionFeed gives the samples of
+    # this image, so person_vectors() can tell the handle's own apart.
+    stamp_ns: int
     image_width: int
     image_height: int
     # The map-frame yaw, in radians, of the ray toward the face, else the
-    # body. None when TF had no camera transform at the stamp.
+    # body. None when TF had no camera transform at the stamp, or the ray
+    # has no yaw.
     heading_map: float | None
 
 
@@ -167,21 +194,77 @@ def image_position(u: float, width: int) -> str:
 def headings(
     boxes: Sequence[BBox], camera_info: CameraInfo, header: Header, tf_buffer: Buffer
 ) -> list[float | None]:
-    """box_heading() of every box of one image, in order.
+    """The map-frame heading of every box of one image, in order; None for a box without one.
 
-    Once one box has no heading, the rest get None without a lookup: TF has
-    no camera transform at the stamp, or camera_info has no focal length,
-    and every further lookup would wait out the timeout again.
+    The camera's transform is looked up once per image. Without it every
+    box gets None, and no box waits out the timeout again. With it, each
+    box's ray is turned on its own: one ray can have no yaw while the others
+    have one, as the central ray of a camera that looks straight down.
     """
-    result: list[float | None] = []
-    failed = False
-    for box in boxes:
-        heading = None
-        if not failed:
-            heading = box_heading(box, camera_info, header, tf_buffer, CONFIG.tf_timeout_s)
-            failed = heading is None
-        result.append(heading)
-    return result
+    transform = camera_transform(header, tf_buffer, CONFIG.tf_timeout_s)
+    if transform is None:
+        return [None] * len(boxes)
+    return [ray_heading(box, camera_info, transform) for box in boxes]
+
+
+def capture_pose(ctx: ToolContext, header: Header) -> Pose2D:
+    """The base's pose at the image's stamp, from the transform ctx.robot_pose() reads.
+
+    A handle goes stale with the base's motion since its pose, and its
+    payload is the scene as the camera saw it at the stamp, so the pose is
+    the one at the stamp: a drive between the image and the call counts.
+
+    Raises StepError UNAVAILABLE when the array has no stamp or TF has no
+    such transform within the timeout. The pose now would let up to a
+    second of motion, CONFIG.max_age_s, pass the stale check unseen, and
+    the camera's transform at the stamp, which the headings need, is
+    missing then too.
+    """
+    stamp = Time.from_msg(header.stamp)
+    # Stamp zero asks TF for its latest transform, the pose now.
+    if stamp.nanoseconds == 0:
+        raise StepError(
+            "UNAVAILABLE",
+            "The vision array has no stamp, so where the robot was when it saw "
+            f"this is unknown. {PUBLISHER_HINT}",
+        )
+    try:
+        stamped = ctx.tf_buffer.lookup_transform(
+            MAP_FRAME, ROBOT_FRAME, stamp, timeout=Duration(seconds=CONFIG.tf_timeout_s)
+        )
+    except TransformException as e:
+        raise StepError(
+            "UNAVAILABLE",
+            f"The robot's position ({MAP_FRAME} -> {ROBOT_FRAME}) when the camera saw "
+            f"this is unknown, so nothing was stored. {e}{tf_publisher_hint(ctx.node)}",
+        ) from e
+    t = stamped.transform
+    q = t.rotation
+    _, _, yaw = euler_from_quaternion([q.x, q.y, q.z, q.w])
+    return Pose2D(x=t.translation.x, y=t.translation.y, yaw=yaw)
+
+
+def put_handles(
+    ctx: ToolContext, kind: str, payloads: Sequence[object], header: Header
+) -> HandleSet:
+    """Store the payloads of one image as a handle set, with the base's pose at its stamp.
+
+    Raises StepError CANCELLED when a stop or a reset came during the call,
+    so a stopped step leaves no handles behind, and capture_pose's
+    UNAVAILABLE.
+    """
+    try:
+        pose = capture_pose(ctx, header)
+    except StepError:
+        # A stop that came while the lookup waited is why the step ended,
+        # not the missing transform, so it is reported first.
+        ctx.check_cancelled()
+        raise
+    # Last, after the TF lookups, which can wait. put_set is given the
+    # pose, so it never calls its pose provider, and nothing that can wait
+    # comes after this check.
+    ctx.check_cancelled()
+    return ctx.handles.put_set(kind, payloads, pose=pose)
 
 
 def is_handle_id(text: str) -> bool:
@@ -203,22 +286,35 @@ def person_handles(ctx: ToolContext, person: str) -> list[Handle]:
 def person_vectors(
     feed: VisionFeed, payload: PersonPayload
 ) -> tuple[list[ModelVector], list[ModelVector]]:
-    """The face and appearance vectors of a person handle, oldest first.
+    """The face and appearance vectors of a person handle, oldest stamp first.
 
-    VisionFeed collects every people array before an atomic can read it, so
-    the vectors collected for the track already hold the handle's own, and
-    every face the track showed while the robot talked to the person. The
-    handle's own vectors stand alone only when the person is untracked, or
-    VisionFeed dropped the track after the person was out of view too long.
+    The handle's own vectors, from its image, always count: a track's
+    collection keeps only its newest samples, so it may have dropped them.
+    Added to them are the samples VisionFeed collected for the handle's
+    track generation, every face the person showed while the robot talked
+    to them, without the sample of the handle's own image, which would
+    count twice. A generation that is no longer live has no samples: its
+    track was dropped, and the track id may name someone else now. The
+    handle of an untracked person has its own vectors only.
     """
-    collected = feed.collected_vectors(payload.track_id)
-    faces = list(collected.faces)
-    appearances = list(collected.appearances)
-    if not faces and payload.face is not None:
-        faces = [payload.face]
-    if not appearances and payload.appearance is not None:
-        appearances = [payload.appearance]
-    return faces, appearances
+    if payload.track is None:
+        collected = CollectedVectors(faces=(), appearances=())
+    else:
+        collected = feed.collected_vectors(payload.track)
+    return (
+        _with_own(collected.faces, payload.face, payload.stamp_ns),
+        _with_own(collected.appearances, payload.appearance, payload.stamp_ns),
+    )
+
+
+def _with_own(
+    collected: Sequence[Sample], own: ModelVector | None, stamp_ns: int
+) -> list[ModelVector]:
+    samples = [sample for sample in collected if sample.stamp_ns != stamp_ns]
+    if own is not None:
+        samples.append(Sample(stamp_ns, own))
+    samples.sort(key=lambda sample: sample.stamp_ns)
+    return [sample.vector for sample in samples]
 
 
 def group_by_model(vectors: Sequence[ModelVector]) -> dict[str, list[np.ndarray]]:

@@ -67,7 +67,7 @@ def run(ctx: ToolContext, args: Args) -> Out:
     # the stamp finds the people of the same image. A newer people array
     # would compare boxes from two images, after the camera or the guests
     # may have moved.
-    people = feed.people_at(objects.header.stamp, config.pair_wait_s, ctx.cancel)
+    people = feed.people_at(objects.header.stamp, config.pair_wait_s, ctx.cancel).msg
     places = find_seat_places(objects.detections, people.people, config.seating)
     if not places:
         raise StepError("NOT_FOUND", _nothing_to_sit_on(objects, config.seating), {"seats": 0})
@@ -90,7 +90,7 @@ def run(ctx: ToolContext, args: Args) -> Out:
         )
         for place, heading in zip(places, heading_maps, strict=True)
     ]
-    handle_set = ctx.handles.put_set("seat", payloads)
+    handle_set = shared.put_handles(ctx, "seat", payloads, objects.header)
 
     lines = []
     free = []

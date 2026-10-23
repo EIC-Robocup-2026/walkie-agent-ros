@@ -607,6 +607,10 @@ A lookup checks, in this order:
 - **The pose comes from TF,** through `ctx.robot_pose()`. When TF has no
   pose, the set is stored without one, and the motion checks report
   `UNAVAILABLE`.
+- **Person and seat handles pass the pose at the image's stamp.**
+  `find_people` and `find_seats` look up `map` -> `base_footprint` at the
+  stamp and give it as `pose`, so a drive between the image and the call
+  counts. Without it they store nothing and fail with `UNAVAILABLE`.
 - **Age is measured in real time,** on the agent's monotonic clock, not
   the node clock. Under sim time, a handle ages with the computer's clock.
 
@@ -642,7 +646,7 @@ one place.
 | `wait(future, timeout_s, what="The call")` | Waits for a future that the connector's executor completes, and returns its result. Raises `TIMEOUT: <what> did not finish within <timeout_s> s.`, or `CANCELLED` within 50 ms of a stop or a reset |
 | `now()` | The node clock's time, which follows `/clock` under sim time |
 | `robot_pose(timeout_s=1.0)` | A `Pose2D` (`x`, `y`, `yaw`) from the latest TF `map` -> `base_footprint`. Raises `UNAVAILABLE`, with `move_relative`'s hint when no node publishes `/tf` |
-| `tf_buffer` | The node's TF buffer, for a transform at an image's stamp, as `box_heading` needs. It is RAI's private `connector._tf_buffer`, reused so that each node keeps one buffer and one listener. Recheck it on every rai-core upgrade |
+| `tf_buffer` | The node's TF buffer, for a transform at an image's stamp: the camera's, as `camera_transform` needs, and the base's, for a handle's pose at capture. It is RAI's private `connector._tf_buffer`, reused so that each node keeps one buffer and one listener. Recheck it on every rai-core upgrade |
 | `subscription(msg_type, topic, callback, qos)`, `publisher(msg_type, topic, qos)`, `service_client(srv_type, name)`, `action_client(action_type, name)` | The node's entity for that name, created on the first call |
 
 - **`wait()` leaves the future alone.** After a `TIMEOUT` or `CANCELLED`,

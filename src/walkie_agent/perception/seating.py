@@ -158,19 +158,16 @@ def find_seat_places(
     """The places to sit among `detections`, each free or taken by one of `people`.
 
     `detections` and `people` must come from the same image, since their
-    boxes are compared in pixels. Seats are ordered left to right by their
-    box centre, and a sofa's places follow each other, left to right, so
-    the places of one sofa stay together.
+    boxes are compared in pixels. The places are ordered left to right by
+    their own box centre, after each sofa is split into its places, so a
+    chair in front of a sofa's middle comes between the sofa's left and
+    right places. Places with the same centre keep the detections' order.
     """
     anchors = [seat_anchor(person, config) for person in people]
-    seats = [
-        (index, detection)
-        for index, detection in enumerate(detections)
-        if config.is_seat(detection.label)
-    ]
-    seats.sort(key=lambda seat: (seat[1].bbox.center.position.x, seat[0]))
     places: list[SeatPlace] = []
-    for index, detection in seats:
+    for index, detection in enumerate(detections):
+        if not config.is_seat(detection.label):
+            continue
         box = bbox_xyxy(detection.bbox)
         regions: list[tuple[str | None, BBox]] = (
             list(split_seat_regions(box, has_middle=config.sofa_has_middle))
@@ -189,4 +186,9 @@ def find_seat_places(
             )
             for i, (part, region) in enumerate(regions)
         )
+    # Sorted by place rather than by seat: the LLM reads the handles as left
+    # to right and takes the first free one as the leftmost, and a sofa's
+    # centre says nothing about where its left place is. The sort is stable,
+    # so a tie keeps the detections' order and a sofa's parts in order.
+    places.sort(key=lambda place: (place.box[0] + place.box[2]) / 2)
     return places

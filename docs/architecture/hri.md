@@ -119,7 +119,7 @@ flowchart TB
 | ------ | ------ | ------ | ------------ |
 | `find_people(gesture=None)` | P | As on [Perception](perception.md#people) | Person handles, left to right. Each one also has its box height as a share of the image, so the LLM can pick the nearest |
 | `recognize_person(person)` | R | Changed | Also takes the whole set from one `find_people` call. Names then go to people closest match first, so no name is given twice |
-| `remember_person(person, name, facts={})` | write | Changed | Adds `facts` such as `{"drink": "milk"}`, stored in walkie-database's `person.attributes`. Sends every face and appearance vector kept for the track |
+| `remember_person(person, name, facts={})` | W | Changed | Adds `facts` such as `{"drink": "milk"}`, stored in walkie-database's `person.attributes`. Sends every face and appearance vector kept for the track. Declares the code's provisional `W` effect until [Perception question 3](perception.md#open-questions) is decided |
 | `find_seats()` | P | New | Seat handles, left to right, each `free` or `taken` |
 | `look_at(target)` | N | New ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)) | Starts the gaze loop on a person, or turns to a seat and holds. Returns at once |
 | `stop_looking()` | N | New | Stops the gaze loop |

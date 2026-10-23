@@ -2,9 +2,12 @@
 
 !!! note "Status: Proposed"
     The host graph and the todo list are partly built: see
-    [The Agent](agent.md#how-a-task-runs) for how they work today. Levels,
-    taint, tool search and the cancel token are not built yet. The rest of
-    this page is the design for team review. Each of the
+    [The Agent](agent.md#how-a-task-runs) for how they work today. So is
+    the toolbox core: typed atomics, handles and the cancel token that a
+    stop or a reset sets
+    ([The Agent: typed atomic tools](agent.md#typed-atomic-tools)). No
+    atomic ships yet. Bundles, levels, taint and tool search are not built
+    yet. The rest of this page is the design for team review. Each of the
     [open questions](#open-questions) says which phase it blocks.
 
 Today's agent has a fixed set of tools, built once at startup (see
@@ -178,6 +181,7 @@ flowchart TD
 | S | speaks or plays a sound ([ADR-0007](decisions/0007-speak-tool-and-console.md)) | `speak`, `play_sound` |
 | N | moves the base | `navigate_to_location`, `move_relative`, `navigate_to_pose`, `look_at` |
 | M | moves an arm or gripper | `move_arm_to_pose`, `set_gripper`, `run_skill` |
+| W | writes to the robot's memory. Provisional ([Perception question 3](perception.md#open-questions)) | `remember_person` |
 
 A bundle's effects are the union of its steps, and retries are allowed only
 on idempotent R or P steps. Every generated tool carries a
@@ -187,10 +191,18 @@ speak.
 
 ## File formats
 
-**Shared types.** `StepError` has 13 codes, such as `NOT_FOUND`,
-`AMBIGUOUS`, `STALE` and `SKILL_FAILED`. Every `Out` has a `summary` line,
+**Shared types.** These are built, in `src/walkie_agent/toolbox/types.py`
+([The Agent: typed atomic tools](agent.md#typed-atomic-tools)).
+`StepError` has 13 codes: `UNAVAILABLE`, `TIMEOUT`, `NOT_FOUND`,
+`AMBIGUOUS`, `OUT_OF_REACH`, `STALE`, `REFUSED`, `PRECONDITION_FAILED`,
+`SKILL_FAILED`, `POSTCONDITION`, `SAFETY_STOP`, `CANCELLED` and
+`INTERNAL`. Their meanings are in
+[the agent's table](agent.md#error-codes). Every `Out` has a `summary`,
 which is all the LLM sees on success. An atomic's `META` also holds
 `questions`: 3 to 5 spoken-style requests it answers, for tool search.
+`META.effects` may hold `W`, a memory write. `W` is provisional until
+[Perception question 3](perception.md#open-questions) is decided: until
+then, a `W` tool is a reviewed atomic that generated tools may never call.
 
 **Bundles** hold one `BUNDLE = Bundle(...)`. The bundle's `description` and
 each parameter's `description` make up the schema the LLM sees, so both are
@@ -293,7 +305,9 @@ Ask the person with wait_for_person, then call pick_object(obj=...).
 **Handles.** A `HandleStore` keeps payloads with the robot pose at capture.
 A handle is `STALE` once the base has moved more than 5 cm or 3°, with a
 soft age limit of 10 minutes to allow a spoken clarification. Handles clear
-on reset and when a new task replaces the todo list.
+on reset and when a new task replaces the todo list. The store is built,
+with these limits for objects
+([The Agent: handles](agent.md#handles)).
 
 ## How today's tools map to atomics
 

@@ -9,13 +9,16 @@ import logging
 import threading
 import time
 from collections.abc import Iterable
+from types import SimpleNamespace
 
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, ToolException, tool
 from langgraph.errors import GraphRecursionError
+from pydantic import BaseModel
 from rai.communication.hri_connector import HRIMessage
 from rai.messages import HumanMultimodalMessage
+from rclpy.task import Future
 
 from scripted_llm import ScriptedChatModel, tool_call
 from walkie_agent.agent import RECURSION_LIMIT, WalkieAgent, is_stop_utterance
@@ -29,6 +32,16 @@ from walkie_agent.graph import (
 )
 from walkie_agent.tasks import TaskTemplate
 from walkie_agent.todo import TodoList, TodoRejected
+from walkie_agent.toolbox import (
+    AtomicTool,
+    Effect,
+    HandleStore,
+    Pose2D,
+    StepError,
+    Toolbox,
+    ToolMeta,
+    ToolOutput,
+)
 from walkie_agent.tools.todos import UpdateTodosTool, WaitForPersonTool
 
 GATE_T1_T2 = "[todo] Open items: t1, t2. Finish them, or mark them failed or cancelled with a note."
@@ -59,6 +72,7 @@ def make_agent(
     tools: Iterable[BaseTool] = (),
     todos: TodoList | None = None,
     templates: dict[str, TaskTemplate] | None = None,
+    toolbox: Toolbox | None = None,
 ) -> tuple[WalkieAgent, ScriptedChatModel]:
     llm = ScriptedChatModel(responses=list(responses))
     agent = WalkieAgent(
@@ -68,6 +82,7 @@ def make_agent(
         stream_response=False,
         todos=todos,
         templates=templates,
+        toolbox=toolbox,
     )
     return agent, llm
 
@@ -1181,3 +1196,321 @@ def test_an_llm_error_is_logged_and_the_agent_keeps_serving(start, caplog, failu
 
     assert contents(llm.received[1]) == ["First task.\n", "Second task.\n"]
     assert contents(agent.state["messages"])[-1] == "Back again."
+
+
+# -- The toolbox (ADR-0037) ------------------------------------------------------
+
+CANCELLED = "CANCELLED: A stop or a reset interrupted the call."
+
+
+class NoArgs(BaseModel):
+    pass
+
+
+class GuestArgs(BaseModel):
+    name: str
+
+
+class Done(ToolOutput):
+    pass
+
+
+def atomic_tool(
+    toolbox: Toolbox, name: str, run, args: type[BaseModel] = NoArgs, example: dict | None = None
+) -> AtomicTool:
+    """An atomic called `name` that runs `run(ctx, args)` with the toolbox's ctx."""
+    meta = ToolMeta(
+        name=name,
+        description=f"The {name} atomic.",
+        effects=frozenset({Effect.M}),
+        questions=("Do it.", "Go on.", "Please do it now."),
+        examples=(example or {},),
+    )
+    return AtomicTool(SimpleNamespace(META=meta, Args=args, Out=Done, run=run), toolbox.ctx)
+
+
+class WaitingArm:
+    """An atomic that waits 5 s for an arm that never answers, unless a cancel ends it."""
+
+    def __init__(self, toolbox: Toolbox) -> None:
+        self.started = threading.Event()
+        self.ended = threading.Event()
+        self.errors: list[str] = []
+        self.waited_s = 0.0
+
+        def run(ctx, args):
+            self.started.set()
+            began = time.monotonic()
+            try:
+                return ctx.wait(Future(), 5.0, what="The arm")
+            except StepError as e:
+                self.errors.append(str(e))
+                raise
+            finally:
+                self.waited_s = time.monotonic() - began
+                self.ended.set()
+
+        self.tool = atomic_tool(toolbox, "move_arm", run)
+
+
+def toolbox_without_ros() -> Toolbox:
+    """A toolbox whose handle store sees the robot standing still, so it needs no TF."""
+    toolbox = Toolbox(connector=None)
+    toolbox.ctx.handles = HandleStore(lambda: Pose2D(0.0, 0.0, 0.0))
+    return toolbox
+
+
+def is_live(toolbox: Toolbox, set_id: str) -> bool:
+    try:
+        toolbox.ctx.handles.get_set(set_id)
+    except StepError:
+        return False
+    return True
+
+
+def test_atomic_failures_count_as_failed_calls():
+    def find(ctx, args):
+        raise StepError("NOT_FOUND", "No one is in view.")
+
+    toolbox = Toolbox(connector=None)
+    todos = seeded(["Find the guest"], in_progress="t1")
+    agent, _ = make_agent(
+        [
+            tool_call("find_guest", {"name": "Ana"}, "call_find"),
+            todo_call([update("t1", status="completed")], "call_done"),
+            tool_call("find_guest", {"name": ["Ana"]}, "call_bad"),
+            todo_call([update("t1", status="failed", note="Ana is not here.")], "call_fail"),
+            AIMessage("I could not find Ana."),
+        ],
+        tools=[
+            atomic_tool(toolbox, "find_guest", find, GuestArgs, {"name": "Ana"}),
+            UpdateTodosTool(todos=todos),
+        ],
+        todos=todos,
+        toolbox=toolbox,
+    )
+
+    messages = run_graph(agent, "Find Ana.")
+
+    found = result_of(messages, "call_find")
+    assert (found.content, found.status) == ("NOT_FOUND: No one is in view.", "error")
+    done = result_of(messages, "call_done")
+    assert done.status == "error"
+    assert "t1 cannot be completed because find_guest failed" in done.content
+    # Bad arguments get ToolRunner's usual message, as for any other tool.
+    assert "Validation error in tool find_guest" in result_of(messages, "call_bad").content
+    assert todos.snapshot()[0].status == "failed"
+
+
+def test_a_stop_utterance_cancels_a_waiting_atomic_at_once(start):
+    toolbox = Toolbox(connector=None)
+    arm = WaitingArm(toolbox)
+    heard: list[bool] = []
+    toolbox.on_interrupt(lambda: heard.append(toolbox.ctx.cancel.is_set()))
+    agent, llm = make_agent(
+        [tool_call("move_arm", {}, "call_arm"), AIMessage("Stopped.")],
+        tools=[arm.tool],
+        toolbox=toolbox,
+    )
+    start(agent)
+
+    agent(human("Raise the arm."))
+    assert arm.started.wait(timeout=5)
+    agent(human("Stop."))
+
+    # The listener ran before agent() returned, with the cancel already set.
+    assert heard == [True]
+    assert arm.ended.wait(timeout=5)
+    assert arm.waited_s < 1.0
+    assert arm.errors == [CANCELLED]
+    assert settle(agent, llm, 2)
+    assert contents(llm.received[1]) == ["Raise the arm.\n", "", CANCELLED, "Stop.\n"]
+    # The stop's own run began after the cancel, so it cleared it.
+    assert not toolbox.ctx.cancel.is_set()
+
+
+def test_reset_cancels_a_waiting_atomic_at_once(start):
+    toolbox = Toolbox(connector=None)
+    arm = WaitingArm(toolbox)
+    heard: list[bool] = []
+    toolbox.on_interrupt(lambda: heard.append(toolbox.ctx.cancel.is_set()))
+    agent, llm = make_agent(
+        [tool_call("move_arm", {}, "call_arm")], tools=[arm.tool], toolbox=toolbox
+    )
+    start(agent)
+    first_session = agent.session_id
+
+    agent(human("Raise the arm."))
+    assert arm.started.wait(timeout=5)
+    agent.reset()
+
+    assert heard == [True]
+    assert arm.ended.wait(timeout=5)
+    assert arm.waited_s < 1.0
+    assert arm.errors == [CANCELLED]
+    assert wait_until(lambda: agent.session_id != first_session and agent.ready())
+    assert len(llm.received) == 1
+
+
+def test_a_run_waits_until_the_interrupt_listeners_are_done(start):
+    def check(ctx, args):
+        ctx.check_cancelled()
+        return Done(summary="Not cancelled.")
+
+    toolbox = toolbox_without_ros()
+    entered = threading.Event()
+    release = threading.Event()
+    late: list[bool] = []
+
+    def slow() -> None:
+        entered.set()
+        release.wait(timeout=10)
+
+    toolbox.on_interrupt(slow)
+    # Stands in for the gaze loop stopping: it must act on the run the reset
+    # interrupted, never on the next one.
+    toolbox.on_interrupt(lambda: late.append(toolbox.ctx.cancel.is_set()))
+    agent, llm = make_agent(
+        [tool_call("check_arm", {}, "call_check"), AIMessage("The arm is fine.")],
+        tools=[atomic_tool(toolbox, "check_arm", check)],
+        toolbox=toolbox,
+    )
+    start(agent)
+    first_session = agent.session_id
+
+    resetter = threading.Thread(target=agent.reset)
+    resetter.start()
+    assert entered.wait(timeout=5)
+    assert wait_until(lambda: agent.session_id != first_session)
+    agent(human("Check the arm."))
+
+    # The reset is applied, but the message waits for the listeners. A
+    # negative check needs some time to pass; a run would start within 0.1 s.
+    time.sleep(0.5)
+    assert llm.received == []
+    release.set()
+    resetter.join(timeout=5)
+
+    assert late == [True]
+    assert settle(agent, llm, 2)
+    assert result_of(agent.state["messages"], "call_check").content == "Not cancelled."
+
+
+def test_reset_forgets_the_handles_and_the_next_task_starts_uncancelled(start):
+    def check(ctx, args):
+        ctx.check_cancelled()
+        return Done(summary="Not cancelled.")
+
+    toolbox = toolbox_without_ros()
+    new_tasks: list[int] = []
+    toolbox.on_new_task(lambda: new_tasks.append(1))
+    agent, llm = make_agent(
+        [tool_call("check_arm", {}, "call_check"), AIMessage("The arm is fine.")],
+        tools=[atomic_tool(toolbox, "check_arm", check)],
+        toolbox=toolbox,
+    )
+    start(agent)
+    first_session = agent.session_id
+    mugs = toolbox.ctx.handles.put_set("object", ["mug"])
+
+    agent.reset()
+    assert wait_until(lambda: agent.session_id != first_session and agent.ready())
+
+    assert not is_live(toolbox, mugs.id)
+    assert new_tasks == [1]
+    # The cancel lasts until the next run begins, whenever that is.
+    assert toolbox.ctx.cancel.is_set()
+
+    agent(human("Check the arm."))
+    assert settle(agent, llm, 2)
+    assert result_of(agent.state["messages"], "call_check").content == "Not cancelled."
+
+
+def test_handles_last_for_one_task_and_survive_a_question(start):
+    toolbox = toolbox_without_ros()
+    new_tasks: list[int] = []
+    toolbox.on_new_task(lambda: new_tasks.append(1))
+    old = toolbox.ctx.handles.put_set("object", ["yesterday's mug"])
+    mugs: list[str] = []
+    seen: list[tuple[str, bool, int]] = []
+
+    def first_call() -> None:
+        seen.append(("old", is_live(toolbox, old.id), len(new_tasks)))
+        mugs.append(toolbox.ctx.handles.put_set("object", ["red mug", "blue mug"]).id)
+
+    def later_call() -> None:
+        seen.append(("mugs", is_live(toolbox, mugs[0]), len(new_tasks)))
+
+    todos = TodoList()
+    speak, _ = fake_speak()
+    agent, llm = make_agent(
+        [
+            todo_call([update("t1", status="in_progress")], "call_start"),
+            tool_call("wait_for_person", {"question": "Which mug?"}, "call_ask"),
+            todo_call(
+                [
+                    update("t1", status="completed"),
+                    update("t2", status="cancelled", note="The person came to fetch it."),
+                ],
+                "call_done",
+            ),
+            AIMessage("Here is the red mug."),
+            AIMessage("You're welcome."),
+        ],
+        tools=todo_tools(todos, speak),
+        todos=todos,
+        toolbox=toolbox,
+    )
+    llm.hooks.update({0: first_call, 2: later_call, 4: later_call})
+    start(agent)
+
+    agent.submit("Bring me a mug.", todos=["Pick up the mug", "Bring it back"])
+    assert settle(agent, llm, 2)
+    agent(human("The red one."))
+    assert settle(agent, llm, 4)
+    agent(human("Thanks."))
+    assert settle(agent, llm, 5)
+
+    assert seen == [
+        # The seed replaced the list, so the old task's handles went.
+        ("old", False, 1),
+        # The answer to the question kept the list, and so the handles.
+        ("mugs", True, 1),
+        # The finished list was cleared for the next message.
+        ("mugs", False, 2),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("before", "text", "replaced"),
+    [
+        ("empty list", "Give me a house tour.", True),
+        ("finished list", "Give me a house tour.", True),
+        ("empty list", "What time is it?", False),
+    ],
+    ids=["template", "template after a finished list", "no template"],
+)
+def test_a_template_replaces_the_handles_once(start, before, text, replaced):
+    todos = TodoList()
+    if before == "finished list":
+        todos = seeded(["Say hello"])
+        todos.apply([update("t1", status="completed")])
+    toolbox = toolbox_without_ros()
+    new_tasks: list[int] = []
+    toolbox.on_new_task(lambda: new_tasks.append(1))
+    old = toolbox.ctx.handles.put_set("object", ["mug"])
+    # A template's steps stay open, so the gate sends the LLM back twice.
+    calls = 3 if replaced else 1
+    agent, llm = make_agent(
+        [AIMessage(f"On it {n}.") for n in range(calls)],
+        todos=todos,
+        templates={"tour": TOUR},
+        toolbox=toolbox,
+    )
+    start(agent)
+
+    agent(human(text))
+    assert settle(agent, llm, calls)
+
+    assert new_tasks == ([1] if replaced else [])
+    assert is_live(toolbox, old.id) is not replaced

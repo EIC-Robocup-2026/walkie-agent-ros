@@ -24,6 +24,7 @@ from walkie_agent.graph import ToolSet, build_walkie_graph
 from walkie_agent.locations import Location
 from walkie_agent.tasks import TaskTemplate, match_template, parse_task_message
 from walkie_agent.todo import TodoItem, TodoList, console_line
+from walkie_agent.toolbox import Toolbox
 from walkie_agent.tools import build_walkie_tools
 from walkie_agent.whoami import build_system_prompt
 
@@ -105,6 +106,9 @@ class WalkieAgent(LangChainAgent):
       change also goes to the target connectors as one console line.
     - reset() forgets the conversation and the todo list without restarting
       the agent.
+    - With a `toolbox`, a stop or a reset also cancels the running atomic
+      tool at once, and a new task that replaces the todo list forgets the
+      handles of the old one.
     - An error from the LLM or the graph is logged, and the agent keeps
       serving the next message.
 
@@ -128,10 +132,12 @@ class WalkieAgent(LangChainAgent):
         stream_response: bool = True,
         todos: TodoList | None = None,
         templates: Mapping[str, TaskTemplate] | None = None,
+        toolbox: Toolbox | None = None,
     ):
         self.todos = todos if todos is not None else TodoList()
         self.tools = ToolSet(tools or [])
         self.templates = dict(templates or {})
+        self.toolbox = toolbox
         self._target_connectors = dict(target_connectors)
         graph = build_walkie_graph(llm, self.tools, self.todos, system_prompt)
         super().__init__(
@@ -179,13 +185,16 @@ class WalkieAgent(LangChainAgent):
 
         Returns immediately; the agent thread applies the reset. A running task
         stops at its next step, so a tool call already in progress (such as a
-        navigation goal) finishes first. Safe to call from any thread.
+        navigation goal) finishes first; an atomic tool's wait is cancelled
+        at once. Safe to call from any thread.
         """
         with self._buffer_lock:
             self._received_messages.clear()
             self._seeds.clear()
             self._reset_requested.set()
             self._interrupt_event.set()
+            self._cancel_atomics()
+        self._notify_toolbox_interrupt()
 
     def stop(self) -> None:
         """Stop the agent thread. A running task ends after its current step."""
@@ -197,6 +206,9 @@ class WalkieAgent(LangChainAgent):
         with self._buffer_lock:
             self._stop_event.set()
             self._interrupt_event.set()
+            self._cancel_atomics()
+        # Before RAI's stop(), which waits for the running task to end.
+        self._notify_toolbox_interrupt()
         super().stop()
 
     def subscribe_reset(self, connector: ROS2Connector, topic: str) -> None:
@@ -241,6 +253,7 @@ class WalkieAgent(LangChainAgent):
     def _enqueue(self, msg: HRIMessage, seed: _Seed | None) -> None:
         # Replaces RAI's __call__. The seed is stored under the same lock as
         # the message, so a reset can never separate the two.
+        stop_heard = False
         with self._buffer_lock:
             if self.max_size is not None and len(self._received_messages) >= self.max_size:
                 self.logger.warning("Buffer overflow. Dropping the oldest message.")
@@ -263,7 +276,30 @@ class WalkieAgent(LangChainAgent):
                 # can cancel the open steps.
                 self._received_messages.append(msg)
                 self._interrupt_event.set()
+                self._cancel_atomics()
+                stop_heard = True
                 self.logger.info("Stop heard: interrupting the task, dropping older messages.")
+        if stop_heard:
+            self._notify_toolbox_interrupt()
+
+    def _cancel_atomics(self) -> None:
+        # Called with _buffer_lock held. A run clears the cancel under the
+        # same lock when it starts (begin_task), so a cancel always reaches
+        # the run it was meant for: set after a run started, it cancels that
+        # run; set before, the next run clears it. Set after the lock is
+        # released, it could land on a run that started in between.
+        if self.toolbox is not None:
+            self.toolbox.cancel()
+
+    def _notify_toolbox_interrupt(self) -> None:
+        # Outside _buffer_lock: a listener, such as the gaze loop stopping,
+        # may block, and must not hold up the agent thread or a ROS callback.
+        if self.toolbox is not None:
+            self.toolbox.notify_interrupt()
+
+    def _toolbox_new_task(self) -> None:
+        if self.toolbox is not None:
+            self.toolbox.new_task()
 
     def _run_agent(self) -> None:
         # Replaces RAI's _run_agent. Runs on the agent thread between tasks,
@@ -273,6 +309,7 @@ class WalkieAgent(LangChainAgent):
             self._interrupt_event.clear()
             self.state["messages"].clear()
             self.todos.clear()
+            self._toolbox_new_task()
             self._start_session()
             self.logger.info(f"Conversation reset. Langfuse session: {self.session_id}")
 
@@ -284,11 +321,14 @@ class WalkieAgent(LangChainAgent):
             # Once stop() is called, no new run starts, because a new run
             # clears the interrupt that stop() set. stop() sets both events
             # under this lock, so it cannot land between this check and the
-            # clear below.
+            # clear below. While the listeners of an earlier interrupt are
+            # still running, the run waits for the next pass, so a late
+            # listener cannot act on it; the count is raised under this lock.
             if (
                 self._received_messages
                 and not self._reset_requested.is_set()
                 and not self._stop_event.is_set()
+                and not (self.toolbox is not None and self.toolbox.interrupt_pending())
             ):
                 # "queue": one message per task, oldest first.
                 msg = self._received_messages.popleft()
@@ -296,6 +336,8 @@ class WalkieAgent(LangChainAgent):
                 seed = entry[1] if entry is not None else None
                 # An interrupt meant for the previous run must not end this one.
                 self._interrupt_event.clear()
+                if self.toolbox is not None:
+                    self.toolbox.begin_task()
                 self._agent_ready_event.clear()
 
         if msg is None:
@@ -330,27 +372,35 @@ class WalkieAgent(LangChainAgent):
             self._agent_ready_event.set()
 
     def _prepare_todos(self, text: str, seed: _Seed | None) -> str:
-        """Set up the todo list for the task that starts now; return its text."""
+        """Set up the todo list for the task that starts now; return its text.
+
+        When the list is replaced, the toolbox forgets the old task's
+        handles. An answer to a wait_for_person question keeps the list, and
+        so the handles: the question may be about one of them, such as a
+        guest's name for a person handle.
+        """
         if seed is not None:
             self.todos.seed(seed.items, seed.source)
+            self._toolbox_new_task()
             return text
         # A message without a seed may be the answer to a wait_for_person
         # question.
         self.todos.resume_waiting()
         # A finished list does not carry into the next task.
-        if not self.todos.is_empty and not self.todos.open_ids():
+        replaced = not self.todos.is_empty and not self.todos.open_ids()
+        if replaced:
             self.todos.clear()
         # With items open, the message belongs to the current task. The check
         # runs here, when the message starts, and not when it arrives: a task
         # queued before it may still open or finish items.
-        if self.todos.open_ids():
-            return text
-        template = match_template(text, self.templates)
-        if template is None:
-            return text
-        self.logger.info(f"The message matches task template '{template.name}'.")
-        self.todos.seed(template.todos, "seed")
-        return template.prompt(text)
+        template = None if self.todos.open_ids() else match_template(text, self.templates)
+        if template is not None:
+            self.logger.info(f"The message matches task template '{template.name}'.")
+            self.todos.seed(template.todos, "seed")
+            replaced = True
+        if replaced:
+            self._toolbox_new_task()
+        return text if template is None else template.prompt(text)
 
     def _submit_task_message(self, data: str, topic: str) -> None:
         # Runs in the connector's executor, where an exception would end the
@@ -412,12 +462,16 @@ def create_walkie_agent(
     `templates` are the task templates (see tasks.py)."""
     # One list, shared by the todo tools and the graph.
     todos = TodoList()
+    # No backends yet, so only atomics that require none load; with no
+    # atomic in walkie_agent.tools.atomic, the LLM sees the same tools.
+    toolbox = Toolbox(connector)
     return WalkieAgent(
         target_connectors=target_connectors,
         llm=llm,
-        tools=build_walkie_tools(connector, locations, whoami_dir, todos=todos),
+        tools=build_walkie_tools(connector, locations, whoami_dir, todos=todos, toolbox=toolbox),
         system_prompt=build_system_prompt(SYSTEM_PROMPT, whoami_dir),
         stream_response=stream_response,
         todos=todos,
         templates=templates,
+        toolbox=toolbox,
     )

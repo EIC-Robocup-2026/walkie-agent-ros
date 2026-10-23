@@ -183,7 +183,7 @@ sequenceDiagram
 | `refind_person(person)` | P | The newest message again | A new handle for the same person: same track id, else the closest appearance embedding over a limit. `NOT_FOUND` otherwise |
 | `localize_person(person)`, internal | P | The person's depth, which the message lacks ([question 1](#open-questions)) | A pose handle for `navigate_to_pose`, as `localize_object` gives ([ADR-0043](decisions/0043-navigate-to-pose-provenance.md)) |
 | `recognize_person(person)` | R | walkie-database's face table, then its appearance table | A name and stored facts, or `UNKNOWN`. Fails when the handle has no face. Also takes a whole set, giving each name to one person at most ([HRI Task](hri.md#atomics)) |
-| `remember_person(person, name, facts={})` | write ([question 3](#open-questions)) | Writes the person, its facts such as a drink, and every face and appearance vector kept for the track, through walkie-database | Confirmation. The person is forgotten with the session (walkie-database ADR-0010) |
+| `remember_person(person, name, facts={})` | W, provisional ([question 3](#open-questions)) | Writes the person, its facts such as a drink, and every face and appearance vector kept for the track, through walkie-database | Confirmation. The person is forgotten with the session (walkie-database ADR-0010) |
 
 - **Why gestures live in the agent.** They are task words, not model
   output. Keeping them agent-side needs no message change, and the
@@ -302,7 +302,9 @@ flowchart TB
 3. **No effect covers a memory write.** R, P, S, N and M cover reading,
    perceiving, speaking and moving. Proposed: `remember_person` stays a
    reviewed atomic that generated tools cannot call at any level, until a
-   write effect is decided. Blocks: `remember_person`.
+   write effect is decided. Until then, the code has a provisional `W`
+   effect for it ([The Agent: effects](agent.md#effects)). Blocks:
+   `remember_person`.
 4. **Describing a person.** Either a Florence-2 caption service, its text
    capped and marked untrusted like web text, or attributes picked from a
    fixed list, such as shirt colours, with the object embedder on the

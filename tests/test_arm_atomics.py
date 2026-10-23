@@ -6,6 +6,7 @@ reach it through a real CommanderClient in a real Toolbox. So these tests
 cover the answers the LLM reads for every outcome the commander can give.
 """
 
+import math
 import random
 import threading
 import time
@@ -25,12 +26,25 @@ from scripted_llm import ScriptedChatModel, tool_call
 from walkie_agent.agent import WalkieAgent
 from walkie_agent.arm import commander as commander_module
 from walkie_agent.arm.commander import CommanderClient
-from walkie_agent.arm.poses import RIGHT_JOINT2, ArmPoses, load_arm_poses, load_robot_model
-from walkie_agent.arm.state import NOT_SAFE_SENTENCE, SAFE_SENTENCE, UNKNOWN_SENTENCE
+from walkie_agent.arm.poses import (
+    GRIPPER_GROUPS,
+    RIGHT_JOINT2,
+    ArmPoses,
+    load_arm_poses,
+    load_robot_model,
+)
+from walkie_agent.arm.state import (
+    NOT_SAFE_SENTENCE,
+    SAFE_SENTENCE,
+    UNKNOWN_SENTENCE,
+    ArmsState,
+    ArmState,
+)
 from walkie_agent.sim.fake_commander import FakeCommander
 from walkie_agent.toolbox import StepError, Toolbox, ToolOutput
 from walkie_agent.tools import FORBIDDEN_NAMES
 from walkie_agent.tools import navigation as navigation_module
+from walkie_agent.tools.atomic._arm import FINGER_JOINTS
 from walkie_agent.tools.navigation import MoveRelativeTool, NavigateToLocationTool
 
 MODEL_PATH = PROJECT_ROOT / "config" / "robot_model.toml"
@@ -342,18 +356,90 @@ def test_a_joint_left_off_its_target_is_a_postcondition_failure(toolbox, fake):
     assert error.data["error_rad"] == pytest.approx(0.31)
 
 
-def test_plan_only_is_caught_by_the_joint_check(toolbox, fake):
-    fake.plan_only = True
+def test_a_move_whose_reading_afterwards_fails_is_a_postcondition_failure(toolbox, fake, poses):
+    # The joint order is known from an earlier read, so the move is sent.
+    client_of(toolbox).joint_names("both_arms", threading.Event())
+    fake.read_failure = "Failed to get current robot state"
 
     error = error_of(toolbox, "move_arm_to_pose", pose="standby")
 
     assert error.code == "POSTCONDITION"
-    assert error.message.startswith("The commander reported success (Plan Only), but ")
-    assert error.message.endswith(f"from 'standby'. Treat this as a failure. {SAFE_SENTENCE}")
+    assert error.message == (
+        "The commander reported success, but the arms could not be checked against 'standby': "
+        "The commander could not read the joints of both_arms: Failed to get current robot "
+        f"state. Treat this as a failure. {UNKNOWN_SENTENCE}"
+    )
+    assert error.data == {"pose": "standby", "status": "Success", "read_error": "UNAVAILABLE"}
+    assert in_pose(fake, targets(poses, "standby", "left", "right"))
 
-    # Already in the pose, nothing needs to move, and the check passes.
+
+def test_a_move_whose_reading_afterwards_lacks_a_joint_is_a_postcondition_failure(toolbox, fake):
+    client_of(toolbox).joint_names("both_arms", threading.Event())
+    fake.missing_joints = {"openarm_left_joint4"}
+
+    error = error_of(toolbox, "move_arm_to_pose", pose="standby")
+
+    assert error.code == "POSTCONDITION"
+    # The left arm is unknown, and the right one is read in standby.
+    assert error.message == (
+        "The commander reported success, but its reading lacks a usable position for "
+        "openarm_left_joint4, so the arms cannot be checked against 'standby'. Treat this as a "
+        f"failure. {NOT_SAFE_SENTENCE}"
+    )
+    assert error.data == {
+        "pose": "standby",
+        "status": "Success",
+        "missing": ["openarm_left_joint4"],
+    }
+
+
+def test_a_joint_read_as_not_a_number_after_a_move_fails_the_check(toolbox, fake):
+    # A NaN passes every tolerance check, since every comparison with it is
+    # false, so the move must not count as arrived.
+    fake.joint_errors = {"openarm_left_joint1": math.nan}
+
+    error = error_of(toolbox, "move_arm_to_pose", pose="standby")
+
+    assert error.code == "POSTCONDITION"
+    assert error.message == (
+        "The commander reported success, but the arms could not be checked against 'standby': "
+        "The commander's reading of both_arms is not usable: openarm_left_joint1 = nan. Treat "
+        f"this as a failure. {UNKNOWN_SENTENCE}"
+    )
+    assert error.data == {"pose": "standby", "status": "Success", "read_error": "INTERNAL"}
+
+
+def test_plan_only_never_says_the_arms_moved(toolbox, fake):
+    fake.plan_only = True
+
+    error = error_of(toolbox, "move_arm_to_pose", pose="standby")
+
+    # The joint check catches it, and the answer says why nothing moved.
+    assert error.code == "POSTCONDITION"
+    assert error.message == (
+        "The commander runs in plan-only mode, so it moved nothing, and openarm_left_joint4 is "
+        "1.82 rad from 'standby'. Treat this as a failure. No arm can move until the commander "
+        f"restarts without plan_only, so tell the person instead of trying again. {SAFE_SENTENCE}"
+    )
+    assert error.data["status"] == "Plan Only"
+
+    # Already in the pose, the check passes, and the answer still says nothing moved.
     out = call(toolbox, "move_arm_to_pose", pose="home")
-    assert (out.summary, out.status) == (f"Moved to 'home'. {SAFE_SENTENCE}", "Plan Only")
+    assert (out.summary, out.status) == (
+        "Already at 'home'. The commander runs in plan-only mode, so it moved nothing. "
+        f"{SAFE_SENTENCE}",
+        "Plan Only",
+    )
+    left = call(toolbox, "move_arm_to_pose", pose="home", arm="left")
+    assert left.summary == (
+        "The left arm is already at 'home'. The commander runs in plan-only mode, so it moved "
+        f"nothing. {SAFE_SENTENCE}"
+    )
+    assert fake.results == [
+        ("both_arms", "Plan Only"),
+        ("both_arms", "Plan Only"),
+        ("left_arm", "Plan Only"),
+    ]
 
 
 def test_a_move_that_runs_past_its_pose_timeout_times_out(fake, connector, poses):
@@ -371,7 +457,7 @@ def test_a_move_that_runs_past_its_pose_timeout_times_out(fake, connector, poses
     assert error.code == "TIMEOUT"
     assert error.message == (
         "Could not move to 'hands_up': The move of both_arms did not finish within 0.5 s; "
-        f"the goal was cancelled. {UNKNOWN_SENTENCE}"
+        f"the arms were told to stop. {UNKNOWN_SENTENCE}"
     )
     assert elapsed < 2.0
     assert fake.cancel_requests == 1
@@ -455,6 +541,22 @@ def test_without_a_commander_every_call_is_unavailable(connector, poses, monkeyp
 # -- set_gripper --------------------------------------------------------------------
 
 
+def fail_gripper(monkeypatch, fake: FakeCommander, group: str) -> None:
+    """End every goal of `group` that reaches its position ABORTED "Failed".
+
+    As when the gripper controller fails: the commander then reports success
+    false, whatever the fingers did.
+    """
+    finish = fake._finish
+
+    def failed(goal_handle, result, goal_group, success, status):
+        if goal_group == group and status == "Success":
+            success, status = False, "Failed"
+        return finish(goal_handle, result, goal_group, success, status)
+
+    monkeypatch.setattr(fake, "_finish", failed)
+
+
 def test_open_reports_only_that_it_moved(toolbox, fake):
     # An object between the fingers: on an open the commander still reports
     # grasped false and a 0.0 gap, which must not read as "holding nothing".
@@ -473,6 +575,56 @@ def test_half_on_both_sends_left_then_right(toolbox, fake):
     assert out.summary == f"Set both grippers half open. {SAFE_SENTENCE}"
     assert out.holding == {"left": None, "right": None}
     assert fake.gripper_goals == [("left_gripper", 0.036), ("right_gripper", 0.036)]
+
+
+def test_an_open_the_commander_reports_failed_is_a_failure(toolbox, fake, monkeypatch):
+    fail_gripper(monkeypatch, fake, "left_gripper")
+
+    error = error_of(toolbox, "set_gripper", arm="left", state="open")
+
+    assert error.code == "SKILL_FAILED"
+    assert error.message == (
+        f"The left gripper did not open fully (the commander reported 'Failed'). {SAFE_SENTENCE}"
+    )
+    assert error.data == {"arm": "left", "state": "open", "holding": {"left": None}}
+
+
+def test_when_the_second_gripper_fails_the_answer_says_what_each_did(toolbox, fake):
+    # Something between the right fingers stops them short of half open.
+    fake.object_widths["right_gripper"] = 0.04
+
+    error = error_of(toolbox, "set_gripper", arm="both", state="half")
+
+    assert error.code == "SKILL_FAILED"
+    assert error.message == (
+        "Set the left gripper half open. The right gripper did not reach half open (the "
+        f"commander reported 'Failed'). {SAFE_SENTENCE}"
+    )
+    assert error.data["holding"] == {"left": None, "right": None}
+    assert fake.gripper_goals == [("left_gripper", 0.036), ("right_gripper", 0.036)]
+
+
+def test_a_second_gripper_goal_the_commander_rejects_keeps_what_the_first_did(
+    toolbox, fake, monkeypatch
+):
+    finish = fake._finish
+
+    def reject_from_now_on(goal_handle, result, group, success, status):
+        # Every goal after the left one is rejected.
+        fake.reject_goals = True
+        return finish(goal_handle, result, group, success, status)
+
+    monkeypatch.setattr(fake, "_finish", reject_from_now_on)
+
+    error = error_of(toolbox, "set_gripper", arm="both", state="close")
+
+    # Nothing read the arms, and a failed call does not read them.
+    assert (error.code, error.message) == (
+        "INTERNAL",
+        "Closed the left gripper. It is holding nothing. Could not move the right gripper: The "
+        f"commander rejected the goal for right_gripper. {UNKNOWN_SENTENCE}",
+    )
+    assert fake.gripper_goals == [("left_gripper", 0.0), ("right_gripper", 0.0)]
 
 
 def test_a_close_on_an_object_holds_it(toolbox, fake):
@@ -525,8 +677,56 @@ def test_grasp_detect_min_below_zero_reads_an_empty_close_as_held(toolbox, fake)
     assert out.holding == {"left": True}
 
 
+@pytest.mark.parametrize(
+    ("width", "held"), [(0.02, "something"), (None, "nothing")], ids=["object", "empty"]
+)
+def test_a_close_the_commander_did_not_measure_is_judged_from_a_read(toolbox, fake, width, held):
+    # A threshold below every goal: the commander runs no grasp detection and
+    # reports grasped false with a gap of 0.0, as with grasp_detect_enable off.
+    fake.set_parameters([Parameter("grasp_close_threshold", value=-1.0)])
+    fake.object_widths["left_gripper"] = width
+
+    out = call(toolbox, "set_gripper", arm="left", state="close")
+
+    assert out.summary == f"Closed the left gripper. It is holding {held}. {SAFE_SENTENCE}"
+    assert out.holding == {"left": held == "something"}
+
+
+def test_a_close_the_commander_did_not_measure_fails_when_the_fingers_barely_moved(
+    toolbox, fake
+):
+    # The commander's gap of 0.0 says nothing about the fingers, which the
+    # read finds stopped near the open position.
+    fake.set_parameters([Parameter("grasp_close_threshold", value=-1.0)])
+    fake.object_widths["left_gripper"] = 0.043
+
+    error = error_of(toolbox, "set_gripper", arm="left", state="close")
+
+    assert (error.code, error.message) == (
+        "SKILL_FAILED",
+        f"The left gripper did not close (gap 0.043 m). {SAFE_SENTENCE}",
+    )
+    assert error.data["holding"] == {"left": None}
+
+
+def test_a_close_whose_fingers_cannot_be_read_says_it_cannot_tell(toolbox, fake):
+    fake.object_widths["right_gripper"] = 0.02
+    fake.missing_joints = {"openarm_right_finger_joint1"}
+
+    out = call(toolbox, "set_gripper", arm="both", state="close")
+
+    # Both closes ended as the commander allows, so the call does not fail.
+    assert out.summary == (
+        "Closed the left gripper. It is holding nothing. The right gripper's fingers could not "
+        "be read after the close, so whether it closed on something is unknown: The commander "
+        "answered 0 joint names and 0 positions for right_gripper. Call get_arm_state to see "
+        f"how far it closed. {SAFE_SENTENCE}"
+    )
+    assert out.holding == {"left": False, "right": None}
+
+
 def test_an_interrupt_during_a_gripper_command_stops_it(toolbox, fake):
-    fake.never_answer = True
+    fake.gripper_time_s = 1.0
     timer = threading.Timer(0.3, toolbox.interrupt)
     timer.start()
 
@@ -539,12 +739,45 @@ def test_an_interrupt_during_a_gripper_command_stops_it(toolbox, fake):
     )
     # The right gripper was never sent.
     assert fake.gripper_goals == [("left_gripper", 0.0)]
+    # The cancel reached the commander, which accepts it but finishes the
+    # ramp; until then the command is outstanding and every call is refused.
+    assert fake.cancel_requests == 1
+    client = client_of(toolbox)
+    assert client.busy() == "the left_gripper command from an earlier call"
+    assert fake.results == []
+    assert wait_until(lambda: client.busy() is None)
+    assert fake.results == [("left_gripper", "Canceled")]
+
+
+def test_an_interrupt_while_the_fingers_are_read_stops_the_call(toolbox, fake):
+    fake.joint_states_delay_s = 2.0
+    timer = threading.Timer(0.5, toolbox.interrupt)
+    timer.start()
+
+    start = time.monotonic()
+    error = error_of(toolbox, "set_gripper", arm="both", state="close")
+    elapsed = time.monotonic() - start
+    timer.join()
+
+    assert (error.code, error.message) == (
+        "CANCELLED",
+        "Stopped by reset before checking whether the left gripper holds something. "
+        f"{UNKNOWN_SENTENCE}",
+    )
+    assert elapsed < 1.5
+    # The right gripper was never sent.
+    assert fake.gripper_goals == [("left_gripper", 0.0)]
 
 
 # -- get_arm_state ------------------------------------------------------------------
 
 
-def test_get_arm_state_reads_the_arms_and_remembers_the_grippers(toolbox, fake):
+@pytest.mark.parametrize("arm", ["left", "right"])
+def test_each_gripper_is_read_by_the_one_joint_of_its_group(model, arm):
+    assert model.groups[GRIPPER_GROUPS[arm]] == (FINGER_JOINTS[arm],)
+
+
+def test_get_arm_state_reads_the_arms_and_the_grippers(toolbox, fake):
     call(toolbox, "set_gripper", arm="left", state="close")
 
     out = call(toolbox, "get_arm_state")
@@ -552,12 +785,15 @@ def test_get_arm_state_reads_the_arms_and_remembers_the_grippers(toolbox, fake):
     assert out.summary.splitlines() == [
         "Left arm: home, safe for driving.",
         "Right arm: home, safe for driving.",
-        "Left gripper: last command close.",
-        "Right gripper: unknown.",
+        "Left gripper: closed (gap 0.000 m).",
+        # Never commanded, but read: the fingers start open.
+        "Right gripper: open (gap 0.044 m).",
         SAFE_SENTENCE,
     ]
     assert (out.poses, out.travel_safe) == ({"left": "home", "right": "home"}, True)
-    assert out.grippers == {"left": "close", "right": None}
+    assert out.grippers == {"left": "close", "right": "open"}
+    assert out.gripper_gaps_m == pytest.approx({"left": 0.0, "right": 0.044})
+    assert fake.joint_state_requests[-2:] == ["left_gripper", "right_gripper"]
 
 
 def test_get_arm_state_names_a_pose_out_of_the_offered_ones_and_no_pose(toolbox, fake, poses):
@@ -565,6 +801,10 @@ def test_get_arm_state_names_a_pose_out_of_the_offered_ones_and_no_pose(toolbox,
     # still reported as in it.
     fake.teleport(targets(poses, "receive", "left"))
     fake.teleport({"openarm_right_joint1": 0.7})
+    # Stopped on an object, the left fingers are nearer the half position
+    # than the closed one, and still read as closed.
+    fake.object_widths["left_gripper"] = 0.02
+    call(toolbox, "set_gripper", arm="left", state="close")
     call(toolbox, "set_gripper", arm="right", state="half")
 
     out = call(toolbox, "get_arm_state")
@@ -572,11 +812,45 @@ def test_get_arm_state_names_a_pose_out_of_the_offered_ones_and_no_pose(toolbox,
     assert out.summary.splitlines() == [
         "Left arm: receive, not safe for driving.",
         "Right arm: no named pose, not safe for driving.",
-        "Left gripper: unknown.",
-        "Right gripper: last command half.",
+        "Left gripper: closed (gap 0.020 m).",
+        "Right gripper: half open (gap 0.036 m).",
         NOT_SAFE_SENTENCE,
     ]
     assert out.poses == {"left": "receive", "right": None}
+    assert out.grippers == {"left": "close", "right": "half"}
+
+
+def test_a_gripper_that_cannot_be_read_falls_back_to_its_last_command(toolbox, fake):
+    call(toolbox, "set_gripper", arm="left", state="close")
+    # A finger read as not a number, and one the reading lacks.
+    fake.teleport({"openarm_left_finger_joint1": math.nan})
+    fake.missing_joints = {"openarm_right_finger_joint1"}
+
+    out = call(toolbox, "get_arm_state")
+
+    assert out.summary.splitlines() == [
+        "Left arm: home, safe for driving.",
+        "Right arm: home, safe for driving.",
+        "Left gripper: could not be read; last command close.",
+        "Right gripper: could not be read; last command unknown.",
+        SAFE_SENTENCE,
+    ]
+    assert out.grippers == {"left": "close", "right": None}
+    assert out.gripper_gaps_m == {"left": None, "right": None}
+
+
+def test_get_arm_state_does_not_name_a_pose_from_a_joint_that_is_not_a_number(toolbox, fake):
+    # Every other joint is at home, so a NaN that passed the tolerance check
+    # would read as home.
+    fake.teleport({"openarm_left_joint1": math.nan})
+
+    error = error_of(toolbox, "get_arm_state")
+
+    assert (error.code, error.message) == (
+        "INTERNAL",
+        "The commander's reading of both_arms is not usable: openarm_left_joint1 = nan. "
+        f"{UNKNOWN_SENTENCE}",
+    )
 
 
 # -- The drive check (ADR-0025) ---------------------------------------------------------
@@ -635,15 +909,16 @@ def test_the_robot_drives_with_both_arms_travel_safe(
 def test_without_a_commander_the_robot_drives_at_once_and_says_so(
     fake_walkie, connector, locations, poses
 ):
+    not_found = "Arm state unknown: the commander was not found."
     with arm_toolbox(connector, poses, wait=False) as box:
         tool = navigate(connector, locations, client_of(box))
         start = time.monotonic()
         note = tool._check_arms()
         # No 3 s read: the client knows at once that the commander is missing.
         assert time.monotonic() - start < 0.5
-        assert note == f" {ARMS_UNKNOWN}"
+        assert note == f" {not_found}"
 
-        assert tool.invoke({"location": "kitchen"}) == f"Arrived at kitchen. {ARMS_UNKNOWN}"
+        assert tool.invoke({"location": "kitchen"}) == f"Arrived at kitchen. {not_found}"
     assert fake_walkie.pose()[:2] == pytest.approx((3.5, 1.2))
 
 
@@ -656,6 +931,56 @@ def test_a_commander_that_does_not_answer_lets_the_robot_drive(
     result = navigate(connector, locations, client_of(toolbox)).invoke({"location": "kitchen"})
 
     assert result == f"Arrived at kitchen. {ARMS_UNKNOWN}"
+
+
+def test_a_commander_that_cannot_read_the_joints_lets_the_robot_drive(
+    fake_walkie, toolbox, fake, connector, locations
+):
+    fake.read_failure = "Failed to get current robot state"
+
+    result = navigate(connector, locations, client_of(toolbox)).invoke({"location": "kitchen"})
+
+    assert result == (
+        "Arrived at kitchen. Arm state unknown: the commander gave no reading of the arms."
+    )
+
+
+@pytest.mark.parametrize(
+    ("joints", "missing", "detail"),
+    [
+        (
+            {"openarm_left_joint1": float("nan")},
+            set(),
+            "The commander's reading of both_arms is not usable: openarm_left_joint1 = nan.",
+        ),
+        (
+            {"openarm_right_joint4": float("inf")},
+            set(),
+            "The commander's reading of both_arms is not usable: openarm_right_joint4 = inf.",
+        ),
+        (
+            {},
+            {"openarm_right_joint3"},
+            "The commander's reading of both_arms lacks openarm_right_joint3, so it cannot say "
+            "where the right arm is.",
+        ),
+    ],
+    ids=["nan", "inf", "missing joint"],
+)
+def test_the_robot_does_not_drive_on_a_reading_that_cannot_show_the_arms(
+    fake_walkie, toolbox, fake, connector, locations, joints, missing, detail
+):
+    # Every other joint is at home, which is travel-safe.
+    fake.teleport(joints)
+    fake.missing_joints = missing
+
+    result = navigate(connector, locations, client_of(toolbox)).invoke({"location": "kitchen"})
+
+    assert result == (
+        "Not driving: the commander's reading does not show that the arms are safe for "
+        f"driving. {detail} Tell the person that the arms cannot be checked."
+    )
+    assert fake_walkie.pose() == (0.0, 0.0, 0.0)
 
 
 def test_the_robot_does_not_drive_while_an_arm_moves(
@@ -671,10 +996,99 @@ def test_the_robot_does_not_drive_while_an_arm_moves(
     moving.join()
 
     assert result == (
-        "Not driving: an arm is still moving. Cannot read the joints of both_arms while the "
-        "move of both_arms is running. Wait for it to finish."
+        "Not driving: an arm or a gripper may still be moving, as the move of both_arms has "
+        "not ended yet. Try again in a few seconds."
     )
     assert fake_walkie.pose() == (0.0, 0.0, 0.0)
+
+
+def test_the_robot_does_not_drive_when_a_move_starts_after_the_busy_check(
+    fake_walkie, toolbox, fake, connector, locations, monkeypatch
+):
+    fake.move_time_s = 1.0
+    client = client_of(toolbox)
+    moving = threading.Thread(target=lambda: call(toolbox, "move_arm_to_pose", pose="hands_up"))
+    moving.start()
+    assert wait_until(lambda: fake.joint_goals, 5.0)
+    # As when the move starts between busy() and the read: the read refuses.
+    monkeypatch.setattr(client, "busy", lambda: None)
+
+    result = navigate(connector, locations, client).invoke({"location": "kitchen"})
+    moving.join()
+
+    assert result == (
+        "Not driving: an arm or a gripper may still be moving. Cannot read the joints of "
+        "both_arms while the move of both_arms is running. Wait for it to finish."
+    )
+    assert fake_walkie.pose() == (0.0, 0.0, 0.0)
+
+
+def test_the_robot_does_not_drive_on_a_reading_of_one_arm(
+    fake_walkie, toolbox, fake, connector, locations, monkeypatch
+):
+    # read_arms() refuses a reading that lacks an arm's joints, so only an arm
+    # that no pose has a table for is left unknown. Its state is faked here.
+    client = client_of(toolbox)
+    monkeypatch.setattr(
+        client, "read_arms", lambda *_, **__: ArmsState(left=ArmState("home", True))
+    )
+
+    result = navigate(connector, locations, client).invoke({"location": "kitchen"})
+
+    assert result == (
+        "Not driving: the commander's reading does not show where both arms are. Tell the "
+        "person that the arms cannot be checked."
+    )
+    assert fake_walkie.pose() == (0.0, 0.0, 0.0)
+
+
+def test_the_robot_does_not_drive_while_a_move_outlives_the_commander(
+    fake_walkie, toolbox, fake, connector, locations, poses, monkeypatch
+):
+    monkeypatch.setattr(commander_module, "CANCEL_ANSWER_S", 0.2)
+    fake.never_answer = True
+    client = client_of(toolbox)
+    standby = targets(poses, "standby", "left")
+    order = client.joint_names("left_arm", threading.Event())
+    cancel = threading.Event()
+    errors: list[StepError] = []
+
+    def move() -> None:
+        try:
+            client.set_joint_position("left_arm", [standby[j] for j in order], cancel, 30.0)
+        except StepError as e:
+            errors.append(e)
+
+    moving = threading.Thread(target=move)
+    moving.start()
+    assert wait_until(lambda: fake.joint_goals, 5.0)
+    # The commander dies mid-move. Not found any more, but the arm it was
+    # moving may still be moving.
+    fake.vanish()
+    assert wait_until(lambda: not client.available(), 5.0)
+    tool = navigate(connector, locations, client)
+
+    assert tool.invoke({"location": "kitchen"}) == (
+        "Not driving: an arm or a gripper may still be moving, as the move of left_arm has "
+        "not ended yet. Try again in a few seconds."
+    )
+    assert fake_walkie.pose() == (0.0, 0.0, 0.0)
+
+    cancel.set()
+    moving.join(timeout=5)
+    assert [(e.code, e.message) for e in errors] == [
+        (
+            "CANCELLED",
+            "A stop or a reset interrupted the move of left_arm; the commander did not "
+            "answer the cancel, so an arm may still be moving.",
+        )
+    ]
+    # With its action server gone, the goal is abandoned, and the robot
+    # drives as without a commander.
+    assert wait_until(lambda: client.busy() is None)
+    assert tool.invoke({"location": "kitchen"}) == (
+        "Arrived at kitchen. Arm state unknown: the commander was not found."
+    )
 
 
 def test_without_the_arm_backend_there_is_no_check(

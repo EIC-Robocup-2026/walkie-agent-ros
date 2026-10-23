@@ -1,17 +1,36 @@
 """Open, half open or close a gripper, and say after a close whether it holds something.
 
-The commander reports `grasped` and the settled gap only on a close; on an
-open or "half" it reports false and 0.0 whatever the fingers did, so those
-are never read (CommanderClient returns None for them). On a close,
-`grasped` and the gap are the answer, not the goal's success: a real grasp
-usually ends with success false, because the fingers stall on the object.
+An open or "half" must succeed: the commander reports a failure when the
+gripper controller did not reach the position. A close is judged otherwise,
+since a real grasp usually ends with success false, because the fingers stall
+on the object. After a close, the fingers are read from /get_joint_states:
+  - fingers still near the open position mean the gripper did not close;
+  - otherwise the commander's `grasped` is the answer when its gap agrees
+    with the read;
+  - a close the commander did not measure, as with grasp_detect_enable off
+    or before its first finger reading, reports `grasped` false and a gap
+    of 0.0, which does not agree with fingers stopped on an object; the read
+    is then judged by the commander's default detection band;
+  - fingers that cannot be read leave unknown whether the gripper holds
+    something, and the answer says so.
+The commander reports `grasped` and the gap only on a close; on an open or
+"half" it reports false and 0.0 whatever the fingers did, so those are never
+read (CommanderClient returns None for them).
 """
 
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from walkie_agent.arm.poses import ARMS, BOTH, GRIPPER_GROUPS, GripperPositions
+from walkie_agent.arm.commander import GripperResult
+from walkie_agent.arm.poses import (
+    ARMS,
+    BOTH,
+    GRASP_DETECT_MAX,
+    GRASP_DETECT_MIN,
+    GRIPPER_GROUPS,
+    GripperPositions,
+)
 from walkie_agent.toolbox import Effect, StepError, ToolContext, ToolMeta, ToolOutput
 from walkie_agent.tools.atomic import _arm as shared
 
@@ -20,9 +39,9 @@ META = ToolMeta(
     description=(
         "Open, half open or close the gripper of one arm or both. arm is left, right or "
         "both; state is open, half or close. After a close, the answer says whether the "
-        "gripper is holding something. Close only once the object is between the fingers, "
-        "such as after the person says the bag is in your hand. Tell the person before the "
-        "gripper moves."
+        "gripper is holding something, or that it could not tell. Close only once the "
+        "object is between the fingers, such as after the person says the bag is in your "
+        "hand. Tell the person before the gripper moves."
     ),
     effects=frozenset({Effect.M}),
     questions=(
@@ -36,6 +55,9 @@ META = ToolMeta(
     requires=(shared.ARM,),
 )
 
+# What an open or "half" that the commander reports failed did not do.
+_NOT_REACHED = {"open": "did not open fully", "half": "did not reach half open"}
+
 
 class Args(BaseModel):
     arm: Literal["left", "right", "both"] = Field(
@@ -47,8 +69,10 @@ class Args(BaseModel):
 class Out(ToolOutput):
     arm: str
     state: str
-    # Per arm moved: whether the close holds something. None after an open
-    # or "half", which cannot tell.
+    # Per arm moved: whether the close holds something, judged from a read of
+    # the fingers after it. None when that cannot be told: after an open or
+    # "half", and after a close whose fingers could not be read or that did
+    # not close.
     holding: dict[str, bool | None]
 
 
@@ -58,8 +82,8 @@ def run(ctx: ToolContext, args: Args) -> Out:
     position = grippers.position(args.state)
     arms = ARMS if args.arm == BOTH else (args.arm,)
     holding: dict[str, bool | None] = {}
-    # One sentence per close, in arm order.
-    closes: list[str] = []
+    # One sentence per gripper that finished, in arm order.
+    done: list[str] = []
     failed = False
     for arm in arms:
         try:
@@ -69,7 +93,6 @@ def run(ctx: ToolContext, args: Args) -> Out:
             )
         except StepError as e:
             # Nothing more is sent, and the answer says what was already done.
-            done = _done(args.state, list(holding), closes)
             if e.code == "CANCELLED" and ctx.cancel.is_set():
                 stopped = f"Stopped by reset before the {arm} gripper finished."
                 raise StepError(
@@ -82,24 +105,54 @@ def run(ctx: ToolContext, args: Args) -> Out:
                 _joined(done, f"Could not move the {arm} gripper: "),
                 client.last_state.sentence(),
             ) from None
+        holding[arm] = None
         if args.state != "close":
-            holding[arm] = None
+            if result.success:
+                done.append(_moved(args.state, f"the {arm} gripper"))
+            else:
+                # The other gripper is still moved, as asked.
+                done.append(
+                    f"The {arm} gripper {_NOT_REACHED[args.state]} (the commander reported "
+                    f"{result.status!r})."
+                )
+                failed = True
             continue
-        held = _holding(result.grasped, result.gripper_gap, grippers)
+        try:
+            finger = shared.read_finger(client, arm, ctx.cancel)
+        except StepError as e:
+            if e.code == "CANCELLED" and ctx.cancel.is_set():
+                stopped = (
+                    f"Stopped by reset before checking whether the {arm} gripper holds "
+                    "something."
+                )
+                raise StepError(
+                    "CANCELLED", f"{_joined(done, stopped)} {client.last_state.sentence()}", e.data
+                ) from None
+            # The close itself ended as the commander allows, so the step goes
+            # on; only the answer about the object is missing.
+            done.append(
+                f"The {arm} gripper's fingers could not be read after the close, so whether it "
+                f"closed on something is unknown: {shared.full_stop(e.message)} Call "
+                "get_arm_state to see how far it closed."
+            )
+            continue
+        held = _holding(result, finger, grippers)
         holding[arm] = held
         if held is None:
             # The fingers barely moved, whatever `grasped` says. The other
             # gripper is still closed, as asked.
-            gap = result.gripper_gap
-            gap_text = "no gap reported" if gap is None else f"gap {gap:.3f} m"
-            closes.append(f"The {arm} gripper did not close ({gap_text}).")
+            done.append(f"The {arm} gripper did not close (gap {finger:.3f} m).")
             failed = True
         else:
-            closes.append(
+            done.append(
                 f"Closed the {arm} gripper. It is holding {'something' if held else 'nothing'}."
             )
 
-    text = f"{_done(args.state, list(holding), closes)} {shared.arm_sentence(client, ctx.cancel)}"
+    if args.state != "close" and not failed and len(arms) == len(ARMS):
+        summary = _moved(args.state, "both grippers")
+    else:
+        summary = " ".join(done)
+    text = f"{summary} {shared.arm_sentence(client, ctx.cancel)}"
     if failed:
         raise StepError(
             "SKILL_FAILED", text, {"arm": args.arm, "state": args.state, "holding": holding}
@@ -107,28 +160,29 @@ def run(ctx: ToolContext, args: Args) -> Out:
     return Out(summary=text, arm=args.arm, state=args.state, holding=holding)
 
 
-def _holding(grasped: bool | None, gap: float | None, grippers: GripperPositions) -> bool | None:
-    """Whether a close holds something, or None when the gripper did not close.
+def _holding(result: GripperResult, finger: float, grippers: GripperPositions) -> bool | None:
+    """Whether a close holds something, by `finger`, the travel read after it.
 
-    A settled gap near the open position means the fingers barely moved,
-    which no object explains: the gripper is stuck or blocked, even when
-    the gap lies inside the commander's grasp_detect range. Below that,
-    `grasped` is the answer, by the commander's own detection parameters.
+    None when the gripper did not close: fingers near the open position
+    barely moved, which no object explains, so the gripper is stuck or
+    blocked, even when the travel lies inside the detection band. Otherwise
+    the commander's `grasped` is the answer, by its own detection parameters,
+    when its gap agrees with the read. A gap that does not agree is one the
+    commander did not measure, or the fingers moved since, so the read is
+    judged by the commander's default band.
     """
-    if gap is None or gap >= grippers.open_position - shared.CONFIG.holding_margin_m:
+    if finger >= grippers.open_position - shared.CONFIG.holding_margin_m:
         return None
-    return bool(grasped)
+    gap = result.gripper_gap
+    if gap is not None and abs(gap - finger) <= shared.CONFIG.gap_agreement_m:
+        return bool(result.grasped)
+    return GRASP_DETECT_MIN <= finger <= GRASP_DETECT_MAX
 
 
-def _done(state: str, arms: list[str], closes: list[str]) -> str:
-    """What the grippers that finished did, such as "Opened both grippers."."""
-    if state == "close":
-        return " ".join(closes)
-    if not arms:
-        return ""
-    which = "both grippers" if len(arms) == len(ARMS) else f"the {arms[0]} gripper"
+def _moved(state: str, which: str) -> str:
+    """What an open or "half" of `which` did, such as "Opened both grippers."."""
     return f"Opened {which}." if state == "open" else f"Set {which} half open."
 
 
-def _joined(done: str, text: str) -> str:
-    return f"{done} {text}" if done else text
+def _joined(done: list[str], text: str) -> str:
+    return " ".join([*done, text])

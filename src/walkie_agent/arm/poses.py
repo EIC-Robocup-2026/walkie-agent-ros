@@ -38,6 +38,12 @@ RIGHT_JOINT2 = "openarm_right_joint2"
 # The commander's grasp_close_threshold parameter, in metres: a gripper goal
 # at or below it is a close, and only a close reports `grasped` and the gap.
 GRASP_CLOSE_THRESHOLD = 0.03
+# The commander's default grasp_detect_min and grasp_detect_max, in metres: a
+# close holds something when the settled finger travel is within them, above
+# an empty close and below fully open. set_gripper applies them to its own
+# read of the fingers when the commander's result carries no measurement.
+GRASP_DETECT_MIN = 0.005
+GRASP_DETECT_MAX = 0.044
 
 # How long one move may take when a pose sets no timeout_s. A move takes
 # about 5 s in the simulation, plus planning.

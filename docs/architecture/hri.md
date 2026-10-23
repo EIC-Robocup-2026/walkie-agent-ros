@@ -352,8 +352,8 @@ Why it works this way:
   request to press on the hand was the same kind of request.
 - **No new atomics.** The two arm atomics from
   [Manipulation](manipulation.md#tools) do it. `move_arm_to_pose` checks
-  the joints after the move, and `set_gripper` judges a close from the
-  commander's `grasped` flag and the finger gap.
+  the joints after the move, and `set_gripper` reads the fingers after a
+  close and judges it from that read and the commander's `grasped` flag.
 - **Two new poses** in `config/arm_poses.toml`, both from walkie-agent-v2's
   hand-over:
 

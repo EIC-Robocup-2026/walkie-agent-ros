@@ -307,7 +307,7 @@ clock, which that file does not set. It runs in walkie-ros's environment,
 where the commander is built.
 
 - **Without the commander,** the arm tools answer `UNAVAILABLE`, and every
-  drive ends with "Arm state unknown: the commander did not answer."
+  drive ends with "Arm state unknown: the commander was not found."
 - **Untried poses.** On sim time the agent also offers the poses not yet
   tried on the robot: `tray`, `receive` and `carry`
   ([Pose configuration](architecture/manipulation.md#pose-configuration)).

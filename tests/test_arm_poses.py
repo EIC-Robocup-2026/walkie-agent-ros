@@ -8,6 +8,8 @@ until someone copies it on purpose (ADR-0022).
 
 import difflib
 import importlib.util
+import math
+import os
 import subprocess
 import sys
 import tomllib
@@ -34,6 +36,7 @@ from walkie_agent.arm.state import (
     ArmsState,
     ArmState,
     match_pose,
+    unread_joints,
     worst_joint,
 )
 
@@ -191,12 +194,44 @@ def test_receive_and_carry_are_the_recorded_values(arm_poses):
 # The snapshot.
 
 
+def require_clone(checkout: Path) -> None:
+    """Skip when the walkie-ros clone at `checkout` is missing, but fail in CI.
+
+    CI clones it with `pixi run build-ros2` before the tests, so a missing
+    clone there is a broken job, and a skip would hide a snapshot that drifted.
+    """
+    if (checkout / SRDF).exists() and (checkout / LIMITS).exists():
+        return
+    message = (
+        f"{WALKIE_ROS_KEY} is not cloned, so config/robot_model.toml cannot be "
+        "compared with the pinned walkie-ros. Run `pixi run build-ros2` to clone it."
+    )
+    if os.environ.get("CI"):
+        pytest.fail(message)
+    pytest.skip(message)
+
+
+@pytest.mark.parametrize(
+    ("ci", "outcome"),
+    [(None, pytest.skip.Exception), ("true", pytest.fail.Exception)],
+    ids=["local", "ci"],
+)
+def test_a_missing_clone_skips_the_comparison_locally_and_fails_it_in_ci(
+    tmp_path, monkeypatch, ci, outcome
+):
+    if ci is None:
+        monkeypatch.delenv("CI", raising=False)
+    else:
+        monkeypatch.setenv("CI", ci)
+    # Caught as any outcome, so a skip where a failure is due fails this test
+    # instead of skipping it.
+    with pytest.raises(BaseException, match="is not cloned") as info:
+        require_clone(tmp_path)
+    assert type(info.value) is outcome
+
+
 def test_robot_model_matches_the_pinned_walkie_ros(tmp_path):
-    if not (WALKIE_ROS / SRDF).exists() or not (WALKIE_ROS / LIMITS).exists():
-        pytest.skip(
-            f"{WALKIE_ROS_KEY} is not cloned, so config/robot_model.toml cannot be "
-            "compared with the pinned walkie-ros. Run `pixi run build-ros2` to clone it."
-        )
+    require_clone(WALKIE_ROS)
     repos = yaml.safe_load((PROJECT_ROOT / "ros2_ws.repos").read_text())
     pinned = repos["repositories"][WALKIE_ROS_KEY]["version"]
     head = subprocess.run(
@@ -294,6 +329,63 @@ def test_snapshot_refuses_what_it_cannot_resolve(tmp_path, default, condition, m
     with pytest.raises(module.SnapshotError) as err:
         module.snapshot(small_checkout(tmp_path, default, condition))
     assert message in str(err.value)
+
+
+LEFT_UP = '<group_state name="up" group="left_arm"><joint name="l1" value="0.1745"/></group_state>'
+LEFT_GRIPPER = '<group name="left_gripper"><joint name="lf"/></group>'
+
+
+@pytest.mark.parametrize(
+    ("element", "before", "after", "message"),
+    [
+        (
+            LEFT_UP,
+            '<xacro:if value="false">',
+            "</xacro:if>",
+            "<group_state> {'name': 'up', 'group': 'left_arm'} is inside <xacro:if> "
+            "{'value': 'false'}.",
+        ),
+        (
+            LEFT_UP,
+            '<xacro:if value="false"><xacro:unless value="$(arg right_joint2_fixed)">',
+            "</xacro:unless></xacro:if>",
+            "<group_state> {'name': 'up', 'group': 'left_arm'} is inside <xacro:unless> "
+            "{'value': '$(arg right_joint2_fixed)'}.",
+        ),
+        (
+            LEFT_GRIPPER,
+            '<xacro:if value="false">',
+            "</xacro:if>",
+            "<group> {'name': 'left_gripper'} is inside <xacro:if> {'value': 'false'}.",
+        ),
+    ],
+    ids=["preset in xacro:if", "preset two levels down", "group in xacro:if"],
+)
+def test_snapshot_refuses_a_group_or_preset_inside_a_xacro_element(
+    tmp_path, element, before, after, message
+):
+    # xacro drops what <xacro:if value="false"> holds, so a snapshot that read
+    # it anyway would keep a preset the commander no longer has.
+    checkout = small_checkout(tmp_path)
+    srdf = checkout / SRDF
+    text = srdf.read_text()
+    assert element in text
+    srdf.write_text(text.replace(element, f"{before}{element}{after}"))
+    module = load_snapshot_script()
+    with pytest.raises(module.SnapshotError) as err:
+        module.snapshot(checkout)
+    assert message in str(err.value)
+    assert "cannot tell whether xacro keeps it" in str(err.value)
+
+
+def test_snapshot_reads_only_the_presets_directly_under_robot(tmp_path):
+    # MoveIt reads only the group states that are children of <robot>.
+    checkout = small_checkout(tmp_path)
+    srdf = checkout / SRDF
+    nested = '<other><group_state name="down" group="left_arm"><joint name="l1" value="0"/>'
+    srdf.write_text(srdf.read_text().replace("</robot>", f"{nested}</group_state></other></robot>"))
+    data = tomllib.loads(load_snapshot_script().snapshot(checkout))
+    assert data["states"]["left_arm"] == {"up": {"l1": 0.1745}}
 
 
 # The loader's checks. Each case breaks the committed file in one place.
@@ -533,6 +625,53 @@ def test_match_pose_skips_only_a_missing_right_joint2_at_zero(arm_poses):
     left = reading(poses, "home", None)
     del left["openarm_left_joint3"]
     assert match_pose("left", left, poses) is None
+
+
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf], ids=["nan", "inf", "-inf"])
+@pytest.mark.parametrize(
+    "joint", ["openarm_left_joint1", "openarm_left_joint7"], ids=["first", "last"]
+)
+def test_a_joint_that_is_not_a_number_matches_no_pose(arm_poses, joint, value):
+    poses = arm_poses.poses
+    joints = reading(poses, "home", "home")
+    joints[joint] = value
+    home = poses["home"].tables["left"]
+    assert unread_joints(home, joints) == [joint]
+    assert worst_joint(home, joints) is None
+    assert match_pose("left", joints, poses) is None
+    state = ArmsState.from_joints(joints, poses)
+    assert state.left == ArmState(pose=None, travel_safe=False)
+    assert state.sentence() == NOT_SAFE_SENTENCE
+
+
+def test_a_nan_does_not_hide_a_joint_far_from_the_pose(arm_poses):
+    # Every comparison with NaN is false, so a NaN error that came first was
+    # never beaten by a larger one, and passed the tolerance check: the arm
+    # matched home with joint 4 at 2.0 rad.
+    poses = arm_poses.poses
+    joints = reading(poses, "home", "home")
+    joints["openarm_left_joint1"] = math.nan
+    joints["openarm_left_joint4"] = 2.0
+    assert match_pose("left", joints, poses) is None
+    assert ArmsState.from_joints(joints, poses).travel_safe is False
+
+
+def test_unread_joints_names_the_missing_and_the_unusable(arm_poses):
+    poses = arm_poses.poses
+    joints = reading(poses, None, "home")
+    joints["openarm_right_joint5"] = math.nan
+    del joints["openarm_right_joint3"]
+    del joints["openarm_right_joint2"]
+    right = poses["home"].tables["right"]
+    # openarm_right_joint2 at 0 is not listed, as right_joint2_fixed leaves it.
+    assert unread_joints(right, joints) == ["openarm_right_joint3", "openarm_right_joint5"]
+    # Present but not a number, it is unread like any other joint.
+    joints["openarm_right_joint2"] = math.nan
+    assert unread_joints(right, joints) == [
+        "openarm_right_joint2",
+        "openarm_right_joint3",
+        "openarm_right_joint5",
+    ]
 
 
 def test_match_pose_ignores_poses_without_a_table_for_the_arm(arm_poses):

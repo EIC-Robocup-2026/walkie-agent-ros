@@ -37,7 +37,17 @@ emergency stops. The LLM never chooses joint values or coordinates.
 - The first phase needs no walkie-ros changes.
 - The agent inherits the commander's behavior, which the tools must handle:
     - no feedback while a goal runs;
-    - a cancel during execution is reported as ABORTED `"Execution Failed"`;
+    - a `/set_joint_position` cancel stops both arms, not only the goal's
+      group, and is then accepted: MoveIt's stop is global;
+    - a cancel during planning ends the goal CANCELED `"Canceled"` once the
+      plan is made, and a cancel during execution is reported as ABORTED
+      `"Execution Failed"`;
+    - a `/control_gripper` cancel is accepted, but the gripper finishes its
+      current motion before the goal ends `"Canceled"`;
+    - a `/control_gripper` goal ends ABORTED `"Failed"` whenever the
+      controller reports no success, as when the fingers stall on an
+      object, and it reports `grasped` and the gap only for a close it
+      measured, so an unmeasured close reads as false and 0;
     - `plan_only` is read once at startup, and the launch file cannot set it;
     - velocity and acceleration scaling are hard-coded to 1.0 (full speed);
     - each goal runs in its own thread with no lock on the arm, so two goals

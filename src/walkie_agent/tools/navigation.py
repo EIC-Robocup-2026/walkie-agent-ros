@@ -33,8 +33,12 @@ ROBOT_FRAME = "base_footprint"
 # The arm check before a drive reads the joints once, bounded like every arm
 # read (ADR-0024).
 ARM_CHECK_TIMEOUT_S = 3.0
-# Added to a drive's answer when the arm check could not read the arms.
+# Added to a drive's answer when the arm check could not read the arms: the
+# commander's servers were not discovered, its read did not answer in time,
+# or it answered that it could not read the joints.
+ARMS_NOT_FOUND = "Arm state unknown: the commander was not found."
 ARMS_UNKNOWN = "Arm state unknown: the commander did not answer."
+ARMS_NOT_READ = "Arm state unknown: the commander gave no reading of the arms."
 
 _STATUS_NAMES = {
     GoalStatus.STATUS_UNKNOWN: "UNKNOWN",
@@ -150,35 +154,60 @@ class Nav2GoalTool(BaseROS2Tool):
     def _check_arms(self) -> str:
         """The interlock: refuse to drive with an arm out (ADR-0025).
 
-        Raises ToolException when an arm is known to be out of every
-        travel-safe pose, or still moving. When the commander is missing or
-        does not answer, the robot drives, and the returned note says the
-        arms were not checked: failing open keeps navigation working while
-        the arm stack is down, at the cost that a crashed commander disables
-        the check (ADR-0025). Returns "" after a check that passed.
+        Raises ToolException while a goal sent to the commander may still
+        move an arm or a gripper, when an arm is known to be out of every
+        travel-safe pose, and when the commander answers with a reading that
+        cannot show the arms are safe. When the commander is not found, does
+        not answer or gives no reading, the robot drives, and the returned
+        note says why the arms were not checked: failing open keeps
+        navigation working while the arm stack is down, at the cost that a
+        crashed commander disables the check (ADR-0025). Returns "" after a
+        check that passed.
         """
         if self.arm is None:
             return ""
         # Here, not at the top: walkie_agent.toolbox imports this module.
         from walkie_agent.toolbox.types import StepError
 
-        unknown = f" {ARMS_UNKNOWN}"
+        # First, and never waiting: a goal can outlive the commander's
+        # discovery, and also the call that sent it.
+        busy = self.arm.busy()
+        if busy is not None:
+            raise ToolException(
+                f"Not driving: an arm or a gripper may still be moving, as {busy} has not "
+                "ended yet. Try again in a few seconds."
+            )
         # available() never waits, so a run with no commander drives at once
         # instead of after the read's timeout.
         if not self.arm.available():
-            return unknown
+            return f" {ARMS_NOT_FOUND}"
         try:
             # The tool has no cancel event; a fresh one is never set, so only
             # the timeout ends the read.
             state = self.arm.read_arms(threading.Event(), timeout_s=ARM_CHECK_TIMEOUT_S)
         except StepError as e:
+            if e.code == "TIMEOUT":
+                return f" {ARMS_UNKNOWN}"
+            if e.code == "UNAVAILABLE":
+                return f" {ARMS_NOT_READ}"
             if e.code == "PRECONDITION_FAILED":
-                raise ToolException(f"Not driving: an arm is still moving. {e.message}") from e
-            return unknown
+                raise ToolException(
+                    f"Not driving: an arm or a gripper may still be moving. {e.message}"
+                ) from e
+            # INTERNAL: an answer that is malformed, lacks an arm's joints or
+            # holds a position that is not a number.
+            raise ToolException(
+                "Not driving: the commander's reading does not show that the arms are safe "
+                f"for driving. {e.message} Tell the person that the arms cannot be checked."
+            ) from e
         if state.unsafe_arms:
             raise ToolException(_arms_not_safe(state.unsafe_arms))
         if state.travel_safe is None:
-            return unknown
+            # Only for an arm that no pose has a table for.
+            raise ToolException(
+                "Not driving: the commander's reading does not show where both arms are. "
+                "Tell the person that the arms cannot be checked."
+            )
         return ""
 
     def _make_pose(self, x: float, y: float, yaw: float) -> PoseStamped:

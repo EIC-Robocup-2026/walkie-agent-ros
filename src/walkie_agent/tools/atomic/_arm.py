@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 
 from walkie_agent.arm.commander import CommanderClient
-from walkie_agent.arm.poses import ARMS, BOTH, ArmPose
+from walkie_agent.arm.poses import ARMS, BOTH, GRIPPER_GROUPS, ArmPose
 from walkie_agent.arm.state import UNKNOWN_SENTENCE
 from walkie_agent.toolbox import StepError, ToolContext
 
@@ -22,6 +22,11 @@ ARM = "arm"
 # The answer to a move that a stop or a reset interrupted (manipulation.md,
 # Tools). The arms stopped wherever the cancel found them.
 STOPPED = f"Stopped by reset. {UNKNOWN_SENTENCE}"
+
+# Each gripper's finger joint: the one joint of its group in
+# config/robot_model.toml, and the joint whose position the commander's grasp
+# detection reads. Its position is the travel of one finger, in metres.
+FINGER_JOINTS = {"left": "openarm_left_finger_joint1", "right": "openarm_right_finger_joint1"}
 
 
 @dataclass(frozen=True)
@@ -38,6 +43,12 @@ class ArmConfig:
     # below the open position. A gap closer to open means the fingers barely
     # moved, which no object explains: the gripper is stuck or blocked.
     holding_margin_m: float = 0.004
+    # After a close, the commander's `grasped` is used only when its gap is
+    # within this of set_gripper's own read of the fingers. A close that the
+    # commander did not measure reports a gap of 0.0, and every read that the
+    # default detection band counts as holding, GRASP_DETECT_MIN or more, is
+    # further than this from it.
+    gap_agreement_m: float = 0.002
 
 
 # Read by the atomics on every call, as `_arm.CONFIG`, so a test can replace it.
@@ -98,6 +109,32 @@ def arm_sentence(client: CommanderClient, cancel: threading.Event, read: bool = 
     return state.sentence()
 
 
+def read_finger(client: CommanderClient, arm: str, cancel: threading.Event) -> float:
+    """How far `arm`'s gripper is open now: one finger's travel, in metres, read once.
+
+    Raises StepError as CommanderClient.joint_states() does, and INTERNAL
+    when the reading lacks the finger joint.
+    """
+    group = GRIPPER_GROUPS[arm]
+    reading = client.joint_states(group, cancel, CONFIG.read_timeout_s)
+    joint = FINGER_JOINTS[arm]
+    if joint not in reading:
+        raise StepError(
+            "INTERNAL",
+            f"The commander's reading of {group} lacks {joint}.",
+            {"group": group, "joints": list(reading)},
+        )
+    return reading[joint]
+
+
+def full_stop(text: str) -> str:
+    """`text` ending with a full stop, unless it already ends a sentence.
+
+    Some commander messages end with its own status text, which has none.
+    """
+    return text if text.endswith((".", "?", "!")) else f"{text}."
+
+
 def with_sentence(error: StepError, prefix: str, sentence: str) -> StepError:
     """`error` with `prefix` before its message and `sentence` after it, same code and data."""
-    return StepError(error.code, f"{prefix}{error.message} {sentence}", error.data)
+    return StepError(error.code, f"{prefix}{full_stop(error.message)} {sentence}", error.data)

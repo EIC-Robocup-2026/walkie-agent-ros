@@ -360,7 +360,7 @@ todos = [
 | `list_arm_poses`                  | atomic     | Lists the named arm poses, which arms each can move, and whether it is safe for driving. Only with `--arms` |
 | `move_arm_to_pose`                | atomic     | Moves one arm or both to a named pose, then checks the joints. Only with `--arms` |
 | `set_gripper`                     | atomic     | Opens, half-opens or closes one gripper or both; after a close, says whether it holds something. Only with `--arms` |
-| `get_arm_state`                   | atomic     | Reports the named pose each arm is in, whether it is safe for driving, and each gripper's last command. Only with `--arms` |
+| `get_arm_state`                   | atomic     | Reports the named pose each arm is in, whether it is safe for driving, and how far each gripper is open. Only with `--arms` |
 
 `find_objects` calls `/walkie_database/find_objects` with a label and asks
 for at most 5 objects. It returns each object's room and position on the
@@ -399,9 +399,11 @@ state unknown." ([Arm Manipulation](manipulation.md#tools)).
 With `--arms`, `navigate_to_location` and `move_relative` also check the
 arms before they drive
 ([ADR-0025](decisions/0025-travel-safe-interlock.md)). They refuse while an
-arm is out of every pose that is safe for driving, or still moving. When the
-commander does not answer, they drive, and add "Arm state unknown: the
-commander did not answer." to the result.
+arm is out of every pose that is safe for driving, while an arm or a
+gripper may still be moving, and when the commander's reading does not show
+where both arms are. When the commander is not found, does not answer, or
+gives no reading, they drive, and add a note that says which to the result,
+such as "Arm state unknown: the commander did not answer."
 
 For the full list of topics, see
 [Getting Started](../getting-started.md).

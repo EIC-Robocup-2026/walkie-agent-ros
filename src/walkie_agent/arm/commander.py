@@ -8,9 +8,10 @@ as the `arm` backend. It uses the three names ADR-0021 allows:
 It is created once per agent from the connector, like VisionFeed: its
 clients are made here, once, on the connector's node, and its methods block
 the calling thread, never the executor's. Each method takes the caller's
-cancel event (an atomic passes ctx.cancel). A cancel or a timeout cancels a
-running goal, because the commander keeps moving the arms until told
-otherwise.
+cancel event (an atomic passes ctx.cancel). A cancel or a timeout asks the
+commander to cancel a running goal, because the commander keeps moving the
+arms until told otherwise, and the call then returns without waiting for
+the goal to end.
 
 One call at a time. The commander runs every goal in its own thread with no
 lock on the arms, so two goals would fight, and its /get_joint_states calls
@@ -18,18 +19,27 @@ MoveIt's getCurrentState(), which the commander's own comments call unsafe
 to run concurrently (ADR-0021, ADR-0024). So every call holds a lock, and a
 read or a second goal while a goal runs is refused at once rather than
 queued behind a move that can take 30 s.
+
+A goal outlives the call that sent it. It is outstanding from its send
+until the client sees its result, sees it rejected, or abandons it, and
+until then every other call is refused, also after its own call gave up on
+a cancel or a timeout. Such a goal can still move the arms: the commander
+may accept it late, or still be stopping it. A cancel of it would also stop
+a newer goal, since the commander's cancel stops both arms.
 """
 
+import functools
 import logging
 import math
 import threading
 import time
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
 from action_msgs.msg import GoalStatus
+from action_msgs.srv import CancelGoal
 from my_robot_interfaces.action import ControlGripper, SetJointPosition
 from my_robot_interfaces.srv import GetJointStates
 from rai.communication.ros2 import ROS2Connector
@@ -42,10 +52,11 @@ from walkie_agent.arm.poses import (
     BOTH_ARMS_GROUP,
     GRASP_CLOSE_THRESHOLD,
     GRIPPER_GROUPS,
+    RIGHT_JOINT2,
     ArmPoses,
     load_arm_poses,
 )
-from walkie_agent.arm.state import ArmsState
+from walkie_agent.arm.state import ArmsState, ArmState
 from walkie_agent.toolbox.types import StepError
 from walkie_agent.tools.waiters import wait_for_future
 
@@ -76,10 +87,19 @@ READ_TIMEOUT_S = 3.0
 # which is how long a close that stalls on an object takes to end.
 GRIPPER_TIMEOUT_S = 10.0
 # How long a cancelled or timed-out call waits for the commander to answer
-# the cancel request. Its cancel callback stops the arms before it answers,
-# so an answer means the arms were told to stop; the goal's own result can
-# take seconds more and is not waited for.
+# the cancel request. The commander's cancel callback stops both arms before
+# it accepts, so an accepted cancel means the arms were told to stop. The
+# goal's own result can take seconds more; the call does not wait for it,
+# and the goal stays outstanding until it comes.
 CANCEL_ANSWER_S = 1.0
+# How long after its call gave up a goal may stay outstanding before the
+# client abandons it and takes calls again. The result normally comes within
+# seconds: a cancelled move stops at once, and a cancelled gripper command
+# finishes its ramp and the commander's 5 s wait for the controller. But a
+# commander that restarted keeps its action servers discovered, and the old
+# goal's result never comes, so discovery alone cannot end the wait. A goal
+# whose action server is no longer discovered is abandoned at the next check.
+ABANDON_AFTER_S = 60.0
 # How long a call waits for the commander's server to be discovered. Not
 # zero, so a call soon after the agent starts does not fail on discovery;
 # short, so a missing commander costs little. available() never waits.
@@ -109,6 +129,30 @@ _STATUS_NAMES = {
     if name.startswith("STATUS_")
 }
 
+# What a call that cancelled its goal says happened, by the commander's
+# answer (_cancel_outcome): the words for an arm goal, then for a gripper
+# goal. The commander's cancel callback stops both arms before it accepts,
+# but a gripper finishes the motion it is in.
+_CANCEL_OUTCOMES = {
+    "accepted": (
+        "the arms were told to stop",
+        "the commander accepted the cancel, but the gripper finishes its current motion",
+    ),
+    "ended": ("the goal had already ended", "the command had already ended"),
+    "refused": (
+        "the commander refused the cancel, so an arm may still be moving",
+        "the commander refused the cancel, so the gripper may still be moving",
+    ),
+    "unknown": (
+        "the commander does not know the goal, so an arm may still be moving",
+        "the commander does not know the command, so the gripper may still be moving",
+    ),
+    "no answer": (
+        "the commander did not answer the cancel, so an arm may still be moving",
+        "the commander did not answer the cancel, so the gripper may still be moving",
+    ),
+}
+
 
 @dataclass(frozen=True)
 class GripperResult:
@@ -121,10 +165,42 @@ class GripperResult:
     status: str
     # Only for a close, a position at or below GRASP_CLOSE_THRESHOLD. On an
     # open or "half" the commander reports false and 0.0 whatever the
-    # fingers did, so they are None here and cannot be misread.
+    # fingers did, so they are None here and cannot be misread. A close the
+    # commander did not measure, with grasp_detect_enable off, superseded,
+    # or with no finger reading, reports false and 0.0 too, which looks like
+    # a measured empty close.
     grasped: bool | None
     # The settled travel of one finger, in metres.
     gripper_gap: float | None
+
+
+@dataclass(eq=False)
+class _Goal:
+    """A goal sent to the commander, kept until the client knows that it ended."""
+
+    # Such as "the move of left_arm" or "the left_gripper command".
+    what: str
+    # The group it was sent for.
+    group: str
+    client: ActionClient
+    # The send_goal_async future.
+    sent: Future
+    # The get_result_async future, once the goal was accepted.
+    result: Future | None = None
+    # time.monotonic() when the call that sent it gave up on it; None while
+    # that call still waits for it.
+    gave_up_at: float | None = None
+
+    def ended(self) -> bool:
+        """True once its result came, or once it was not accepted."""
+        if self.result is not None:
+            return self.result.done() or self.result.cancelled()
+        if not self.sent.done():
+            return self.sent.cancelled()
+        if self.sent.exception() is not None:
+            return True
+        handle = self.sent.result()
+        return handle is None or not handle.accepted
 
 
 class CommanderClient:
@@ -136,11 +212,14 @@ class CommanderClient:
     against config/robot_model.toml.
 
     Every blocking method raises StepError:
-      - CANCELLED once `cancel` is set, cancelling a running goal;
+      - CANCELLED once `cancel` is set, after asking the commander to cancel
+        a running goal; the message says how it answered;
       - TIMEOUT when the commander does not finish within `timeout_s`, also
-        cancelling the goal;
+        after asking it to cancel the goal;
       - UNAVAILABLE when the commander's server is not there;
-      - PRECONDITION_FAILED when a goal of another call is still running.
+      - PRECONDITION_FAILED while a goal is outstanding: one that another
+        call waits for, or one that an earlier call gave up on and that has
+        not ended.
     A group the agent may not use, or a value that is not a finite number,
     raises ValueError: that is a bug in reviewed code, not something for the
     LLM to retry.
@@ -154,6 +233,14 @@ class CommanderClient:
         self._set_joint_position = ActionClient(node, SetJointPosition, SET_JOINT_POSITION_ACTION)
         self._control_gripper = ActionClient(node, ControlGripper, CONTROL_GRIPPER_ACTION)
         self._node = node
+        # The joints of each arm, as arm_state() counts them: those its
+        # poses set, which are all the joints of its group.
+        self._arm_joints = {
+            arm: frozenset(
+                joint for pose in self.poses.poses.values() for joint in pose.tables.get(arm, {})
+            )
+            for arm in ARMS
+        }
         # Held for the whole of every call.
         self._lock = threading.Lock()
         # What the goal holding the lock does, such as "the move of
@@ -161,11 +248,15 @@ class CommanderClient:
         # refuse a second call at once.
         self._running: str | None = None
         # Guards what the methods remember, which the gaze loop reads from
-        # its own thread while a call holds the call lock.
+        # its own thread while a call holds the call lock, and the goal
+        # record, which done callbacks clear from the executor's threads.
         self._state_lock = threading.Lock()
         self._last_state = ArmsState()
         self._joint_order: dict[str, tuple[str, ...]] = {}
         self._gripper_positions: dict[str, float | None] = dict.fromkeys(GRIPPER_GOAL_GROUPS)
+        # The goal whose end the client does not know yet, or None. One at
+        # most: no call starts while it is set.
+        self._goal: _Goal | None = None
 
     # -- Without waiting ----------------------------------------------------------
 
@@ -177,13 +268,30 @@ class CommanderClient:
             and self._control_gripper.server_is_ready()
         )
 
+    def busy(self) -> str | None:
+        """The goal that keeps the commander from taking a call, or None. Never waits.
+
+        Such as "the move of left_arm" while its call waits for it, or "the
+        move of left_arm from an earlier call" once that call gave up on it
+        and until it ends. Either way it may still move an arm, so the drive
+        check refuses on it (ADR-0025). A running call counts even when the
+        commander is no longer discovered; a goal its call gave up on is
+        abandoned then, or after ABANDON_AFTER_S (_outstanding).
+        """
+        running = self._running
+        if running is not None:
+            return running
+        goal = self._outstanding()
+        return None if goal is None else f"{goal.what} from an earlier call"
+
     @property
     def last_state(self) -> ArmsState:
         """The arms as of the last read, for callers that must not call the commander.
 
-        An arm becomes unknown when a goal for it is sent, and known again
-        with the next read of its joints, so a moving arm is never reported
-        in its old pose. ArmsState() until the first read.
+        An arm becomes unknown when a goal for it is sent or a read of it
+        is not usable, and known again with the next good read of its
+        joints, so a moving arm is never reported in its old pose.
+        ArmsState() until the first read.
         """
         with self._state_lock:
             return self._last_state
@@ -191,10 +299,12 @@ class CommanderClient:
     def last_gripper_position(self, group: str) -> float | None:
         """The position last commanded to `group`, or None when unknown.
 
-        No service reports the gap outside a close, so this is all
-        get_arm_state can say about a gripper. None before the first command,
-        while one runs, and after one was cancelled or timed out, since the
-        fingers may then have stopped anywhere.
+        get_arm_state gives it only when it cannot read the finger. It is
+        the command, not where the fingers went: it is kept also when the
+        commander reports the goal failed, as a close that stalls on an
+        object does. None before the first command, while one runs, and
+        after one was cancelled, timed out or rejected, since the fingers
+        may then have stopped anywhere.
         """
         _check_group(group, GRIPPER_GOAL_GROUPS)
         with self._state_lock:
@@ -210,7 +320,10 @@ class CommanderClient:
         The order is the one /set_joint_position expects for the group, and
         it lacks openarm_right_joint2 when walkie-ros runs with
         right_joint2_fixed. Raises StepError as the class says, and INTERNAL
-        when the commander does not know the group or answers malformed.
+        when the commander does not know the group, answers malformed or
+        gives a position that is not a finite number; the arms of the group
+        are then unknown. An arm of the group whose joints the reading lacks
+        is unknown too.
         """
         _check_group(group, READ_GROUPS)
         deadline = _deadline(timeout_s)
@@ -240,7 +353,14 @@ class CommanderClient:
                     f"The commander's {GET_JOINT_STATES_SERVICE} did not answer within "
                     f"{timeout_s:g} s. {COMMANDER_HINT}",
                 ) from None
-            reading = _reading(group, response)
+            try:
+                reading = _reading(group, response)
+            except StepError as e:
+                if e.code == "INTERNAL":
+                    # The commander answered, but not with positions that
+                    # can be trusted, so the arms may be anywhere.
+                    self._forget_arms(group)
+                raise
             self._remember_reading(group, reading)
             return reading
 
@@ -260,8 +380,22 @@ class CommanderClient:
         return tuple(self.joint_states(group, cancel, timeout_s))
 
     def read_arms(self, cancel: threading.Event, timeout_s: float = READ_TIMEOUT_S) -> ArmsState:
-        """Both arms' named poses from one read of both_arms; see joint_states()."""
+        """Both arms' named poses from one read of both_arms; see joint_states().
+
+        Also raises StepError INTERNAL when the reading lacks a joint of
+        either arm, which is then unknown.
+        """
         reading = self.joint_states(BOTH_ARMS_GROUP, cancel, timeout_s)
+        incomplete = [arm for arm in ARMS if self._missing(arm, reading)]
+        if incomplete:
+            missing = [joint for arm in incomplete for joint in self._missing(arm, reading)]
+            which = "either arm" if len(incomplete) == len(ARMS) else f"the {incomplete[0]} arm"
+            raise StepError(
+                "INTERNAL",
+                f"The commander's reading of {BOTH_ARMS_GROUP} lacks {', '.join(missing)}, so "
+                f"it cannot say where {which} is.",
+                {"missing": missing},
+            )
         return ArmsState.from_joints(reading, self.poses.poses)
 
     # -- Goals ----------------------------------------------------------------
@@ -297,21 +431,24 @@ class CommanderClient:
                 self._set_joint_position,
                 SET_JOINT_POSITION_ACTION,
                 SetJointPosition.Goal(group_name=group, joint_positions=values),
+                group,
                 what,
                 deadline,
                 timeout_s,
                 cancel,
             )
-        if response is None:
-            with self._state_lock:
-                self._joint_order.pop(group, None)
-            raise StepError(
-                "INTERNAL",
-                f"The commander rejected the goal for {group} with {len(values)} positions. "
-                "It rejects a count that differs from the group's joints; the joint order "
-                "is read again on the next call.",
-                {"group": group, "count": len(values)},
-            )
+            if response is None:
+                # Under the call lock, so a newer call's read of the order
+                # is not dropped.
+                with self._state_lock:
+                    self._joint_order.pop(group, None)
+                raise StepError(
+                    "INTERNAL",
+                    f"The commander rejected the goal for {group} with {len(values)} positions. "
+                    "It rejects a count that differs from the group's joints; the joint order "
+                    "is read again on the next call.",
+                    {"group": group, "count": len(values)},
+                )
         result = response.result
         if response.status == GoalStatus.STATUS_SUCCEEDED and result.success:
             return result.status
@@ -341,23 +478,26 @@ class CommanderClient:
                 self._control_gripper,
                 CONTROL_GRIPPER_ACTION,
                 ControlGripper.Goal(group_name=group, position=position),
+                group,
                 what,
                 deadline,
                 timeout_s,
                 cancel,
             )
-        if response is None:
-            raise StepError(
-                "INTERNAL", f"The commander rejected the goal for {group}.", {"group": group}
-            )
-        result = response.result
-        if response.status == GoalStatus.STATUS_CANCELED:
-            raise StepError(
-                "CANCELLED",
-                f"The commander cancelled {what}.",
-                {"group": group, "status": result.status},
-            )
-        self._remember_gripper(group, position)
+            if response is None:
+                raise StepError(
+                    "INTERNAL", f"The commander rejected the goal for {group}.", {"group": group}
+                )
+            result = response.result
+            if response.status == GoalStatus.STATUS_CANCELED:
+                raise StepError(
+                    "CANCELLED",
+                    f"The commander cancelled {what}.",
+                    {"group": group, "status": result.status},
+                )
+            # Under the call lock, so an older call cannot overwrite the
+            # position of a newer one.
+            self._remember_gripper(group, position)
         closed = position <= GRASP_CLOSE_THRESHOLD
         return GripperResult(
             success=response.status == GoalStatus.STATUS_SUCCEEDED and result.success,
@@ -382,16 +522,13 @@ class CommanderClient:
         cancel: threading.Event,
         running: str | None = None,
     ) -> Iterator[None]:
-        """Hold the call lock; `running` names the goal, if the call sends one."""
+        """Hold the call lock; `running` names the goal, if the call sends one.
+
+        Refuses at once while a goal is outstanding (_Goal).
+        """
         while True:
             _check_cancelled(cancel)
-            busy = self._running
-            if busy is not None:
-                raise StepError(
-                    "PRECONDITION_FAILED",
-                    f"Cannot {action} while {busy} is running. Wait for it to finish.",
-                    {"running": busy},
-                )
+            self._check_free(action)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise StepError(
@@ -400,12 +537,32 @@ class CommanderClient:
                 )
             if self._lock.acquire(timeout=min(_POLL_S, remaining)):
                 break
-        self._running = running
         try:
+            # The call that held the lock may have left its goal outstanding.
+            self._check_free(action)
+            self._running = running
             yield
         finally:
             self._running = None
             self._lock.release()
+
+    def _check_free(self, action: str) -> None:
+        """Raises StepError PRECONDITION_FAILED while a goal is outstanding."""
+        running = self._running
+        if running is not None:
+            raise StepError(
+                "PRECONDITION_FAILED",
+                f"Cannot {action} while {running} is running. Wait for it to finish.",
+                {"running": running},
+            )
+        goal = self._outstanding()
+        if goal is not None:
+            raise StepError(
+                "PRECONDITION_FAILED",
+                f"Cannot {action}: {goal.what} from an earlier call has not ended yet. "
+                "Try again in a few seconds.",
+                {"outstanding": goal.what},
+            )
 
     @staticmethod
     def _wait_ready(
@@ -427,42 +584,152 @@ class CommanderClient:
         client: ActionClient,
         name: str,
         goal: Any,
+        group: str,
         what: str,
         deadline: float,
         timeout_s: float,
         cancel: threading.Event,
     ) -> Any | None:
-        """Send `goal` and return its GetResult response, or None when it was rejected."""
+        """Send `goal` and return its GetResult response, or None when it was rejected.
+
+        The goal is outstanding from its send until its end is known, also
+        after this call gives up on a cancel or a timeout (_Goal).
+        """
         self._wait_ready(client.server_is_ready, f"{name} action", deadline, cancel)
-        sent = client.send_goal_async(goal)
+        record = _Goal(what, group, client, client.send_goal_async(goal))
+        with self._state_lock:
+            self._goal = record
         try:
-            handle = _wait(sent, deadline, cancel)
+            return self._wait_goal(record, name, deadline, timeout_s, cancel)
+        finally:
+            self._release(record)
+
+    def _wait_goal(
+        self, goal: _Goal, name: str, deadline: float, timeout_s: float, cancel: threading.Event
+    ) -> Any | None:
+        try:
+            handle = _wait(goal.sent, deadline, cancel)
         except StepError as e:
             # The commander may still accept the goal after this call has
             # given up; it must not then move the arms with nobody waiting.
-            sent.add_done_callback(_cancel_if_accepted)
+            goal.sent.add_done_callback(functools.partial(self._on_late_answer, goal))
             if e.code == "TIMEOUT":
                 logger.warning(
                     f"{name} neither accepted nor rejected a goal within {timeout_s:g} s. "
                     f"{STALE_PIN_HINT}"
                 )
-            outcome = "it is cancelled if the commander accepts it"
-            raise _ended(e, what, timeout_s, outcome) from None
+            # A gripper finishes its motion whatever the cancel.
+            outcome = (
+                "if the commander accepts it later, the gripper still makes that motion"
+                if goal.group in GRIPPER_GOAL_GROUPS
+                else "if the commander accepts it later, it is cancelled at once"
+            )
+            raise _ended(e, goal.what, timeout_s, outcome) from None
         if handle is None or not handle.accepted:
             return None
+        result = handle.get_result_async()
+        with self._state_lock:
+            goal.result = result
+        # Not under the state lock: on a future that is already done, the
+        # callback can run at once, in this thread.
+        result.add_done_callback(functools.partial(self._end_goal, goal))
         try:
-            return _wait(handle.get_result_async(), deadline, cancel)
+            return _wait(result, deadline, cancel)
         except StepError as e:
-            # wait_for_future itself, not _wait: `cancel` may already be set.
-            if wait_for_future(handle.cancel_goal_async(), CANCEL_ANSWER_S) is not None:
-                outcome = "the goal was cancelled"
+            raise _ended(e, goal.what, timeout_s, self._cancel(handle, goal)) from None
+
+    def _cancel(self, handle: Any, goal: _Goal) -> str:
+        """Ask the commander to cancel the goal of `handle`; what its answer means, in words."""
+        # wait_for_future itself, not _wait: `cancel` may already be set.
+        answer = wait_for_future(handle.cancel_goal_async(), CANCEL_ANSWER_S)
+        outcome = _cancel_outcome(answer, handle.goal_id)
+        words = _CANCEL_OUTCOMES[outcome][1 if goal.group in GRIPPER_GOAL_GROUPS else 0]
+        if outcome not in ("accepted", "ended"):
+            logger.warning(f"Cancel of {goal.what}: {words}.")
+        return words
+
+    def _on_late_answer(self, goal: _Goal, sent: Future) -> None:
+        """The commander answered a goal after its call gave up waiting for that answer.
+
+        A done callback, run by the connector's executor, so it must not
+        raise. An accepted goal is cancelled at once, and stays outstanding
+        until its result comes. A gripper goal still finishes its motion.
+        """
+        try:
+            handle = None if sent.cancelled() or sent.exception() is not None else sent.result()
+            if handle is None or not handle.accepted:
+                self._end_goal(goal)
+                return
+            logger.warning(
+                f"The commander accepted {goal.what} after its call gave up; cancelling it."
+            )
+            handle.cancel_goal_async()
+            result = handle.get_result_async()
+            with self._state_lock:
+                goal.result = result
+            result.add_done_callback(functools.partial(self._end_goal, goal))
+        except Exception:
+            logger.exception(f"Could not handle the late answer to {goal.what}.")
+
+    def _end_goal(self, goal: _Goal, _future: Future | None = None) -> None:
+        """Forget `goal`, which has ended. Also a done callback, so it must not raise."""
+        with self._state_lock:
+            if self._goal is goal:
+                self._goal = None
+
+    def _release(self, goal: _Goal) -> None:
+        """As the call that sent `goal` returns: forget it if it ended, else keep it outstanding."""
+        with self._state_lock:
+            if self._goal is not goal:
+                return
+            if goal.ended():
+                self._goal = None
             else:
-                logger.warning(f"The commander did not answer the cancel of {what}.")
-                outcome = "the commander did not confirm the cancel"
-            raise _ended(e, what, timeout_s, outcome) from None
+                goal.gave_up_at = time.monotonic()
+
+    def _outstanding(self) -> _Goal | None:
+        """The goal that a call gave up on and whose end is not known yet, else None.
+
+        Checked when asked, with no timer: forgets the goal once it ended,
+        and abandons it once its action server is no longer discovered or
+        ABANDON_AFTER_S has passed since its call gave up.
+        """
+        with self._state_lock:
+            goal = self._goal
+            # While gave_up_at is None, the call that sent the goal still
+            # holds the call lock, and `_running` names it.
+            if goal is None or goal.gave_up_at is None:
+                return None
+            if goal.ended():
+                self._goal = None
+                return None
+            waited_s = time.monotonic() - goal.gave_up_at
+        if not goal.client.server_is_ready():
+            self._abandon(goal, "its action server is no longer discovered")
+        elif waited_s >= ABANDON_AFTER_S:
+            self._abandon(
+                goal,
+                f"no result came within {ABANDON_AFTER_S:g} s after its call gave up, as when "
+                "the commander restarted",
+            )
+        else:
+            return goal
+        return None
+
+    def _abandon(self, goal: _Goal, reason: str) -> None:
+        with self._state_lock:
+            if self._goal is not goal:
+                return
+            self._goal = None
+        # What the goal moved stays unknown: its call forgot it before the
+        # send, and no read ran since.
+        logger.warning(
+            f"Abandoned {goal.what}: {reason}. Calls to the commander are taken again; "
+            "what it moved is unknown until read or commanded again."
+        )
 
     def _forget_arms(self, group: str) -> None:
-        arms = _GROUP_ARMS[group]
+        arms = _GROUP_ARMS.get(group, ())
         with self._state_lock:
             old = self._last_state
             self._last_state = ArmsState(
@@ -470,16 +737,35 @@ class CommanderClient:
                 right=None if "right" in arms else old.right,
             )
 
+    def _missing(self, arm: str, reading: Mapping[str, float]) -> list[str]:
+        """The joints of `arm` that `reading` lacks, by name.
+
+        openarm_right_joint2 does not count: walkie-ros launched with
+        right_joint2_fixed holds it at 0 and does not list it.
+        """
+        joints = self._arm_joints[arm] - {RIGHT_JOINT2}
+        return sorted(joint for joint in joints if joint not in reading)
+
     def _remember_reading(self, group: str, reading: dict[str, float]) -> None:
-        # A read of one arm's group says nothing about the other arm, which
+        # An arm of the group takes its state from the reading, or becomes
+        # unknown when the reading lacks one of its joints. A read of one
+        # arm's group or of a gripper says nothing about the other arm, which
         # keeps its last state: only this client moves the arms (ADR-0021).
         read = ArmsState.from_joints(reading, self.poses.poses)
+        incomplete = {arm for arm in _GROUP_ARMS.get(group, ()) if self._missing(arm, reading)}
+        covered: dict[str, ArmState | None] = {
+            arm: None if arm in incomplete else read.arm(arm) for arm in _GROUP_ARMS.get(group, ())
+        }
         with self._state_lock:
-            self._joint_order[group] = tuple(reading)
+            # The order of an incomplete reading is not kept, so a later move
+            # reads the order again instead of being refused on it.
+            if incomplete:
+                self._joint_order.pop(group, None)
+            else:
+                self._joint_order[group] = tuple(reading)
             old = self._last_state
             self._last_state = ArmsState(
-                left=read.left if read.left is not None else old.left,
-                right=read.right if read.right is not None else old.right,
+                left=covered.get("left", old.left), right=covered.get("right", old.right)
             )
 
     def _remember_gripper(self, group: str, position: float | None) -> None:
@@ -504,14 +790,21 @@ def _wait(future: Future, deadline: float, cancel: threading.Event) -> Any:
             return result
 
 
-def _cancel_if_accepted(future: Future) -> None:
-    # A done callback, run by the connector's executor.
-    if future.cancelled() or future.exception() is not None:
-        return
-    handle = future.result()
-    if handle is not None and handle.accepted:
-        logger.warning("The commander accepted a goal after its call gave up; cancelling it.")
-        handle.cancel_goal_async()
+def _cancel_outcome(answer: Any, goal_id: Any) -> str:
+    """The key in _CANCEL_OUTCOMES for the commander's answer to a cancel of `goal_id`."""
+    if answer is None:
+        return "no answer"
+    if answer.return_code == CancelGoal.Response.ERROR_GOAL_TERMINATED:
+        return "ended"
+    if answer.return_code == CancelGoal.Response.ERROR_UNKNOWN_GOAL_ID:
+        return "unknown"
+    if answer.return_code == CancelGoal.Response.ERROR_NONE and any(
+        bytes(info.goal_id.uuid) == bytes(goal_id.uuid) for info in answer.goals_canceling
+    ):
+        return "accepted"
+    # An rclcpp server, such as the commander's, answers a refused cancel
+    # ERROR_REJECTED; an rclpy server answers ERROR_NONE without the goal.
+    return "refused"
 
 
 def _ended(error: StepError, what: str, timeout_s: float, outcome: str) -> StepError:
@@ -565,7 +858,18 @@ def _reading(group: str, response: Any) -> dict[str, float]:
             f"The commander answered {len(names)} joint names and {len(positions)} "
             f"positions for {group}.",
         )
-    return {name: float(position) for name, position in zip(names, positions, strict=True)}
+    reading = {name: float(position) for name, position in zip(names, positions, strict=True)}
+    # A NaN would pass the pose match's tolerance check, since every
+    # comparison with it is false.
+    bad = {name: value for name, value in reading.items() if not math.isfinite(value)}
+    if bad:
+        listed = ", ".join(f"{name} = {value}" for name, value in bad.items())
+        raise StepError(
+            "INTERNAL",
+            f"The commander's reading of {group} is not usable: {listed}.",
+            {"joints": list(bad)},
+        )
+    return reading
 
 
 def _check_cancelled(cancel: threading.Event) -> None:

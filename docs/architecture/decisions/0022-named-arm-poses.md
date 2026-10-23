@@ -46,7 +46,9 @@ Named poses live agent-side in `config/arm_poses.toml`:
   states and of `joint_limits.yaml`, generated from the pinned walkie-ros
   commit by `scripts/snapshot_robot_model.py`. A test regenerates it from
   the pinned clone and fails when it drifts, and another fails when a table
-  that names an SRDF state no longer matches it.
+  that names an SRDF state no longer matches it. Without the clone the
+  first test is skipped, except in CI, where it fails. The script stops on
+  a group or a group state inside a xacro element it does not resolve.
 - At run time, the joint order comes from `/get_joint_states`, which returns
   the group's joint names in the order the commander expects. If it lists
   no `openarm_right_joint2` (`right_joint2_fixed`), the tool drops that

@@ -8,13 +8,17 @@ them.
 """
 
 import logging
+import math
 import threading
 import time
 from pathlib import Path
 
 import pytest
+from action_msgs.msg import GoalInfo
+from action_msgs.srv import CancelGoal
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
+from unique_identifier_msgs.msg import UUID
 
 from walkie_agent.arm import commander as commander_module
 from walkie_agent.arm.commander import CommanderClient
@@ -155,6 +159,82 @@ def test_a_slow_read_times_out(client, fake_commander, caplog):
     assert client.read_arms(NO_CANCEL).travel_safe is True
 
 
+@pytest.mark.parametrize("value", [math.nan, math.inf, -math.inf], ids=["nan", "inf", "-inf"])
+def test_a_reading_that_is_not_a_number_is_internal_and_forgets_the_arms(
+    client, fake_commander, value
+):
+    client.read_arms(NO_CANCEL)
+    # Every other joint at home but joint4 far off: a NaN passes every
+    # tolerance check, so a match that let it through would call the arm home.
+    fake_commander.teleport({"openarm_left_joint1": value, "openarm_left_joint4": 2.0})
+
+    with pytest.raises(StepError) as error:
+        client.read_arms(NO_CANCEL)
+
+    assert error.value.code == "INTERNAL"
+    assert error.value.message == (
+        f"The commander's reading of both_arms is not usable: openarm_left_joint1 = {value}."
+    )
+    assert error.value.data == {"joints": ["openarm_left_joint1"]}
+    assert client.last_state == ArmsState()
+    # A read of the other arm alone says nothing about this one.
+    client.joint_states("right_arm", NO_CANCEL)
+    assert client.last_state == ArmsState(right=ArmState("home", True))
+
+
+def test_a_reading_that_lacks_an_arms_joints_is_internal_and_forgets_that_arm(
+    client, fake_commander, model
+):
+    home = client.read_arms(NO_CANCEL)
+    # Only the left arm's joints, as in a malformed answer.
+    fake_commander.missing_joints = set(model.groups["right_arm"])
+    # openarm_right_joint2 is not missed: right_joint2_fixed leaves it out.
+    missing = sorted(set(model.groups["right_arm"]) - {RIGHT_JOINT2})
+
+    with pytest.raises(StepError) as error:
+        client.read_arms(NO_CANCEL)
+
+    assert error.value.code == "INTERNAL"
+    assert error.value.message == (
+        f"The commander's reading of both_arms lacks {', '.join(missing)}, so it cannot say "
+        "where the right arm is."
+    )
+    assert error.value.data == {"missing": missing}
+    assert client.last_state == ArmsState(left=home.left, right=None)
+
+    # A read of one arm that lacks a joint forgets that arm, and keeps the other.
+    fake_commander.missing_joints = {"openarm_left_joint3"}
+    assert "openarm_left_joint3" not in client.joint_states("left_arm", NO_CANCEL)
+    assert client.last_state == ArmsState()
+    client.joint_states("right_arm", NO_CANCEL)
+    assert client.last_state == ArmsState(right=home.right)
+
+    fake_commander.missing_joints = {"openarm_left_joint3", "openarm_right_joint5"}
+    with pytest.raises(StepError) as error:
+        client.read_arms(NO_CANCEL)
+    assert error.value.message == (
+        "The commander's reading of both_arms lacks openarm_left_joint3, openarm_right_joint5, "
+        "so it cannot say where either arm is."
+    )
+    assert client.last_state == ArmsState()
+
+
+def test_the_joint_order_of_a_reading_that_lacks_a_joint_is_not_kept(
+    client, fake_commander, model
+):
+    fake_commander.missing_joints = {"openarm_left_joint3"}
+    client.joint_states("left_arm", NO_CANCEL)
+    fake_commander.missing_joints = set()
+    requests = len(fake_commander.joint_state_requests)
+
+    # Read again, not taken from the incomplete reading.
+    assert set(client.joint_names("left_arm", NO_CANCEL)) == set(model.groups["left_arm"])
+    assert len(fake_commander.joint_state_requests) == requests + 1
+    # A complete reading is kept.
+    client.joint_names("left_arm", NO_CANCEL)
+    assert len(fake_commander.joint_state_requests) == requests + 1
+
+
 # -- Joint goals ------------------------------------------------------------------
 
 
@@ -259,27 +339,267 @@ def test_a_goal_never_answered_times_out_and_is_cancelled(client, fake_commander
 
     assert error.value.code == "TIMEOUT"
     assert error.value.message == (
-        "The move of left_arm did not finish within 0.5 s; the goal was cancelled."
+        "The move of left_arm did not finish within 0.5 s; the arms were told to stop."
     )
     assert time.monotonic() - start < 1.0
     assert fake_commander.cancel_requests == 1
     assert wait_until(lambda: fake_commander.results == [("left_arm", "Execution Failed")])
+    assert wait_until(lambda: client.busy() is None)
 
 
-def test_a_goal_accepted_after_its_timeout_is_cancelled(client, fake_commander, poses, caplog):
+def refused(call) -> StepError:
+    with pytest.raises(StepError) as error:
+        call()
+    assert error.value.code == "PRECONDITION_FAILED"
+    return error.value
+
+
+def test_a_goal_accepted_after_its_call_gave_up_holds_off_every_call_until_it_ends(
+    client, fake_commander, poses, caplog
+):
     client.joint_names("left_arm", NO_CANCEL)
+    before = fake_commander.joints()
     fake_commander.accept_delay_s = 0.5
+    fake_commander.plan_time_s = 0.5
+    calls = (
+        lambda: client.read_arms(NO_CANCEL),
+        lambda: client.control_gripper("left_gripper", 0.0, NO_CANCEL),
+    )
 
     with caplog.at_level(logging.WARNING, logger=commander_module.__name__):
         with pytest.raises(StepError) as error:
             move(client, "left_arm", table(poses, "standby", "left"), timeout_s=0.2)
 
+        assert error.value.code == "TIMEOUT"
+        assert error.value.message == (
+            "The move of left_arm did not finish within 0.2 s; if the commander accepts it "
+            "later, it is cancelled at once."
+        )
+        assert commander_module.STALE_PIN_HINT in caplog.text
+        # Not answered yet: the commander may still accept it and move the arm.
+        assert client.busy() == "the move of left_arm from an earlier call"
+        for call in calls:
+            assert refused(call).message.endswith(
+                ": the move of left_arm from an earlier call has not ended yet. "
+                "Try again in a few seconds."
+            )
+        # Accepted, and cancelled at once; still refused until its result.
+        assert wait_until(lambda: fake_commander.cancel_requests == 1)
+        for call in calls:
+            refused(call)
+        assert wait_until(lambda: client.busy() is None)
+
+    assert "accepted the move of left_arm after its call gave up" in caplog.text
+    # Cancelled while it planned, so the arm never moved.
+    assert fake_commander.results == [("left_arm", "Canceled")]
+    assert fake_commander.joints() == before
+    assert fake_commander.gripper_goals == []
+    assert client.read_arms(NO_CANCEL).left == ArmState("home", True)
+
+
+def test_a_gripper_goal_accepted_after_its_call_gave_up_still_moves_the_fingers(
+    client, fake_commander
+):
+    fake_commander.accept_delay_s = 0.5
+
+    with pytest.raises(StepError) as error:
+        client.control_gripper("left_gripper", 0.0, NO_CANCEL, timeout_s=0.2)
+
     assert error.value.code == "TIMEOUT"
-    assert error.value.message.endswith("; it is cancelled if the commander accepts it.")
-    assert commander_module.STALE_PIN_HINT in caplog.text
-    # Nobody waits for it any more, so it must not move the arm to the end.
-    assert wait_until(lambda: fake_commander.cancel_requests == 1)
+    assert error.value.message == (
+        "The left_gripper command did not finish within 0.2 s; if the commander accepts it "
+        "later, the gripper still makes that motion."
+    )
+    assert client.busy() == "the left_gripper command from an earlier call"
+    # Accepted and cancelled, but the fingers finish their ramp first.
+    assert wait_until(lambda: client.busy() is None)
+    assert fake_commander.cancel_requests == 1
+    assert fake_commander.results == [("left_gripper", "Canceled")]
+    assert fake_commander.joints()["openarm_left_finger_joint1"] == 0.0
+
+
+def test_a_goal_whose_result_never_comes_is_abandoned_after_the_limit(
+    client, fake_commander, poses, monkeypatch, caplog
+):
+    # As when the commander restarted: its servers are still discovered,
+    # but the old goal's result never comes.
+    monkeypatch.setattr(commander_module, "ABANDON_AFTER_S", 0.5)
+    fake_commander.move_time_s = 5.0
+    fake_commander.result_delay_s = math.inf
+    client.joint_names("left_arm", NO_CANCEL)
+
+    with pytest.raises(StepError) as error:
+        move(client, "left_arm", table(poses, "standby", "left"), timeout_s=0.3)
+    gave_up_at = time.monotonic()
+
+    assert error.value.message == (
+        "The move of left_arm did not finish within 0.3 s; the arms were told to stop."
+    )
     assert wait_until(lambda: fake_commander.results == [("left_arm", "Execution Failed")])
+    refused(lambda: client.read_arms(NO_CANCEL))
+    with caplog.at_level(logging.WARNING, logger=commander_module.__name__):
+        assert wait_until(lambda: client.busy() is None)
+    assert time.monotonic() - gave_up_at >= 0.5
+    assert (
+        "Abandoned the move of left_arm: no result came within 0.5 s after its call gave up"
+        in caplog.text
+    )
+    # Stopped part way, which the next read shows.
+    assert client.read_arms(NO_CANCEL).left == ArmState(None, False)
+
+
+def test_a_goal_whose_server_vanishes_is_abandoned(
+    client, fake_commander, poses, monkeypatch, caplog
+):
+    fake_commander.never_answer = True
+    fake_commander.reject_cancels = True
+    client.joint_names("left_arm", NO_CANCEL)
+
+    with pytest.raises(StepError) as error:
+        move(client, "left_arm", table(poses, "standby", "left"), timeout_s=0.3)
+
+    assert error.value.code == "TIMEOUT"
+    refused(lambda: client.read_arms(NO_CANCEL))
+    assert client.busy() == "the move of left_arm from an earlier call"
+
+    with caplog.at_level(logging.WARNING, logger=commander_module.__name__):
+        fake_commander.vanish()
+        assert wait_until(lambda: client.busy() is None)
+    assert (
+        "Abandoned the move of left_arm: its action server is no longer discovered"
+        in caplog.text
+    )
+    # Taken again, and failing as without a commander.
+    monkeypatch.setattr(commander_module, "READY_WAIT_S", 0.2)
+    with pytest.raises(StepError) as error:
+        client.read_arms(NO_CANCEL)
+    assert error.value.code == "UNAVAILABLE"
+
+
+class _LockThatAnotherCallTakesFirst:
+    """The call lock, taken once by another call while the first acquire() waits.
+
+    That call leaves its goal outstanding, so a call that passed the check
+    before it waited for the lock must check again once it holds it.
+    """
+
+    def __init__(self, client, other_call):
+        self._client = client
+        self._lock = client._lock
+        self._other_call = other_call
+
+    def acquire(self, timeout=-1):
+        self._client._lock = self._lock
+        with pytest.raises(StepError) as error:
+            self._other_call()
+        assert error.value.code == "TIMEOUT"
+        return self._lock.acquire(timeout=timeout)
+
+
+def test_a_call_that_waited_for_the_lock_is_refused_once_it_holds_it(
+    client, fake_commander, poses, monkeypatch
+):
+    fake_commander.never_answer = True
+    fake_commander.reject_cancels = True
+    client.joint_names("left_arm", NO_CANCEL)
+
+    def other_move():
+        move(client, "left_arm", table(poses, "standby", "left"), timeout_s=0.3)
+
+    monkeypatch.setattr(client, "_lock", _LockThatAnotherCallTakesFirst(client, other_move))
+
+    error = refused(lambda: client.read_arms(NO_CANCEL))
+
+    assert error.message == (
+        "Cannot read the joints of both_arms: the move of left_arm from an earlier call has not "
+        "ended yet. Try again in a few seconds."
+    )
+    assert fake_commander.joint_state_requests == ["left_arm"]
+
+
+def test_a_refused_cancel_says_the_arm_may_still_move(client, fake_commander, poses, caplog):
+    fake_commander.move_time_s = 1.0
+    fake_commander.reject_cancels = True
+    client.joint_names("left_arm", NO_CANCEL)
+
+    with caplog.at_level(logging.WARNING, logger=commander_module.__name__):
+        with pytest.raises(StepError) as error:
+            move(client, "left_arm", table(poses, "standby", "left"), timeout_s=0.3)
+
+    assert error.value.message == (
+        "The move of left_arm did not finish within 0.3 s; the commander refused the cancel, "
+        "so an arm may still be moving."
+    )
+    assert "Cancel of the move of left_arm: the commander refused the cancel" in caplog.text
+    assert fake_commander.cancel_requests == 1
+    assert client.busy() == "the move of left_arm from an earlier call"
+    # The move went on to its end.
+    assert wait_until(lambda: client.busy() is None)
+    assert fake_commander.results == [("left_arm", "Success")]
+    assert client.read_arms(NO_CANCEL).left == ArmState("standby", False)
+
+
+def test_a_cancel_after_the_goal_ended_says_so(client, fake_commander, poses):
+    # The move ends at 0.2 s, but its result is only sent at 1.2 s.
+    fake_commander.result_delay_s = 1.0
+    client.joint_names("left_arm", NO_CANCEL)
+
+    with pytest.raises(StepError) as error:
+        move(client, "left_arm", table(poses, "standby", "left"), timeout_s=0.5)
+
+    assert error.value.message == (
+        "The move of left_arm did not finish within 0.5 s; the goal had already ended."
+    )
+    # The commander answers ERROR_GOAL_TERMINATED without calling its
+    # cancel callback.
+    assert fake_commander.cancel_requests == 0
+    assert client.busy() == "the move of left_arm from an earlier call"
+    assert wait_until(lambda: client.busy() is None)
+    assert fake_commander.results == [("left_arm", "Success")]
+
+
+def test_an_unanswered_cancel_says_the_arm_may_still_move(
+    client, fake_commander, poses, monkeypatch
+):
+    monkeypatch.setattr(commander_module, "CANCEL_ANSWER_S", 0.2)
+    fake_commander.move_time_s = 2.0
+    fake_commander.cancel_delay_s = 0.5
+    client.joint_names("left_arm", NO_CANCEL)
+    start = time.monotonic()
+
+    with pytest.raises(StepError) as error:
+        move(client, "left_arm", table(poses, "standby", "left"), timeout_s=0.3)
+
+    assert error.value.message == (
+        "The move of left_arm did not finish within 0.3 s; the commander did not answer the "
+        "cancel, so an arm may still be moving."
+    )
+    assert time.monotonic() - start < 0.8
+    assert client.busy() == "the move of left_arm from an earlier call"
+    # The late answer stops the arm.
+    assert wait_until(lambda: client.busy() is None)
+    assert fake_commander.results == [("left_arm", "Execution Failed")]
+
+
+GOAL_ID = UUID(uuid=list(range(16)))
+OTHER_ID = UUID(uuid=list(range(1, 17)))
+
+
+@pytest.mark.parametrize(
+    ("answer", "outcome"),
+    [
+        (CancelGoal.Response(goals_canceling=[GoalInfo(goal_id=GOAL_ID)]), "accepted"),
+        # An rclpy server's refusal, and an rclcpp server's.
+        (CancelGoal.Response(), "refused"),
+        (CancelGoal.Response(goals_canceling=[GoalInfo(goal_id=OTHER_ID)]), "refused"),
+        (CancelGoal.Response(return_code=CancelGoal.Response.ERROR_REJECTED), "refused"),
+        (CancelGoal.Response(return_code=CancelGoal.Response.ERROR_UNKNOWN_GOAL_ID), "unknown"),
+        (CancelGoal.Response(return_code=CancelGoal.Response.ERROR_GOAL_TERMINATED), "ended"),
+        (None, "no answer"),
+    ],
+)
+def test_the_cancel_outcome_follows_the_commanders_answer(answer, outcome):
+    assert commander_module._cancel_outcome(answer, GOAL_ID) == outcome
 
 
 def test_a_cancel_mid_move_ends_the_goal_promptly(client, fake_commander, poses):
@@ -298,7 +618,7 @@ def test_a_cancel_mid_move_ends_the_goal_promptly(client, fake_commander, poses)
 
     assert error.value.code == "CANCELLED"
     assert error.value.message == (
-        "A stop or a reset interrupted the move of left_arm; the goal was cancelled."
+        "A stop or a reset interrupted the move of left_arm; the arms were told to stop."
     )
     assert returned_at - cancelled_at[0] < 0.5
     assert fake_commander.cancel_requests == 1
@@ -430,11 +750,46 @@ def test_a_gripper_goal_never_answered_times_out(client, fake_commander):
 
     assert error.value.code == "TIMEOUT"
     assert error.value.message == (
-        "The left_gripper command did not finish within 0.3 s; the goal was cancelled."
+        "The left_gripper command did not finish within 0.3 s; the commander accepted the "
+        "cancel, but the gripper finishes its current motion."
     )
     # Stopped somewhere unknown.
     assert client.last_gripper_position("left_gripper") is None
     assert wait_until(lambda: fake_commander.results[-1:] == [("left_gripper", "Canceled")])
+
+
+def test_an_older_gripper_call_cannot_overwrite_the_position_of_a_newer_one(client, monkeypatch):
+    remember = client._remember_gripper
+    paused = threading.Event()
+    resume = threading.Event()
+
+    def remember_slowly(group, position):
+        # The close's result, kept back until the main thread has tried
+        # its own command.
+        if position == 0.0:
+            paused.set()
+            assert resume.wait(5.0)
+        remember(group, position)
+
+    monkeypatch.setattr(client, "_remember_gripper", remember_slowly)
+    older = threading.Thread(
+        target=lambda: client.control_gripper("left_gripper", 0.0, NO_CANCEL)
+    )
+    older.start()
+    assert paused.wait(5.0)
+
+    # The older call still holds the call lock while it records the close.
+    try:
+        with pytest.raises(StepError) as error:
+            client.control_gripper("left_gripper", 0.044, NO_CANCEL)
+    finally:
+        resume.set()
+        older.join(timeout=5)
+
+    assert error.value.code == "PRECONDITION_FAILED"
+    assert client.last_gripper_position("left_gripper") == 0.0
+    client.control_gripper("left_gripper", 0.044, NO_CANCEL)
+    assert client.last_gripper_position("left_gripper") == 0.044
 
 
 # -- Availability and arguments -----------------------------------------------------

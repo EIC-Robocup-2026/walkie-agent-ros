@@ -9,30 +9,62 @@ The commander's result can be misleading:
 
 - In plan-only mode it reports success with status `"Plan Only"` and does not
   move.
-- A cancel during execution is reported as ABORTED `"Execution Failed"`.
+- A cancel during execution is reported as ABORTED `"Execution Failed"`,
+  and a cancel during planning as CANCELED `"Canceled"`. Either way the
+  result does not say where the arms stopped.
+- A close it did not measure, with grasp detection off or before its first
+  finger reading, reports `grasped` false and a gap of 0, whatever the
+  fingers hold.
 
-The gripper's `grasped` flag can also be wrong. If the gripper controller is
+A reading can mislead as well. A position that is not a number passes a
+tolerance check, since every comparison with NaN is false, and a reading
+that lacks an arm's joints says nothing about that arm. The gripper's
+`grasped` flag can also be wrong. If the gripper controller is
 down, the commander reports a failure with the fingers still open, and that
 gap falls inside the "holding" band. LLMs tend to believe whatever a tool
 returns.
+
+`/get_joint_states` also answers for the gripper groups. Each has one
+joint, the finger whose travel the commander's grasp detection reads.
 
 **Decision**
 
 - After every arm goal, the tool reads `/get_joint_states` for the group and
   requires every joint to be within 0.05 rad of the target. Otherwise it
   reports failure, naming the joint that is off.
+- A reading is used only when every position is a finite number. Otherwise
+  the read fails with `INTERNAL`, and the arms it covers become unknown. An
+  arm whose joints a reading lacks becomes unknown too, and the read of
+  both arms' poses that `get_arm_state` and the drive check use then fails
+  with `INTERNAL`. Only a read of one arm or a gripper leaves the other
+  arm's state as it was.
 - Every arm tool ends its answer with the arm state: "safe for driving",
   "not safe for driving" or "state unknown".
-- `set_gripper` reports "holding" only when `grasped` is true and the finger
-  gap is clearly below fully open. The detection band is calibrated on the
-  competition objects.
+- A move that reports `"Plan Only"` never says the arms moved. When the
+  check passes, the answer says the arms were already in the pose; when it
+  fails, it says the commander runs in plan-only mode.
+- An open or a "half" that the commander reports failed is a failure. After
+  a close, `set_gripper` reads the finger. Within 4 mm of fully open, the
+  gripper did not close. Otherwise it reports "holding" from `grasped` when
+  the commander's gap is within 2 mm of the read, and from the commander's
+  default detection band applied to the read when it is not. When the
+  finger cannot be read, it says that it cannot tell. The detection band is
+  calibrated on the competition objects.
+- `get_arm_state` reads both fingers, and names each gripper closed, half
+  open or open, with the gap. Only when a read fails does it give the last
+  command instead.
 
 **Consequences**
 
 - The LLM gets what the robot actually did, not what the commander reported.
-- Each motion costs one extra service call, bounded at 3 s.
+- Each motion and each close costs one extra service call, bounded at 3 s,
+  and `get_arm_state` makes three.
 - `/get_joint_states` calls MoveIt's `getCurrentState()`. A comment in the
   commander says that call is not thread-safe, and that concurrent calls
   crash the node. Until that is checked, the agent reads joint states only
-  when no goal is running, and `get_arm_state` refuses during motion.
+  when no goal is running, and `get_arm_state` refuses during motion. A
+  goal whose call gave up, after a timeout or a cancel, still counts until
+  the commander reports that it ended. The client stops waiting for that
+  report once the commander's action server is no longer discovered, or
+  60 s after the call gave up.
 <!-- --8<-- [end:body] -->

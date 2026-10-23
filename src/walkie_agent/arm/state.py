@@ -4,10 +4,12 @@ Each arm is matched on its own, since a pose can move one arm alone
 (ADR-0022). An arm is in a pose when every joint of the pose's table for that
 arm is within MATCH_TOLERANCE_RAD of the reading: the tolerance
 move_arm_to_pose checks after a move, so an arm that a move left within it
-counts as arrived. The robot may drive only while both arms are in
-travel-safe poses.
+counts as arrived. A joint the reading lacks, or gives as a value that is not
+a finite number, matches nothing. The robot may drive only while both arms
+are in travel-safe poses.
 """
 
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -22,23 +24,40 @@ NOT_SAFE_SENTENCE = "Arms: not safe for driving."
 UNKNOWN_SENTENCE = "Arms: state unknown."
 
 
+def unread_joints(table: Mapping[str, float], joints: Mapping[str, float]) -> list[str]:
+    """The joints of `table` that the reading `joints` gives no usable position for, by name.
+
+    A joint is unread when the reading lacks it, or gives a value that is not
+    a finite number. A NaN would otherwise pass every tolerance check, since
+    every comparison with it is false. The one exception is
+    openarm_right_joint2 at 0, when the reading lacks it: walkie-ros launched
+    with right_joint2_fixed holds that joint at 0, and /get_joint_states does
+    not list it.
+    """
+    return sorted(
+        joint
+        for joint, target in table.items()
+        if not (joint in joints and math.isfinite(joints[joint]))
+        and not (joint == RIGHT_JOINT2 and target == 0.0 and joint not in joints)
+    )
+
+
 def worst_joint(
     table: Mapping[str, float], joints: Mapping[str, float]
 ) -> tuple[str, float] | None:
     """The joint of `table` furthest from the reading `joints`, and how far, in radians.
 
-    None when the reading lacks a joint of the table, since the reading then
-    cannot tell where that joint is. The one exception is openarm_right_joint2
-    at 0: walkie-ros launched with right_joint2_fixed holds that joint at 0,
-    and /get_joint_states does not list it. None as well when nothing is left
-    to compare.
+    None when the reading gives no usable position for a joint of the table
+    (unread_joints), since the reading then cannot tell where that joint is.
+    None as well when nothing is left to compare.
     """
+    if unread_joints(table, joints):
+        return None
     worst: tuple[str, float] | None = None
     for joint, target in table.items():
         if joint not in joints:
-            if joint == RIGHT_JOINT2 and target == 0.0:
-                continue
-            return None
+            # openarm_right_joint2 at 0, which right_joint2_fixed holds there.
+            continue
         error = abs(float(joints[joint]) - target)
         if worst is None or error > worst[1]:
             worst = (joint, error)
@@ -49,9 +68,10 @@ def match_pose(arm: str, joints: Mapping[str, float], poses: Mapping[str, ArmPos
     """The name of the pose `arm` is in, or None when it is in none.
 
     `arm` is "left" or "right", and `joints` a reading by joint name, which
-    may hold the other arm's joints too. When several poses match, the one
-    with the smallest largest joint error wins; on a tie, the first in
-    `poses`.
+    may hold the other arm's joints too. A pose matches only when the reading
+    gives every joint of its table as a finite number (worst_joint). When
+    several poses match, the one with the smallest largest joint error wins;
+    on a tie, the first in `poses`.
     """
     best: tuple[float, str] | None = None
     for name, pose in poses.items():

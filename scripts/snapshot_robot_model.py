@@ -10,7 +10,8 @@ Reads a walkie-ros checkout, never changing it, and writes the file named by
   left_arm, right_arm and both_arms. The SRDF is a xacro file: its
   `<xacro:unless value="$(arg right_joint2_fixed)">` wrappers are removed and
   their content kept, which is the SRDF with right_joint2_fixed at its default,
-  false, as real_omnibot.launch.py launches it.
+  false, as real_omnibot.launch.py launches it. A group or a group state
+  inside any other xacro element, at any depth, stops the script.
 - From .../config/joint_limits.yaml, min_position and max_position of every
   joint of those groups. MoveIt enforces these, not the URDF's: they widen
   joints 4 and 7 by 0.02 rad, and some presets need that margin.
@@ -48,11 +49,14 @@ STATE_GROUPS = ("left_arm", "right_arm", "both_arms")
 LIFT_SUFFIX = "_lift"
 
 XACRO = "{http://www.ros.org/wiki/xacro}"
-# The one xacro condition the SRDF uses. Its content is kept, as when the arg
-# is false. Any other condition stops the script: keeping or dropping its
-# content would be a guess.
+# The one xacro condition the SRDF uses, around a joint of a group state. Its
+# content is kept, as when the arg is false. Any other condition stops the
+# script: keeping or dropping its content would be a guess.
 KEPT_CONDITION = ("unless", "$(arg right_joint2_fixed)")
 CONDITION_ARG = "right_joint2_fixed"
+# The SRDF elements that hold what the script reads: the groups, with their
+# joints, and the group states.
+READ_TAGS = ("group", "group_state")
 
 BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -69,7 +73,33 @@ def parse_srdf(path: Path) -> ET.Element:
                 f"{path}: {CONDITION_ARG} defaults to {arg.get('default')!r}, not 'false'; "
                 "the snapshot keeps the joints the condition removes only when it is false."
             )
+    check_enclosing(root, path)
     return root
+
+
+def check_enclosing(root: ET.Element, path: Path) -> None:
+    """Fail on a group or a group state that a xacro element encloses, at any depth.
+
+    xacro keeps or drops such an element by a value the script does not
+    evaluate, so reading it or skipping it would be a guess. The elements
+    inside a group or a group state are checked where they are read.
+    ElementTree keeps no link from an element to its parent, so the links are
+    mapped first.
+    """
+    parents = {child: parent for parent in root.iter() for child in parent}
+    # In document order, so an element is named before the elements inside it.
+    for element in root.iter():
+        if element.tag not in READ_TAGS:
+            continue
+        parent = parents.get(element)
+        while parent is not None:
+            if parent.tag.startswith(XACRO):
+                raise SnapshotError(
+                    f"{path}: <{tag(element)}> {element.attrib} is inside <{tag(parent)}> "
+                    f"{parent.attrib}. The snapshot resolves only the {CONDITION_ARG} "
+                    "wrappers inside group states, so it cannot tell whether xacro keeps it."
+                )
+            parent = parents.get(parent)
 
 
 def tag(element: ET.Element) -> str:
@@ -106,9 +136,12 @@ def read_value(text: str | None, where: str) -> float:
 
 
 def read_states(root: ET.Element) -> dict[str, dict[str, dict[str, float]]]:
-    """Every group state, as group -> state -> joint -> value, in the SRDF's order."""
+    """Every group state, as group -> state -> joint -> value, in the SRDF's order.
+
+    Only the children of <robot>, the group states MoveIt reads.
+    """
     states: dict[str, dict[str, dict[str, float]]] = {}
-    for state in root.iter("group_state"):
+    for state in root.findall("group_state"):
         group, name = state.get("group", ""), state.get("name", "")
         where = f"group_state {name!r} of {group!r}"
         if name in states.get(group, {}):

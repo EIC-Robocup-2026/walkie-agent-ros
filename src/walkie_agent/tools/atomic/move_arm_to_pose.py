@@ -4,19 +4,29 @@ The pose's joint tables go to the commander's /set_joint_position in the
 order its /get_joint_states gives for the group, so a commander that lists
 its joints in another order, or without openarm_right_joint2, still gets the
 right values. A reported success is not trusted: the joints are read after
-every move and compared with the pose, which also catches the commander's
-"Plan Only", where nothing moved.
+every move and compared with the pose. In the commander's plan-only mode it
+reports success with "Plan Only" and moves nothing, so the answer never says
+the arms moved: it says they were already in the pose, or fails.
 """
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from walkie_agent.arm.commander import CommanderClient
 from walkie_agent.arm.poses import ARM_GROUPS, ARMS, BOTH, BOTH_ARMS_GROUP, RIGHT_JOINT2, ArmPose
-from walkie_agent.arm.state import MATCH_TOLERANCE_RAD, worst_joint
+from walkie_agent.arm.state import MATCH_TOLERANCE_RAD, unread_joints, worst_joint
 from walkie_agent.toolbox import Effect, StepError, ToolContext, ToolMeta, ToolOutput
 from walkie_agent.tools.atomic import _arm as shared
+
+# The commander's status for a success in plan-only mode, where nothing moved.
+PLAN_ONLY = "Plan Only"
+PLAN_ONLY_TEXT = "The commander runs in plan-only mode, so it moved nothing"
+# What to do about it: the commander reads plan_only once, at startup.
+PLAN_ONLY_NEXT = (
+    "No arm can move until the commander restarts without plan_only, so tell the person "
+    "instead of trying again."
+)
 
 META = ToolMeta(
     name="move_arm_to_pose",
@@ -52,7 +62,7 @@ class Out(ToolOutput):
     arm: str
     # The commander's status: "Success", or "Plan Only" when the commander runs
     # with plan_only and planned without moving; the joint check then fails
-    # unless the arms were already in the pose.
+    # unless the arms were already in the pose, and the answer says so.
     status: str
     # The largest joint error after the move, in radians.
     max_error_rad: float
@@ -108,43 +118,63 @@ def run(ctx: ToolContext, args: Args) -> Out:
         if e.code == "CANCELLED" and ctx.cancel.is_set():
             raise StepError("CANCELLED", shared.STOPPED) from None
         # A move that cannot be checked counts as failed (ADR-0024).
-        raise StepError(
-            "POSTCONDITION",
-            f"The commander reported success, but the joints could not be read to check "
-            f"the move to {name!r}: {e.message} Treat this as a failure. "
-            f"{client.last_state.sentence()}",
+        raise _unchecked(
+            status,
+            f"the arms could not be checked against {name!r}: {shared.full_stop(e.message)}",
+            client.last_state.sentence(),
             {"pose": name, "status": status, "read_error": e.code},
         ) from None
 
     sentence = client.last_state.sentence()
-    reported = "The commander reported success" + (" (Plan Only)" if status == "Plan Only" else "")
     worst = worst_joint(targets, reading)
     if worst is None:
-        missing = sorted(joint for joint in targets if joint not in reading)
-        raise StepError(
-            "POSTCONDITION",
-            f"{reported}, but the commander's reading lacks {', '.join(missing)}, so the move "
-            f"to {name!r} cannot be checked. Treat this as a failure. {sentence}",
+        missing = unread_joints(targets, reading)
+        raise _unchecked(
+            status,
+            f"its reading lacks a usable position for {', '.join(missing)}, so the arms "
+            f"cannot be checked against {name!r}.",
+            sentence,
             {"pose": name, "status": status, "missing": missing},
         )
     joint, error = worst
     if error > MATCH_TOLERANCE_RAD:
-        raise StepError(
-            "POSTCONDITION",
-            f"{reported}, but {joint} is {error:.2f} rad from {name!r}. Treat this as a "
-            f"failure. {sentence}",
+        raise _unchecked(
+            status,
+            f"{joint} is {error:.2f} rad from {name!r}.",
+            sentence,
             {"pose": name, "status": status, "joint": joint, "error_rad": error},
         )
 
-    moved = f"Moved to {name!r}." if args.arm == BOTH else f"Moved the {args.arm} arm to {name!r}."
+    if status == PLAN_ONLY:
+        # Nothing moved, so the check passed because the arms were already there.
+        where = (
+            f"Already at {name!r}."
+            if args.arm == BOTH
+            else f"The {args.arm} arm is already at {name!r}."
+        )
+        summary = f"{where} {PLAN_ONLY_TEXT}. {sentence}"
+    else:
+        moved = (
+            f"Moved to {name!r}." if args.arm == BOTH else f"Moved the {args.arm} arm to {name!r}."
+        )
+        summary = f"{moved} {sentence}"
     return Out(
-        summary=f"{moved} {sentence}",
+        summary=summary,
         pose=name,
         arm=args.arm,
         status=status,
         max_error_rad=error,
         travel_safe=client.last_state.travel_safe,
     )
+
+
+def _unchecked(status: str, problem: str, sentence: str, data: dict[str, Any]) -> StepError:
+    """The POSTCONDITION for a move whose check after it failed; `problem` says how."""
+    if status == PLAN_ONLY:
+        text = f"{PLAN_ONLY_TEXT}, and {problem} Treat this as a failure. {PLAN_ONLY_NEXT}"
+    else:
+        text = f"The commander reported success, but {problem} Treat this as a failure."
+    return StepError("POSTCONDITION", f"{text} {sentence}", data)
 
 
 def _arm_refusal(pose: ArmPose) -> str:

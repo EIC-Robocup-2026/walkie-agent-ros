@@ -203,7 +203,7 @@ def test_arms_loads_the_arm_atomics_the_arm_rules_and_the_drive_check(
         assert final_input[0].content == SYSTEM_PROMPT + ARM_RULES
         tool_outputs = [m.content for m in final_input if isinstance(m, ToolMessage)]
         assert tool_outputs == [
-            "Arrived at kitchen. Arm state unknown: the commander did not answer."
+            "Arrived at kitchen. Arm state unknown: the commander was not found."
         ]
     finally:
         commander.destroy()

@@ -13,6 +13,7 @@ from collections.abc import Iterable
 import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, ToolException, tool
+from langgraph.errors import GraphRecursionError
 from rai.communication.hri_connector import HRIMessage
 from rai.messages import HumanMultimodalMessage
 
@@ -595,7 +596,7 @@ def test_more_than_20_tools_warns_once_per_count(caplog):
 
 
 def test_a_long_task_is_not_cut_short():
-    """LangGraph's default limit of 25 steps would stop this task and raise."""
+    """A task of 15 tool rounds finishes well inside RECURSION_LIMIT."""
     rounds = 15
     agent, llm = make_agent(
         [tool_call("noop", call_id=f"call_{n}") for n in range(rounds)] + [AIMessage("Done.")],
@@ -606,6 +607,21 @@ def test_a_long_task_is_not_cut_short():
 
     assert len(llm.received) == rounds + 1
     assert agent.agent.config["recursion_limit"] == RECURSION_LIMIT
+
+
+def test_a_runaway_tool_loop_is_stopped_at_the_limit():
+    """LangGraph's own default, 10007 steps, would let this loop run to the end."""
+    rounds = RECURSION_LIMIT
+    agent, llm = make_agent(
+        [tool_call("noop", call_id=f"call_{n}") for n in range(rounds)] + [AIMessage("Done.")],
+        tools=[make_tool("noop")],
+    )
+
+    with pytest.raises(GraphRecursionError):
+        run_graph(agent)
+
+    # Each round is two steps, llm and tools.
+    assert len(llm.received) <= RECURSION_LIMIT // 2 + 1
 
 
 # -- The completion gate ---------------------------------------------------------

@@ -8,7 +8,7 @@
 `WalkieAgent` subclasses RAI's `ReActAgent`
 ([ADR-0003](/architecture/decisions/0003-rai-react-agent.md)).
 `ReActAgent` builds its graph with `create_react_runnable`, which calls
-`llm.bind_tools(tools)` once, when the graph is compiled
+`llm.bind_tools(tools)` once, while it builds the graph
 (`rai/agents/langchain/core/react_agent.py` in rai-core 2.12.1). The
 [self-evolving agent](/architecture/self-evolving-agent.md) needs more than
 that:

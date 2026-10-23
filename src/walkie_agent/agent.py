@@ -57,8 +57,10 @@ Rules:
   text-to-speech voice, so never use markdown, lists or code in them.
 """
 
-# LangGraph stops a run after this many steps and raises. Its default, 25, is
-# about 12 tool rounds, too few for a seeded task with several steps.
+# LangGraph stops a run after this many steps and raises GraphRecursionError.
+# Its own default, 10007 in LangGraph 1.2, is no real bound, so an LLM stuck in
+# a tool loop would run until its token budget ran out. 100 steps is about 50
+# tool rounds per run: room for a seeded task, and an end to a loop.
 RECURSION_LIMIT = 100
 
 _STOP_UTTERANCES = frozenset({"stop", "never mind", "nevermind"})
@@ -93,8 +95,8 @@ class WalkieAgent(LangChainAgent):
 
     - Messages queue. An utterance that arrives during a task waits until
       the task ends. Only reset(), or an utterance that is just "stop" or
-      "never mind", interrupts a task. RAI checks the interrupt between graph
-      steps, so a running tool call finishes first.
+      "never mind", interrupts a task. _run_agent checks the interrupt
+      between graph steps, so a running tool call finishes first.
     - submit() sends a task with a seeded todo list (ADR-0041). A message
       without a seed that starts while no todo item is open, and contains a
       template's keyword, starts with the template's task and todos.

@@ -18,6 +18,7 @@ from walkie_agent.tools.navigation import (
     NavigateToLocationTool,
 )
 from walkie_agent.tools.speech import SpeakTool
+from walkie_agent.tools.todos import UpdateTodosTool, WaitForPersonTool
 
 __all__ = [
     "FORBIDDEN_NAMES",
@@ -26,6 +27,8 @@ __all__ = [
     "MoveRelativeTool",
     "NavigateToLocationTool",
     "SpeakTool",
+    "UpdateTodosTool",
+    "WaitForPersonTool",
     "build_walkie_tools",
 ]
 

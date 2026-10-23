@@ -19,9 +19,23 @@ from walkie_agent.toolbox import StepError, ToolContext
 # The backend name in META.requires and ctx.backend().
 ARM = "arm"
 
-# The answer to a move that a stop or a reset interrupted (manipulation.md,
-# Tools). The arms stopped wherever the cancel found them.
+# The answer when a stop or a reset interrupts the read after a move. The
+# move had ended, but the arms were not checked against the pose. A goal that
+# a stop or a reset interrupts is answered by interrupted() instead.
 STOPPED = f"Stopped by reset. {UNKNOWN_SENTENCE}"
+
+# What to do after a stop or a reset interrupted a goal whose cancel the
+# commander accepted (StepError.data["cancel"], CommanderClient): for an arm
+# goal, then for a gripper goal. An accepted joint cancel stops both arms,
+# but a gripper finishes the motion it is in.
+_AFTER_ACCEPTED = (
+    "They may take a moment to stop, so call get_arm_state before relying on where they are.",
+    "Wait a few seconds for it to finish.",
+)
+# After a cancel the commander refused, did not know or did not answer, and
+# after a goal it had not accepted yet ("pending"): an arm or the gripper
+# may still be moving.
+_AFTER_UNSURE = "Wait a few seconds, then call get_arm_state."
 
 # Each gripper's finger joint: the one joint of its group in
 # config/robot_model.toml, and the joint whose position the commander's grasp
@@ -109,14 +123,44 @@ def arm_sentence(client: CommanderClient, cancel: threading.Event, read: bool = 
     return state.sentence()
 
 
-def read_finger(client: CommanderClient, arm: str, cancel: threading.Event) -> float:
+def interrupted(error: StepError, gripper: bool) -> str | None:
+    """What a goal that a stop or a reset interrupted did, and what to do next.
+
+    `error` is the CANCELLED that set_joint_position() or control_gripper()
+    raised once the call's cancel was set; `gripper` is True for
+    control_gripper(). The client's message says how the commander answered
+    the cancel, and what to do about that answer follows it (manipulation.md,
+    Safety). Nothing follows when the goal had already ended, or when the
+    commander itself reported the goal cancelled. None when no goal was sent,
+    as when the reset came while the call waited for the commander.
+    """
+    message = full_stop(error.message)
+    outcome = error.data.get("cancel")
+    if outcome is None:
+        # Only the commander's own report of a cancelled goal has a status.
+        return message if "status" in error.data else None
+    if outcome == "ended":
+        return message
+    if outcome == "accepted":
+        return f"{message} {_AFTER_ACCEPTED[1 if gripper else 0]}"
+    return f"{message} {_AFTER_UNSURE}"
+
+
+def read_finger(
+    client: CommanderClient, arm: str, cancel: threading.Event, command: int | None = None
+) -> float:
     """How far `arm`'s gripper is open now: one finger's travel, in metres, read once.
 
-    Raises StepError as CommanderClient.joint_states() does, and INTERNAL
-    when the reading lacks the finger joint.
+    With `command`, a GripperResult.command, the read is made only while
+    that command is still the gripper's latest
+    (CommanderClient.joint_states_since()). Raises StepError as the client's
+    read does, and INTERNAL when the reading lacks the finger joint.
     """
     group = GRIPPER_GROUPS[arm]
-    reading = client.joint_states(group, cancel, CONFIG.read_timeout_s)
+    if command is None:
+        reading = client.joint_states(group, cancel, CONFIG.read_timeout_s)
+    else:
+        reading = client.joint_states_since(group, command, cancel, CONFIG.read_timeout_s)
     joint = FINGER_JOINTS[arm]
     if joint not in reading:
         raise StepError(

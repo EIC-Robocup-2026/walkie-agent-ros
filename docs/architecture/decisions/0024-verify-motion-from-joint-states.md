@@ -14,7 +14,9 @@ The commander's result can be misleading:
   result does not say where the arms stopped.
 - A close it did not measure, with grasp detection off or before its first
   finger reading, reports `grasped` false and a gap of 0, whatever the
-  fingers hold.
+  fingers hold. So does a close that a newer command for the gripper
+  superseded, also one from another node, and the fingers then show the
+  newer command.
 
 A reading can mislead as well. A position that is not a number passes a
 tolerance check, since every comparison with NaN is false, and a reading
@@ -44,9 +46,13 @@ joint, the finger whose travel the commander's grasp detection reads.
   check passes, the answer says the arms were already in the pose; when it
   fails, it says the commander runs in plan-only mode.
 - An open or a "half" that the commander reports failed is a failure. After
-  a close, `set_gripper` reads the finger. Within 4 mm of fully open, the
-  gripper did not close. Otherwise it reports "holding" from `grasped` when
-  the commander's gap is within 2 mm of the read, and from the commander's
+  a close that the commander reports failed with `grasped` false and a gap
+  of 0, `set_gripper` does not read the finger and says that it cannot
+  tell. After any other close it reads the finger, but only while the close
+  is still the gripper's latest command from the agent; after a newer one,
+  it says that it cannot tell. Within 4 mm of fully open, the gripper did
+  not close. Otherwise it reports "holding" from `grasped` when the
+  commander's gap is within 2 mm of the read, and from the commander's
   default detection band applied to the read when it is not. When the
   finger cannot be read, it says that it cannot tell. The detection band is
   calibrated on the competition objects.
@@ -57,14 +63,19 @@ joint, the finger whose travel the commander's grasp detection reads.
 **Consequences**
 
 - The LLM gets what the robot actually did, not what the commander reported.
-- Each motion and each close costs one extra service call, bounded at 3 s,
-  and `get_arm_state` makes three.
+- Each motion costs one extra service call, and each close at most one,
+  bounded at 3 s, and `get_arm_state` makes three, or four while the arms
+  are unverified.
 - `/get_joint_states` calls MoveIt's `getCurrentState()`. A comment in the
   commander says that call is not thread-safe, and that concurrent calls
   crash the node. Until that is checked, the agent reads joint states only
   when no goal is running, and `get_arm_state` refuses during motion. A
   goal whose call gave up, after a timeout or a cancel, still counts until
   the commander reports that it ended. The client stops waiting for that
-  report once the commander's action server is no longer discovered, or
-  60 s after the call gave up.
+  report once the commander's action server has stayed undiscovered for
+  5 s, or 60 s after the call gave up. Neither bounds the motion, since
+  MoveIt lets a goal run for twice its planned duration plus 60 s, so the
+  arms are then unverified: the client refuses every goal, and
+  `get_arm_state` reads both arms twice, 0.3 s apart. Two readings that
+  agree within 0.01 rad clear that state.
 <!-- --8<-- [end:body] -->

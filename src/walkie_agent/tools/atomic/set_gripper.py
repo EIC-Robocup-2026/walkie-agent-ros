@@ -3,16 +3,25 @@
 An open or "half" must succeed: the commander reports a failure when the
 gripper controller did not reach the position. A close is judged otherwise,
 since a real grasp usually ends with success false, because the fingers stall
-on the object. After a close, the fingers are read from /get_joint_states:
+on the object. Whether a close holds something is unknown, and the answer
+says so, when:
+  - the commander reports it failed with `grasped` false and a gap of 0.0:
+    it reports that for a close that a newer command superseded, also one
+    from another node, and for a close it did not measure, as with
+    grasp_detect_enable off, so the fingers may show nothing of this close
+    and are not read;
+  - another command for the gripper came after the close, so a read would
+    not show where the close left the fingers
+    (CommanderClient.joint_states_since());
+  - the fingers cannot be read.
+Otherwise the fingers are read from /get_joint_states:
   - fingers still near the open position mean the gripper did not close;
   - otherwise the commander's `grasped` is the answer when its gap agrees
     with the read;
-  - a close the commander did not measure, as with grasp_detect_enable off
-    or before its first finger reading, reports `grasped` false and a gap
-    of 0.0, which does not agree with fingers stopped on an object; the read
-    is then judged by the commander's default detection band;
-  - fingers that cannot be read leave unknown whether the gripper holds
-    something, and the answer says so.
+  - a close that reached its position without being measured, as before
+    the commander's first finger reading, reports `grasped` false and a gap
+    of 0.0 too; when that does not agree with the read, the read is judged
+    by the commander's default detection band.
 The commander reports `grasped` and the gap only on a close; on an open or
 "half" it reports false and 0.0 whatever the fingers did, so those are never
 read (CommanderClient returns None for them).
@@ -71,8 +80,8 @@ class Out(ToolOutput):
     state: str
     # Per arm moved: whether the close holds something, judged from a read of
     # the fingers after it. None when that cannot be told: after an open or
-    # "half", and after a close whose fingers could not be read or that did
-    # not close.
+    # "half", after a close that did not close, and when whether it holds
+    # something is unknown (see the module's docstring).
     holding: dict[str, bool | None]
 
 
@@ -94,7 +103,10 @@ def run(ctx: ToolContext, args: Args) -> Out:
         except StepError as e:
             # Nothing more is sent, and the answer says what was already done.
             if e.code == "CANCELLED" and ctx.cancel.is_set():
-                stopped = f"Stopped by reset before the {arm} gripper finished."
+                stopped = (
+                    shared.interrupted(e, gripper=True)
+                    or f"Stopped by reset before the {arm} gripper moved."
+                )
                 raise StepError(
                     "CANCELLED",
                     f"{_joined(done, stopped)} {client.last_state.sentence()}",
@@ -117,8 +129,18 @@ def run(ctx: ToolContext, args: Args) -> Out:
                 )
                 failed = True
             continue
+        # In each case where whether the close holds something is unknown,
+        # the close itself ended as the commander allows, so the step goes
+        # on; only the answer about the object is missing.
+        if _unmeasured_failure(result):
+            done.append(
+                f"The commander reported that the {arm} gripper's close failed and gave no "
+                "measurement, as when another command replaced it, so whether the gripper holds "
+                "something is unknown. Call get_arm_state to see how far it is open."
+            )
+            continue
         try:
-            finger = shared.read_finger(client, arm, ctx.cancel)
+            finger = shared.read_finger(client, arm, ctx.cancel, result.command)
         except StepError as e:
             if e.code == "CANCELLED" and ctx.cancel.is_set():
                 stopped = (
@@ -128,8 +150,14 @@ def run(ctx: ToolContext, args: Args) -> Out:
                 raise StepError(
                     "CANCELLED", f"{_joined(done, stopped)} {client.last_state.sentence()}", e.data
                 ) from None
-            # The close itself ended as the commander allows, so the step goes
-            # on; only the answer about the object is missing.
+            if e.code == "PRECONDITION_FAILED" and "command" in e.data:
+                # joint_states_since(): a newer command for the gripper came.
+                done.append(
+                    f"Another command for the {arm} gripper came after the close, so whether the "
+                    "close held something is unknown. Call get_arm_state to see how far the "
+                    "gripper is open."
+                )
+                continue
             done.append(
                 f"The {arm} gripper's fingers could not be read after the close, so whether it "
                 f"closed on something is unknown: {shared.full_stop(e.message)} Call "
@@ -160,16 +188,31 @@ def run(ctx: ToolContext, args: Args) -> Out:
     return Out(summary=text, arm=args.arm, state=args.state, holding=holding)
 
 
+def _unmeasured_failure(result: GripperResult) -> bool:
+    """True for a close that the commander reports failed with a gap of 0.0 and grasped false.
+
+    The commander reports that for a close that a newer command for the
+    group superseded, also one from another node, and for a failed close
+    that it did not measure, as with grasp_detect_enable off. Which of these
+    happened cannot be told, and after a supersession the fingers show the
+    newer command, so such a close is not judged from a read.
+    """
+    return not result.success and result.gripper_gap == 0.0 and result.grasped is False
+
+
 def _holding(result: GripperResult, finger: float, grippers: GripperPositions) -> bool | None:
     """Whether a close holds something, by `finger`, the travel read after it.
 
-    None when the gripper did not close: fingers near the open position
-    barely moved, which no object explains, so the gripper is stuck or
-    blocked, even when the travel lies inside the detection band. Otherwise
-    the commander's `grasped` is the answer, by its own detection parameters,
-    when its gap agrees with the read. A gap that does not agree is one the
-    commander did not measure, or the fingers moved since, so the read is
-    judged by the commander's default band.
+    Only for a close that _unmeasured_failure() does not exclude, read while
+    it was still the gripper's latest command. None when the gripper did not
+    close: fingers near the open position barely moved, which no object
+    explains, so the gripper is stuck or blocked, even when the travel lies
+    inside the detection band. Otherwise the commander's `grasped` is the
+    answer, by its own detection parameters, when its gap agrees with the
+    read. A gap that does not agree is one the commander did not measure on
+    a close that reached its position, or the fingers moved since, as
+    another node can make them, so the read is judged by the commander's
+    default band.
     """
     if finger >= grippers.open_position - shared.CONFIG.holding_margin_m:
         return None

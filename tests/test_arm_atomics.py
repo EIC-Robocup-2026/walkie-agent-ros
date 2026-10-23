@@ -15,6 +15,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 
 import pytest
+from action_msgs.msg import GoalStatus
 from langchain_core.messages import AIMessage
 from rai.communication.hri_connector import HRIMessage
 from rai.communication.ros2 import ROS2Connector
@@ -44,13 +45,23 @@ from walkie_agent.sim.fake_commander import FakeCommander
 from walkie_agent.toolbox import StepError, Toolbox, ToolOutput
 from walkie_agent.tools import FORBIDDEN_NAMES
 from walkie_agent.tools import navigation as navigation_module
+from walkie_agent.tools.atomic import _arm as arm_shared
 from walkie_agent.tools.atomic._arm import FINGER_JOINTS
 from walkie_agent.tools.navigation import MoveRelativeTool, NavigateToLocationTool
 
 MODEL_PATH = PROJECT_ROOT / "config" / "robot_model.toml"
 POSES_PATH = PROJECT_ROOT / "config" / "arm_poses.toml"
 
-STOPPED = f"Stopped by reset. {UNKNOWN_SENTENCE}"
+# The answer when a stop or a reset interrupts a move of both arms, and the
+# commander accepts the cancel.
+MOVE_STOPPED = (
+    "A stop or a reset interrupted the move of both_arms; the arms were told to stop. They "
+    "may take a moment to stop, so call get_arm_state before relying on where they are. "
+    f"{UNKNOWN_SENTENCE}"
+)
+# What follows the client's message on a stop or a reset when the commander
+# may still be moving an arm or the gripper.
+WAIT_THEN_CHECK = "Wait a few seconds, then call get_arm_state."
 ARMS_UNKNOWN = "Arm state unknown: the commander did not answer."
 LEFT_OUT = (
     "Not driving: the left arm is not in a pose that is safe for driving. Move it with "
@@ -463,6 +474,72 @@ def test_a_move_that_runs_past_its_pose_timeout_times_out(fake, connector, poses
     assert fake.cancel_requests == 1
 
 
+def accepted_handle(client: CommanderClient):
+    """The goal handle of the client's running goal once the commander accepted it, else None."""
+    goal = client._goal
+    if goal is None or goal.result is None:
+        return None
+    return goal.sent.result()
+
+
+def interrupt_for(
+    outcome: str, toolbox: Toolbox, fake: FakeCommander, monkeypatch, gripper: bool
+) -> threading.Thread:
+    """A started thread that interrupts the next goal so that its cancel gets `outcome`.
+
+    `outcome` is a value of StepError.data["cancel"] other than "accepted",
+    which the fake gives by default. The goal is the next arm goal, or the
+    next gripper goal with `gripper`.
+    """
+    client = client_of(toolbox)
+    name = "control_gripper" if gripper else "set_joint_position"
+    action = client._control_gripper if gripper else client._set_joint_position
+    # Long enough to be interrupted while it runs.
+    fake.move_time_s = fake.gripper_time_s = 2.0
+    if outcome == "refused":
+        fake.reject_cancels = True
+    elif outcome == "no answer":
+        monkeypatch.setattr(commander_module, "CANCEL_ANSWER_S", 0.2)
+        fake.cancel_delay_s = 0.5
+    elif outcome == "pending":
+        # The send stays unanswered until the fake closes.
+        fake.accept_gate = threading.Event()
+    elif outcome == "ended":
+        # The goal ends at once, and its result is held.
+        fake.move_time_s = fake.gripper_time_s = 0.05
+        fake.result_delay_s = math.inf
+
+    def ready() -> bool:
+        if outcome == "pending":
+            return bool(fake.gripper_goals if gripper else fake.joint_goals)
+        handle = accepted_handle(client)
+        if outcome == "ended":
+            # The client saw the goal end on the status topic, and has no result.
+            return handle is not None and handle.status == GoalStatus.STATUS_SUCCEEDED
+        return handle is not None
+
+    def gave_up() -> bool:
+        goal = client._goal
+        return goal is None or goal.gave_up_at is not None
+
+    def interrupt() -> None:
+        if wait_until(ready, 5.0) and outcome == "unknown":
+            # The commander restarts, and its new server does not know the goal.
+            fake.vanish(name)
+            wait_until(lambda: not action.server_is_ready(), 5.0)
+            fake.come_back()
+            wait_until(action.server_is_ready, 5.0)
+        toolbox.interrupt()
+        if outcome == "pending" and wait_until(gave_up, 5.0):
+            # The commander answers at last, with a rejection, so the goal never runs.
+            fake.reject_goals = True
+            fake.accept_gate.set()
+
+    thread = threading.Thread(target=interrupt)
+    thread.start()
+    return thread
+
+
 def test_an_interrupt_mid_move_cancels_the_goal(toolbox, fake, poses):
     fake.move_time_s = 5.0
     interrupted_at: list[float] = []
@@ -479,13 +556,72 @@ def test_an_interrupt_mid_move_cancels_the_goal(toolbox, fake, poses):
     returned_at = time.monotonic()
     thread.join()
 
-    assert (error.code, error.message) == ("CANCELLED", STOPPED)
+    # The client's message, and what to do about the cancel it accepted.
+    assert (error.code, error.message, error.data) == (
+        "CANCELLED", MOVE_STOPPED, {"cancel": "accepted"}
+    )
     assert returned_at - interrupted_at[0] < 1.0
     assert fake.cancel_requests == 1
     # The commander stops the arms and ends the goal as failed.
     assert wait_until(lambda: fake.results == [("both_arms", "Execution Failed")], 1.0)
     assert not in_pose(fake, targets(poses, "hands_up", "left", "right"), tolerance=0.05)
     assert client_of(toolbox).last_state.sentence() == UNKNOWN_SENTENCE
+
+
+@pytest.mark.parametrize(
+    ("outcome", "answer"),
+    [
+        (
+            "refused",
+            f"the commander refused the cancel, so an arm may still be moving. {WAIT_THEN_CHECK}",
+        ),
+        (
+            "unknown",
+            "the commander does not know the goal, so an arm may still be moving. "
+            f"{WAIT_THEN_CHECK}",
+        ),
+        (
+            "no answer",
+            "the commander did not answer the cancel, so an arm may still be moving. "
+            f"{WAIT_THEN_CHECK}",
+        ),
+        (
+            "pending",
+            f"if the commander accepts it later, it is cancelled at once. {WAIT_THEN_CHECK}",
+        ),
+        # Nothing to wait for.
+        ("ended", "the goal had already ended."),
+    ],
+    ids=["refused", "unknown", "no answer", "pending", "ended"],
+)
+def test_an_interrupted_move_says_how_the_commander_answered_the_cancel(
+    toolbox, fake, monkeypatch, outcome, answer
+):
+    # Read first, so the answer shows that the move made the arms unknown.
+    call(toolbox, "get_arm_state")
+    thread = interrupt_for(outcome, toolbox, fake, monkeypatch, gripper=False)
+
+    error = error_of(toolbox, "move_arm_to_pose", pose="hands_up")
+    thread.join(timeout=10)
+
+    assert (error.code, error.message, error.data) == (
+        "CANCELLED",
+        f"A stop or a reset interrupted the move of both_arms; {answer} {UNKNOWN_SENTENCE}",
+        {"cancel": outcome},
+    )
+
+
+def test_an_interrupt_before_the_goal_is_sent_says_the_arms_did_not_move(toolbox, fake):
+    # The read leaves the joint order known, so the move gets as far as its send.
+    call(toolbox, "get_arm_state")
+    toolbox.interrupt()
+
+    error = error_of(toolbox, "move_arm_to_pose", pose="hands_up")
+
+    assert (error.code, error.message, error.data) == (
+        "CANCELLED", f"Stopped by reset before the arms moved. {SAFE_SENTENCE}", {}
+    )
+    assert fake.joint_goals == []
 
 
 def test_a_move_names_the_action_when_its_server_is_not_ready(toolbox, fake, monkeypatch):
@@ -680,33 +816,105 @@ def test_grasp_detect_min_below_zero_reads_an_empty_close_as_held(toolbox, fake)
 @pytest.mark.parametrize(
     ("width", "held"), [(0.02, "something"), (None, "nothing")], ids=["object", "empty"]
 )
-def test_a_close_the_commander_did_not_measure_is_judged_from_a_read(toolbox, fake, width, held):
+def test_a_close_reported_reached_without_a_measurement_is_judged_from_a_read(
+    toolbox, fake, monkeypatch, width, held
+):
     # A threshold below every goal: the commander runs no grasp detection and
     # reports grasped false with a gap of 0.0, as with grasp_detect_enable off.
+    fake.set_parameters([Parameter("grasp_close_threshold", value=-1.0)])
+    fake.object_widths["left_gripper"] = width
+    finish = fake._finish
+
+    def reached(goal_handle, result, group, success, status):
+        # A controller that allows stalling reports fingers stopped on an
+        # object as having reached the position.
+        if group == "left_gripper":
+            success, status = True, "Success"
+        return finish(goal_handle, result, group, success, status)
+
+    monkeypatch.setattr(fake, "_finish", reached)
+
+    out = call(toolbox, "set_gripper", arm="left", state="close")
+
+    # With an object, the gap of 0.0 does not agree with the read, so the band decides.
+    assert out.summary == f"Closed the left gripper. It is holding {held}. {SAFE_SENTENCE}"
+    assert out.holding == {"left": held == "something"}
+
+
+# set_gripper's answer after a close of the left gripper that the commander
+# reports failed, with grasped false and a gap of 0.0.
+LEFT_CLOSE_UNMEASURED = (
+    "The commander reported that the left gripper's close failed and gave no measurement, as "
+    "when another command replaced it, so whether the gripper holds something is unknown. "
+    "Call get_arm_state to see how far it is open."
+)
+
+
+@pytest.mark.parametrize("width", [0.02, 0.043], ids=["object", "barely moved"])
+def test_a_close_reported_failed_without_a_measurement_cannot_tell(toolbox, fake, width):
+    # No grasp detection, and the fingers stall on the object, so the
+    # commander reports the close failed with grasped false and a gap of
+    # 0.0, as it does for a close that a newer command superseded.
     fake.set_parameters([Parameter("grasp_close_threshold", value=-1.0)])
     fake.object_widths["left_gripper"] = width
 
     out = call(toolbox, "set_gripper", arm="left", state="close")
 
-    assert out.summary == f"Closed the left gripper. It is holding {held}. {SAFE_SENTENCE}"
-    assert out.holding == {"left": held == "something"}
+    # Not a failure of the step: the close ended as the commander allows.
+    assert out.summary == f"{LEFT_CLOSE_UNMEASURED} {SAFE_SENTENCE}"
+    assert out.holding == {"left": None}
+    # The fingers may show a newer command, so they are not read.
+    assert "left_gripper" not in fake.joint_state_requests
 
 
-def test_a_close_the_commander_did_not_measure_fails_when_the_fingers_barely_moved(
-    toolbox, fake
+def test_a_close_that_another_node_supersedes_cannot_tell(toolbox, fake):
+    fake.gripper_time_s = 1.0
+    finger = FINGER_JOINTS["left"]
+    opened = fake.joints()[finger]
+
+    def supersede_mid_ramp() -> None:
+        if wait_until(lambda: fake.joints()[finger] < opened, 5.0):
+            # Half open: a read would find the fingers inside the band.
+            fake.supersede("left_gripper", 0.036)
+
+    thread = threading.Thread(target=supersede_mid_ramp)
+    thread.start()
+    out = call(toolbox, "set_gripper", arm="left", state="close")
+    thread.join(timeout=10)
+
+    assert fake.results == [("left_gripper", "Failed")]
+    assert out.summary == f"{LEFT_CLOSE_UNMEASURED} {SAFE_SENTENCE}"
+    assert out.holding == {"left": None}
+    assert "left_gripper" not in fake.joint_state_requests
+
+
+def test_a_close_followed_by_another_command_before_its_read_cannot_tell(
+    toolbox, fake, monkeypatch
 ):
-    # The commander's gap of 0.0 says nothing about the fingers, which the
-    # read finds stopped near the open position.
-    fake.set_parameters([Parameter("grasp_close_threshold", value=-1.0)])
-    fake.object_widths["left_gripper"] = 0.043
+    # The commander measures the close on the object. Another call then
+    # sets the gripper half open before the close's read, which would find
+    # the fingers inside the band.
+    fake.object_widths["left_gripper"] = 0.02
+    client = client_of(toolbox)
+    read_finger = arm_shared.read_finger
 
-    error = error_of(toolbox, "set_gripper", arm="left", state="close")
+    def another_command_first(*args, **kwargs):
+        client.control_gripper("left_gripper", 0.036, threading.Event())
+        return read_finger(*args, **kwargs)
 
-    assert (error.code, error.message) == (
-        "SKILL_FAILED",
-        f"The left gripper did not close (gap 0.043 m). {SAFE_SENTENCE}",
+    monkeypatch.setattr(arm_shared, "read_finger", another_command_first)
+
+    out = call(toolbox, "set_gripper", arm="left", state="close")
+
+    assert out.summary == (
+        "Another command for the left gripper came after the close, so whether the close held "
+        "something is unknown. Call get_arm_state to see how far the gripper is open. "
+        f"{SAFE_SENTENCE}"
     )
-    assert error.data["holding"] == {"left": None}
+    assert out.holding == {"left": None}
+    assert fake.gripper_goals == [("left_gripper", 0.0), ("left_gripper", 0.036)]
+    # The read is refused before it is made.
+    assert "left_gripper" not in fake.joint_state_requests
 
 
 def test_a_close_whose_fingers_cannot_be_read_says_it_cannot_tell(toolbox, fake):
@@ -735,8 +943,11 @@ def test_an_interrupt_during_a_gripper_command_stops_it(toolbox, fake):
 
     assert error.code == "CANCELLED"
     assert error.message == (
-        f"Stopped by reset before the left gripper finished. {UNKNOWN_SENTENCE}"
+        "A stop or a reset interrupted the left_gripper command; the commander accepted the "
+        "cancel, but the gripper finishes its current motion. Wait a few seconds for it to "
+        f"finish. {UNKNOWN_SENTENCE}"
     )
+    assert error.data == {"cancel": "accepted"}
     # The right gripper was never sent.
     assert fake.gripper_goals == [("left_gripper", 0.0)]
     # The cancel reached the commander, which accepts it but finishes the
@@ -747,6 +958,62 @@ def test_an_interrupt_during_a_gripper_command_stops_it(toolbox, fake):
     assert fake.results == []
     assert wait_until(lambda: client.busy() is None)
     assert fake.results == [("left_gripper", "Canceled")]
+
+
+@pytest.mark.parametrize(
+    ("outcome", "answer"),
+    [
+        (
+            "refused",
+            "the commander refused the cancel, so the gripper may still be moving. "
+            f"{WAIT_THEN_CHECK}",
+        ),
+        (
+            "unknown",
+            "the commander does not know the command, so the gripper may still be moving. "
+            f"{WAIT_THEN_CHECK}",
+        ),
+        (
+            "no answer",
+            "the commander did not answer the cancel, so the gripper may still be moving. "
+            f"{WAIT_THEN_CHECK}",
+        ),
+        (
+            "pending",
+            "if the commander accepts it later, the gripper still makes that motion. "
+            f"{WAIT_THEN_CHECK}",
+        ),
+        # Nothing to wait for.
+        ("ended", "the command had already ended."),
+    ],
+    ids=["refused", "unknown", "no answer", "pending", "ended"],
+)
+def test_an_interrupted_gripper_command_says_how_the_commander_answered_the_cancel(
+    toolbox, fake, monkeypatch, outcome, answer
+):
+    thread = interrupt_for(outcome, toolbox, fake, monkeypatch, gripper=True)
+
+    error = error_of(toolbox, "set_gripper", arm="both", state="close")
+    thread.join(timeout=10)
+
+    assert (error.code, error.message, error.data) == (
+        "CANCELLED",
+        f"A stop or a reset interrupted the left_gripper command; {answer} {UNKNOWN_SENTENCE}",
+        {"cancel": outcome},
+    )
+    # The right gripper was never sent.
+    assert fake.gripper_goals == [("left_gripper", 0.0)]
+
+
+def test_an_interrupt_before_a_gripper_command_is_sent_says_it_did_not_move(toolbox, fake):
+    toolbox.interrupt()
+
+    error = error_of(toolbox, "set_gripper", arm="left", state="close")
+
+    assert (error.code, error.message, error.data) == (
+        "CANCELLED", f"Stopped by reset before the left gripper moved. {UNKNOWN_SENTENCE}", {}
+    )
+    assert fake.gripper_goals == []
 
 
 def test_an_interrupt_while_the_fingers_are_read_stops_the_call(toolbox, fake):
@@ -996,41 +1263,77 @@ def test_the_robot_does_not_drive_while_an_arm_moves(
     moving.join()
 
     assert result == (
-        "Not driving: an arm or a gripper may still be moving, as the move of both_arms has "
-        "not ended yet. Try again in a few seconds."
+        "Not driving. Cannot check the arms for driving while the move of both_arms is "
+        "running. Wait for it to finish."
     )
     assert fake_walkie.pose() == (0.0, 0.0, 0.0)
 
 
-def test_the_robot_does_not_drive_when_a_move_starts_after_the_busy_check(
-    fake_walkie, toolbox, fake, connector, locations, monkeypatch
+def test_a_move_that_starts_during_the_drive_check_waits_for_it(
+    fake_walkie, toolbox, fake, connector, locations, poses, monkeypatch
 ):
-    fake.move_time_s = 1.0
+    # Only the gripper action is missing, which does not stop the arms being
+    # read.
     client = client_of(toolbox)
-    moving = threading.Thread(target=lambda: call(toolbox, "move_arm_to_pose", pose="hands_up"))
-    moving.start()
-    assert wait_until(lambda: fake.joint_goals, 5.0)
-    # As when the move starts between busy() and the read: the read refuses.
-    monkeypatch.setattr(client, "busy", lambda: None)
+    fake.vanish("control_gripper")
+    assert wait_until(lambda: not client.available(), 5.0)
+    standby = targets(poses, "standby", "left")
+    order = client.joint_names("left_arm", threading.Event())
+    service_is_ready = client._joint_states.service_is_ready
+    outcome: list[str] = []
+    in_flight: list[bool] = []
+    moving = threading.Thread(
+        target=lambda: outcome.append(
+            client.set_joint_position(
+                "left_arm", [standby[j] for j in order], threading.Event(), 5.0
+            )
+        )
+    )
+
+    def ready_while_a_move_starts() -> bool:
+        # The check's first step, with the call lock held: a move that
+        # starts now must not send its goal before the check has decided.
+        if not in_flight:
+            moving.start()
+            in_flight.append(wait_until(lambda: fake.joint_goals, 0.5))
+        return service_is_ready()
+
+    monkeypatch.setattr(client._joint_states, "service_is_ready", ready_while_a_move_starts)
 
     result = navigate(connector, locations, client).invoke({"location": "kitchen"})
-    moving.join()
+    moving.join(timeout=5)
 
-    assert result == (
-        "Not driving: an arm or a gripper may still be moving. Cannot read the joints of "
-        "both_arms while the move of both_arms is running. Wait for it to finish."
-    )
+    assert in_flight == [False]
+    assert result == "Arrived at kitchen."
+    assert fake.joint_state_requests == ["left_arm", "both_arms"]
+    # The move went once the check was done.
+    assert outcome == ["Success"]
+
+
+@pytest.mark.parametrize("missing", ["set_joint_position", "control_gripper"])
+def test_a_missing_goal_action_does_not_stop_the_check_reading_the_arms(
+    fake_walkie, toolbox, fake, connector, locations, poses, missing
+):
+    client = client_of(toolbox)
+    fake.vanish(missing)
+    assert wait_until(lambda: not client.available(), 5.0)
+    fake.teleport(targets(poses, "receive", "left"))
+
+    assert navigate(connector, locations, client).invoke({"location": "kitchen"}) == LEFT_OUT
+    assert fake.joint_state_requests == ["both_arms"]
     assert fake_walkie.pose() == (0.0, 0.0, 0.0)
 
 
 def test_the_robot_does_not_drive_on_a_reading_of_one_arm(
     fake_walkie, toolbox, fake, connector, locations, monkeypatch
 ):
-    # read_arms() refuses a reading that lacks an arm's joints, so only an arm
+    # The check refuses a reading that lacks an arm's joints, so only an arm
     # that no pose has a table for is left unknown. Its state is faked here.
     client = client_of(toolbox)
     monkeypatch.setattr(
-        client, "read_arms", lambda *_, **__: ArmsState(left=ArmState("home", True))
+        client,
+        "check_for_driving",
+        lambda *_, **__: commander_module.DriveCheck(ArmsState(left=ArmState("home", True))),
     )
 
     result = navigate(connector, locations, client).invoke({"location": "kitchen"})
@@ -1042,10 +1345,32 @@ def test_the_robot_does_not_drive_on_a_reading_of_one_arm(
     assert fake_walkie.pose() == (0.0, 0.0, 0.0)
 
 
+ABANDONED = "the move of left_arm from an earlier call was given up on before its end was known"
+UNVERIFIED = (
+    f"Not driving. An arm or a gripper may still be moving, as {ABANDONED}, and the arms "
+    "cannot be checked now. {why} Try again in a few seconds; if it fails again, tell the "
+    "person that the arms cannot be checked."
+)
+
+
+def abandon_a_move(client: CommanderClient, fake: FakeCommander, poses, monkeypatch) -> None:
+    """Leave the arms unverified: a move stopped part way whose result never comes."""
+    monkeypatch.setattr(commander_module, "ABANDON_AFTER_S", 0.2)
+    fake.move_time_s = 5.0
+    fake.result_delay_s = math.inf
+    standby = targets(poses, "standby", "left")
+    order = client.joint_names("left_arm", threading.Event())
+    with pytest.raises(StepError):
+        client.set_joint_position("left_arm", [standby[j] for j in order], threading.Event(), 0.3)
+    assert wait_until(lambda: client.busy() is None)
+    assert client.unverified == ABANDONED
+
+
 def test_the_robot_does_not_drive_while_a_move_outlives_the_commander(
     fake_walkie, toolbox, fake, connector, locations, poses, monkeypatch
 ):
     monkeypatch.setattr(commander_module, "CANCEL_ANSWER_S", 0.2)
+    monkeypatch.setattr(commander_module, "ABSENT_ABANDON_S", 0.3)
     fake.never_answer = True
     client = client_of(toolbox)
     standby = targets(poses, "standby", "left")
@@ -1069,8 +1394,8 @@ def test_the_robot_does_not_drive_while_a_move_outlives_the_commander(
     tool = navigate(connector, locations, client)
 
     assert tool.invoke({"location": "kitchen"}) == (
-        "Not driving: an arm or a gripper may still be moving, as the move of left_arm has "
-        "not ended yet. Try again in a few seconds."
+        "Not driving. Cannot check the arms for driving while the move of left_arm is "
+        "running. Wait for it to finish."
     )
     assert fake_walkie.pose() == (0.0, 0.0, 0.0)
 
@@ -1083,12 +1408,85 @@ def test_the_robot_does_not_drive_while_a_move_outlives_the_commander(
             "answer the cancel, so an arm may still be moving.",
         )
     ]
-    # With its action server gone, the goal is abandoned, and the robot
-    # drives as without a commander.
-    assert wait_until(lambda: client.busy() is None)
+    # Its call gave up on it, but it may still move the arm.
     assert tool.invoke({"location": "kitchen"}) == (
-        "Arrived at kitchen. Arm state unknown: the commander was not found."
+        "Not driving. Cannot check the arms for driving: the move of left_arm from an earlier "
+        "call has not ended yet. Try again in a few seconds."
     )
+    # Abandoned once its action server stays missing. The arms are then
+    # unverified and cannot be read, so the robot still does not drive.
+    assert wait_until(lambda: client.busy() is None)
+    assert tool.invoke({"location": "kitchen"}) == UNVERIFIED.format(
+        why="The commander's /get_joint_states service is not discovered. Is "
+        "bimanual_commander running?"
+    )
+    assert fake_walkie.pose() == (0.0, 0.0, 0.0)
+
+
+@pytest.mark.parametrize(
+    ("knob", "value", "why"),
+    [
+        (
+            "joint_states_delay_s",
+            2.0,
+            "The commander's /get_joint_states did not answer within 0.3 s. Is "
+            "bimanual_commander running?",
+        ),
+        (
+            "read_failure",
+            "Failed to get current robot state",
+            "The commander could not read the joints of both_arms: Failed to get current "
+            "robot state.",
+        ),
+    ],
+    ids=["no answer", "no reading"],
+)
+def test_after_an_abandoned_goal_the_robot_does_not_drive_without_a_reading(
+    fake_walkie, toolbox, fake, connector, locations, poses, monkeypatch, knob, value, why
+):
+    client = client_of(toolbox)
+    abandon_a_move(client, fake, poses, monkeypatch)
+    monkeypatch.setattr(navigation_module, "ARM_CHECK_TIMEOUT_S", 0.3)
+    setattr(fake, knob, value)
+
+    result = navigate(connector, locations, client).invoke({"location": "kitchen"})
+
+    assert result == UNVERIFIED.format(why=why)
+    assert fake_walkie.pose() == (0.0, 0.0, 0.0)
+    assert client.unverified == ABANDONED
+
+
+def test_after_an_abandoned_goal_the_robot_drives_once_a_settled_read_shows_the_arms_still(
+    fake_walkie, toolbox, fake, connector, locations, poses, monkeypatch
+):
+    # The commander refuses the cancel, so the arm goes on moving after the
+    # goal was abandoned.
+    monkeypatch.setattr(commander_module, "ABANDON_AFTER_S", 0.3)
+    fake.teleport(targets(poses, "standby", "left"))
+    fake.move_time_s = 1.5
+    fake.reject_cancels = True
+    client = client_of(toolbox)
+    home = targets(poses, "home", "left")
+    order = client.joint_names("left_arm", threading.Event())
+    with pytest.raises(StepError):
+        client.set_joint_position("left_arm", [home[j] for j in order], threading.Event(), 0.3)
+    assert wait_until(lambda: client.busy() is None)
+    tool = navigate(connector, locations, client)
+
+    result = tool.invoke({"location": "kitchen"})
+
+    assert result.startswith("Not driving. An arm is still moving: openarm_left_joint")
+    assert result.endswith(
+        " rad between two reads 0.3 s apart. Wait a few seconds, then try again."
+    )
+    assert fake_walkie.pose() == (0.0, 0.0, 0.0)
+    assert client.unverified == ABANDONED
+    # The move ends at home, and the next check's settled read shows it.
+    assert wait_until(lambda: fake.results == [("left_arm", "Success")], 5.0)
+    requests = len(fake.joint_state_requests)
+    assert tool.invoke({"location": "kitchen"}) == "Arrived at kitchen."
+    assert fake.joint_state_requests[requests:] == ["both_arms", "both_arms"]
+    assert client.unverified is None
 
 
 def test_without_the_arm_backend_there_is_no_check(
@@ -1100,6 +1498,71 @@ def test_without_the_arm_backend_there_is_no_check(
         "Arrived at kitchen."
     )
     assert fake.joint_state_requests == []
+
+
+# -- get_arm_state while the arms are unverified ---------------------------------------------
+
+# The first line of get_arm_state's answer once its settled read verified the arms.
+VERIFIED = (
+    f"The arms had to be checked, as {ABANDONED}. Two reads of both arms 0.3 s apart agree, "
+    "so they have stopped. Arm and gripper tools can be used again."
+)
+
+
+def test_get_arm_state_says_when_its_settled_read_verified_the_arms(
+    toolbox, fake, poses, monkeypatch
+):
+    client = client_of(toolbox)
+    abandon_a_move(client, fake, poses, monkeypatch)
+    requests = len(fake.joint_state_requests)
+
+    out = call(toolbox, "get_arm_state")
+
+    assert out.summary.splitlines()[0] == VERIFIED
+    # Two reads of both arms, then one of each gripper.
+    assert fake.joint_state_requests[requests:] == [
+        "both_arms", "both_arms", "left_gripper", "right_gripper"
+    ]
+    assert client.unverified is None
+    # Verified, so the next answer starts with the arms.
+    assert call(toolbox, "get_arm_state").summary.splitlines()[0].startswith("Left arm: ")
+
+
+def test_get_arm_state_says_why_it_checked_when_an_arm_still_moves(
+    toolbox, fake, poses, monkeypatch
+):
+    # The commander refuses the cancel, so the arm goes on moving after the
+    # goal was abandoned.
+    monkeypatch.setattr(commander_module, "ABANDON_AFTER_S", 0.3)
+    fake.move_time_s = 1.5
+    fake.reject_cancels = True
+    client = client_of(toolbox)
+    standby = targets(poses, "standby", "left")
+    order = client.joint_names("left_arm", threading.Event())
+    with pytest.raises(StepError):
+        client.set_joint_position("left_arm", [standby[j] for j in order], threading.Event(), 0.3)
+    assert wait_until(lambda: client.busy() is None)
+
+    error = error_of(toolbox, "get_arm_state")
+
+    assert error.code == "PRECONDITION_FAILED"
+    assert error.message.startswith(
+        f"The arms had to be checked, as {ABANDONED}. An arm is still moving: openarm_left_joint"
+    )
+    assert error.message.endswith(
+        " rad between two reads 0.3 s apart. Wait a few seconds, then try again. "
+        f"{UNKNOWN_SENTENCE}"
+    )
+    assert client.unverified == ABANDONED
+    # The move ends in standby, and the next call's settled read shows it.
+    assert wait_until(lambda: fake.results == [("left_arm", "Success")], 5.0)
+    out = call(toolbox, "get_arm_state")
+    assert out.summary.splitlines()[:3] == [
+        VERIFIED,
+        "Left arm: standby, not safe for driving.",
+        "Right arm: home, safe for driving.",
+    ]
+    assert client.unverified is None
 
 
 # -- Stop and reset through the agent ------------------------------------------------------
@@ -1157,4 +1620,4 @@ def test_reset_stop_and_a_stop_utterance_cancel_a_running_arm_goal(how, start, t
     if how == "stop utterance":
         assert wait_until(lambda: len(llm.received) == 2 and agent.ready(), 5.0)
         tool_messages = [m.content for m in llm.received[1] if m.type == "tool"]
-        assert tool_messages == [f"CANCELLED: {STOPPED}"]
+        assert tool_messages == [f"CANCELLED: {MOVE_STOPPED}"]

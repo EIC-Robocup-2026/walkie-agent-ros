@@ -48,6 +48,11 @@ emergency stops. The LLM never chooses joint values or coordinates.
       controller reports no success, as when the fingers stall on an
       object, and it reports `grasped` and the gap only for a close it
       measured, so an unmeasured close reads as false and 0;
+    - a newer `/control_gripper` goal for the same gripper, from any node,
+      ends an older one that has not sent its final setpoint yet; the older
+      goal then ends ABORTED `"Failed"` with `grasped` false and a gap of 0,
+      or CANCELED `"Canceled"` when it was being cancelled, so a superseded
+      close reads like an unmeasured one;
     - `plan_only` is read once at startup, and the launch file cannot set it;
     - velocity and acceleration scaling are hard-coded to 1.0 (full speed);
     - each goal runs in its own thread with no lock on the arm, so two goals

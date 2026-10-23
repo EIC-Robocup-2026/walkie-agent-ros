@@ -231,7 +231,11 @@ def _move_error(
 ) -> StepError:
     """The answer to a move the commander did not finish as asked."""
     if error.code == "CANCELLED" and ctx.cancel.is_set():
-        return StepError("CANCELLED", shared.STOPPED, error.data)
+        # A stop or a reset: the call ends at once, so the arms are not read.
+        stopped = (
+            shared.interrupted(error, gripper=False) or "Stopped by reset before the arms moved."
+        )
+        return StepError("CANCELLED", f"{stopped} {client.last_state.sentence()}", error.data)
     if error.code in ("SKILL_FAILED", "INTERNAL", "CANCELLED"):
         # The commander answered, so it can be read: a failed plan left the
         # arms where they were, and a failed execution may have stopped them

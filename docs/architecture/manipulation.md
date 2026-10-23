@@ -131,13 +131,35 @@ sequenceDiagram
 Until the `MotionSupervisor` lands, `CommanderClient` answers "may I move?".
 It refuses a second call at once while a goal runs. On a cancel or a
 timeout it asks the commander to cancel the goal, and its message says how
-the commander answered. An arm cancel stops both arms, because MoveIt's stop
-is global. A gripper cancel is accepted, but the gripper finishes its
-current motion. A goal outlives the call that sent it: until the commander
-reports that the goal ended, every call is refused with
-`PRECONDITION_FAILED`. The client lets go of such a goal once the
-commander's action server is no longer discovered, or 60 s after its call
-gave up.
+the commander answered. The error's data gives that answer as `cancel`:
+`accepted`, `ended`, `refused`, `unknown` or `no answer`, or `pending` when
+the commander had not answered the send, so no cancel was sent. An arm
+cancel stops both arms, because MoveIt's stop is global. A gripper cancel
+is accepted, but the gripper finishes its current motion. A goal outlives
+the call that sent it: until the commander reports that the goal ended,
+every call is refused with `PRECONDITION_FAILED`.
+
+The client abandons such a goal once the commander's action server has
+stayed undiscovered for 5 s, or 60 s after its call gave up. Neither bounds
+the motion, since MoveIt lets a goal run for twice its planned duration
+plus 60 s, so the arms are then unverified (`CommanderClient.unverified`).
+Reads are still taken, but every goal is refused with
+`PRECONDITION_FAILED`, and the drive check does not fail open, until a
+settled read shows the arms still: two reads of both arms, 0.3 s apart,
+that agree within 0.01 rad. `get_arm_state` and the drive check make that
+read while the arms are unverified. A goal that the commander accepts after
+its call gave up is cancelled at once. When it had been abandoned, the arms
+become unverified again, and the call of a newer arm goal fails with
+`SKILL_FAILED`, since the cancel stops both arms; its message says to call
+`get_arm_state`. A joint cancel does not stop a gripper, so a gripper goal
+never fails that way.
+
+Each gripper command the client sends gets a number,
+`GripperResult.command`, and a command that the commander accepts late
+counts again. `joint_states_since()` reads a gripper only while that
+command is still the latest for its group, so a read after a close does not
+show where a newer command from the agent left the fingers. Commands from
+other nodes are not counted.
 
 ## Tools
 
@@ -175,7 +197,9 @@ drive. Some example answers:
   driving."
 - "The left gripper did not open fully (the commander reported 'Failed').
   Arms: safe for driving."
-- "Stopped by reset. Arms: state unknown."
+- "A stop or a reset interrupted the move of both_arms; the arms were told
+  to stop. They may take a moment to stop, so call get_arm_state before
+  relying on where they are. Arms: state unknown."
 - "Not driving: the arms are not in a pose that is safe for driving. Move
   them with move_arm_to_pose first, for example 'home'."
 
@@ -187,6 +211,15 @@ each gripper closed at or below 0.03 m, the commander's close threshold,
 and otherwise half open or open, whichever position is nearer, with the
 gap: "Left gripper: closed (gap 0.020 m)." When a finger cannot be read,
 the line gives the last command the agent sent that gripper instead.
+
+While the arms are unverified, `get_arm_state` reads them with the settled
+read. When that read shows them still, the answer starts with why they had
+to be checked and what the check found: "The arms had to be checked, as
+the move of left_arm from an earlier call was given up on before its end
+was known. Two reads of both arms 0.3 s apart agree, so they have stopped.
+Arm and gripper tools can be used again." When an arm is still moving, the
+call fails with `PRECONDITION_FAILED`, and its message starts with the same
+reason, then names the joint that moved.
 
 With `--arms`, the system prompt gets matching rules (`ARM_RULES` in
 `src/walkie_agent/agent.py`): tell people before moving the arms, tuck the
@@ -350,14 +383,30 @@ description = "Holding an object close to the body."
   MotionSupervisor also refuses arm motion while Nav2 drives, and the other
   way round. Until it lands, `CommanderClient` refuses a second commander
   call while a goal runs, and while a goal whose call gave up has not
-  ended. The drive check refuses to drive in both cases.
+  ended. While the arms are unverified, it refuses every goal. The drive
+  check refuses to drive in the first two cases, and in the third unless a
+  settled read shows the arms still. It makes the whole decision under the
+  client's call lock (`check_for_driving()`), so no arm goal can start
+  between its steps.
 - **Reset.** `/walkie/reset` publishes `"stop"` on
   `/trajectory_execution_event`, cancels every goal, and blocks every motion
   tool until the reset is applied. The physical emergency stop stays the real
   safety boundary, because a software stop needs ROS, MoveIt and the
   controllers to be working. Until the MotionSupervisor lands, a stop or a
   reset sets the atomics' cancel event: a running arm atomic cancels its
-  commander goal and answers "Stopped by reset. Arms: state unknown."
+  commander goal at once. A stop before the goal is sent answers "Stopped
+  by reset before the arms moved." or "Stopped by reset before the left
+  gripper moved." Otherwise the answer is the client's message, which says
+  how the commander answered the cancel, then what to do, then the arm
+  state:
+    - an arm cancel it accepted: the arms may take a moment to stop, so
+      call `get_arm_state` before relying on where they are;
+    - a gripper cancel it accepted: the gripper finishes its current
+      motion, so wait a few seconds;
+    - a cancel it refused, did not know or did not answer, or a goal it had
+      not accepted yet: an arm or the gripper may still be moving, so wait a
+      few seconds, then call `get_arm_state`;
+    - a goal that had already ended: nothing more.
 - **Collision.** MoveIt plans around the robot and the planning scene. The
   agent never turns collision checking off. Held objects are not in the
   planning scene by default, so poses used while holding something need
@@ -371,17 +420,27 @@ description = "Holding an object close to the body."
 - **Grasp detection.** The commander's `grasped` flag can be wrong when the
   gripper controller is down, or when "half" is set at or below 0.03 m. A
   close the commander did not measure, with `grasp_detect_enable` off or
-  before its first finger reading, reports `grasped` false and a gap of 0.
-  The detection band must be calibrated on real objects. An open or a
-  "half" that the commander reports failed fails `set_gripper`, and after
-  every close the tool reads the finger:
+  before its first finger reading, reports `grasped` false and a gap of 0,
+  and so does a close that a newer command superseded, also one from
+  another node. The detection band must be calibrated on real objects. An
+  open or a "half" that the commander reports failed fails `set_gripper`.
+  When the tool cannot tell whether a close holds something, the answer
+  says so and to call `get_arm_state`, and the step does not fail on that
+  alone. After a close:
+    - when the commander reports it failed with `grasped` false and a gap
+      of 0, the tool does not read the finger, which may show a newer
+      command, and says that it cannot tell;
+    - otherwise the tool reads the finger, but only while the close is
+      still the gripper's latest command from the agent
+      (`joint_states_since()`); after a newer one, and when the finger
+      cannot be read, it says that it cannot tell;
     - within 4 mm of fully open, the gripper did not close, and the tool
       fails;
     - otherwise `grasped` is the answer when the commander's gap is within
       2 mm of the read;
-    - when it is not, the read is judged by the commander's default
-      detection band, 0.005 to 0.044 m;
-    - when the finger cannot be read, the answer says that it cannot tell.
+    - when it is not, as after a close reported reached but not measured,
+      the read is judged by the commander's default detection band, 0.005
+      to 0.044 m.
 - **Generated code.** Tools written by the self-evolving agent can never
   reach the arm controllers or the MoveIt and commander planning names. They
   move the arms only in simulation, and only through the atomics: the
@@ -542,8 +601,8 @@ contract:
 
 | Backend           | File                                | What it does |
 | ----------------- | ----------------------------------- | ------------ |
-| `CommanderClient` | `src/walkie_agent/arm/commander.py` | Built. The `arm` backend, created only with `--arms`. Calls `/set_joint_position`, `/control_gripper` and `/get_joint_states` on `bimanual_commander`, one call at a time, and cancels a running goal on a cancel or a timeout. A goal whose call gave up still holds off every call until it ends. A reading with a position that is not a finite number is refused, and an arm whose joints a reading lacks becomes unknown. It loads `config/arm_poses.toml` and remembers the arms' last read state and each gripper's last command. In simulation it talks to the real commander in walkie-ros's MuJoCo simulation. |
-| `FakeCommander`   | `src/walkie_agent/sim/fake_commander.py` | Built. A ROS-level fake of `bimanual_commander` ([ADR-0019](decisions/0019-test-fakes-fast-dds.md)) for the tests. It serves the same three names, and has knobs for slow moves, planning time, plan and execution failures, plan-only mode, joint errors, rejected goals, no answer, late results, refused and slow cancels, failed and incomplete reads, `right_joint2_fixed`, and object widths for grasps. `vanish()` takes its servers off the graph. Its docstring lists where it differs from the commander. |
+| `CommanderClient` | `src/walkie_agent/arm/commander.py` | Built. The `arm` backend, created only with `--arms`. Calls `/set_joint_position`, `/control_gripper` and `/get_joint_states` on `bimanual_commander`, one call at a time, and cancels a running goal on a cancel or a timeout. A goal whose call gave up still holds off every call until it ends, or until it is abandoned, after its action server stayed undiscovered for 5 s or 60 s after its call gave up. The arms are then unverified, and goals are refused, until a settled read of both arms shows them still. `check_for_driving()` makes the drive check's whole decision under the call lock. A reading with a position that is not a finite number is refused, and an arm whose joints a reading lacks becomes unknown. It loads `config/arm_poses.toml`, remembers the arms' last read state and each gripper's last command, and counts each gripper's commands for `joint_states_since()`. In simulation it talks to the real commander in walkie-ros's MuJoCo simulation. |
+| `FakeCommander`   | `src/walkie_agent/sim/fake_commander.py` | Built. A ROS-level fake of `bimanual_commander` ([ADR-0019](decisions/0019-test-fakes-fast-dds.md)) for the tests. It serves the same three names, and has knobs for slow moves, planning time, plan and execution failures, plan-only mode, joint errors, rejected goals, no answer, an acceptance held until a test releases it (`accept_gate`), late results, refused and slow cancels, failed and incomplete reads, `right_joint2_fixed`, and object widths for grasps. `vanish()` takes all or some of its servers off the graph, and `come_back()` serves them again as new instances that do not know the old goals. `supersede()` commands a gripper as another node can, which ends the ramp of the gripper's goal. Its docstring lists where it differs from the commander. |
 | `MockSkillServer` | `src/walkie_agent/sim/mock_skill.py` (new) | Serves `run_skill` with the seven ADR-0027 outcomes. Each skill has fault knobs: a forced outcome and a delay. A successful pick attaches the `FakeScene` object to the arm. |
 | `FakeScene`       | `src/walkie_agent/sim/fake_scene.py` (new) | Loads a TOML scene of objects (label, description, map pose, size, graspable) for the perception mocks and the picks. |
 
@@ -762,18 +821,22 @@ the `FakeSkillServer` serves in the sim harvest
   serves the commander's actions and service with the same names and
   quirks. It has settings for scrambled joint order, planning time, planning
   and execution failure, slow motion, plan-only mode, joints that stop off
-  target, rejected goals, goals that never finish, late results, refused
-  and slow cancels, failed and incomplete reads, `right_joint2_fixed` and
-  grasping an object. `vanish()` takes its servers off the graph, as when
-  the commander stops. Tests run on Fast DDS
-  ([ADR-0019](decisions/0019-test-fakes-fast-dds.md)).
+  target, rejected goals, goals that never finish, an acceptance held until
+  the test releases it, late results, refused and slow cancels, failed and
+  incomplete reads, `right_joint2_fixed` and grasping an object.
+  `vanish()` takes all or some of its servers off the graph, as when the
+  commander stops, and `come_back()` serves them again, as a restarted
+  commander. `supersede()` commands a gripper from outside the agent. Tests
+  run on Fast DDS ([ADR-0019](decisions/0019-test-fakes-fast-dds.md)).
   `tests/test_commander.py` covers `CommanderClient`, including goals that
-  outlive their call and each answer to a cancel, and
+  outlive their call, each answer to a cancel, abandoned goals, the
+  settled read and goals that the commander accepts late, and
   `tests/test_arm_atomics.py` the four arm atomics and the drive check,
-  against it. Those include grippers that fail or close unmeasured,
-  plan-only mode, and readings that lack a joint or hold one that is not a
-  number. `tests/test_arm_poses.py` covers the pose loader, the pose match
-  and the snapshot.
+  against it. Those include the answer to a stop or a reset for each
+  answer to its cancel, grippers that fail, close unmeasured or are
+  commanded again before the read, plan-only mode, and readings that lack
+  a joint or hold one that is not a number. `tests/test_arm_poses.py`
+  covers the pose loader, the pose match and the snapshot.
 - **Fake skill server.** Next to it, `FakeSkillServer` serves the skill
   interface over ROS with the ADR-0027 outcomes, for the sim harvest. Its
   tests should show that a pick and a place move only the object, through

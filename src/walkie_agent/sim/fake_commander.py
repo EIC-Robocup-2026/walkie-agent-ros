@@ -20,6 +20,9 @@ What it copies from the real commander, since the agent must handle it:
     stopped while it moves ends ABORTED "Execution Failed";
   - a cancel of a gripper goal is accepted, the fingers finish their ramp,
     and the goal then ends CANCELED "Canceled";
+  - a newer command for a gripper's group, a goal or supersede(), ends the
+    ramp of the older goal, which then ends ABORTED "Failed" with a 0.0 gap
+    and grasped false, or CANCELED "Canceled" when it was asked to cancel;
   - a cancel of a goal that has ended is answered ERROR_GOAL_TERMINATED;
   - right_joint2_fixed removes openarm_right_joint2 from right_arm and
     both_arms;
@@ -41,8 +44,12 @@ Where it differs from the real commander, so a test does not rely on it:
   - never_answer holds a goal until it is cancelled, and a held gripper
     goal then ends at once, without the ramp the commander would finish;
   - a close always reports the gap, which the commander's
-    grasp_detect_enable can turn off, and it never supersedes a gripper
-    command with a newer one;
+    grasp_detect_enable can turn off;
+  - the two grippers ramp at the same time, where the commander ramps one
+    gripper at a time;
+  - after vanish(), a goal that the destroyed server took goes on moving
+    the joints and never sends its result, also after come_back(), where a
+    commander that died stops its goals with it;
   - the joint order and right_joint2_fixed can change while it runs, and
     grasp_close_threshold is read on every gripper goal, where the
     commander reads it once at startup;
@@ -57,10 +64,12 @@ test can change them on a running fake. Goals run concurrently, each in its
 own callback, as the commander runs each in its own thread.
 """
 
+import functools
 import math
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
+from typing import Any
 
 import rclpy
 from my_robot_interfaces.action import ControlGripper, SetJointPosition
@@ -81,6 +90,11 @@ from walkie_agent.arm.poses import (
 
 # The groups served, in robot_model.toml's order.
 _GROUPS = (*ARM_GROUPS.values(), BOTH_ARMS_GROUP, *GRIPPER_GROUPS.values())
+# The interfaces, by the names vanish() takes.
+SET_JOINT_POSITION = "set_joint_position"
+CONTROL_GRIPPER = "control_gripper"
+GET_JOINT_STATES = "get_joint_states"
+_INTERFACES = (SET_JOINT_POSITION, CONTROL_GRIPPER, GET_JOINT_STATES)
 # The steps a move or a gripper command is split into, so a cancel and a
 # shutdown are seen within one step.
 _STEP_S = 0.02
@@ -122,6 +136,11 @@ class FakeCommander(Node):
         self.never_answer = False
         # How long a goal waits to be accepted or rejected.
         self.accept_delay_s = 0.0
+        # A goal that arrives while this is set waits until the event is set
+        # before it is accepted or rejected, so a test decides when the
+        # commander answers; reject_goals is read once it is set. None to
+        # answer at once.
+        self.accept_gate: threading.Event | None = None
         # How long a goal that ended waits before its result is sent, so a
         # cancel meanwhile is answered ERROR_GOAL_TERMINATED. math.inf holds
         # it until the fake closes, as when the commander restarted and the
@@ -167,7 +186,9 @@ class FakeCommander(Node):
         # The group of every /get_joint_states request.
         self.joint_state_requests: list[str] = []
 
-        self._lock = threading.Lock()
+        # Reentrant, so that a motion step can check whether it was stopped
+        # while it holds the lock.
+        self._lock = threading.RLock()
         # Every arm and finger joint, including openarm_right_joint2, which
         # stays where it is while right_joint2_fixed hides it.
         home = self.model.states.get(BOTH_ARMS_GROUP, {}).get("home", {})
@@ -180,38 +201,26 @@ class FakeCommander(Node):
         # How many times an accepted joint cancel stopped the arms. A motion
         # stops when this changes, as MoveIt's stop ends every execution.
         self._arm_stops = 0
+        # Gripper group -> how many commands it was given, by goals and by
+        # supersede(). A ramp stops when this changes, as the commander's
+        # per-group command generation ends a superseded ramp.
+        self._gripper_commands = dict.fromkeys(GRIPPER_GROUPS.values(), 0)
         # Set by destroy_node(), to release every held goal and request.
         self._closing = threading.Event()
-        # Set by vanish().
-        self._vanished = threading.Event()
         self._idle = threading.Condition()
         self._active = 0
 
         # Reentrant, so a held goal or a slow request does not block the others.
-        callbacks = ReentrantCallbackGroup()
-        self._servers = (
-            ActionServer(
-                self,
-                SetJointPosition,
-                "set_joint_position",
-                execute_callback=self._execute_move,
-                goal_callback=self._on_joint_goal,
-                cancel_callback=self._on_joint_cancel,
-                callback_group=callbacks,
-            ),
-            ActionServer(
-                self,
-                ControlGripper,
-                "control_gripper",
-                execute_callback=self._execute_gripper,
-                goal_callback=self._on_gripper_goal,
-                cancel_callback=self._on_cancel,
-                callback_group=callbacks,
-            ),
-        )
-        self._service = self.create_service(
-            GetJointStates, "get_joint_states", self._on_joint_states, callback_group=callbacks
-        )
+        self._callbacks = ReentrantCallbackGroup()
+        # Each interface by name, None once vanish() destroyed it, and how
+        # many times it was created. A goal keeps the number of the server
+        # that took it, by goal id, so that it sends no result once that
+        # server is gone.
+        self._entities: dict[str, Any] = dict.fromkeys(_INTERFACES)
+        self._instances = dict.fromkeys(_INTERFACES, 0)
+        self._goal_servers: dict[bytes, tuple[str, int]] = {}
+        for name in _INTERFACES:
+            self._create(name)
 
     def destroy_node(self) -> None:
         # Held goals and slow requests block executor threads; they are
@@ -220,23 +229,51 @@ class FakeCommander(Node):
         self._closing.set()
         with self._idle:
             self._idle.wait_for(lambda: self._active == 0, timeout=_RELEASE_S)
-        if not self._vanished.is_set():
-            for server in self._servers:
+        for name in (SET_JOINT_POSITION, CONTROL_GRIPPER):
+            server = self._entities[name]
+            if server is not None:
                 server.destroy()
         super().destroy_node()
 
-    def vanish(self) -> None:
-        """Destroy the servers and the service at once, as when the commander dies mid-goal.
+    def vanish(self, *names: str) -> None:
+        """Destroy interfaces at once, as when the commander dies mid-goal.
 
-        A goal it runs or holds then sends no result: it ends when the fake
-        closes.
+        `names` are among SET_JOINT_POSITION, CONTROL_GRIPPER and
+        GET_JOINT_STATES; all three by default. A goal that a destroyed
+        server runs or holds sends no result, also after come_back(): it
+        ends when the fake closes.
         """
-        if self._vanished.is_set():
-            return
-        self._vanished.set()
-        for server in self._servers:
-            server.destroy()
-        self.destroy_service(self._service)
+        for name in names or _INTERFACES:
+            with self._lock:
+                entity, self._entities[name] = self._entities[name], None
+            if entity is None:
+                continue
+            if name == GET_JOINT_STATES:
+                self.destroy_service(entity)
+            else:
+                entity.destroy()
+
+    def come_back(self) -> None:
+        """Create the interfaces that vanish() destroyed again, as a restarted commander.
+
+        The new servers do not know the goals of the old ones, so a cancel
+        of such a goal is answered as for an unknown goal.
+        """
+        for name in _INTERFACES:
+            if self._entities[name] is None:
+                self._create(name)
+
+    def supersede(self, group: str, position: float) -> None:
+        """Command gripper `group` to `position` from outside the agent, as another node can.
+
+        The fingers go there at once. A goal of the group that is still in
+        its ramp ends as a superseded goal: ABORTED "Failed", with a 0.0 gap
+        and grasped false.
+        """
+        [finger] = self.model.groups[group]
+        with self._lock:
+            self._gripper_commands[group] += 1
+            self._joints[finger] = float(position)
 
     def joints(self) -> dict[str, float]:
         """Every arm and finger joint by name."""
@@ -329,8 +366,9 @@ class FakeCommander(Node):
             response.status = "OK"
             return response
 
-    def _execute_move(self, goal_handle) -> SetJointPosition.Result:
+    def _execute_move(self, server: tuple[str, int], goal_handle) -> SetJointPosition.Result:
         with self._serving():
+            self._took(server, goal_handle)
             group = goal_handle.request.group_name
             result = SetJointPosition.Result()
             if self.never_answer:
@@ -367,11 +405,13 @@ class FakeCommander(Node):
                 return self._finish(goal_handle, result, group, False, "Execution Failed")
             return self._finish(goal_handle, result, group, True, "Success")
 
-    def _execute_gripper(self, goal_handle) -> ControlGripper.Result:
+    def _execute_gripper(self, server: tuple[str, int], goal_handle) -> ControlGripper.Result:
         with self._serving():
+            self._took(server, goal_handle)
             group = goal_handle.request.group_name
             position = goal_handle.request.position
             result = ControlGripper.Result()
+            superseded = self._claim_gripper(group)
             if self.never_answer:
                 self._hold(lambda: goal_handle.is_cancel_requested)
                 status = "Canceled" if goal_handle.is_cancel_requested else "Failed"
@@ -380,8 +420,12 @@ class FakeCommander(Node):
             width = self.object_widths.get(group)
             settled = position if width is None else max(position, float(width))
             # The commander finishes the ramp before it looks at a cancel,
-            # and a joint cancel's stop does not reach the gripper.
-            self._move({finger: settled}, self.gripper_time_s, lambda: False)
+            # and a joint cancel's stop does not reach the gripper. A newer
+            # command for the group ends the ramp, and the goal then reports
+            # the result's defaults: a 0.0 gap and grasped false.
+            if not self._move({finger: settled}, self.gripper_time_s, superseded) and superseded():
+                status = "Canceled" if goal_handle.is_cancel_requested else "Failed"
+                return self._finish(goal_handle, result, group, False, status)
             if goal_handle.is_cancel_requested:
                 return self._finish(goal_handle, result, group, False, "Canceled")
             if position <= self.get_parameter("grasp_close_threshold").value:
@@ -399,6 +443,52 @@ class FakeCommander(Node):
 
     # -- Helpers ----------------------------------------------------------------
 
+    def _create(self, name: str) -> None:
+        """Create interface `name`, as a new instance of it."""
+        with self._lock:
+            self._instances[name] += 1
+            server = (name, self._instances[name])
+        if name == GET_JOINT_STATES:
+            entity = self.create_service(
+                GetJointStates, name, self._on_joint_states, callback_group=self._callbacks
+            )
+        elif name == SET_JOINT_POSITION:
+            entity = ActionServer(
+                self,
+                SetJointPosition,
+                name,
+                execute_callback=functools.partial(self._execute_move, server),
+                goal_callback=self._on_joint_goal,
+                cancel_callback=self._on_joint_cancel,
+                callback_group=self._callbacks,
+            )
+        else:
+            entity = ActionServer(
+                self,
+                ControlGripper,
+                name,
+                execute_callback=functools.partial(self._execute_gripper, server),
+                goal_callback=self._on_gripper_goal,
+                cancel_callback=self._on_cancel,
+                callback_group=self._callbacks,
+            )
+        with self._lock:
+            self._entities[name] = entity
+
+    def _took(self, server: tuple[str, int], goal_handle) -> None:
+        """Note that `server`, an (interface, instance) pair, took the goal of `goal_handle`."""
+        with self._lock:
+            self._goal_servers[bytes(goal_handle.goal_id.uuid)] = server
+
+    def _server_gone(self, goal_handle) -> bool:
+        """True when the server that took the goal of `goal_handle` was destroyed."""
+        with self._lock:
+            server = self._goal_servers.get(bytes(goal_handle.goal_id.uuid))
+            if server is None:
+                return False
+            name, instance = server
+            return self._entities[name] is None or self._instances[name] != instance
+
     @contextmanager
     def _serving(self) -> Iterator[None]:
         with self._idle:
@@ -411,9 +501,14 @@ class FakeCommander(Node):
                 self._idle.notify_all()
 
     def _delay_answer(self) -> None:
-        if self.accept_delay_s > 0:
-            with self._serving():
+        gate = self.accept_gate
+        if self.accept_delay_s <= 0 and gate is None:
+            return
+        with self._serving():
+            if self.accept_delay_s > 0:
                 self._closing.wait(self.accept_delay_s)
+            while gate is not None and not (gate.is_set() or self._closing.is_set()):
+                gate.wait(_STEP_S)
 
     def _arm_stopped(self, goal_handle) -> Callable[[], bool]:
         """True once the goal is cancelled, or once a joint cancel stops the arms."""
@@ -426,6 +521,18 @@ class FakeCommander(Node):
             return goal_handle.is_cancel_requested or stopped_since
 
         return stopped
+
+    def _claim_gripper(self, group: str) -> Callable[[], bool]:
+        """Count a command for `group`; the check returned is true once a newer one came."""
+        with self._lock:
+            self._gripper_commands[group] += 1
+            command = self._gripper_commands[group]
+
+        def superseded() -> bool:
+            with self._lock:
+                return self._gripper_commands[group] != command
+
+        return superseded
 
     def _hold(self, stopped: Callable[[], bool]) -> None:
         while not (stopped() or self._closing.is_set()):
@@ -445,6 +552,10 @@ class FakeCommander(Node):
                 return False
             fraction = i / steps
             with self._lock:
+                # Checked again with the lock held, so no step lands after a
+                # stop or a newer command.
+                if stopped():
+                    return False
                 for joint, target in targets.items():
                     # The last step sets the target itself, which the
                     # interpolation can miss by a rounding error.
@@ -466,7 +577,7 @@ class FakeCommander(Node):
         # The goal has ended; its result goes when this returns. A result sent
         # through a server that vanish() destroyed would fail, so it waits
         # for the fake to close.
-        delay = math.inf if self._vanished.is_set() else self.result_delay_s
+        delay = math.inf if self._server_gone(goal_handle) else self.result_delay_s
         if delay > 0:
             self._closing.wait(None if math.isinf(delay) else delay)
         return result

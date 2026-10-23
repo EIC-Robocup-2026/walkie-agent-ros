@@ -403,7 +403,10 @@ arm is out of every pose that is safe for driving, while an arm or a
 gripper may still be moving, and when the commander's reading does not show
 where both arms are. When the commander is not found, does not answer, or
 gives no reading, they drive, and add a note that says which to the result,
-such as "Arm state unknown: the commander did not answer."
+such as "Arm state unknown: the commander did not answer." They refuse in
+those cases too while the arms are unverified, after the arm client gave up
+on a goal before its end was known. They then read both arms twice, 0.3 s
+apart, and drive only when the two readings agree.
 
 For the full list of topics, see
 [Getting Started](../getting-started.md).

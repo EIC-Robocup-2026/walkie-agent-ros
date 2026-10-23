@@ -26,6 +26,14 @@ until then every other call is refused, also after its own call gave up on
 a cancel or a timeout. Such a goal can still move the arms: the commander
 may accept it late, or still be stopping it. A cancel of it would also stop
 a newer goal, since the commander's cancel stops both arms.
+
+Abandoning a goal only lets calls through again: its end is still unknown,
+so the arms are then unverified (`unverified`). Motion goals are refused,
+and the drive check does not fail open, until a settled read, two reads of
+both arms SETTLE_S apart that agree, shows the arms still. A goal that the
+commander accepts after it was abandoned is cancelled at once and makes the
+arms unverified again, and a newer arm goal that the cancel may stop fails
+(_on_late_answer).
 """
 
 import functools
@@ -93,13 +101,28 @@ GRIPPER_TIMEOUT_S = 10.0
 # and the goal stays outstanding until it comes.
 CANCEL_ANSWER_S = 1.0
 # How long after its call gave up a goal may stay outstanding before the
-# client abandons it and takes calls again. The result normally comes within
-# seconds: a cancelled move stops at once, and a cancelled gripper command
-# finishes its ramp and the commander's 5 s wait for the controller. But a
-# commander that restarted keeps its action servers discovered, and the old
-# goal's result never comes, so discovery alone cannot end the wait. A goal
-# whose action server is no longer discovered is abandoned at the next check.
+# client abandons it and takes calls again. It is not a bound on the motion:
+# MoveIt lets a goal execute for twice its planned duration plus 60 s
+# (move_group.yaml of walkie-ros's openarm_bimanual_moveit_config). The
+# result normally comes within seconds: a cancelled move stops at once, and
+# a cancelled gripper command finishes its ramp and the commander's 5 s wait
+# for the controller. But a commander that restarted keeps its action
+# servers discovered, and the old goal's result never comes, so discovery
+# alone cannot end the wait. Abandoning only lets calls through: the arms
+# are then unverified, so motion goals are refused and the robot does not
+# drive until a settled read shows the arms still (_settled_read).
 ABANDON_AFTER_S = 60.0
+# How long a goal's action server must stay undiscovered, as the checks of
+# _outstanding() see it, before the goal is abandoned. Not at the first
+# check: discovery can drop for a moment while the commander still runs the
+# goal.
+ABSENT_ABANDON_S = 5.0
+# A settled read is two complete reads of both arms SETTLE_S apart whose
+# joints all agree within SETTLE_TOLERANCE_RAD. A joint that moves faster
+# than about 0.03 rad/s, their ratio, fails it. A goal that has not started
+# to move, such as one that MoveIt still plans, passes it.
+SETTLE_S = 0.3
+SETTLE_TOLERANCE_RAD = 0.01
 # How long a call waits for the commander's server to be discovered. Not
 # zero, so a call soon after the agent starts does not fail on discovery;
 # short, so a missing commander costs little. available() never waits.
@@ -108,6 +131,13 @@ READY_WAIT_S = 1.0
 # How often a wait looks at the cancel event and the clock, as
 # ToolContext.wait() does.
 _POLL_S = 0.05
+
+# Why check_for_driving() could not read the arms (DriveCheck.unread): the
+# /get_joint_states service is not discovered, its read did not answer in
+# time, or the commander answered that it could not read the joints.
+NOT_FOUND = "not found"
+NO_ANSWER = "no answer"
+NO_READING = "no reading"
 
 # The goals the agent may send. The *_lift groups also move the lift, which
 # the agent never commands (ADR-0026).
@@ -152,6 +182,9 @@ _CANCEL_OUTCOMES = {
         "the commander did not answer the cancel, so the gripper may still be moving",
     ),
 }
+# The cancel outcome in StepError.data of a goal call that gave up before the
+# commander answered its send, so no cancel was sent.
+_PENDING = "pending"
 
 
 @dataclass(frozen=True)
@@ -172,6 +205,19 @@ class GripperResult:
     grasped: bool | None
     # The settled travel of one finger, in metres.
     gripper_gap: float | None
+    # The number of this command among the client's commands for its group,
+    # for joint_states_since().
+    command: int
+
+
+@dataclass(frozen=True)
+class DriveCheck:
+    """What check_for_driving() found: both arms, or why they were not read."""
+
+    # From a complete reading of both arms; None when they were not read.
+    state: ArmsState | None
+    # NOT_FOUND, NO_ANSWER or NO_READING when `state` is None, else None.
+    unread: str | None = None
 
 
 @dataclass(eq=False)
@@ -190,6 +236,16 @@ class _Goal:
     # time.monotonic() when the call that sent it gave up on it; None while
     # that call still waits for it.
     gave_up_at: float | None = None
+    # time.monotonic() when a check first found its action server
+    # undiscovered since it was last found discovered; None while it is
+    # discovered.
+    absent_since: float | None = None
+    # Why something other than its own call may have stopped it part way,
+    # such as the cancel of an older goal, which stops both arms; else None.
+    disturbed: str | None = None
+    # For a gripper goal, its number among the client's commands for its
+    # group (GripperResult.command); else None.
+    command: int | None = None
 
     def ended(self) -> bool:
         """True once its result came, or once it was not accepted."""
@@ -219,7 +275,8 @@ class CommanderClient:
       - UNAVAILABLE when the commander's server is not there;
       - PRECONDITION_FAILED while a goal is outstanding: one that another
         call waits for, or one that an earlier call gave up on and that has
-        not ended.
+        not ended; and for a goal while the arms are unverified
+        (`unverified`).
     A group the agent may not use, or a value that is not a finite number,
     raises ValueError: that is a bug in reviewed code, not something for the
     LLM to retry.
@@ -250,6 +307,7 @@ class CommanderClient:
         # Guards what the methods remember, which the gaze loop reads from
         # its own thread while a call holds the call lock, and the goal
         # record, which done callbacks clear from the executor's threads.
+        # Held for short steps only, never while waiting.
         self._state_lock = threading.Lock()
         self._last_state = ArmsState()
         self._joint_order: dict[str, tuple[str, ...]] = {}
@@ -257,6 +315,15 @@ class CommanderClient:
         # The goal whose end the client does not know yet, or None. One at
         # most: no call starts while it is set.
         self._goal: _Goal | None = None
+        # Why the arms are unverified, or None (`unverified`). The count goes
+        # up each time it is set, so a read that began before does not clear
+        # it or keep a state from before it.
+        self._unverified: str | None = None
+        self._unverified_count = 0
+        # The commands sent to each gripper group so far, counting again one
+        # that the commander accepts after its call gave up, so that a read
+        # can tell whether a newer command came (joint_states_since).
+        self._gripper_commands = dict.fromkeys(GRIPPER_GOAL_GROUPS, 0)
 
     # -- Without waiting ----------------------------------------------------------
 
@@ -275,14 +342,32 @@ class CommanderClient:
         move of left_arm from an earlier call" once that call gave up on it
         and until it ends. Either way it may still move an arm, so the drive
         check refuses on it (ADR-0025). A running call counts even when the
-        commander is no longer discovered; a goal its call gave up on is
-        abandoned then, or after ABANDON_AFTER_S (_outstanding).
+        commander is no longer discovered. A goal its call gave up on is
+        abandoned once its action server stays undiscovered for
+        ABSENT_ABANDON_S, or after ABANDON_AFTER_S (_outstanding); the arms
+        are then unverified, which `unverified` tells, not busy().
         """
         running = self._running
         if running is not None:
             return running
         goal = self._outstanding()
         return None if goal is None else f"{goal.what} from an earlier call"
+
+    @property
+    def unverified(self) -> str | None:
+        """Why the arms are unverified, or None. Never waits.
+
+        Set when a goal is abandoned (_outstanding) and when the commander
+        accepts a goal after it was abandoned, since either may still move
+        an arm or a gripper; what that goal moves is then unknown in
+        last_state. While it is set, every goal is refused and the drive
+        check does not fail open. A settled read clears it: read_arms() and
+        check_for_driving() make one while it is set. Such as "the move of
+        left_arm from an earlier call was given up on before its end was
+        known".
+        """
+        with self._state_lock:
+            return self._unverified
 
     @property
     def last_state(self) -> ArmsState:
@@ -323,45 +408,42 @@ class CommanderClient:
         when the commander does not know the group, answers malformed or
         gives a position that is not a finite number; the arms of the group
         are then unknown. An arm of the group whose joints the reading lacks
-        is unknown too.
+        is unknown too. One read does not clear the unverified state; a
+        settled read (read_arms) does.
         """
         _check_group(group, READ_GROUPS)
         deadline = _deadline(timeout_s)
         with self._exclusive(f"read the joints of {group}", deadline, cancel):
-            self._wait_ready(
-                self._joint_states.service_is_ready,
-                f"{GET_JOINT_STATES_SERVICE} service",
-                deadline,
-                cancel,
-            )
-            future = self._joint_states.call_async(GetJointStates.Request(group_name=group))
-            try:
-                response = _wait(future, deadline, cancel)
-            except StepError as e:
-                # The answer would otherwise be kept for a caller that left.
-                self._joint_states.remove_pending_request(future)
-                if e.code == "CANCELLED":
-                    raise StepError(
-                        "CANCELLED", f"A stop or a reset interrupted the read of {group}."
-                    ) from None
-                logger.warning(
-                    f"{GET_JOINT_STATES_SERVICE} did not answer within {timeout_s:g} s. "
-                    f"{STALE_PIN_HINT}"
-                )
-                raise StepError(
-                    "TIMEOUT",
-                    f"The commander's {GET_JOINT_STATES_SERVICE} did not answer within "
-                    f"{timeout_s:g} s. {COMMANDER_HINT}",
-                ) from None
-            try:
-                reading = _reading(group, response)
-            except StepError as e:
-                if e.code == "INTERNAL":
-                    # The commander answered, but not with positions that
-                    # can be trusted, so the arms may be anywhere.
-                    self._forget_arms(group)
-                raise
-            self._remember_reading(group, reading)
+            count = self._unverified_mark()
+            reading = self._read(group, deadline, timeout_s, cancel)
+            self._remember_reading(group, reading, count)
+            return reading
+
+    def joint_states_since(
+        self,
+        group: str,
+        command: int,
+        cancel: threading.Event,
+        timeout_s: float = READ_TIMEOUT_S,
+    ) -> dict[str, float]:
+        """The joints of gripper `group`, read once while `command` is its latest command.
+
+        `command` is GripperResult.command. Under the call lock, which no
+        goal holds or waits on then (_exclusive refuses while one runs or is
+        outstanding), it checks that no newer command for the group came,
+        also none that the commander accepted late, reads, and checks again.
+        Raises StepError as joint_states() does, and PRECONDITION_FAILED when
+        a newer command came, since a read then would not show where
+        `command` left the fingers.
+        """
+        _check_group(group, GRIPPER_GOAL_GROUPS)
+        deadline = _deadline(timeout_s)
+        with self._exclusive(f"read the joints of {group}", deadline, cancel):
+            self._check_command(group, command)
+            count = self._unverified_mark()
+            reading = self._read(group, deadline, timeout_s, cancel)
+            self._check_command(group, command)
+            self._remember_reading(group, reading, count)
             return reading
 
     def joint_names(
@@ -380,23 +462,56 @@ class CommanderClient:
         return tuple(self.joint_states(group, cancel, timeout_s))
 
     def read_arms(self, cancel: threading.Event, timeout_s: float = READ_TIMEOUT_S) -> ArmsState:
-        """Both arms' named poses from one read of both_arms; see joint_states().
+        """Both arms' named poses from a read of both_arms; see joint_states().
 
         Also raises StepError INTERNAL when the reading lacks a joint of
-        either arm, which is then unknown.
+        either arm, which is then unknown. While the arms are unverified
+        (`unverified`), it makes a settled read instead (_settled_read),
+        which clears that state, can take twice `timeout_s` plus SETTLE_S,
+        and raises PRECONDITION_FAILED when an arm is still moving.
         """
-        reading = self.joint_states(BOTH_ARMS_GROUP, cancel, timeout_s)
-        incomplete = [arm for arm in ARMS if self._missing(arm, reading)]
-        if incomplete:
-            missing = [joint for arm in incomplete for joint in self._missing(arm, reading)]
-            which = "either arm" if len(incomplete) == len(ARMS) else f"the {incomplete[0]} arm"
-            raise StepError(
-                "INTERNAL",
-                f"The commander's reading of {BOTH_ARMS_GROUP} lacks {', '.join(missing)}, so "
-                f"it cannot say where {which} is.",
-                {"missing": missing},
-            )
+        deadline = _deadline(timeout_s)
+        with self._exclusive(f"read the joints of {BOTH_ARMS_GROUP}", deadline, cancel):
+            reading = self._read_both(deadline, timeout_s, cancel)
         return ArmsState.from_joints(reading, self.poses.poses)
+
+    def check_for_driving(
+        self, cancel: threading.Event, timeout_s: float = READ_TIMEOUT_S
+    ) -> DriveCheck:
+        """Read both arms for the drive check (ADR-0025), all under the call lock.
+
+        So no goal can start between its steps. Raises StepError
+        PRECONDITION_FAILED while a goal runs or is outstanding, and TIMEOUT
+        when another call keeps the lock past `timeout_s`. Returns the arms'
+        state, or no state and why: the /get_joint_states service is not
+        discovered (NOT_FOUND; a missing action does not stop the arms being
+        read), the read does not answer within `timeout_s` (NO_ANSWER), or
+        the commander cannot read the joints (NO_READING). The caller may
+        then drive: failing open keeps navigation working while the arm
+        stack is down. Not while the arms are unverified (`unverified`): it
+        then makes a settled read, and raises PRECONDITION_FAILED instead of
+        failing open, and when an arm is still moving. INTERNAL as
+        read_arms() raises it.
+        """
+        deadline = _deadline(timeout_s)
+        with self._exclusive("check the arms for driving", deadline, cancel):
+            if not self._joint_states.service_is_ready():
+                self._refuse_unverified(
+                    f"The commander's {GET_JOINT_STATES_SERVICE} service is not discovered. "
+                    f"{COMMANDER_HINT}"
+                )
+                return DriveCheck(None, NOT_FOUND)
+            try:
+                reading = self._read_both(deadline, timeout_s, cancel)
+            except StepError as e:
+                if e.code not in ("TIMEOUT", "UNAVAILABLE"):
+                    raise
+                self._refuse_unverified(e.message)
+                if e.code == "TIMEOUT":
+                    return DriveCheck(None, NO_ANSWER)
+                # _wait_ready's, when the service went away since the check.
+                return DriveCheck(None, NOT_FOUND if "name" in e.data else NO_READING)
+        return DriveCheck(ArmsState.from_joints(reading, self.poses.poses))
 
     # -- Goals ----------------------------------------------------------------
 
@@ -415,8 +530,10 @@ class CommanderClient:
         StepError as the class says, and:
           - INTERNAL when the commander rejects the goal, which it does for
             a position count that differs from the group's joints;
-          - SKILL_FAILED for "Planning Failed" (nothing moved) and
-            "Execution Failed" (the motion stopped part way);
+          - SKILL_FAILED for "Planning Failed" (nothing moved), for
+            "Execution Failed" (the motion stopped part way), and when the
+            cancel of an older goal that the commander accepted late may
+            have stopped it (_on_late_answer);
           - CANCELLED when the commander reports the goal cancelled.
         """
         _check_group(group, ARM_GOAL_GROUPS)
@@ -427,7 +544,7 @@ class CommanderClient:
             # Before the goal is sent: from then on the arm may move, and the
             # gaze loop must not see its old pose.
             self._forget_arms(group)
-            response = self._run_goal(
+            _, response = self._run_goal(
                 self._set_joint_position,
                 SET_JOINT_POSITION_ACTION,
                 SetJointPosition.Goal(group_name=group, joint_positions=values),
@@ -474,7 +591,7 @@ class CommanderClient:
         what = f"the {group} command"
         with self._exclusive(f"move {group}", deadline, cancel, running=what):
             self._remember_gripper(group, None)
-            response = self._run_goal(
+            record, response = self._run_goal(
                 self._control_gripper,
                 CONTROL_GRIPPER_ACTION,
                 ControlGripper.Goal(group_name=group, position=position),
@@ -504,6 +621,7 @@ class CommanderClient:
             status=result.status,
             grasped=bool(result.grasped) if closed else None,
             gripper_gap=float(result.gripper_gap) if closed else None,
+            command=record.command,
         )
 
     def destroy(self) -> None:
@@ -524,11 +642,13 @@ class CommanderClient:
     ) -> Iterator[None]:
         """Hold the call lock; `running` names the goal, if the call sends one.
 
-        Refuses at once while a goal is outstanding (_Goal).
+        Refuses at once while a goal is outstanding (_Goal), and a call that
+        sends a goal also while the arms are unverified.
         """
+        sends = running is not None
         while True:
             _check_cancelled(cancel)
-            self._check_free(action)
+            self._check_free(action, sends)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise StepError(
@@ -539,15 +659,19 @@ class CommanderClient:
                 break
         try:
             # The call that held the lock may have left its goal outstanding.
-            self._check_free(action)
+            self._check_free(action, sends)
             self._running = running
             yield
         finally:
             self._running = None
             self._lock.release()
 
-    def _check_free(self, action: str) -> None:
-        """Raises StepError PRECONDITION_FAILED while a goal is outstanding."""
+    def _check_free(self, action: str, sends: bool) -> None:
+        """Raises StepError PRECONDITION_FAILED while a goal is outstanding.
+
+        With `sends`, for a call that sends a goal, also while the arms are
+        unverified.
+        """
         running = self._running
         if running is not None:
             raise StepError(
@@ -563,6 +687,10 @@ class CommanderClient:
                 "Try again in a few seconds.",
                 {"outstanding": goal.what},
             )
+        if sends:
+            cause = self.unverified
+            if cause is not None:
+                raise _unverified_refusal(action, cause)
 
     @staticmethod
     def _wait_ready(
@@ -579,6 +707,166 @@ class CommanderClient:
                 )
             time.sleep(_POLL_S)
 
+    def _read(
+        self, group: str, deadline: float, timeout_s: float, cancel: threading.Event
+    ) -> dict[str, float]:
+        """One read of `group`, with the call lock held; see joint_states().
+
+        Remembers nothing, except that the arms of the group are unknown
+        after an INTERNAL.
+        """
+        self._wait_ready(
+            self._joint_states.service_is_ready,
+            f"{GET_JOINT_STATES_SERVICE} service",
+            deadline,
+            cancel,
+        )
+        future = self._joint_states.call_async(GetJointStates.Request(group_name=group))
+        try:
+            response = _wait(future, deadline, cancel)
+        except StepError as e:
+            # The answer would otherwise be kept for a caller that left.
+            self._joint_states.remove_pending_request(future)
+            if e.code == "CANCELLED":
+                raise StepError(
+                    "CANCELLED", f"A stop or a reset interrupted the read of {group}."
+                ) from None
+            logger.warning(
+                f"{GET_JOINT_STATES_SERVICE} did not answer within {timeout_s:g} s. "
+                f"{STALE_PIN_HINT}"
+            )
+            raise StepError(
+                "TIMEOUT",
+                f"The commander's {GET_JOINT_STATES_SERVICE} did not answer within "
+                f"{timeout_s:g} s. {COMMANDER_HINT}",
+            ) from None
+        try:
+            return _reading(group, response)
+        except StepError as e:
+            if e.code == "INTERNAL":
+                # The commander answered, but not with positions that can
+                # be trusted, so the arms may be anywhere.
+                self._forget_arms(group)
+            raise
+
+    def _read_both(
+        self, deadline: float, timeout_s: float, cancel: threading.Event
+    ) -> dict[str, float]:
+        """A complete reading of both arms, with the call lock held.
+
+        One read while the arms are verified; a settled read while they are
+        unverified, or once they become so during the read.
+        """
+        with self._state_lock:
+            unverified, count = self._unverified, self._unverified_count
+        if unverified is None:
+            reading = self._read(BOTH_ARMS_GROUP, deadline, timeout_s, cancel)
+            if self._remember_reading(BOTH_ARMS_GROUP, reading, count):
+                self._check_complete(reading)
+                return reading
+            # A goal given up on earlier was accepted late during the read.
+        return self._settled_read(timeout_s, cancel)
+
+    def _settled_read(self, timeout_s: float, cancel: threading.Event) -> dict[str, float]:
+        """Two complete reads of both arms SETTLE_S apart, with the call lock held.
+
+        When every joint agrees within SETTLE_TOLERANCE_RAD and the arms did
+        not become unverified again since the first read began, it keeps
+        the second reading and clears the unverified state. Each read has
+        its own `timeout_s`. Raises StepError as _read() does, INTERNAL when
+        a reading lacks a joint of either arm, CANCELLED, and
+        PRECONDITION_FAILED when an arm moved between the reads or the arms
+        became unverified again; both arms are then unknown.
+        """
+        count = self._unverified_mark()
+        first = self._read_complete(timeout_s, cancel)
+        if cancel.wait(SETTLE_S):
+            raise StepError(
+                "CANCELLED", f"A stop or a reset interrupted the read of {BOTH_ARMS_GROUP}."
+            )
+        second = self._read_complete(timeout_s, cancel)
+        joint, moved = max(
+            ((name, abs(value - first[name])) for name, value in second.items() if name in first),
+            key=lambda change: change[1],
+            default=("", 0.0),
+        )
+        if moved > SETTLE_TOLERANCE_RAD:
+            self._forget_arms(BOTH_ARMS_GROUP)
+            raise StepError(
+                "PRECONDITION_FAILED",
+                f"An arm is still moving: {joint} moved {moved:.3f} rad between two reads "
+                f"{SETTLE_S:g} s apart. Wait a few seconds, then try again.",
+                {"joint": joint, "moved_rad": moved},
+            )
+        if not self._remember_reading(BOTH_ARMS_GROUP, second, count, verify=True):
+            self._forget_arms(BOTH_ARMS_GROUP)
+            cause = self.unverified
+            raise StepError(
+                "PRECONDITION_FAILED",
+                f"While the arms were being checked, {cause}. Wait a few seconds, then try "
+                "again.",
+                {"unverified": cause},
+            )
+        logger.info(
+            f"The arms are verified: two reads of {BOTH_ARMS_GROUP} {SETTLE_S:g} s apart agree "
+            f"within {SETTLE_TOLERANCE_RAD:g} rad."
+        )
+        return second
+
+    def _read_complete(self, timeout_s: float, cancel: threading.Event) -> dict[str, float]:
+        """One read of both arms for a settled read; INTERNAL when it lacks a joint."""
+        reading = self._read(BOTH_ARMS_GROUP, _deadline(timeout_s), timeout_s, cancel)
+        try:
+            self._check_complete(reading)
+        except StepError:
+            with self._state_lock:
+                # As _remember_reading() does for an incomplete reading.
+                self._joint_order.pop(BOTH_ARMS_GROUP, None)
+                self._last_state = _without(self._last_state, BOTH_ARMS_GROUP)
+            raise
+        return reading
+
+    def _check_complete(self, reading: Mapping[str, float]) -> None:
+        """Raises StepError INTERNAL when `reading` lacks a joint of either arm."""
+        incomplete = [arm for arm in ARMS if self._missing(arm, reading)]
+        if incomplete:
+            missing = [joint for arm in incomplete for joint in self._missing(arm, reading)]
+            which = "either arm" if len(incomplete) == len(ARMS) else f"the {incomplete[0]} arm"
+            raise StepError(
+                "INTERNAL",
+                f"The commander's reading of {BOTH_ARMS_GROUP} lacks {', '.join(missing)}, so "
+                f"it cannot say where {which} is.",
+                {"missing": missing},
+            )
+
+    def _check_command(self, group: str, command: int) -> None:
+        """Raises StepError PRECONDITION_FAILED once a command newer than `command` came."""
+        with self._state_lock:
+            latest = self._gripper_commands[group]
+        if latest != command:
+            raise StepError(
+                "PRECONDITION_FAILED",
+                f"Another {group} command came after this one, so a read now would not show "
+                "where this one left the fingers.",
+                {"group": group, "command": command},
+            )
+
+    def _refuse_unverified(self, why: str) -> None:
+        """Raises StepError PRECONDITION_FAILED while the arms are unverified.
+
+        For the drive check, which must not fail open then. `why` says why
+        the arms cannot be read.
+        """
+        cause = self.unverified
+        if cause is not None:
+            raise StepError(
+                "PRECONDITION_FAILED",
+                f"An arm or a gripper may still be moving, as {cause}, and the arms cannot be "
+                f"checked now. {_full_stop(why)} Try again in a few seconds; if it fails again, "
+                "tell the person that the arms cannot be checked.",
+                {"unverified": cause},
+            )
+
     def _run_goal(
         self,
         client: ActionClient,
@@ -589,18 +877,34 @@ class CommanderClient:
         deadline: float,
         timeout_s: float,
         cancel: threading.Event,
-    ) -> Any | None:
-        """Send `goal` and return its GetResult response, or None when it was rejected.
+    ) -> tuple[_Goal, Any | None]:
+        """Send `goal`; return its record and its GetResult response, None when rejected.
 
         The goal is outstanding from its send until its end is known, also
         after this call gives up on a cancel or a timeout (_Goal).
         """
         self._wait_ready(client.server_is_ready, f"{name} action", deadline, cancel)
-        record = _Goal(what, group, client, client.send_goal_async(goal))
+        # The check, the send and the record under one hold of the state
+        # lock, which _on_late_answer() takes too: an older goal that the
+        # commander accepts late either makes the arms unverified before
+        # this goal is sent, which refuses it, or finds its record, which it
+        # marks disturbed. send_goal_async() calls no callback of ours.
         with self._state_lock:
-            self._goal = record
+            cause = self._unverified
+            if cause is None:
+                record = _Goal(what, group, client, client.send_goal_async(goal))
+                if group in self._gripper_commands:
+                    # Counted with the send, under the call lock, so no read
+                    # that checks the count runs in between
+                    # (joint_states_since), and a call that sends nothing
+                    # counts nothing.
+                    self._gripper_commands[group] += 1
+                    record.command = self._gripper_commands[group]
+                self._goal = record
+        if cause is not None:
+            raise _unverified_refusal(f"move {group}", cause)
         try:
-            return self._wait_goal(record, name, deadline, timeout_s, cancel)
+            return record, self._wait_goal(record, name, deadline, timeout_s, cancel)
         finally:
             self._release(record)
 
@@ -624,7 +928,7 @@ class CommanderClient:
                 if goal.group in GRIPPER_GOAL_GROUPS
                 else "if the commander accepts it later, it is cancelled at once"
             )
-            raise _ended(e, goal.what, timeout_s, outcome) from None
+            raise _ended(e, goal.what, timeout_s, _PENDING, outcome) from None
         if handle is None or not handle.accepted:
             return None
         result = handle.get_result_async()
@@ -634,42 +938,122 @@ class CommanderClient:
         # callback can run at once, in this thread.
         result.add_done_callback(functools.partial(self._end_goal, goal))
         try:
-            return _wait(result, deadline, cancel)
+            response = _wait(result, deadline, cancel)
         except StepError as e:
-            raise _ended(e, goal.what, timeout_s, self._cancel(handle, goal)) from None
+            raise _ended(e, goal.what, timeout_s, *self._cancel(handle, goal)) from None
+        with self._state_lock:
+            disturbed = goal.disturbed
+        if disturbed is not None:
+            self._forget_arms(goal.group)
+            raise StepError(
+                "SKILL_FAILED",
+                f"{_capital(goal.what)} may have been stopped part way: {disturbed}. Call "
+                "get_arm_state to see where the arms are.",
+                {"group": goal.group, "disturbed": disturbed},
+            )
+        return response
 
-    def _cancel(self, handle: Any, goal: _Goal) -> str:
-        """Ask the commander to cancel the goal of `handle`; what its answer means, in words."""
+    def _cancel(self, handle: Any, goal: _Goal) -> tuple[str, str]:
+        """Ask the commander to cancel the goal of `handle`.
+
+        Returns the _CANCEL_OUTCOMES key of its answer, and what that means
+        in words.
+        """
         # wait_for_future itself, not _wait: `cancel` may already be set.
         answer = wait_for_future(handle.cancel_goal_async(), CANCEL_ANSWER_S)
         outcome = _cancel_outcome(answer, handle.goal_id)
         words = _CANCEL_OUTCOMES[outcome][1 if goal.group in GRIPPER_GOAL_GROUPS else 0]
         if outcome not in ("accepted", "ended"):
             logger.warning(f"Cancel of {goal.what}: {words}.")
-        return words
+        return outcome, words
 
     def _on_late_answer(self, goal: _Goal, sent: Future) -> None:
         """The commander answered a goal after its call gave up waiting for that answer.
 
         A done callback, run by the connector's executor, so it must not
-        raise. An accepted goal is cancelled at once, and stays outstanding
-        until its result comes. A gripper goal still finishes its motion.
+        raise, block or take the call lock. An accepted goal is cancelled at
+        once, and the answer to that cancel is logged when it comes
+        (_on_cancel_answer). A goal that is still outstanding stays so until
+        its result comes. A goal that was abandoned makes the arms
+        unverified again, and a newer arm goal that runs or is outstanding
+        is marked disturbed, before the cancel is sent: the commander's
+        cancel of a joint goal stops both arms. A joint cancel does not stop
+        a gripper, and a gripper finishes its motion whatever the cancel, so
+        a gripper goal is never disturbed. An answer that is not an
+        acceptance only forgets the goal, and changes nothing once it was
+        abandoned.
         """
         try:
             handle = None if sent.cancelled() or sent.exception() is not None else sent.result()
             if handle is None or not handle.accepted:
-                self._end_goal(goal)
+                with self._state_lock:
+                    current = self._goal is goal
+                    if current:
+                        self._goal = None
+                if not current:
+                    logger.debug(f"The commander did not accept {goal.what}, which was abandoned.")
                 return
+            arm_goal = goal.group in ARM_GOAL_GROUPS
+            disturbed = None
+            with self._state_lock:
+                abandoned = self._goal is not goal
+                if abandoned:
+                    self._set_unverified(_accepted_late(goal), goal.group)
+                    newer = self._goal
+                    if (
+                        arm_goal
+                        and newer is not None
+                        and newer.group in ARM_GOAL_GROUPS
+                        and not newer.ended()
+                    ):
+                        newer.disturbed = (
+                            f"the commander accepted {goal.what} from an earlier call late and "
+                            "was asked to cancel it, and a cancel it accepts stops both arms"
+                        )
+                        disturbed = newer.what
+                if not arm_goal:
+                    # The fingers make this motion now, after any newer command.
+                    self._gripper_commands[goal.group] += 1
             logger.warning(
                 f"The commander accepted {goal.what} after its call gave up; cancelling it."
             )
-            handle.cancel_goal_async()
+            if abandoned:
+                logger.warning(
+                    f"{_capital(goal.what)} had been abandoned, so the arms are unverified "
+                    "until a settled read shows them still."
+                )
+            if disturbed is not None:
+                logger.warning(
+                    f"{_capital(disturbed)} may be stopped part way by the cancel of {goal.what}."
+                )
+            handle.cancel_goal_async().add_done_callback(
+                functools.partial(self._on_cancel_answer, goal, handle.goal_id)
+            )
             result = handle.get_result_async()
             with self._state_lock:
                 goal.result = result
             result.add_done_callback(functools.partial(self._end_goal, goal))
         except Exception:
             logger.exception(f"Could not handle the late answer to {goal.what}.")
+
+    def _on_cancel_answer(self, goal: _Goal, goal_id: Any, future: Future) -> None:
+        """Log the commander's answer to the cancel of a goal it accepted late.
+
+        A done callback, so it must not raise, block or take the call lock.
+        """
+        try:
+            answer = (
+                None if future.cancelled() or future.exception() is not None else future.result()
+            )
+            outcome = _cancel_outcome(answer, goal_id)
+            words = _CANCEL_OUTCOMES[outcome][1 if goal.group in GRIPPER_GOAL_GROUPS else 0]
+            message = f"Cancel of {goal.what}, which the commander accepted late: {words}."
+            if outcome in ("accepted", "ended"):
+                logger.info(message)
+            else:
+                logger.warning(message)
+        except Exception:
+            logger.exception(f"Could not check the cancel of {goal.what}.")
 
     def _end_goal(self, goal: _Goal, _future: Future | None = None) -> None:
         """Forget `goal`, which has ended. Also a done callback, so it must not raise."""
@@ -691,8 +1075,9 @@ class CommanderClient:
         """The goal that a call gave up on and whose end is not known yet, else None.
 
         Checked when asked, with no timer: forgets the goal once it ended,
-        and abandons it once its action server is no longer discovered or
-        ABANDON_AFTER_S has passed since its call gave up.
+        and abandons it once its action server stayed undiscovered for
+        ABSENT_ABANDON_S, from the first check that found it so to one that
+        still does, or once ABANDON_AFTER_S passed since its call gave up.
         """
         with self._state_lock:
             goal = self._goal
@@ -703,9 +1088,26 @@ class CommanderClient:
             if goal.ended():
                 self._goal = None
                 return None
-            waited_s = time.monotonic() - goal.gave_up_at
-        if not goal.client.server_is_ready():
-            self._abandon(goal, "its action server is no longer discovered")
+        # Outside the state lock, so the gaze loop's reads of last_state do
+        # not wait for discovery.
+        present = goal.client.server_is_ready()
+        now = time.monotonic()
+        with self._state_lock:
+            if self._goal is not goal:
+                return None
+            if goal.ended():
+                self._goal = None
+                return None
+            if present:
+                goal.absent_since = None
+            elif goal.absent_since is None:
+                goal.absent_since = now
+            absent_s = 0.0 if goal.absent_since is None else now - goal.absent_since
+            waited_s = now - goal.gave_up_at
+        if absent_s >= ABSENT_ABANDON_S:
+            self._abandon(
+                goal, f"its action server has not been discovered for {ABSENT_ABANDON_S:g} s"
+            )
         elif waited_s >= ABANDON_AFTER_S:
             self._abandon(
                 goal,
@@ -717,25 +1119,41 @@ class CommanderClient:
         return None
 
     def _abandon(self, goal: _Goal, reason: str) -> None:
+        """Stop waiting for `goal`: calls are taken again, and the arms are unverified."""
         with self._state_lock:
             if self._goal is not goal:
                 return
             self._goal = None
-        # What the goal moved stays unknown: its call forgot it before the
-        # send, and no read ran since.
+            self._set_unverified(
+                f"{goal.what} from an earlier call was given up on before its end was known",
+                goal.group,
+            )
         logger.warning(
-            f"Abandoned {goal.what}: {reason}. Calls to the commander are taken again; "
-            "what it moved is unknown until read or commanded again."
+            f"Abandoned {goal.what}: {reason}. Calls to the commander are taken again, but the "
+            "arms are unverified: goals are refused and the robot does not drive until a "
+            "settled read shows the arms still."
         )
 
-    def _forget_arms(self, group: str) -> None:
-        arms = _GROUP_ARMS.get(group, ())
+    def _set_unverified(self, cause: str, group: str) -> None:
+        """With the state lock held: the arms are unverified, as a goal for `group` may move.
+
+        What that goal moves is unknown from now on: the arms of its group,
+        or its gripper's commanded position.
+        """
+        self._unverified = cause
+        self._unverified_count += 1
+        self._last_state = _without(self._last_state, group)
+        if group in self._gripper_positions:
+            self._gripper_positions[group] = None
+
+    def _unverified_mark(self) -> int:
+        """How many times the arms became unverified so far, for _remember_reading()."""
         with self._state_lock:
-            old = self._last_state
-            self._last_state = ArmsState(
-                left=None if "left" in arms else old.left,
-                right=None if "right" in arms else old.right,
-            )
+            return self._unverified_count
+
+    def _forget_arms(self, group: str) -> None:
+        with self._state_lock:
+            self._last_state = _without(self._last_state, group)
 
     def _missing(self, arm: str, reading: Mapping[str, float]) -> list[str]:
         """The joints of `arm` that `reading` lacks, by name.
@@ -746,7 +1164,16 @@ class CommanderClient:
         joints = self._arm_joints[arm] - {RIGHT_JOINT2}
         return sorted(joint for joint in joints if joint not in reading)
 
-    def _remember_reading(self, group: str, reading: dict[str, float]) -> None:
+    def _remember_reading(
+        self, group: str, reading: dict[str, float], count: int, verify: bool = False
+    ) -> bool:
+        """Keep what `reading` of `group` says about the arms, and its joint order.
+
+        `count` is _unverified_mark() from before the read. When the arms
+        became unverified since, the reading may predate a motion, so only
+        its joint order is kept, and it returns False. With `verify`, it
+        also clears the unverified state.
+        """
         # An arm of the group takes its state from the reading, or becomes
         # unknown when the reading lacks one of its joints. A read of one
         # arm's group or of a gripper says nothing about the other arm, which
@@ -763,10 +1190,15 @@ class CommanderClient:
                 self._joint_order.pop(group, None)
             else:
                 self._joint_order[group] = tuple(reading)
+            if self._unverified_count != count:
+                return False
             old = self._last_state
             self._last_state = ArmsState(
                 left=covered.get("left", old.left), right=covered.get("right", old.right)
             )
+            if verify:
+                self._unverified = None
+            return True
 
     def _remember_gripper(self, group: str, position: float | None) -> None:
         with self._state_lock:
@@ -807,12 +1239,42 @@ def _cancel_outcome(answer: Any, goal_id: Any) -> str:
     return "refused"
 
 
-def _ended(error: StepError, what: str, timeout_s: float, outcome: str) -> StepError:
-    """The StepError for a goal call that a cancel or its timeout ended."""
+def _ended(
+    error: StepError, what: str, timeout_s: float, cancel_outcome: str, outcome: str
+) -> StepError:
+    """The StepError for a goal call that a cancel or its timeout ended.
+
+    `cancel_outcome` is the _CANCEL_OUTCOMES key of the commander's answer
+    to the cancel, or _PENDING when no cancel was sent; it goes in the data
+    as "cancel". `outcome` says in words what that means.
+    """
+    data = {"cancel": cancel_outcome}
     if error.code == "CANCELLED":
-        return StepError("CANCELLED", f"A stop or a reset interrupted {what}; {outcome}.")
+        return StepError("CANCELLED", f"A stop or a reset interrupted {what}; {outcome}.", data)
     return StepError(
-        "TIMEOUT", f"{what[0].upper()}{what[1:]} did not finish within {timeout_s:g} s; {outcome}."
+        "TIMEOUT", f"{_capital(what)} did not finish within {timeout_s:g} s; {outcome}.", data
+    )
+
+
+def _accepted_late(goal: _Goal) -> str:
+    """Why the arms are unverified once the commander accepts `goal` after it was abandoned."""
+    if goal.group in GRIPPER_GOAL_GROUPS:
+        return (
+            f"the commander accepted {goal.what} from an earlier call late, and the gripper "
+            "makes that motion although it was asked to cancel it"
+        )
+    return (
+        f"the commander accepted {goal.what} from an earlier call late and was asked to "
+        "cancel it"
+    )
+
+
+def _unverified_refusal(action: str, cause: str) -> StepError:
+    return StepError(
+        "PRECONDITION_FAILED",
+        f"Cannot {action}: an arm or a gripper may still be moving, as {cause}. Call "
+        "get_arm_state, which checks that the arms have stopped, then try again.",
+        {"unverified": cause},
     )
 
 
@@ -870,6 +1332,24 @@ def _reading(group: str, response: Any) -> dict[str, float]:
             {"joints": list(bad)},
         )
     return reading
+
+
+def _without(state: ArmsState, group: str) -> ArmsState:
+    """`state` with the arms that `group` moves unknown."""
+    arms = _GROUP_ARMS.get(group, ())
+    return ArmsState(
+        left=None if "left" in arms else state.left,
+        right=None if "right" in arms else state.right,
+    )
+
+
+def _capital(text: str) -> str:
+    return f"{text[0].upper()}{text[1:]}"
+
+
+def _full_stop(text: str) -> str:
+    """`text` ending with a full stop; the commander's status text has none."""
+    return text if text.endswith((".", "?", "!")) else f"{text}."
 
 
 def _check_cancelled(cancel: threading.Event) -> None:

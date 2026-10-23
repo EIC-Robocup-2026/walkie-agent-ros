@@ -6,10 +6,17 @@ commander's grasp detection reads (ADR-0024). A gripper reads as closed at or
 below the commander's close threshold, and otherwise as half open or open,
 whichever position is nearer. When a gripper cannot be read, its line gives
 the last command the agent sent it, which the client remembers.
+
+While the arms are unverified (CommanderClient.unverified), the read of the
+arms is a settled read. When it shows them still, which lets goals through
+again, the answer starts with why they had to be checked and what the check
+found. When an arm is still moving, the call fails, and its message says why
+the arms had to be checked.
 """
 
 from pydantic import BaseModel
 
+from walkie_agent.arm import commander as arm_client
 from walkie_agent.arm.commander import CommanderClient
 from walkie_agent.arm.poses import (
     ARMS,
@@ -63,12 +70,24 @@ class Out(ToolOutput):
 
 def run(ctx: ToolContext, args: Args) -> Out:
     client = shared.commander(ctx)
+    # Why the arms are unverified, if they are: read_arms() then makes a
+    # settled read.
+    unverified = client.unverified
     try:
         state = client.read_arms(ctx.cancel, shared.CONFIG.read_timeout_s)
     except StepError as e:
-        raise shared.with_sentence(e, "", client.last_state.sentence()) from None
+        cause = client.unverified
+        # The settled read found an arm moving, and the state stays unverified.
+        checked = f"{_checked(cause)} " if cause is not None and "moved_rad" in e.data else ""
+        raise shared.with_sentence(e, checked, client.last_state.sentence()) from None
 
     lines = []
+    if unverified is not None and client.unverified is None:
+        # Only the arms: the settled read does not read the grippers.
+        lines.append(
+            f"{_checked(unverified)} Two reads of both arms {arm_client.SETTLE_S:g} s apart "
+            "agree, so they have stopped. Arm and gripper tools can be used again."
+        )
     poses: dict[str, str | None] = {}
     for arm in ARMS:
         arm_state = state.arm(arm)
@@ -107,6 +126,11 @@ def run(ctx: ToolContext, args: Args) -> Out:
         grippers=grippers,
         gripper_gaps_m=gaps,
     )
+
+
+def _checked(cause: str) -> str:
+    """Why a settled read was made: `cause` is CommanderClient.unverified."""
+    return f"The arms had to be checked, as {cause}."
 
 
 def _reads_as(grippers: GripperPositions, gap: float) -> str:

@@ -466,6 +466,68 @@ def test_the_camera_pose_is_tfs_at_the_images_stamp_not_the_newest(idle_node, mo
     assert scene.asked == [Time.from_msg(STAMP)]
 
 
+def camera_buffer() -> Buffer:
+    """A buffer with the head camera on a base at the origin, at any stamp."""
+    buffer = Buffer()
+    buffer.set_transform_static(
+        tf_msg(MAP_FRAME, CAMERA_FRAME, np.linalg.inv(sim_camera())), "test"
+    )
+    return buffer
+
+
+def published(oracle: OraclePerception, monkeypatch) -> list:
+    """Every array `oracle` publishes from here on."""
+    sent: list = []
+    monkeypatch.setattr(oracle._people_pub, "publish", sent.append)
+    monkeypatch.setattr(oracle._objects_pub, "publish", sent.append)
+    return sent
+
+
+def test_an_image_whose_scene_is_unknown_is_skipped_with_a_throttled_warning(
+    idle_node, caplog, monkeypatch
+):
+    asked: list[Time] = []
+
+    def unknown(stamp: Time) -> None:
+        asked.append(stamp)
+        return None
+
+    oracle = OraclePerception(idle_node, unknown, QUIET, tf_buffer=camera_buffer())
+    sent = published(oracle, monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger=oracle_perception.__name__):
+        for _ in range(3):
+            oracle._on_camera_info(camera_info())
+
+    assert len(asked) == 3 and sent == []
+    [text] = oracle_warnings(caplog)
+    assert "No scene is known at the image's stamp" in text
+
+
+def test_an_image_during_which_the_clock_went_back_is_skipped_with_a_warning(
+    idle_node, caplog, monkeypatch
+):
+    # The epoch is read before each image's TF lookup and after its scene:
+    # the first image spans a jump, the second does not.
+    epochs = iter([0, 1, 1, 1])
+    scene = SceneAt(Scene(people=(facing_person(2.0),)))
+    oracle = OraclePerception(
+        idle_node, scene, QUIET, tf_buffer=camera_buffer(), epoch=lambda: next(epochs)
+    )
+    sent = published(oracle, monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger=oracle_perception.__name__):
+        oracle._on_camera_info(camera_info())
+        assert sent == []
+        oracle._on_camera_info(camera_info())
+
+    assert len(scene.asked) == 2
+    people, objects = sent
+    assert len(people.people) == 1 and isinstance(objects, ObjectDetectionArray)
+    [text] = oracle_warnings(caplog)
+    assert "the clock went back" in text
+
+
 # -- Over ROS ----------------------------------------------------------------------------
 
 

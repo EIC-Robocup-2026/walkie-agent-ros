@@ -70,7 +70,7 @@ from walkie_agent.perception.seating import (
     split_seat_regions,
 )
 from walkie_agent.perception.vision_feed import face_trusted
-from walkie_agent.sim import hri_scenario
+from walkie_agent.sim import hri_scenario, oracle_perception
 from walkie_agent.sim.hri_scenario import (
     ABSENT,
     AT_DOOR,
@@ -963,6 +963,27 @@ def test_people_at_a_time_before_a_seat_offer_draws_everyone_as_they_were_then()
         assert (guest2.x, guest2.y) == (0.65, 0.03)
 
 
+def test_the_scene_at_a_time_older_than_the_history_kept_or_before_the_start_is_unknown():
+    scenario, clock = make_scenario()
+    start = clock.t
+    scenario.robot_said("What is your name?", start + 1.0)
+    scenario.robot_pose(LIVING_ROOM, start + 2.0)
+    scenario.robot_pose(facing(scenario, "sofa.middle"), start + 8.0)
+    scenario.robot_said("Please sit here.", start + 8.0)
+
+    # Guest 1 talked from start + 1 and followed from start + 2. Once seated
+    # at start + 8, their oldest state kept is the following one, so what
+    # they did before start + 2 is no longer known.
+    assert scenario.people_at(start + 1.9) is None
+    assert scenario.scene(start + 1.9) is None
+    assert set(scenario.people_at(start + 2.0)) == {"host"}
+    assert scenario.people_at(start + 8.0)["guest1"].posture == "sitting"
+    # Nor is anything before the scenario started.
+    fresh, clock = make_scenario()
+    assert set(fresh.people_at(clock.t)) == {"host", "guest1"}
+    assert fresh.people_at(clock.t - 0.1) is None
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
@@ -1379,6 +1400,21 @@ class FakeClient:
         self.calls.append((request, future))
         return future
 
+    def pause_next_call(self) -> tuple[threading.Event, threading.Event]:
+        """Hold the next call_async before it sends, until the test releases it.
+
+        Returns (paused, release): `paused` is set once the call waits, and
+        setting `release` lets it send.
+        """
+        paused, release = threading.Event(), threading.Event()
+
+        def wait() -> None:
+            paused.set()
+            assert release.wait(5.0), "The paused call was never released."
+
+        self.on_call = wait
+        return paused, release
+
 
 class FakeTimer:
     """A timer that fires only when the test fires it."""
@@ -1483,7 +1519,7 @@ def test_a_reset_as_the_hang_that_waited_for_the_read_goes_out_ends_at_the_origi
     assert rig.value == GRASP_DETECT_MIN and hang.is_set()
     assert rig.records == [
         {"type": "commander", "node": COMMANDER, "grasp_detect_min": GRASP_DETECT_MIN},
-        {"type": "bag_hung", "value": HUNG_VALUE},
+        {"type": "bag_hung", "value": HUNG_VALUE, "already_held": False},
         {"type": "bag_restored", "value": GRASP_DETECT_MIN, "cause": "reset"},
     ]
 
@@ -1564,7 +1600,8 @@ def test_a_request_without_an_answer_is_sent_again_after_request_timeout_s(monke
     }
     assert not hang.is_set()
     rig.answer_set()
-    assert hang.is_set() and rig.records[-1] == {"type": "bag_hung", "value": HUNG_VALUE}
+    assert hang.is_set()
+    assert rig.records[-1] == {"type": "bag_hung", "value": HUNG_VALUE, "already_held": False}
 
 
 def test_once_finishing_a_hang_is_skipped_and_only_the_restore_goes_out():
@@ -1586,6 +1623,101 @@ def test_once_finishing_a_hang_is_skipped_and_only_the_restore_goes_out():
     assert done is not None and done.is_set()
     assert rig.sets() == [HUNG_VALUE, GRASP_DETECT_MIN] and rig.value == GRASP_DETECT_MIN
     assert rig.records[-1] == {"type": "bag_restored", "value": GRASP_DETECT_MIN, "cause": "exit"}
+
+
+def test_a_hang_whose_send_stalls_past_its_timeout_still_goes_out_before_the_restore():
+    rig = GraspRig.read()
+    paused, release = rig.set.pause_next_call()
+    hanging = threading.Thread(target=rig.grasp.hang)
+    hanging.start()
+    assert paused.wait(5.0)
+
+    def meanwhile() -> None:
+        # On another thread: a reset, the hang's timeout passing, the
+        # commander taking the restore, and the node closing.
+        rig.grasp.restore("reset")
+        rig.clock.advance(hri_scenario.REQUEST_TIMEOUT_S + 0.5)
+        rig.fire()
+        rig.answer_set()
+        rig.grasp.close()
+
+    other = threading.Thread(target=meanwhile)
+    other.start()
+    # Long enough for the other thread to finish, unless it waits for the send.
+    other.join(timeout=0.5)
+    release.set()
+    hanging.join(5.0)
+    other.join(5.0)
+
+    # The stalled hang went out first, so the restore is the last value sent.
+    assert rig.sets() == [HUNG_VALUE, GRASP_DETECT_MIN]
+    assert rig.value == GRASP_DETECT_MIN
+    assert rig.records[-1] == {"type": "bag_restored", "value": GRASP_DETECT_MIN, "cause": "reset"}
+
+
+def test_close_waits_for_a_send_under_way_and_nothing_goes_out_after_it():
+    rig = GraspRig.read()
+    paused, release = rig.set.pause_next_call()
+    hanging = threading.Thread(target=rig.grasp.hang)
+    hanging.start()
+    assert paused.wait(5.0)
+    order: list[str] = []
+
+    def close() -> None:
+        rig.grasp.close()
+        order.append("closed")
+
+    closing = threading.Thread(target=close)
+    closing.start()
+    closing.join(timeout=0.5)
+    order.append("sent")
+    release.set()
+    hanging.join(5.0)
+    closing.join(5.0)
+
+    assert order == ["sent", "closed"]
+    rig.clock.advance(hri_scenario.REQUEST_TIMEOUT_S + 0.5)
+    rig.grasp.restore("exit")
+    assert rig.sets() == [HUNG_VALUE]
+
+
+def test_a_hang_after_a_refused_restore_is_resolved_at_once_as_the_commander_still_holds_it():
+    rig = GraspRig.read()
+    rig.grasp.hang()
+    rig.answer_set()
+    rig.grasp.restore("reset")
+    rig.answer_set(successful=False, reason="the arm is moving")
+    assert rig.value == HUNG_VALUE
+
+    hang = rig.grasp.hang()
+
+    assert hang is not None and hang.is_set()
+    assert rig.records[-1] == {"type": "bag_hung", "value": HUNG_VALUE, "already_held": True}
+    # No set goes out for it, now or later.
+    rig.fire()
+    assert rig.sets() == [HUNG_VALUE, GRASP_DETECT_MIN]
+
+
+@pytest.mark.parametrize("taken", [True, False])
+def test_a_hang_while_a_restore_is_in_flight_resolves_as_the_restores_answer_says(taken):
+    rig = GraspRig.read()
+    rig.grasp.hang()
+    rig.answer_set()
+    rig.grasp.restore("reset")
+    hang = rig.grasp.hang()
+    assert hang is not None and not hang.is_set()
+
+    rig.answer_set(successful=taken, reason="the arm is moving")
+
+    if taken:
+        # The commander holds the original again, so the hang goes out again.
+        assert rig.sets() == [HUNG_VALUE, GRASP_DETECT_MIN, HUNG_VALUE] and not hang.is_set()
+        rig.answer_set()
+    else:
+        # The commander refused the restore, so it still holds -1.
+        assert rig.sets() == [HUNG_VALUE, GRASP_DETECT_MIN]
+    assert hang.is_set() and rig.value == HUNG_VALUE
+    assert rig.records[-1] == {"type": "bag_hung", "value": HUNG_VALUE, "already_held": not taken}
 
 
 # -- The node over ROS --------------------------------------------------------------------
@@ -2110,6 +2242,57 @@ def test_the_node_logs_a_clock_that_goes_back_and_drops_the_ground_truth_of_befo
     assert len(of_type(idle_node.records(), "clock_jump")) == 1
 
 
+def test_an_image_whose_scene_is_drawn_after_a_clock_jump_gets_no_arrays(
+    idle_node, monkeypatch, caplog
+):
+    node = idle_node.node
+    scenario = node.scenario
+    clock = FakeClock(node._now())
+    monkeypatch.setattr(node, "_now", clock)
+    start = clock.t
+    # Guest 1 talks from start + 1, follows from start + 1.5 and sits at start + 2.
+    scenario.robot_pose(DOOR, start)
+    scenario.robot_said("What is your name?", start + 1.0)
+    scenario.robot_pose(LIVING_ROOM, start + 1.5)
+    scenario.robot_pose(facing(scenario, "sofa.middle"), start + 2.0)
+    scenario.robot_said("Please sit here.", start + 2.0)
+    assert scenario.person("guest1").state == SEATED
+    clock.t = start + 2.0
+    node._on_tick()
+    # The camera's pose, at any stamp.
+    node._tf_buffer.set_transform_static(
+        tf_msg(MAP_FRAME, CAMERA_FRAME, np.linalg.inv(sim_camera())), "test"
+    )
+    lookup = node._tf_buffer.lookup_transform
+
+    def lookup_then_restart(*args: Any, **kwargs: Any) -> Any:
+        transform = lookup(*args, **kwargs)
+        # The simulation restarts once the image has its transform: the clock goes back 102 s.
+        clock.t = start - 100.0
+        return transform
+
+    monkeypatch.setattr(node._tf_buffer, "lookup_transform", lookup_then_restart)
+    drawn: list[Scene] = []
+    monkeypatch.setattr(
+        oracle_perception,
+        "draw_detections",
+        lambda scene, *_args: drawn.append(scene)
+        or (PersonDetectionArray(), ObjectDetectionArray()),
+    )
+    # An image from while guest 1 followed, in no view.
+    stamp_ns = round((start + 1.9) * 1e9)
+    image = camera_info(TimeMsg(sec=stamp_ns // 1_000_000_000, nanosec=stamp_ns % 1_000_000_000))
+
+    with caplog.at_level(logging.WARNING, logger=oracle_perception.__name__):
+        node._oracle._on_camera_info(image)
+
+    # Its transform is from before the jump, and its scene would be from after it.
+    assert of_type(idle_node.records(), "clock_jump")
+    assert drawn == []
+    [warning] = [r.getMessage() for r in caplog.records if r.name == oracle_perception.__name__]
+    assert "the clock went back" in warning
+
+
 def test_after_close_no_callback_calls_into_the_scenario(idle_node, monkeypatch):
     node = idle_node.node
     node.close()
@@ -2317,6 +2500,42 @@ def test_an_exit_restore_the_commander_refuses_once_is_sent_again_within_the_wai
     restored = records[found.index("bag_restored")]
     assert (restored["value"], restored["cause"]) == (GRASP_DETECT_MIN, "exit")
     assert found.index("bag_retry") < found.index("bag_restored") < len(found) - 1
+    assert found[-1] == "end" and "bag_skipped" not in found
+    assert rig.commander_value() == GRASP_DETECT_MIN
+
+
+def test_closing_just_after_a_hang_whose_answer_was_lost_still_restores_the_bag(
+    make_rig, monkeypatch
+):
+    # The retry timer ticks once a second, as in a run.
+    monkeypatch.setattr(hri_scenario, "COMMANDER_RETRY_S", 1.0)
+    rig = make_rig(bag={"owner": "guest1"})
+    rig.wait_for("commander")
+    client = rig.node._grasp._set
+    send = client.call_async
+
+    def lose_the_hangs_answer(request: Any) -> Future:
+        future = send(request)
+        if request.parameters[0].value.double_value == HUNG_VALUE:
+            # The commander takes the hang, but its answer never reaches the node.
+            return Future()
+        return future
+
+    monkeypatch.setattr(client, "call_async", lose_the_hangs_answer)
+    rig.say("Could you hand me your bag, please?")
+    assert wait_until(lambda: rig.commander_value() == HUNG_VALUE)
+
+    rig.node.close()
+
+    records = rig.records()
+    found = [r["type"] for r in records]
+    retry = records[found.index("bag_retry")]
+    assert (retry["action"], retry["reason"]) == (
+        HANG,
+        f"{rig.topics.commander} did not answer within 2 s",
+    )
+    restored = records[found.index("bag_restored")]
+    assert (restored["value"], restored["cause"]) == (GRASP_DETECT_MIN, "exit")
     assert found[-1] == "end" and "bag_skipped" not in found
     assert rig.commander_value() == GRASP_DETECT_MIN
 

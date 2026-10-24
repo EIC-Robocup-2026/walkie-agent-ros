@@ -875,7 +875,10 @@ agent-sim-hri` gives the agent, so both use one pose each.
   ([Perception](perception.md#in-simulation)). For each image of the head
   camera, it projects the scenario's people, as they were at the image's
   stamp, and the sofa with that image's `camera_info` and TF, so the boxes
-  move as the base turns and the gaze loop closes in the simulation. Faces
+  move as the base turns and the gaze loop closes in the simulation. An
+  image older than the 5 s of history the scenario keeps, or one drawn
+  while the clock went back, gets no arrays, so an old image is never
+  drawn with a later scene. Faces
   and appearances are hash vectors from
   `src/walkie_agent/sim/fake_vectors.py`, under the model names
   `fake_face` and `fake_reid`. The faces clear `VisionFeed`'s angular face
@@ -887,9 +890,9 @@ agent-sim-hri` gives the agent, so both use one pose each.
   along the hallway, with a 6 s period. That is about 9° to either side
   as seen from `door`. The hallway is only 0.64 m wide there, so the
   pacing runs along it rather than square to the line to the robot,
-  which would push the guest off the hallway's line. A bystander walks once across the doorway's view, 1 m behind
-  the guest, 3 s after the first question. It faces along its path, so it
-  shows no face.
+  which would push the guest off the hallway's line. A bystander walks
+  once across the doorway's view, 1 m behind the guest, 3 s after the
+  first question. It faces along its path, so it shows no face.
 - **Following.** Once the base is more than 0.5 m from `door`, the guest
   who talked follows the robot and is in no view.
 - **Seats.** The seats are the world's sofa, with its three cushions as
@@ -939,7 +942,12 @@ agent-sim-hri` gives the agent, so both use one pose each.
   time, and sends a failed or unanswered one again until the commander
   holds the value wanted (`bag_retry`). Without a commander, or when the
   commander refuses it, the hang is logged as skipped, and the guest still
-  answers.
+  answers. A hang while the commander still holds -1, as after a restore
+  it refused, is logged at once as `bag_hung` with `already_held`. On
+  exit, the restore gets 2 s from when it can first go out, once a
+  request in flight is answered or dropped at its 2 s timeout. So the
+  scenario waits at most 4 s for it, and logs a restore not taken by then
+  as skipped.
 - **`door` keeps the hand clear of the door leaf.** The door has no
   actuator and stays open into the room. At `door`, the left gripper in
   `receive` is 0.205 m from the leaf, and at least 0.10 m anywhere in
@@ -981,14 +989,22 @@ records (next PR). A run passes when:
 
 - the people memory, the mock in sim, holds each guest's name and drink
   as in the scenario, judged from the agent's record of its tool calls;
-- the heading stays within 10° of the talking guest for at least 80% of
-  each conversation, and its mean bearing error is at most 0.9 times
-  that of the heading held fixed at the conversation's start, so a robot
-  that never turns cannot pass. The ratio cannot be much lower: the
-  pacing swings only about 9° to either side, and the gaze loop's 6°
-  deadband holds the heading still for most of each swing. A simulation
-  of the loop gave 0.77 with no perception delay and 0.87 with 0.3 s.
-  The hallway is too narrow for a wider swing;
+- the heading follows the talking guest in each conversation. A
+  conversation is one guest's time talking at the door. Its samples are
+  the 10 Hz `state` records in it with a known pose. A sample's error is
+  the absolute value of the guest's bearing from the base, wrapped into
+  (-180°, 180°]. The error is at most 10° in at least 80% of the samples.
+  The gaze value is the mean error over the samples. The baseline is the
+  same mean with each bearing taken against the heading of the
+  conversation's first sample instead. The gaze value is at most 0.9
+  times the baseline, so a robot that never turns cannot pass. A
+  conversation with no samples fails. When the baseline is zero or below
+  1°, the ratio is skipped, and only the 10° and 80% criterion applies.
+  The ratio cannot be much lower: the pacing swings only about 9° to
+  either side, and the gaze loop's 6° deadband holds the heading still
+  for most of each swing. A simulation of the loop gave 0.77 with no
+  perception delay and 0.87 with 0.3 s. The hallway is too narrow for a
+  wider swing;
 - each seat offer faces a free place, never a taken one;
 - each introduction faces the listener;
 - the only questions are the four essential ones and the hand-over

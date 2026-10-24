@@ -7,7 +7,8 @@ simulation"): for every camera_info of the robot's camera it asks a scene
 callable who and what is where in the map, projects them into that image
 (walkie_agent.sim.projection), and publishes a PersonDetectionArray and an
 ObjectDetectionArray as walkie-vision does, one of each per image, also when
-they are empty.
+they are empty. An image without the camera's pose, without a known scene,
+or during which the clock went back gets none.
 
 It knows nothing of a task: the HRI scenario feeds it a Scene now, and the
 harvest can later. Faces and appearances are hash vectors under walkie-vision's
@@ -151,7 +152,9 @@ DEFAULT_ORACLE_CONFIG = OracleConfig()
 class OraclePerception:
     """Publishes walkie-vision's arrays for a simulated scene, one pair per camera_info.
 
-    `scene` gives the Scene at a camera_info's stamp. It is called on the
+    `scene` gives the Scene at a camera_info's stamp, or None when it does
+    not know the scene then, such as for a stamp older than the history it
+    keeps. Such an image is skipped, with a warning. It is called on the
     executor thread that runs the camera_info callback, so it must be safe
     to call while the node's other callbacks run. Spin `node` with a
     MultiThreadedExecutor: each image waits up to `tf_timeout_s` for TF on
@@ -160,18 +163,25 @@ class OraclePerception:
     `tf_buffer` shares a buffer the node fills already, such as one that
     also gives the scenario the robot's pose. Without one, OraclePerception
     listens to TF on `node` itself.
+
+    `epoch`, if given, counts the times the clock went back. It is read
+    before the camera's pose is looked up and again once the scene is
+    drawn. An image for which it changed is skipped, with a warning: its
+    pose and its scene may come from different clocks.
     """
 
     def __init__(
         self,
         node: Node,
-        scene: Callable[[Time], Scene],
+        scene: Callable[[Time], Scene | None],
         config: OracleConfig = DEFAULT_ORACLE_CONFIG,
         *,
         tf_buffer: Buffer | None = None,
+        epoch: Callable[[], int] | None = None,
     ) -> None:
         self._node = node
         self._scene = scene
+        self._epoch = epoch
         self._config = config
         # Used only in the camera_info callback, whose callback group runs
         # one image at a time.
@@ -222,6 +232,7 @@ class OraclePerception:
             )
             return
         stamp = Time.from_msg(info.header.stamp)
+        epoch = None if self._epoch is None else self._epoch()
         try:
             transform = self._tf_buffer.lookup_transform(
                 info.header.frame_id,
@@ -237,8 +248,23 @@ class OraclePerception:
                 f"at the image's stamp, so no detections were published for it: {e}",
             )
             return
+        scene = self._scene(stamp)
+        if self._epoch is not None and self._epoch() != epoch:
+            self._warn(
+                "clock",
+                "An image was drawn while the clock went back, so no detections were published "
+                "for it: its camera pose and its scene may come from different clocks.",
+            )
+            return
+        if scene is None:
+            self._warn(
+                "scene",
+                "No scene is known at the image's stamp, as for an image older than the "
+                "scene's history, so no detections were published for it.",
+            )
+            return
         people, objects = draw_detections(
-            self._scene(stamp), info, transform_matrix(transform), self._config, self._rng
+            scene, info, transform_matrix(transform), self._config, self._rng
         )
         self._people_pub.publish(people)
         self._objects_pub.publish(objects)

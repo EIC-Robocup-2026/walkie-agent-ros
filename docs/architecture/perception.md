@@ -254,7 +254,8 @@ of the robot's camera, also when empty. People come only from it, because
 walkie-ros's MuJoCo worlds have no person bodies. It knows nothing of a
 task: a simulation tool attaches it to its own node and gives it a
 callable that returns a `Scene` (`src/walkie_agent/sim/scene.py`), the
-people and objects in the map frame at an image's stamp. The HRI scenario
+people and objects in the map frame at an image's stamp, or `None` when it
+does not know them then. The HRI scenario
 does so now ([HRI Task](hri.md#in-simulation)). The harvest still owns its
 scenario fields ([Sim Harvest](harvest.md#h0-scenarios)).
 
@@ -265,7 +266,11 @@ scenario fields ([Sim Harvest](harvest.md#h0-scenarios)).
   lens distortion, in `src/walkie_agent/sim/projection.py`, which has no
   ROS. An image with no transform is skipped with a throttled warning that
   names the missing transform. Until the simulation's AMCL runs, every
-  image is.
+  image is. An image whose stamp the scene callable does not know, such as
+  one older than the history it keeps, is skipped the same way. So is one
+  during which the clock went back, when the tool gives the oracle a count
+  of the clock's jumps: its pose and its scene may come from different
+  clocks.
 - **TF, not ground truth.** The agent turns and judges headings with the
   same TF, so the boxes always agree with its frame. AMCL's error then
   moves the whole virtual scene against the simulated room, which nothing

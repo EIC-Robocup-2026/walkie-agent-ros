@@ -8,7 +8,8 @@ in the map frame of the world it names, chula_pat14_6 by default, and the
 node plays them against the agent:
 
   - OraclePerception draws the people and the seats as walkie-vision's
-    arrays, for each image of the robot's head camera.
+    arrays, for each image of the robot's head camera. An image older than
+    the scene's history of HISTORY_S gets none.
   - The current guest answers each robot line on /to_human that asks
     something, on /from_human after a delay. The guest at the door paces
     while talking.
@@ -61,11 +62,15 @@ Rules
   read at start. The node sends the commander one request at a time. One
   that fails, or gets no answer within REQUEST_TIMEOUT_S, is sent again
   within COMMANDER_RETRY_S, until the commander holds the value wanted. A
-  hang the commander refuses is given up.
+  hang the commander refuses is given up. On exit the restore gets
+  RESTORE_WAIT_S from when it can first go out, after the request in
+  flight is answered or dropped, so the node waits at most
+  REQUEST_TIMEOUT_S + RESTORE_WAIT_S for it.
 - The clock. A clock that goes back, as when the simulation restarts,
   moves every time the scenario keeps with it and is logged as
-  clock_jump. A run whose log has one is not a valid run, and the pass
-  check fails it.
+  clock_jump. An image drawn while the clock went back gets no arrays. A
+  run whose log has a clock_jump is not a valid run, and the pass check
+  fails it.
 
 Event log
 ---------
@@ -114,6 +119,8 @@ the seat's id on any other seat. A number that is not finite is null.
                  requests so far), hang (whether this one hangs the bag),
                  early_answer.
   bag_hung       The commander took grasp_detect_min = value (-1.0).
+                 already_held: true when it held -1 still, as after a
+                 restore it refused, so that no set was sent.
   bag_restored   The commander took back value. cause: reset, exit, or
                  start (a negative value found at start, left by a run
                  that did not restore it).
@@ -130,7 +137,8 @@ the seat's id on any other seat. A number that is not finite is null.
                  no commander at the request, no such parameter, a
                  refused hang, a reset or exit before the commander took
                  the hang, a request while the node closes, or a restore
-                 on exit not finished in time.
+                 on exit the commander had not taken RESTORE_WAIT_S after
+                 it could first go out.
   commander      The commander answered the read of grasp_detect_min.
                  The node sends the read once the commander is found,
                  looking every COMMANDER_RETRY_S, and again when it fails
@@ -278,12 +286,17 @@ COMMANDER_RETRY_S = 1.0
 # block every later request.
 REQUEST_TIMEOUT_S = 2.0
 # How long a bag request waits for the commander before its answer may go
-# out, and how long close() waits for the restore, in seconds.
+# out, in seconds.
 HANG_WAIT_S = 2.0
+# How long close() waits for the commander to take the restore, in seconds
+# of the computer's clock. Counted from when the restore can first go out,
+# once the request in flight is answered or dropped, so close() waits at
+# most REQUEST_TIMEOUT_S + RESTORE_WAIT_S. At least REQUEST_TIMEOUT_S, so a
+# restore sent gets the same time to answer as any other request.
 RESTORE_WAIT_S = 2.0
 # How far back the scene can be drawn as of a camera image's stamp, in
-# seconds. The oracle waits at most its tf_timeout_s, 0.1 s, for the
-# camera's pose, so an image is never this old when it is drawn.
+# seconds. TF's wait does not bound an image's age, since an image may
+# reach the oracle late, so an older image is not drawn.
 HISTORY_S = 5.0
 # The guest who talked follows the robot once its base is this far from the
 # door pose, in meters: further than Nav2's goal tolerance and AMCL's error.
@@ -949,7 +962,8 @@ class HriScenario:
 
     robot_said(), todos_changed(), robot_pose(), reset(), tick() and
     clock_jumped() each return a Step: the answers due now, the events to
-    log, and a bag action. scene() gives the Scene for the oracle. Times
+    log, and a bag action. scene() gives the Scene for the oracle, or None
+    for a time it does not know. Times
     are seconds on `clock`, which each method reads unless given `t`. The
     events that happen at construction, the seated people and guest 1 at
     the door, come with the first Step. Not thread-safe: the node calls it
@@ -1244,22 +1258,30 @@ class HriScenario:
 
     # -- Outputs --
 
-    def scene(self, t: float | None = None) -> Scene:
-        """Everyone and every seat as of `t`, for the oracle (people_at())."""
-        return Scene(people=tuple(self.people_at(t).values()), objects=self._objects)
+    def scene(self, t: float | None = None) -> Scene | None:
+        """Everyone and every seat as of `t`, for the oracle, or None (people_at())."""
+        people = self.people_at(t)
+        if people is None:
+            return None
+        return Scene(people=tuple(people.values()), objects=self._objects)
 
-    def people_at(self, t: float | None = None) -> dict[str, ScenePerson]:
-        """Everyone the scene holds as of `t`, by id. A following guest is in no view.
+    def people_at(self, t: float | None = None) -> dict[str, ScenePerson] | None:
+        """Everyone the scene holds as of `t`, by id; None when `t` is unknown.
 
-        `t` selects each person's state as of `t` within the last HISTORY_S,
-        so a camera image's stamp draws the people as they were when it was
-        taken. A `t` before that draws each person's oldest state kept. The
-        guests at the door face the robot's last pose.
+        `t` selects each person's state as of `t`, so a camera image's stamp
+        draws the people as they were when it was taken. A person's states
+        older than HISTORY_S before their latest change are dropped, so the
+        scene is known for at least the last HISTORY_S. A `t` older than the
+        states kept, or before the scenario's start, is unknown, so that an
+        old image is never drawn with a later scene. A following guest is in
+        no view. The guests at the door face the robot's last pose.
         """
         t = self._now(t)
         drawn: dict[str, ScenePerson] = {}
         for person in self._people.values():
             entry = self._entry_at(person.id, t)
+            if entry is None:
+                return None
             if entry.state in (AT_DOOR, TALKING):
                 x, y = self._guest_xy(entry.state, entry.talk_start, t)
                 # Turned to the robot, or to where it will stand before a pose comes.
@@ -1372,9 +1394,14 @@ class HriScenario:
         while len(entries) > 1 and entries[1].t <= horizon:
             del entries[0]
 
-    def _entry_at(self, person_id: str, t: float) -> _Entry:
-        """The person's last entry at or before `t`, or their oldest one kept."""
+    def _entry_at(self, person_id: str, t: float) -> _Entry | None:
+        """The person's last entry at or before `t`; None before their oldest one kept.
+
+        A timeline is complete from its oldest entry on (_remember()).
+        """
         entries = self._timeline[person_id]
+        if t < entries[0].t:
+            return None
         found = entries[0]
         for entry in entries:
             if entry.t > t:
@@ -1531,10 +1558,11 @@ class HriScenario:
         )
 
     def _bearings(self, t: float) -> dict[str, float] | None:
-        if self._pose is None:
+        people = self.people_at(t)
+        if self._pose is None or people is None:
             return None
         pose = self._pose
-        return {pid: round(bearing_deg(pose, p.x, p.y), 2) for pid, p in self.people_at(t).items()}
+        return {pid: round(bearing_deg(pose, p.x, p.y), 2) for pid, p in people.items()}
 
 
 # -- The event log ------------------------------------------------------------------------
@@ -1655,13 +1683,19 @@ class GraspParameter:
     bag_skipped, only when there is no commander at the request, it has no
     such parameter, it refuses the hang, or a restore comes before the
     commander took it. Each value the commander takes is logged once it has
-    answered.
+    answered. A hang wanted while the commander still holds -1, as after a
+    restore it refused, is logged as bag_hung with already_held at once.
 
     Thread-safe. Each decision is made and logged under its own lock, so
-    the log's order is the order of the decisions. A request is sent after
-    the lock is released, since rclpy may run its answer's callback at once.
-    It never takes the node's lock, so the node may call it under its own
-    (node -> grasp -> log).
+    the log's order is the order of the decisions. A send lock is held from
+    deciding a request until it is sent. So no other thread drops it as
+    unanswered before it went out, and close() waits for a send under way,
+    so nothing goes out after it. The send lock is re-entrant, since rclpy
+    may run an answer's callback at once on the sending thread, and that
+    callback may send the next request. The decision lock is released
+    before each send, so such a callback can take it. Neither lock is held
+    while waiting for an answer, and neither takes the node's lock, so the
+    node may call it under its own (node -> send -> grasp -> log).
     """
 
     def __init__(
@@ -1682,6 +1716,8 @@ class GraspParameter:
         self._set = node.create_client(
             SetParameters, f"{commander}/set_parameters", callback_group=group
         )
+        # Held from deciding a request until it is sent (class docstring).
+        self._send_lock = threading.RLock()
         self._lock = threading.Lock()
         self._original: ParameterValue | None = None
         self._missing = False
@@ -1697,6 +1733,9 @@ class GraspParameter:
         # The cause the wanted restore is logged with.
         self._cause = "start"
         self._finishing = False
+        # When the restore on exit could first go out, on the monotonic
+        # clock; set by finish().
+        self._exit_free_at: float | None = None
         self._closed = False
         # On the computer's clock, so the commander is found before the
         # simulation's /clock runs too. Never cancelled before close(): it
@@ -1717,10 +1756,14 @@ class GraspParameter:
     def hang(self) -> threading.Event | None:
         """Want grasp_detect_min at -1. The event is set once this hang is resolved.
 
-        Resolved: the commander took it (bag_hung), it was given up
-        (bag_skipped), or a restore came before the commander took it. A
-        request while a hang is wanted gets that hang's event, which may be
-        set already. None when the hang was logged as skipped at once.
+        Resolved: the commander took it (bag_hung), it held -1 still with
+        nothing in flight, as after a restore it refused (bag_hung with
+        already_held), it was given up (bag_skipped), or a restore came
+        before the commander took it. A restore in flight at the request is
+        answered first: once taken, the hang is sent again; once refused,
+        the commander holds -1 still. A request while a hang is wanted gets
+        that hang's event, which may be set already. None when the hang was
+        logged as skipped at once.
         """
         with self._lock:
             reason = None
@@ -1742,6 +1785,7 @@ class GraspParameter:
             if self._hang_event is None or self._hang_event.is_set():
                 self._hang_event = threading.Event()
             event = self._hang_event
+            self._settle()
         self._reconcile()
         return event
 
@@ -1773,15 +1817,54 @@ class GraspParameter:
         return event
 
     def finish(self) -> threading.Event | None:
-        """Refuse every later hang, then restore("exit"). For the node's close()."""
+        """Refuse every later hang, then restore("exit"). For the node's close().
+
+        wait_restored() then waits for the event, if any.
+        """
         with self._lock:
             self._finishing = True
+            # When the restore can first go out: now, or once the request in
+            # flight is answered or, at the latest, dropped as unanswered.
+            now = self._monotonic()
+            due = self._due()
+            self._exit_free_at = now if due is None else max(now, due)
         return self.restore("exit")
 
-    def close(self) -> None:
-        """Send nothing more, and stop the timer."""
+    def wait_restored(self, done: threading.Event, wait_s: float) -> bool:
+        """After finish(), wait for its event `done`; False when it was not set in time.
+
+        A request in flight at finish() holds the restore back until it is
+        answered or its REQUEST_TIMEOUT_S ends. Then the wait drops it and
+        sends the restore at once, rather than at the timer's next tick. The
+        wait ends `wait_s` after the restore could first go out, so it lasts
+        at most REQUEST_TIMEOUT_S + `wait_s`, and a restore sent gets
+        `wait_s` for its answer. One that fails meanwhile is sent again
+        within COMMANDER_RETRY_S, as always.
+        """
         with self._lock:
-            self._closed = True
+            free_at = self._exit_free_at
+        deadline = (self._monotonic() if free_at is None else free_at) + wait_s
+        while not done.is_set():
+            now = self._monotonic()
+            if now >= deadline:
+                return False
+            with self._lock:
+                due = self._due()
+            # Awake at least every COMMANDER_RETRY_S, for a request the timer
+            # sends meanwhile.
+            wake = min(deadline, now + COMMANDER_RETRY_S, deadline if due is None else due)
+            if done.wait(max(0.0, wake - now)):
+                return True
+            if due is not None and self._monotonic() >= due:
+                # Drops the unanswered request and sends the restore.
+                self._reconcile()
+        return True
+
+    def close(self) -> None:
+        """Send nothing more, once a send under way has gone out, and stop the timer."""
+        with self._send_lock:
+            with self._lock:
+                self._closed = True
         self._timer.cancel()
 
     # -- Internals --
@@ -1794,11 +1877,15 @@ class GraspParameter:
             logger.exception("A request to %s failed.", self._commander)
 
     def _reconcile(self) -> None:
-        """Send the request the commander needs next, unless one is in flight."""
-        with self._lock:
-            request = self._next_request()
-        if request is not None:
-            self._send(request)
+        """Send the request the commander needs next, unless one is in flight.
+
+        Under the send lock from the decision until the request is sent.
+        """
+        with self._send_lock:
+            with self._lock:
+                request = self._next_request()
+            if request is not None:
+                self._send(request)
 
     def _next_request(self) -> _Request | None:
         """Decide what to send next, and mark it in flight. Called under the lock."""
@@ -1851,7 +1938,13 @@ class GraspParameter:
         return self._inflight
 
     def _send(self, request: _Request) -> None:
-        """Send the request marked in flight. Called without the lock."""
+        """Send the request marked in flight. Called under the send lock, without the lock."""
+        with self._lock:
+            # Only _reconcile() and close(), under the send lock, drop or
+            # replace the request in flight before its answer; checked all
+            # the same, so nothing goes out that is no longer decided.
+            if self._closed or self._inflight is not request:
+                return
         try:
             if request.action is None:
                 future = self._get.call_async(
@@ -1937,7 +2030,7 @@ class GraspParameter:
         if result.successful:
             if request.action == HANG:
                 self._held = _HELD_HUNG
-                self._record("bag_hung", value=HUNG_VALUE)
+                self._record("bag_hung", value=HUNG_VALUE, already_held=False)
                 if self._hang_event is not None:
                     self._hang_event.set()
             else:
@@ -1967,6 +2060,17 @@ class GraspParameter:
     def _settle(self) -> None:
         """Set the events that nothing would set later. Called under the lock."""
         if self._want_hung:
+            hang = self._hang_event
+            if (
+                hang is not None
+                and not hang.is_set()
+                and self._held == _HELD_HUNG
+                and self._inflight is None
+            ):
+                # The commander holds -1 still, as after a restore it
+                # refused, so no set is needed for this hang.
+                self._record("bag_hung", value=HUNG_VALUE, already_held=True)
+                hang.set()
             return
         if self._hang_event is not None and not self._hang_in_flight():
             # A hang that is no longer wanted, and not in flight, is over.
@@ -1983,6 +2087,12 @@ class GraspParameter:
 
     def _hang_in_flight(self) -> bool:
         return self._inflight is not None and self._inflight.action == HANG
+
+    def _due(self) -> float | None:
+        """When the request in flight is dropped if unanswered; None if none. Under the lock."""
+        if self._inflight is None:
+            return None
+        return self._inflight.sent_at + REQUEST_TIMEOUT_S
 
     def _no_parameter(self) -> str:
         return f"{self._commander} has no parameter {GRASP_DETECT_MIN_PARAM}"
@@ -2070,6 +2180,9 @@ class HriScenarioNode(Node):
         )
         # The time of the last input, to find a clock that went back.
         self._last_t = self._now()
+        # How often the clock went back, so the oracle drops an image whose
+        # drawing spans a jump (OraclePerception's epoch).
+        self._epoch = 0
         self._write_events(scenario.tick(self._last_t).events)
 
         # One buffer for the robot's pose and the oracle's camera transforms,
@@ -2077,7 +2190,9 @@ class HriScenarioNode(Node):
         # back clears it.
         self._tf_buffer = Buffer(node=self)
         self._tf_listener = TransformListener(self._tf_buffer, self)
-        self._oracle = OraclePerception(self, self._scene_at, config, tf_buffer=self._tf_buffer)
+        self._oracle = OraclePerception(
+            self, self._scene_at, config, tf_buffer=self._tf_buffer, epoch=self._clock_epoch
+        )
 
         # The scenario's inputs run one at a time, in the order they came.
         # Each stream of the robot's state has a mutually exclusive group of
@@ -2140,7 +2255,10 @@ class HriScenarioNode(Node):
         """Restore grasp_detect_min and end the log, while the node still spins.
 
         From here on no input reaches the scenario, so no answer goes out
-        and nothing hangs the bag again.
+        and nothing hangs the bag again. The restore gets `timeout_s` from
+        when it can first go out, after a request in flight is answered or
+        dropped at its REQUEST_TIMEOUT_S, so close() waits at most
+        REQUEST_TIMEOUT_S + `timeout_s` (GraspParameter.wait_restored()).
         """
         with self._lock:
             if self._closed:
@@ -2148,7 +2266,7 @@ class HriScenarioNode(Node):
             self._closed = True
             self._hang_done = None
         done = self._grasp.finish()
-        if done is not None and not done.wait(timeout_s):
+        if done is not None and not self._grasp.wait_restored(done, timeout_s):
             self._record(
                 "bag_skipped",
                 action=RESTORE,
@@ -2322,8 +2440,8 @@ class HriScenarioNode(Node):
         """The time of one input into the scenario, or None once closed. Called under the lock.
 
         A clock that went back, as when the simulation restarts, first moves
-        the scenario's times with it (HriScenario.clock_jumped()), and drops
-        the ground truth taken on the old clock.
+        the scenario's times with it (HriScenario.clock_jumped()), drops the
+        ground truth taken on the old clock, and counts a new epoch.
         """
         if self._closed:
             return None
@@ -2331,11 +2449,21 @@ class HriScenarioNode(Node):
         if now < self._last_t:
             self._write_events(self._scenario.clock_jumped(self._last_t, now).events)
             self._ground_truth = None
+            self._epoch += 1
         self._last_t = now
         return now
 
-    def _scene_at(self, stamp: Time) -> Scene:
-        """The scene as of a camera image's stamp, for the oracle; empty once closed."""
+    def _clock_epoch(self) -> int:
+        """How often the clock went back so far, as the inputs found it; for the oracle."""
+        with self._lock:
+            return self._epoch
+
+    def _scene_at(self, stamp: Time) -> Scene | None:
+        """The scene as of a camera image's stamp, for the oracle.
+
+        None for a stamp the scenario does not know (HriScenario.people_at()),
+        and empty once closed.
+        """
         with self._lock:
             if self._enter() is None:
                 return Scene()

@@ -25,7 +25,7 @@ test on the robot. This page plans that first slice, on top of
   and the skill server.
 - **On its path:** walkie-vision's torch and face nodes, walkie-database's
   people services, and in this repository phase 1, six atomics and the
-  arm atomics (all built), the gaze loop (built) and an HRI template. On
+  arm atomics, the gaze loop and the HRI template, all built. On
   the robot, also the MotionSupervisor.
 - **The bag goes in the left hand.** The robot holds out its hand, the
   guest says when the bag is in it, and the gripper closes. The two poses
@@ -775,9 +775,12 @@ confirmed:
 
 A template in `config/task_templates.toml` seeds the todo list
 ([ADR-0041](decisions/0041-todo-list-and-seeding.md)). The format is on
-[The Agent](agent.md#task-templates). The template is not in the file yet.
-The atomics it needs and the simulated scenario are built, and it comes
-with the sim run and its pass check ([Delivery order](#delivery-order)):
+[The Agent](agent.md#task-templates). The template is in the file, beside
+its pass check ([In simulation](#in-simulation)). The door line
+keeps the robot off the onlookers: it looks for people in front once, on
+arrival, and faces the guest it finds. Each step needs a tool to succeed
+before it can be completed, so a step cannot be marked done on words
+alone:
 
 ```toml title="config/task_templates.toml"
 [templates.hri]
@@ -786,6 +789,8 @@ task = """
 Receive two guests, one at a time, at the door. Learn each guest's name and
 favourite drink, guide them to the living room and offer a free seat. Then
 introduce them to each other.
+At the door, call find_people with in_front once on arrival, then look_at
+the guest it finds. Other people near the door are not guests.
 Keep looking at the person you talk to. Ask for the name, then the drink.
 Never ask a guest to confirm or correct an answer. Ask again only if you
 heard nothing. Never ask who is who. Call guests by name, never "he" or "she".
@@ -795,14 +800,18 @@ in it. If you hold nothing, ask once more, then go on without the bag. Keep
 the bag in the carry pose until the end.
 """
 todos = [
-  "Meet the first guest at the door and learn their name and drink",
-  "Guide the first guest to the living room and offer a free seat",
-  "Meet the second guest at the door and learn their name and drink",
-  "Take the second guest's bag",
-  "Guide the second guest to the living room and offer a free seat",
-  "Introduce the guests to each other",
+  { content = "Meet the first guest at the door and learn their name and drink", requires_tool = "remember_person" },
+  { content = "Guide the first guest to the living room and offer a free seat", requires_tool = "find_seats" },
+  { content = "Meet the second guest at the door and learn their name and drink", requires_tool = "remember_person" },
+  { content = "Take the second guest's bag", requires_tool = "set_gripper" },
+  { content = "Guide the second guest to the living room and offer a free seat", requires_tool = "find_seats" },
+  { content = "Introduce the guests to each other", requires_tool = "recognize_person" },
 ]
 ```
+
+The operator starts a run with the template on `/walkie/task`, as
+[Getting Started](../getting-started.md#run-the-hri-scenario) shows. An utterance with one of
+its keywords picks it too, while no todo item is open.
 
 The run uses no preset. Each step is two to four atomic calls, the
 hand-over about six over two turns, and the first goal is to see how the new agent loop handles a real task. Presets
@@ -865,6 +874,9 @@ flowchart LR
   on walkie-ros's branch `feat/chula-pat14-6-simulation` until its PR #58
   merges. walkie-vision and walkie-database are needed only for the
   robot.
+- **The template and its pass check are built.** The last box stays dashed
+  until a sim run passes the check
+  ([In simulation](#in-simulation)).
 - **From phase 2,** the slice takes only the toolbox core and the atomics
   above ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The arm
   atomics call the real commander through `CommanderClient`. In sim the
@@ -1028,17 +1040,29 @@ and `seat_switch`, not of the code:
 the first free place in file order. When the todo item finishes or leaves
 the list before the switch fires, the log has `seat_switch_skipped`.
 
-The pass check comes with the template. It reads the event log. Two
+The pass check comes with the template. It reads the event log. Some
 criteria need what the scenario cannot see: what the people memory holds,
-and whether a drive was refused because an arm was out. For those, the
-check reads the agent's record of its tool calls, which the template
-records (next PR). A run passes when:
+whether a drive was refused because an arm was out, and what the robot
+said before each arm motion. For those, the check reads the agent's record
+of its tool calls. `pixi run agent-sim-hri` passes `--tool-log`, so the
+agent writes one JSON line per call to `logs/agent_tools_<time>.jsonl`:
+the tool, its arguments, its outcome, the text the LLM read, the atomic's
+full result, the people and seats it named with the track behind each,
+and what the gaze loop was doing when the robot spoke. The format is in
+`walkie_agent.tool_log`'s docstring. Both logs stamp `t` on the
+simulation's clock, so their times compare directly. A run passes when:
 
 - the people memory, the mock in sim, holds each guest's name and drink
-  as in the scenario, judged from the agent's record of its tool calls;
+  as in the scenario, judged from the agent's record of its tool calls.
+  The call must name the guest's own track and come after the last new
+  task, since a new task clears the memory;
 - the heading follows the talking guest in each conversation. A
   conversation is one guest's time talking at the door. Its samples are
-  the 10 Hz `state` records in it with a known pose. A sample's error is
+  the 10 Hz `state` records in it with a known pose. Samples while Nav2
+  drives, or while an arm is out or its pose unknown, are left out. The
+  gaze loop stops by design then
+  ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)), so counting them
+  would fail a run for following the rules. A sample's error is
   the absolute value of the guest's bearing from the base, wrapped into
   (-180°, 180°]. The error is at most 10° in at least 80% of the samples.
   The gaze value is the mean error over the samples. The baseline is the
@@ -1053,12 +1077,16 @@ records (next PR). A run passes when:
   perception delay and 0.87 with 0.3 s. The hallway is too narrow for a
   wider swing;
 - each seat offer faces a free place, never a taken one;
-- each introduction faces the listener;
+- each guest is introduced to while the robot faces them within 10°, the
+  gaze criterion's limit. An introduction is a robot line after both
+  guests are seated that names exactly one guest's drink;
 - the only questions are the four essential ones and the hand-over
   request, plus one repeat after the mumble, and one more hand-over
   request in the early-answer variant;
-- the robot speaks before every arm motion, and closes the gripper only
-  after the guest's answer;
+- the robot speaks before every arm motion, with a `speak` or
+  `wait_for_person` call since the previous arm or gripper call, a failed
+  one included since it may have moved, and
+  closes the gripper only after the guest's answer;
 - the left gripper holds the bag before the second guest is guided;
 - no drive is refused because an arm is out, judged from the agent's
   record of its tool calls;
@@ -1067,7 +1095,29 @@ records (next PR). A run passes when:
   of a travel-safe pose;
 - its log has no `clock_jump`: a run whose simulation restarted is not
   valid;
-- it finishes within 6 minutes of sim time.
+- it finishes within 6 minutes of sim time, from the template's seeding to
+  the last item completed. `/walkie/todos` is latched, so a list left
+  finished by an earlier task does not count as the seeding;
+- no `look_at` or `remember_person` call names an onlooker's or the
+  bystander's track, and the robot never speaks while the gaze loop
+  follows one of them.
+
+Run the check on a finished run's two logs. It needs no ROS:
+
+```bash
+pixi run hri-check logs/hri_scenario_<time>.jsonl logs/agent_tools_<time>.jsonl
+```
+
+It prints one `PASS` or `FAIL` line per criterion with its reason, such
+as `PASS gaze guest1: 87% within 10 deg, ratio 0.81 (412 samples)`, and a
+last line of `PASS`, `FAIL` or `INVALID`. The exit code is 0 for a pass, 1
+for a fail and 2 for a run that is not valid: its event log has a
+`clock_jump` or no `start` record, its tool log is empty, or a record in
+either log has no time.
+`tests/test_hri_check.py` covers each criterion on hand-written logs.
+`tests/test_hri_scenario.py` also plays a whole run on the scenario node,
+with a real tool log, and checks that it passes, and that a wrong drink, a
+drive with an arm out and a call on an onlooker each fail their criterion.
 
 The 10° and 80% are first targets, to be tuned. Unit tests in
 `tests/test_perception.py` cover the seating and gesture rules ported from

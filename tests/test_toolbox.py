@@ -514,6 +514,28 @@ def test_clear_forgets_every_set():
     assert error_of(store.get_set, people.id).code == "NOT_FOUND"
 
 
+def test_peek_resolves_handles_and_sets_without_any_check():
+    world = World()
+    store = world.store()
+    people = store.put_set("person", ["Ana", "Ben"])
+
+    # Stale by age and by motion: get() refuses, peek() still answers.
+    world.time += 3600.0
+    world.pose = Pose2D(9.0, 9.0, 0.0)
+    assert error_of(store.get, "per_51c0.1").code == "STALE"
+    calls = world.pose_calls
+    assert [(h.id, h.kind, h.payload) for h in store.peek(" per_51c0.1 ")] == [
+        ("per_51c0.1", "person", "Ben")
+    ]
+    assert [h.payload for h in store.peek(people.id)] == ["Ana", "Ben"]
+    # It never asks for the pose, so it never waits on TF.
+    assert world.pose_calls == calls
+    world.pose = None
+    assert [h.payload for h in store.peek("per_51c0.0")] == ["Ana"]
+    for unknown in ("per_51c0.2", "per_ffff", "per_ffff.0", "Ana", "", "per_51c0." + "9" * 4301):
+        assert store.peek(unknown) == []
+
+
 def test_kinds_are_registered_once_with_their_own_prefix():
     register_kind("person", PERSON)  # the same policy again does nothing
     with pytest.raises(ValueError, match="already registered"):

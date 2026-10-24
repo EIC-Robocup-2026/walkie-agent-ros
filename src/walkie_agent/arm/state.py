@@ -22,6 +22,10 @@ MATCH_TOLERANCE_RAD = 0.05
 SAFE_SENTENCE = "Arms: safe for driving."
 NOT_SAFE_SENTENCE = "Arms: not safe for driving."
 UNKNOWN_SENTENCE = "Arms: state unknown."
+# In every drive's refusal for an arm out. The drives turn the StepError into
+# plain text, which loses its code, so the HRI pass check finds the refusal by
+# this. Here, with no ROS import, so the check can import it without ROS.
+ARMS_OUT = "not in a pose that is safe for driving"
 
 
 def unread_joints(table: Mapping[str, float], joints: Mapping[str, float]) -> list[str]:

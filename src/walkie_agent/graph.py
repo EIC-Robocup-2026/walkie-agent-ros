@@ -36,6 +36,7 @@ from rai.agents.langchain.invocation_helpers import invoke_llm_with_tracing
 from rai.messages import SystemMultimodalMessage
 
 from walkie_agent.todo import TodoList
+from walkie_agent.tool_log import CURRENT_CALL, ToolLog, mark_run
 
 logger = logging.getLogger(__name__)
 
@@ -197,16 +198,18 @@ class WalkieToolRunner(ToolRunner):
     is found, and an unknown name gets a plain answer instead of a KeyError.
     The result of every known tool goes to the todo list's error ledger. The
     calls that follow a successful wait_for_person in the same AI message do
-    not run.
+    not run. With a `tool_log`, every call, run or not, also goes to the
+    tool-call record (tool_log.py).
 
     Relies on ToolRunner internals of rai-core 2.12 (tools_by_name, _func and
     the try block in run_one); recheck them on every upgrade (ADR-0038).
     """
 
-    def __init__(self, toolset: ToolSet, todos: TodoList) -> None:
+    def __init__(self, toolset: ToolSet, todos: TodoList, tool_log: ToolLog | None = None) -> None:
         super().__init__([], name="tools")
         self.toolset = toolset
         self.todos = todos
+        self.tool_log = tool_log
         self.tools_by_name = _LiveTools(self)  # type: ignore[assignment]
         # The update_todos calls of the current AI message that are answered
         # without running. The graph runs one task at a time, so one list is
@@ -233,6 +236,24 @@ class WalkieToolRunner(ToolRunner):
             self._asked = False
 
     def _run_call(self, name: str, call: ToolCall, config: RunnableConfig | None) -> Any:
+        log = self.tool_log
+        if log is None:
+            return self._dispatch(name, call, config)
+        pending = log.begin(name, call)
+        token = CURRENT_CALL.set(pending)
+        output: Any = None
+        error: BaseException | None = None
+        try:
+            output = self._dispatch(name, call, config)
+            return output
+        except BaseException as e:
+            error = e
+            raise
+        finally:
+            CURRENT_CALL.reset(token)
+            log.end(pending, output, error)
+
+    def _dispatch(self, name: str, call: ToolCall, config: RunnableConfig | None) -> Any:
         call_id = call.get("id") or ""
         if self._asked:
             # ToolRunner runs the calls in order, one at a time (max_concurrency
@@ -255,6 +276,7 @@ class WalkieToolRunner(ToolRunner):
             return ToolMessage(
                 content=ONE_UPDATE_TODOS, name=name, tool_call_id=call_id, status="error"
             )
+        mark_run()
         try:
             output = tool.invoke(call, config)
         except Exception:
@@ -275,6 +297,7 @@ def build_walkie_graph(
     toolset: ToolSet,
     todos: TodoList,
     system_prompt: str | SystemMultimodalMessage | None = None,
+    tool_log: ToolLog | None = None,
 ) -> Runnable[ReActAgentState, ReActAgentState]:
     """Builds the agent's graph: llm, tools and the completion gate.
 
@@ -283,7 +306,8 @@ def build_walkie_graph(
     call it made has arguments that are not valid JSON; the history repair
     answers them, so the LLM can try again. llm -> gate when the LLM calls no
     tool while todo items are open and none is waiting, at most MAX_GATES
-    times per task; the gate goes back to llm. Otherwise the run ends.
+    times per task; the gate goes back to llm. Otherwise the run ends. With a
+    `tool_log`, the tools node records every tool call there.
     """
     # Tool counts already warned about, so a long task does not log the same
     # warning on every turn.
@@ -353,7 +377,7 @@ def build_walkie_graph(
 
     graph = StateGraph(ReActAgentState)
     graph.add_node("llm", llm_node)
-    graph.add_node("tools", WalkieToolRunner(toolset, todos))
+    graph.add_node("tools", WalkieToolRunner(toolset, todos, tool_log))
     graph.add_node("gate", gate_node)
     graph.add_edge(START, "llm")
     graph.add_conditional_edges("llm", route_after_llm, ["tools", "llm", "gate", END])

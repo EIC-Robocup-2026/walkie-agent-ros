@@ -28,6 +28,7 @@ from walkie_agent.perception.people_memory import InMemoryPeopleMemory
 from walkie_agent.perception.vision_feed import VisionFeed
 from walkie_agent.tasks import TaskTemplate, match_template, parse_task_message
 from walkie_agent.todo import TodoItem, TodoList, console_line
+from walkie_agent.tool_log import ToolLog
 from walkie_agent.toolbox import Toolbox
 from walkie_agent.tools import build_walkie_tools
 from walkie_agent.whoami import build_system_prompt
@@ -140,6 +141,8 @@ class WalkieAgent(LangChainAgent):
       turning the base even while the agent is idle.
     - With a `gaze` loop, stop() also shuts it down, so the base stops
       turning and its thread ends with the agent.
+    - With a `tool_log`, every tool call goes to the tool-call record
+      (tool_log.py).
     - An error from the LLM or the graph is logged, and the agent keeps
       serving the next message.
 
@@ -165,14 +168,16 @@ class WalkieAgent(LangChainAgent):
         templates: Mapping[str, TaskTemplate] | None = None,
         toolbox: Toolbox | None = None,
         gaze: GazeLoop | None = None,
+        tool_log: ToolLog | None = None,
     ):
         self.todos = todos if todos is not None else TodoList()
         self.tools = ToolSet(tools or [])
         self.templates = dict(templates or {})
         self.toolbox = toolbox
         self.gaze = gaze
+        self.tool_log = tool_log
         self._target_connectors = dict(target_connectors)
-        graph = build_walkie_graph(llm, self.tools, self.todos, system_prompt)
+        graph = build_walkie_graph(llm, self.tools, self.todos, system_prompt, tool_log)
         super().__init__(
             target_connectors=target_connectors,
             runnable=graph,
@@ -248,6 +253,9 @@ class WalkieAgent(LangChainAgent):
             # the task's last step.
             self.gaze.shutdown()
         super().stop()
+        if self.tool_log is not None:
+            # After RAI's stop(), so the last call's record is written first.
+            self.tool_log.close()
 
     def subscribe_reset(self, connector: ROS2Connector, topic: str) -> None:
         """Call reset() whenever a std_msgs/Empty message arrives on `topic`."""
@@ -515,6 +523,7 @@ def create_walkie_agent(
     templates: Mapping[str, TaskTemplate] | None = None,
     mock_people_memory: bool = False,
     arms: bool = False,
+    tool_log_path: Path | None = None,
 ) -> WalkieAgent:
     """Build the agent. `whoami_dir` adds the robot description and documentation
     search from `pixi run whoami-build`, when they have been built (see whoami.py).
@@ -524,7 +533,9 @@ def create_walkie_agent(
     backend, so the arm atomics load and the navigation tools refuse to drive
     with an arm out; it loads config/arm_poses.toml, and raises ArmPoseError
     when that file is wrong. The gaze loop is always created, as the `gaze`
-    backend, so look_at and stop_looking load in every run."""
+    backend, so look_at and stop_looking load in every run. `tool_log_path`
+    writes the tool-call record there (tool_log.py), stamped on the node's
+    clock."""
     # One list, shared by the todo tools and the graph.
     todos = TodoList()
     # VisionFeed is always created: without a walkie-vision publisher it only
@@ -560,6 +571,18 @@ def create_walkie_agent(
         # Each task starts with no guests, so a guest remembered in one sim
         # run is not recognized in the next.
         toolbox.on_new_task(memory.clear)
+    tool_log = None
+    if tool_log_path is not None:
+        node = connector.node
+        tool_log = ToolLog(
+            tool_log_path,
+            clock=lambda: node.get_clock().now().nanoseconds / 1e9,
+            handles=toolbox.ctx.handles,
+            gaze=gaze,
+        )
+        # Beside the memory's clear, so the record shows where each task's
+        # handles and guests start.
+        toolbox.on_new_task(tool_log.new_task)
     prompt = SYSTEM_PROMPT + ARM_RULES if arms else SYSTEM_PROMPT
     return WalkieAgent(
         target_connectors=target_connectors,
@@ -579,4 +602,5 @@ def create_walkie_agent(
         templates=templates,
         toolbox=toolbox,
         gaze=gaze,
+        tool_log=tool_log,
     )

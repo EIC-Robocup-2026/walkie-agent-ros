@@ -95,8 +95,10 @@ that is not finite is null.
   start          Always the first line. world, file, seed; door and
                  living_room (poses from the locations file); locations
                  (that file); places ({place: [x, y]}); scenario (the
-                 validated file with its defaults); oracle (the
-                 OracleConfig in use); wall_time (ISO 8601).
+                 validated file with its defaults); guests ({guest:
+                 {name, drink}} in id order); bag_owner (the guest who
+                 brings the bag, or null); onlookers (their ids); oracle
+                 (the OracleConfig in use); wall_time (ISO 8601).
   person         A person's state changed. person; name (null for the
                  seated people); state: at_door, talking, following or
                  seated; track_id (null while following); place (null
@@ -240,6 +242,7 @@ from walkie_agent.arm.poses import (
     load_robot_model,
 )
 from walkie_agent.arm.state import ArmsState, ArmState
+from walkie_agent.jsonl import EventLog
 from walkie_agent.locations import Location, load_locations
 from walkie_agent.perception.geometry import MAP_FRAME
 from walkie_agent.perception.seating import DEFAULT_SEATING_CONFIG
@@ -1663,59 +1666,6 @@ class HriScenario:
         return {pid: round(bearing_deg(pose, p.x, p.y), 2) for pid, p in people.items()}
 
 
-# -- The event log ------------------------------------------------------------------------
-
-
-class EventLog:
-    """The event log, one JSON object per line, flushed as written (module docstring).
-
-    Thread-safe. The record of type "end" is the last one: anything written
-    after it is dropped, as is anything written after close().
-    """
-
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._file = open(self.path, "w", encoding="utf-8")
-        self._lock = threading.Lock()
-        self._ended = False
-
-    def write(self, record: Mapping[str, Any]) -> None:
-        record = dict(record)
-        t = record.get("t")
-        record["t"] = round(t, 3) if isinstance(t, (int, float)) and math.isfinite(t) else None
-        line = json.dumps(_json_safe(record), ensure_ascii=False, allow_nan=False)
-        with self._lock:
-            if self._ended or self._file.closed:
-                return
-            self._file.write(line + "\n")
-            self._file.flush()
-            self._ended = record.get("type") == "end"
-
-    def close(self) -> None:
-        with self._lock:
-            self._file.close()
-
-
-def _json_safe(value: Any) -> Any:
-    """`value` with tuples as lists, paths as text and every non-finite number as None."""
-    if isinstance(value, bool) or value is None or isinstance(value, (int, str)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else None
-    if isinstance(value, Mapping):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, Path):
-        return str(value)
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-    return number if math.isfinite(number) else None
-
-
 # -- The commander's parameter --------------------------------------------------------------
 
 
@@ -2273,6 +2223,12 @@ class HriScenarioNode(Node):
             locations=str(loaded.locations_path),
             places={pid: [place.x, place.y] for pid, place in scenario.places.items()},
             scenario=spec.model_dump(mode="json"),
+            guests={
+                guest_id: {"name": guest.name, "drink": guest.drink}
+                for guest_id, guest in zip(spec.guest_ids, spec.guests)
+            },
+            bag_owner=spec.bag_owner(),
+            onlookers=list(spec.onlooker_ids),
             oracle=dataclasses.asdict(config),
             wall_time=datetime.now().astimezone().isoformat(timespec="seconds"),
         )

@@ -1,5 +1,6 @@
 # Task templates: fixed tasks whose todo list is written in advance (ADR-0041).
-# This file ships with no templates, so nothing is seeded by default.
+# This file ships with the HRI template (docs/architecture/hri.md) and a
+# commented example.
 #
 # A template is picked in one of two ways:
 # - An utterance contains one of its keywords as whole words, in any case,
@@ -13,9 +14,34 @@
 #           active_form (the "-ing" line for the console) and requires_tool
 #           (a tool that must succeed before the step can be completed)
 #
-# A malformed template stops the agent at startup. To try the example,
-# remove the "# " in front of each of its lines.
-#
+# A malformed template stops the agent at startup. To try the example
+# below, remove the "# " in front of each of its lines.
+
+[templates.hri]
+keywords = ["hri", "receptionist", "guests"]
+task = """
+Receive two guests, one at a time, at the door. Learn each guest's name and
+favourite drink, guide them to the living room and offer a free seat. Then
+introduce them to each other.
+At the door, call find_people with in_front once on arrival, then look_at
+the guest it finds. Other people near the door are not guests.
+Keep looking at the person you talk to. Ask for the name, then the drink.
+Never ask a guest to confirm or correct an answer. Ask again only if you
+heard nothing. Never ask who is who. Call guests by name, never "he" or "she".
+Take the second guest's bag in your left hand before guiding them. Say
+before you move the arm. Close the hand only after the guest says the bag is
+in it. If you hold nothing, ask once more, then go on without the bag. Keep
+the bag in the carry pose until the end.
+"""
+todos = [
+  { content = "Meet the first guest at the door and learn their name and drink", requires_tool = "remember_person" },
+  { content = "Guide the first guest to the living room and offer a free seat", requires_tool = "find_seats" },
+  { content = "Meet the second guest at the door and learn their name and drink", requires_tool = "remember_person" },
+  { content = "Take the second guest's bag", requires_tool = "set_gripper" },
+  { content = "Guide the second guest to the living room and offer a free seat", requires_tool = "find_seats" },
+  { content = "Introduce the guests to each other", requires_tool = "recognize_person" },
+]
+
 # [templates.tour]
 # keywords = ["house tour", "show me around"]
 # task = """

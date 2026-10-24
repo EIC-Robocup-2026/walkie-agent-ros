@@ -554,8 +554,8 @@ class GazeLoop:
     load only when the backend is present when the Toolbox is built.
     `vision` is the agent's VisionFeed, without which no person can be
     followed; `arm` its CommanderClient, or None without --arms, of which
-    the loop only reads `last_state`, `unverified` and busy(), none of
-    which waits for the commander. `clock`, the node clock in seconds by
+    the loop only reads `last_state`, snapshot(), `unverified` and busy(),
+    none of which waits for the commander. `clock`, the node clock in seconds by
     default, and `yaw_source`, the base's yaw in the map from TF by
     default, None when unknown, are there for tests.
 
@@ -1134,8 +1134,8 @@ class GazeLoop:
             pending, self._pending = self._pending, []
         assert target is not None
         # Outside the lock: TF and the arm state. None of it waits, since
-        # every lookup has a zero timeout, and unverified and busy() take
-        # only the client's state lock, but it takes other locks.
+        # every lookup has a zero timeout, and snapshot(), unverified and
+        # busy() take only the client's state lock, but it takes other locks.
         sighting, waiting = self._sighting(pending)
         yaw = self._yaw_source()
         arm_reason = self._arm_stop_reason(target.arms_known)
@@ -1210,27 +1210,30 @@ class GazeLoop:
     # -- Arms ----------------------------------------------------------------------
 
     def _arm_state(self) -> Any:
-        # last_state, unverified and busy() only, never a call: the
-        # commander's call lock may be held by a goal for many seconds.
+        # The client's memory only, never a call: the commander's call lock
+        # may be held by a goal for many seconds.
         return None if self._arm is None else self._arm.last_state
 
     def _arms_known(self) -> frozenset[str]:
-        # Without busy() first, unlike _arm_stop_reason: an abandonment this
-        # reading misses leaves the arms unverified, and the first tick
-        # reads that after its own busy() and before any command.
+        # The last reading alone: a goal, an abandonment or a recovery that
+        # it misses shows in the first tick's checks, before any command.
         state = self._arm_state()
         if state is None:
             return frozenset()
         return frozenset(arm for arm in ARMS if state.arm(arm) is not None)
 
     def _arm_stop_reason(self, arms_known: frozenset[str]) -> str | None:
-        """ARM_OUT, ARM_MOTION or None, from busy() and then the last reading and unverified.
+        """ARM_OUT, ARM_MOTION or None, from a snapshot of the client, then busy() and unverified.
 
-        busy() comes first, on every tick, since it may abandon a goal that
-        a call gave up on: the arms are then unverified and the goal's arm
-        unknown, and busy() returns None. The reading and unverified are
-        read after it, so the tick that abandons the goal stops the loop
-        rather than turning once more on the state from before.
+        The snapshot gives the last reading and `unverified` as of one
+        moment. A recovery stores a reading and clears `unverified` in one
+        step, so separate reads could pair a reading from before it with
+        the cleared state from after it. busy() comes after the snapshot, so
+        a goal that starts after it still counts. `unverified` is read once
+        more after busy(), since busy() may abandon a goal that a call gave
+        up on, and so may another thread meanwhile: the arms are then
+        unverified, and busy() returns None. The reads after the snapshot
+        can only add a reason to stop, never take one away.
         ARM_OUT when an arm is known to be out of every travel-safe pose.
         Otherwise ARM_MOTION while the arms are unverified (`unverified`):
         the client abandoned a goal before its end was known, or the
@@ -1254,24 +1257,25 @@ class GazeLoop:
         """
         if self._arm is None:
             return None
-        # busy() never waits: it reads the client's state under its short
-        # state lock, never the call lock or the executor, and checks
-        # discovery outside it. So it runs on every tick, not only while an
-        # arm is unknown.
-        busy = self._arm.busy()
-        # The reading before unverified: an abandonment or a late accept
-        # changes both in one step, so when this reading shows the change,
-        # unverified below shows it too.
-        state = self._arm.last_state
+        # snapshot() and unverified never wait: they take only the client's
+        # short state lock.
+        snapshot = self._arm.snapshot()
+        state = snapshot.state
         if state.unsafe_arms:
             return ARM_OUT
         # Before the checks below, which let the loop go on with both arms
-        # known or no goal in busy(). unverified, like busy(), never waits:
-        # it takes only the client's short state lock.
-        if self._arm.unverified is not None:
+        # known or no goal in busy().
+        if snapshot.unverified is not None:
             return ARM_MOTION
         unknown = {arm for arm in ARMS if state.arm(arm) is None}
         if unknown & arms_known:
+            return ARM_MOTION
+        # busy() never waits either: it reads the client's state under the
+        # state lock, never the call lock or the executor, and checks
+        # discovery outside it. So it runs on every tick that gets here, not
+        # only while an arm is unknown, and abandons a goal on time.
+        busy = self._arm.busy()
+        if self._arm.unverified is not None:
             return ARM_MOTION
         if unknown and busy is not None:
             return ARM_MOTION

@@ -643,10 +643,12 @@ flowchart TB
   unverified, after the client abandoned a goal or the commander accepted
   one late, the loop stops for `arm motion`. `busy()` and the last
   reading may not show it: an abandoned goal is no longer in `busy()`,
-  and an abandoned gripper goal leaves both arms known. `busy()` may
-  itself abandon a goal, so every tick calls it first and reads the rest
-  after it: the tick that abandons a goal stops the loop rather than
-  turning once more.
+  and an abandoned gripper goal leaves both arms known. Each tick takes
+  the last reading and the unverified state from one `snapshot()`, since
+  a recovery changes both in one step. Then it calls `busy()`, which
+  catches a goal that started after the snapshot, and reads the
+  unverified state again, since `busy()` may itself abandon a goal. So the
+  tick that abandons a goal stops the loop rather than turning once more.
 
 ### What the LLM reads
 

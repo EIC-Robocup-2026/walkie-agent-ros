@@ -17,6 +17,7 @@ import random
 import re
 import threading
 import time
+from collections.abc import Callable
 from types import SimpleNamespace
 
 import pytest
@@ -33,6 +34,7 @@ from vision_msgs.msg import BoundingBox2D
 from walkie_vision_msgs.msg import PersonDetection, PersonDetectionArray
 
 from walkie_agent import gaze as gaze_module
+from walkie_agent.arm.commander import ClientSnapshot
 from walkie_agent.arm.state import ArmState, ArmsState
 from walkie_agent.gaze import (
     ARM_MOTION,
@@ -1756,14 +1758,18 @@ HOME = ArmState(pose="home", travel_safe=True)
 
 
 def fake_commander(last_state: ArmsState) -> SimpleNamespace:
-    """What the loop reads of a CommanderClient: `last_state`, `unverified` and busy().
+    """What the loop reads of a CommanderClient: `last_state`, snapshot(), `unverified` and busy().
 
-    busy() calls `on_busy` first when a test sets it, as the client's may
-    abandon a goal there (_outstanding), and then returns `goal`.
-    `unverified` is None until a test sets it, as the client's is until it
-    abandons a goal.
+    snapshot() gives `last_state` and `unverified` as they are when it is
+    called. busy() calls `on_busy` first when a test sets it, as the
+    client's may abandon a goal there (_outstanding), and then returns
+    `goal`. `unverified` is None until a test sets it, as the client's is
+    until it abandons a goal.
     """
     arm = SimpleNamespace(last_state=last_state, unverified=None, goal=None, on_busy=None)
+
+    def snapshot() -> ClientSnapshot:
+        return ClientSnapshot(arm.last_state, None, 0, arm.unverified)
 
     def busy() -> str | None:
         on_busy = arm.on_busy
@@ -1771,8 +1777,55 @@ def fake_commander(last_state: ArmsState) -> SimpleNamespace:
             on_busy()
         return arm.goal
 
+    arm.snapshot = snapshot
     arm.busy = busy
     return arm
+
+
+class RacingCommander:
+    """What the loop reads of a CommanderClient, with a change that lands during one read.
+
+    race(before, after) makes the next read of the reading, through
+    `last_state` or snapshot(), call `before` just before it and `after`
+    just after it, as another thread's change lands between the loop's
+    reads of the client. snapshot() reads the reading and `unverified`
+    together, as the client's does under its state lock. `unverified` and
+    busy() read plainly.
+    """
+
+    def __init__(self, last_state: ArmsState) -> None:
+        self.state = last_state
+        self.cause: str | None = None
+        self.goal: str | None = None
+        self._race: tuple[Callable[[], None], Callable[[], None]] | None = None
+
+    def race(self, before: Callable[[], None], after: Callable[[], None]) -> None:
+        self._race = (before, after)
+
+    def _read(self, read: Callable[[], object]) -> object:
+        # Only the gaze thread reads, so the race runs once.
+        race, self._race = self._race, None
+        if race is None:
+            return read()
+        before, after = race
+        before()
+        value = read()
+        after()
+        return value
+
+    @property
+    def last_state(self) -> ArmsState:
+        return self._read(lambda: self.state)
+
+    def snapshot(self) -> ClientSnapshot:
+        return self._read(lambda: ClientSnapshot(self.state, None, 0, self.cause))
+
+    @property
+    def unverified(self) -> str | None:
+        return self.cause
+
+    def busy(self) -> str | None:
+        return self.goal
 
 
 def test_an_arm_that_starts_moving_stops_the_loop(recorder, make_loop):
@@ -1924,6 +1977,81 @@ def test_a_goal_that_busy_abandons_stops_the_loop_before_another_turn(
     assert (status.kind, status.stop_reason) == (kind, ARM_MOTION)
     assert_silent_after_stop(recorder)
     # From the tick whose busy() abandoned the goal on, only the stop's zeros.
+    assert spy.commands()[published_before[0] :] == [0.0, 0.0, 0.0]
+
+
+def start_racing(
+    connector, make_loop, monkeypatch, kind: str
+) -> tuple[RacingCommander, GazeLoop, PublishSpy]:
+    """A loop on a RacingCommander whose arms are unknown from the start, turning."""
+    arm = RacingCommander(ArmsState())
+    # A clock that stays at the handle's sighting, so the person is never lost.
+    clock = FakeClock(1000.0)
+    loop = make_loop(vision=VisionFeed(connector), arm=arm, clock=clock, yaw_source=lambda: 0.0)
+    spy = PublishSpy(loop, monkeypatch)
+    if kind == PERSON:
+        loop.follow_person("per_3", TrackKey(3, 0), 0.7, 1000 * 1_000_000_000, cancel=NO_CANCEL)
+    else:
+        loop.hold_heading("seat_1", 1.0, cancel=NO_CANCEL)
+    # Arms unknown with no goal running: the check fails open.
+    assert spy.next() != 0.0
+    assert loop.status().running
+    return arm, loop, spy
+
+
+@pytest.mark.parametrize("kind", [PERSON, HEADING])
+def test_a_recovery_during_a_ticks_reads_stops_the_loop_before_another_turn(
+    connector, recorder, make_loop, monkeypatch, kind
+):
+    arm, loop, spy = start_racing(connector, make_loop, monkeypatch, kind)
+    published_before: list[int] = []
+
+    def abandoned() -> None:
+        # The gaze thread publishes each tick's command after the tick, so
+        # every command recorded so far came from an earlier tick.
+        published_before.append(len(spy.records()))
+        arm.cause = ARM_ABANDONED
+
+    def recovered() -> None:
+        # As _recover does in one step: it stores a reading that shows the
+        # left arm out and clears the unverified state. A tick that pairs
+        # the reading from before with the state from after sees unknown
+        # arms that are verified, and fails open.
+        arm.state = ArmsState(left=ArmState(pose=None, travel_safe=False), right=None)
+        arm.cause = None
+
+    arm.race(abandoned, recovered)
+
+    assert wait_until(lambda: not loop.status().running)
+    status = loop.status()
+    assert (status.kind, status.stop_reason) == (kind, ARM_MOTION)
+    assert_silent_after_stop(recorder)
+    # From the tick that read the arms during the recovery on, only the
+    # stop's zeros.
+    assert spy.commands()[published_before[0] :] == [0.0, 0.0, 0.0]
+
+
+@pytest.mark.parametrize("kind", [PERSON, HEADING])
+def test_a_goal_that_starts_after_a_ticks_reading_stops_the_loop_before_another_turn(
+    connector, recorder, make_loop, monkeypatch, kind
+):
+    arm, loop, spy = start_racing(connector, make_loop, monkeypatch, kind)
+    published_before: list[int] = []
+
+    def before() -> None:
+        published_before.append(len(spy.records()))
+
+    def started() -> None:
+        # set_gripper's goal, sent by another thread right after the tick
+        # read the arms. busy() after the reading sees it.
+        arm.goal = "the left_gripper command"
+
+    arm.race(before, started)
+
+    assert wait_until(lambda: not loop.status().running)
+    status = loop.status()
+    assert (status.kind, status.stop_reason) == (kind, ARM_MOTION)
+    assert_silent_after_stop(recorder)
     assert spy.commands()[published_before[0] :] == [0.0, 0.0, 0.0]
 
 

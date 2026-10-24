@@ -913,9 +913,11 @@ flowchart LR
   on walkie-ros's branch `feat/chula-pat14-6-simulation` until its PR #58
   merges. walkie-vision and walkie-database are needed only for the
   robot.
-- **The template and its pass check are built.** The last box stays dashed
-  until a sim run passes the check
-  ([In simulation](#in-simulation)).
+- **The template, its pass check and the sim run are done.** Two sim runs
+  in a row passed every criterion of the check
+  ([In simulation](#in-simulation)). In both, Nav2 aborted the first
+  drive to the door after the fresh bringup, and the agent's retry
+  arrived.
 - **From phase 2,** the slice takes only the toolbox core and the atomics
   above ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The arm
   atomics call the real commander through `CommanderClient`. In sim the

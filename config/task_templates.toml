@@ -25,13 +25,25 @@ favourite drink, guide them to the living room and offer a free seat. Then
 introduce them to each other.
 At the door, call find_people with in_front once on arrival, then look_at
 the guest it finds. Other people near the door are not guests.
-Keep looking at the person you talk to. Ask for the name, then the drink.
+Keep looking at the person you talk to until you drive or move an arm,
+which stop look_at by themselves. Ask for the name, then the drink.
 Never ask a guest to confirm or correct an answer. Ask again only if you
 heard nothing. Never ask who is who. Call guests by name, never "he" or "she".
-Take the second guest's bag in your left hand before guiding them. Say
-before you move the arm. Close the hand only after the guest says the bag is
-in it. If you hold nothing, ask once more, then go on without the bag. Keep
-the bag in the carry pose until the end.
+To offer a seat, call find_seats, look_at the free seat you will offer, and
+only then say the offer.
+Take the second guest's bag in your left hand before guiding them. Say a
+line before each arm or gripper move, the move to the carry pose too. Once
+the left arm is in the receive pose, ask for the bag in one wait_for_person
+call, such as "Please hang your bag on my hand, and tell me when it is
+there." Never ask for the bag, or whether it is in your hand, with speak.
+Close the hand only after the answer to that call. If you hold nothing, ask
+once more the same way, then go on without the bag. Keep the bag in the
+carry pose until the end. An arm move stops look_at, so once the bag is in
+the carry pose, look_at the guest again with the same handle.
+Introduce the guests one at a time: look_at one guest, then in one speak
+call tell them the other guest's name and favourite drink. Then do the
+same for the other guest. The introductions end the task: ask nothing
+after them.
 """
 todos = [
   { content = "Meet the first guest at the door and learn their name and drink", requires_tool = "remember_person" },

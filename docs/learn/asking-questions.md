@@ -9,7 +9,12 @@ arrives later as an ordinary message, and the step goes back to
 ## What the tool does
 
 The system prompt tells the LLM to call `wait_for_person` instead of `speak`
-when it cannot go on without an answer. `WaitForPersonTool` in
+when it cannot go on without an answer, and never to say the question, a
+rewording of it, or a request it waits on with `speak` as well. `speak`'s
+own description makes the same exception. A person asked twice answers
+twice, and each answer waits in the queue as its own message, so the second
+one reaches the LLM later as the answer to whatever it asks next.
+`WaitForPersonTool` in
 `src/walkie_agent/tools/todos.py` holds the task's `TodoList` and a
 `speak_tool`, the same `speak` tool that the LLM calls. Its `_run` takes
 three steps:

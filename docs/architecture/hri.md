@@ -432,7 +432,8 @@ flowchart TB
   a reading that cannot show the arms are safe, with the check the drives
   make ([ADR-0025](decisions/0025-travel-safe-interlock.md)). Like that
   check, it fails open when the commander is not found, does not answer
-  or gives no reading: the base turns.
+  or gives no reading, so the base turns, but never while the arms are
+  unverified.
 - **Why `/cmd_vel`.** It is `twist_mux`'s lowest priority, so Nav2 and a
   person holding the joystick always win. The cost: it bypasses
   `collision_monitor` ([question 4](#open-questions)).
@@ -535,7 +536,8 @@ flowchart TB
 | `move_arm_to_pose` has passed its argument checks, before its first commander call for the move. `set_gripper` does not stop the loop | `move_arm_to_pose` | `arm motion` |
 | The commander's last reading shows an arm out of every travel-safe pose | the loop | `arm out` |
 | An arm that the commander's reading knew at the start becomes unknown, as when a goal is sent for it | the loop | `arm motion` |
-| A commander goal runs, or one an earlier call gave up on may still run (`busy()`), while an arm is unknown. A gripper goal with both arms known does not stop the loop | the loop | `arm motion` |
+| A commander goal runs, or one an earlier call gave up on may still run (`busy()`), while an arm is unknown. A gripper goal with both arms known does not stop the loop while the arms are verified | the loop | `arm motion` |
+| The arms are unverified (`unverified`): the commander client abandoned a goal before its end was known, or the commander accepted one after it was abandoned. This stops the loop even when both arms are known and travel-safe and no goal is in `busy()`, as after an abandoned gripper goal, since the drives refuse then too | the loop | `arm motion` |
 | 1 s has passed since the person's last sighting | the loop | `lost` |
 | The base does not face a seat within 10 s | `look_at` | `turn timeout` |
 | A tick raises | the loop | `error` |
@@ -611,9 +613,10 @@ flowchart TB
   `tools/navigation.py`, the check `navigate_to_location` and
   `move_relative` make. Where a drive's refusal says "Not driving", it
   says "Not starting a turn toward" and the handle. It refuses with
-  `PRECONDITION_FAILED` while an arm is out of every travel-safe pose, or
-  while a commander goal may still move an arm or a gripper (`busy()`).
-  It refuses with `INTERNAL` when the commander answers with a reading
+  `PRECONDITION_FAILED` while an arm is out of every travel-safe pose,
+  while a commander goal may still move an arm or a gripper (`busy()`),
+  and while the arms are unverified and the check's recovery cannot
+  clear that. It refuses with `INTERNAL` when the commander answers with a reading
   that cannot show the arms are safe, such as one that lacks an arm's
   joints.
 - **A refusal names this call's turn.** A gripper goal with both arms
@@ -625,12 +628,20 @@ flowchart TB
 - **It fails open, as the drives do.** Without `--arms` there is no
   check. When the commander is not discovered, does not answer, or gives
   no reading of the arms, the base turns, and the answer ends with a
-  note, such as "Arm state unknown: the commander did not answer."
+  note, such as "Arm state unknown: the commander did not answer." While
+  the arms are unverified, it refuses in those cases too, as the drives
+  do.
 - **Never a commander call while running.** A goal may hold the
   commander client's call lock for many seconds, so the loop reads only
-  the client's last reading and `busy()`, which take only the client's
-  short state lock. Arms unknown from the start, as when no commander
-  runs, do not stop it, unless a commander goal runs.
+  the client's last reading, `busy()` and `unverified`, which take only
+  the client's short state lock. Arms unknown from the start, as when no
+  commander runs, do not stop it, unless a commander goal runs or the
+  arms are unverified.
+- **Unverified arms stop it, as they stop a drive.** While the arms are
+  unverified, after the client abandoned a goal or the commander accepted
+  one late, the loop stops for `arm motion`. `busy()` and the last
+  reading may not show it: an abandoned goal is no longer in `busy()`,
+  and an abandoned gripper goal leaves both arms known.
 
 ### What the LLM reads
 

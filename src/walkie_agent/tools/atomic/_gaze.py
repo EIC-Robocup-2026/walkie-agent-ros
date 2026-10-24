@@ -45,8 +45,9 @@ _CAUSES = {
     NAVIGATION: "when a drive was asked for",
     NAVIGATION_ACTIVE: "because a navigation goal became active",
     # Before an arm atomic's first commander call, and from the loop when an
-    # arm became unknown, or a commander goal ran with an arm unknown, which
-    # may be a gripper's (busy()).
+    # arm became unknown, when a commander goal ran with an arm unknown,
+    # which may be a gripper's (busy()), and while the arms were unverified,
+    # after a goal that may still move an arm or a gripper was abandoned.
     ARM_MOTION: "because an arm or a gripper was about to move, or may have been moving",
     # From the commander's last reading, which does not say when the arm went out.
     ARM_OUT: "because an arm was out of every pose that is safe for driving",

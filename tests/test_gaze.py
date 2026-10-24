@@ -1743,8 +1743,12 @@ HOME = ArmState(pose="home", travel_safe=True)
 
 
 def fake_commander(last_state: ArmsState) -> SimpleNamespace:
-    """What the loop reads of a CommanderClient: `last_state`, and busy(), which returns `goal`."""
-    arm = SimpleNamespace(last_state=last_state, goal=None)
+    """What the loop reads of a CommanderClient: `last_state`, `unverified` and busy().
+
+    busy() returns `goal`. `unverified` is None until a test sets it, as the
+    client's is until it abandons a goal.
+    """
+    arm = SimpleNamespace(last_state=last_state, unverified=None, goal=None)
     arm.busy = lambda: arm.goal
     return arm
 
@@ -1813,6 +1817,63 @@ def test_a_gripper_goal_with_both_arms_known_does_not_stop_the_loop(recorder, ma
 
     time.sleep(0.3)
     assert loop.status().running
+
+
+# The client's cause once it abandoned a gripper command: the goal is no
+# longer in busy(), and a gripper command leaves both arms known.
+GRIPPER_ABANDONED = (
+    "the left_gripper command from an earlier call was given up on before its end was known"
+)
+
+
+def test_unverified_arms_stop_a_person_the_loop_follows(connector, recorder, make_loop):
+    arm = fake_commander(ArmsState(left=HOME, right=HOME))
+    # A clock that stays at the handle's sighting, so the person is never lost.
+    clock = FakeClock(1000.0)
+    loop = make_loop(vision=VisionFeed(connector), arm=arm, clock=clock, yaw_source=lambda: 0.0)
+    loop.follow_person("per_3", TrackKey(3, 0), 0.7, 1000 * 1_000_000_000, cancel=NO_CANCEL)
+    assert wait_until(lambda: recorder.count() >= 2)
+    # Still turning, so the stop below is unverified's.
+    assert loop.status().running
+
+    arm.unverified = GRIPPER_ABANDONED
+
+    # Nothing else shows it: no goal is busy, and both arms are known and safe.
+    assert (arm.busy(), arm.last_state.travel_safe) == (None, True)
+    assert wait_until(lambda: not loop.status().running)
+    status = loop.status()
+    assert (status.target, status.kind, status.stop_reason) == ("per_3", PERSON, ARM_MOTION)
+    assert_silent_after_stop(recorder)
+
+
+def test_unverified_arms_stop_a_held_heading(recorder, make_loop):
+    arm = fake_commander(ArmsState(left=HOME, right=HOME))
+    loop = make_loop(arm=arm, yaw_source=lambda: 0.0)
+    loop.hold_heading("seat_1", 1.0, cancel=NO_CANCEL)
+    assert wait_until(lambda: recorder.count() >= 2)
+    assert loop.status().running
+
+    arm.unverified = GRIPPER_ABANDONED
+
+    assert (arm.busy(), arm.last_state.travel_safe) == (None, True)
+    assert wait_until(lambda: not loop.status().running)
+    status = loop.status()
+    assert (status.target, status.kind, status.stop_reason) == ("seat_1", HEADING, ARM_MOTION)
+    assert_silent_after_stop(recorder)
+
+
+def test_an_arm_out_stops_the_loop_as_arm_out_while_the_arms_are_unverified(recorder, make_loop):
+    # Both hold before the first tick, so no tick sees only one of them. The
+    # loop itself does not check the arms when a target is set; look_at does.
+    arm = fake_commander(ArmsState(left=HOME, right=ArmState(pose=None, travel_safe=False)))
+    arm.unverified = GRIPPER_ABANDONED
+    loop = make_loop(arm=arm, yaw_source=lambda: 0.0)
+
+    loop.hold_heading("seat_1", 1.0, cancel=NO_CANCEL)
+
+    assert wait_until(lambda: not loop.status().running)
+    assert loop.status().stop_reason == ARM_OUT
+    assert_silent_after_stop(recorder)
 
 
 def test_no_track_no_heading_or_no_vision_starts_nothing(connector, recorder, make_loop):

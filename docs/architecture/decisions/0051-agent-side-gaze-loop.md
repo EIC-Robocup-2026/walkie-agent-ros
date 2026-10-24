@@ -107,10 +107,10 @@ inputs pass neither.
   `src/walkie_agent/tools/__init__.py` names the exception.
 - As built, `look_at` takes person and seat handles, not object handles,
   and its arm check fails open as the drives' does: when the commander is
-  not found, does not answer or gives no reading, the base turns. It
-  refuses while a commander goal may still move an arm or a gripper, and
-  on a reading that cannot show the arms are safe
-  ([HRI Task](/architecture/hri.md#gaze)).
+  not found, does not answer or gives no reading, the base turns, but
+  never while the arms are unverified. It refuses while a commander goal
+  may still move an arm or a gripper, and on a reading that cannot show
+  the arms are safe ([HRI Task](/architecture/hri.md#gaze)).
 - As built, 0.6 rad/s and 3.2 rad/s² are hard ceilings in `gaze.py`,
   apart from the adjustable config, which may only go lower. The
   publisher clamps every command to 0.6 rad/s whatever its config says,

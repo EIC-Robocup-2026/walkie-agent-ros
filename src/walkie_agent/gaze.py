@@ -23,8 +23,8 @@ only because the loop can do no more than ADR-0051 judged safe:
     loop stops, then stays silent, while any navigate_to_pose goal is active;
   - arms in: look_at checks the arms, every arm atomic stops the loop before
     it moves an arm, and the loop stops itself when the commander's last
-    reading shows an arm out or moving, or a goal runs while an arm is
-    unknown;
+    reading shows an arm out or moving, when a goal runs while an arm is
+    unknown, and while the arms are unverified, as the drives refuse then;
   - it stops by itself 1 s after its person was last seen.
 The gaze thread is the only writer of /cmd_vel, and publishes outside the
 loop's lock. Every stop queues three zero commands for it rather than
@@ -552,10 +552,10 @@ class GazeLoop:
     load only when the backend is present when the Toolbox is built.
     `vision` is the agent's VisionFeed, without which no person can be
     followed; `arm` its CommanderClient, or None without --arms, of which
-    the loop only reads `last_state` and busy(), neither of which waits for
-    the commander. `clock`, the node clock in seconds by default, and
-    `yaw_source`, the base's yaw in the map from TF by default, None when
-    unknown, are there for tests.
+    the loop only reads `last_state`, `unverified` and busy(), none of
+    which waits for the commander. `clock`, the node clock in seconds by
+    default, and `yaw_source`, the base's yaw in the map from TF by
+    default, None when unknown, are there for tests.
 
     The setters, stop() and status() are safe from any thread. The loop
     publishes nothing until a target is set, a command every tick while one
@@ -1132,8 +1132,8 @@ class GazeLoop:
             pending, self._pending = self._pending, []
         assert target is not None
         # Outside the lock: TF and the arm state. None of it waits, since
-        # every lookup has a zero timeout and busy() takes only the client's
-        # state lock, but it takes other locks.
+        # every lookup has a zero timeout, and unverified and busy() take
+        # only the client's state lock, but it takes other locks.
         sighting, waiting = self._sighting(pending)
         yaw = self._yaw_source()
         arm_reason = self._arm_stop_reason(target.arms_known)
@@ -1208,8 +1208,8 @@ class GazeLoop:
     # -- Arms ----------------------------------------------------------------------
 
     def _arm_state(self) -> Any:
-        # last_state and busy() only, never a call: the commander's call
-        # lock may be held by a goal for many seconds.
+        # last_state, unverified and busy() only, never a call: the
+        # commander's call lock may be held by a goal for many seconds.
         return None if self._arm is None else self._arm.last_state
 
     def _arms_known(self) -> frozenset[str]:
@@ -1219,25 +1219,39 @@ class GazeLoop:
         return frozenset(arm for arm in ARMS if state.arm(arm) is not None)
 
     def _arm_stop_reason(self, arms_known: frozenset[str]) -> str | None:
-        """ARM_OUT, ARM_MOTION or None, from the commander's last reading and busy().
+        """ARM_OUT, ARM_MOTION or None, from the commander's last reading, unverified and busy().
 
         ARM_OUT when an arm is known to be out of every travel-safe pose.
-        ARM_MOTION when an arm known when the target was set is unknown now,
-        which happens when a goal for it is sent, and when a commander goal
-        runs, or may still run (busy()), while an arm is unknown: an arm
-        goal makes its arm unknown before it is sent, so this also catches a
-        motion of an arm that was unknown from the start. Every arm atomic
-        stops the loop first, so these only catch a motion that did not. A
-        gripper goal with both arms known does not stop it: the grippers do
-        not move the arms. Arms unknown from the start with no goal running,
-        as without a commander, do not stop it: the check fails open, as
-        navigation's does (ADR-0025).
+        Otherwise ARM_MOTION while the arms are unverified (`unverified`):
+        the client abandoned a goal before its end was known, or the
+        commander accepted one after it was abandoned, and either may still
+        move an arm or a gripper. busy() may then be None, and the reading
+        may still show both arms known and travel-safe, as after an
+        abandoned gripper goal, but a drive is refused until recovery clears
+        that state, so the loop stops too.
+        ARM_MOTION also when an arm known when the target was set is
+        unknown now, which happens when a goal for it is sent, and when a
+        commander goal runs, or may still run (busy()), while an arm is
+        unknown: an arm goal makes its arm unknown before it is sent, so
+        this also catches a motion of an arm that was unknown from the
+        start. Every arm atomic stops the loop first, so these only catch a
+        motion that did not. A gripper goal with both arms known does not
+        stop it while the arms are verified: the grippers do not move the
+        arms. Arms unknown from the start with no goal running, as without
+        a commander, do not stop it: the check fails open, as navigation's
+        does (ADR-0025), and like navigation's, never while the arms are
+        unverified.
         """
         state = self._arm_state()
         if state is None:
             return None
         if state.unsafe_arms:
             return ARM_OUT
+        # Before the checks below, which let the loop go on with both arms
+        # known or no goal in busy(). unverified, like busy() below, never
+        # waits: it takes only the client's short state lock.
+        if self._arm.unverified is not None:
+            return ARM_MOTION
         unknown = {arm for arm in ARMS if state.arm(arm) is None}
         if unknown & arms_known:
             return ARM_MOTION

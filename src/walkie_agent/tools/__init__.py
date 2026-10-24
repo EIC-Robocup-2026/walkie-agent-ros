@@ -24,8 +24,10 @@ from walkie_agent.tools.todos import UpdateTodosTool, WaitForPersonTool
 
 if TYPE_CHECKING:
     # Only for the annotations: walkie_agent.toolbox imports FORBIDDEN_NAMES
-    # from this module, and walkie_agent.arm imports walkie_agent.toolbox.
+    # from this module, and walkie_agent.arm and walkie_agent.gaze import
+    # walkie_agent.toolbox.
     from walkie_agent.arm.commander import CommanderClient
+    from walkie_agent.gaze import GazeLoop
     from walkie_agent.toolbox import Toolbox
 
 __all__ = [
@@ -44,13 +46,30 @@ __all__ = [
 # itself, so it only covers tools that are given it; it is a guard against
 # mistakes, not a security boundary. The atomics' ToolContext checks it for
 # every entity it creates.
-#   /cmd_vel       raw velocity commands would bypass Nav2's obstacle avoidance
+#   /cmd_vel and the other base velocity inputs (manipulation.md's Forbidden
+#                  names): raw velocity commands would bypass Nav2's
+#                  obstacle avoidance. /cmd_vel_nav is Nav2's own input to
+#                  twist_mux, /cmd_vel_joy and /cmd_vel_key the operator's,
+#                  and /omni_wheel_drive_controller/cmd_vel twist_mux's
+#                  output, which drives the wheels directly
 #   /walkie/reset  the agent must not wipe its own memory
 #   /walkie/task   the agent must not queue its own tasks or seed locked steps
 #   /walkie/todos  the operator's view of the list; only update_todos edits it
-# The gaze loop of ADR-0051 is the one exception: it publishes on /cmd_vel and
-# must pass allow_forbidden=("/cmd_vel",) to the ToolContext explicitly.
-FORBIDDEN_NAMES = ["/cmd_vel", "/walkie/reset", "/walkie/task", "/walkie/todos"]
+# The one exception is the gaze loop, walkie_agent.gaze.GazeLoop (ADR-0051):
+# its RotationPublisher publishes rotation only on /cmd_vel, twist_mux's
+# lowest-priority input, and names it in allow_forbidden=("/cmd_vel",) to the
+# ToolContext. /cmd_vel stays listed, so every other tool and helper is still
+# refused it.
+FORBIDDEN_NAMES = [
+    "/cmd_vel",
+    "/cmd_vel_nav",
+    "/cmd_vel_joy",
+    "/cmd_vel_key",
+    "/omni_wheel_drive_controller/cmd_vel",
+    "/walkie/reset",
+    "/walkie/task",
+    "/walkie/todos",
+]
 
 
 def build_walkie_tools(
@@ -60,21 +79,27 @@ def build_walkie_tools(
     todos: TodoList | None = None,
     toolbox: "Toolbox | None" = None,
     arm: "CommanderClient | None" = None,
+    gaze: "GazeLoop | None" = None,
 ) -> list[BaseTool]:
     """The agent's tools. With `todos`, also update_todos and wait_for_person,
     which act on that list; wait_for_person speaks through the same speak tool.
     With `toolbox`, also its atomic tools. With `arm`, the agent's
     CommanderClient, both navigation tools refuse to drive with an arm out
-    (ADR-0025)."""
+    (ADR-0025). With `gaze`, the agent's GazeLoop, both stop it before they
+    drive (ADR-0051)."""
     speak = SpeakTool(connector=connector, forbidden=FORBIDDEN_NAMES)
     tools: list[BaseTool] = [
         # Walkie-specific tools.
         speak,
         ListLocationsTool(locations=locations),
         NavigateToLocationTool(
-            connector=connector, locations=locations, forbidden=FORBIDDEN_NAMES, arm=arm
+            connector=connector,
+            locations=locations,
+            forbidden=FORBIDDEN_NAMES,
+            arm=arm,
+            gaze=gaze,
         ),
-        MoveRelativeTool(connector=connector, forbidden=FORBIDDEN_NAMES, arm=arm),
+        MoveRelativeTool(connector=connector, forbidden=FORBIDDEN_NAMES, arm=arm, gaze=gaze),
         FindObjectsTool(connector=connector, forbidden=FORBIDDEN_NAMES),
         # Premade RAI tools, used as-is.
         GetCurrentPoseTool(

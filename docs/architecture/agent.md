@@ -10,8 +10,9 @@ it over ROS 2.
     The agent is being redesigned into a self-evolving agent: see
     [Self-Evolving Agent (Proposed)](self-evolving-agent.md). Phase 1's host
     graph and todo list are built, and so are the toolbox core of phase 2,
-    the HRI task's four people and seat atomics, and four arm atomics. The
-    rest of the redesign is proposed.
+    the HRI task's four people and seat atomics, its gaze loop with two
+    gaze atomics, and four arm atomics. The rest of the redesign is
+    proposed.
     This page describes the agent as it is today. For a guided tour with
     runnable examples, start at [Learn the Agent](../learn/index.md).
 
@@ -46,7 +47,9 @@ it over ROS 2.
   `ctx` and passes handles, short ids for what it saw
   ([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). Four find
   people and seats, and recognize and remember people
-  ([HRI Task](hri.md#atomics)). With `--arms`, four more move the arms and
+  ([HRI Task](hri.md#atomics)). Two turn the base toward a person or a
+  seat and stop it, through the gaze loop
+  ([HRI Task](hri.md#gaze)). With `--arms`, four more move the arms and
   grippers to named poses through walkie-ros's commander
   ([Arm Manipulation](manipulation.md#tools)).
 - **Knows what it is.** rai_whoami adds a description of Walkie to the system
@@ -321,6 +324,9 @@ todos = [
   the music" do not. Messages queued before it are dropped, with their
   seeds. The stop message itself runs next, so the LLM can cancel the open
   steps and say so. While the agent is idle, "stop" is an ordinary message.
+  Either way, once it is queued, it goes to the Toolbox's stop-heard
+  listeners ([Stop, reset and the cancel](#stop-reset-and-the-cancel)), so
+  the gaze loop stops turning the base between tasks too.
 - **Reset.** A message on `/walkie/reset` drops the queued messages and
   their seeds, and stops the running task. Before the next task, the agent
   clears the history, the todo list and the handles, publishes `[]` on
@@ -357,6 +363,8 @@ todos = [
 | `find_seats`                      | atomic     | Lists the places to sit in view, left to right, as seat handles, each free or taken |
 | `recognize_person`                | atomic     | Names people met before, by face, else by appearance. Only with `--mock-people-memory` |
 | `remember_person`                 | atomic     | Stores a person's name, facts, and face and appearance vectors. Only with `--mock-people-memory` |
+| `look_at`                         | atomic     | Turns the base toward a person handle and keeps following them, or toward a seat handle and holds. Refuses with an arm out |
+| `stop_looking`                    | atomic     | Stops the turning that `look_at` started. Never fails; when nothing runs, says what was looked at last and why it stopped |
 | `list_arm_poses`                  | atomic     | Lists the named arm poses, which arms each can move, and whether it is safe for driving. Only with `--arms` |
 | `move_arm_to_pose`                | atomic     | Moves one arm or both to a named pose, then checks the joints. Only with `--arms` |
 | `set_gripper`                     | atomic     | Opens, half-opens or closes one gripper or both; after a close, says whether it holds something. Only with `--arms` |
@@ -391,10 +399,12 @@ after the others. A failure reaches the LLM as `CODE: message`, see
 always load. `recognize_person` and `remember_person` need the
 `people_memory` backend, which only `--mock-people-memory` adds today, see
 [Where atomics live](#where-atomics-live). The HRI task's page shows what
-each one returns ([HRI Task](hri.md#atomics)). The four arm atomics need
-the `arm` backend, which only `--arms` adds. Every arm tool ends its answer
-with "Arms: safe for driving.", "Arms: not safe for driving." or "Arms:
-state unknown." ([Arm Manipulation](manipulation.md#tools)).
+each one returns ([HRI Task](hri.md#atomics)). `look_at` and
+`stop_looking` always load. The same page says how the gaze loop turns the
+base and when it stops ([HRI Task](hri.md#gaze)). The four arm atomics
+need the `arm` backend, which only `--arms` adds. Every arm tool ends its
+answer with "Arms: safe for driving.", "Arms: not safe for driving." or
+"Arms: state unknown." ([Arm Manipulation](manipulation.md#tools)).
 
 With `--arms`, `navigate_to_location` and `move_relative` also check the
 arms before they drive
@@ -407,7 +417,21 @@ such as "Arm state unknown: the commander did not answer." They refuse in
 those cases too while the arms are unverified, after the arm client gave up
 on a goal before its end was known. They then drive only when the commander
 shows that every such goal is no longer active, and two reads of both arms
-0.3 s apart agree, all within the check's 3 s.
+0.3 s apart agree, all within the check's 3 s. `look_at` makes the same
+check before it turns the base.
+
+Both drive tools stop the gaze loop first, before the arm check, so the base
+stops turning even when the check then refuses the drive
+([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). They wait up to 0.5 s
+for the loop's zero commands to be published. When they are not, the drive
+is refused before the arm check, with no goal sent: "Not driving. The gaze
+loop's stop was not confirmed: its zero commands on /cmd_vel were not
+published within 0.5 s, so the base may still be turning. No navigation
+goal was sent. Try again in a few seconds; if it fails again, tell the
+person that the base cannot be confirmed stopped." When the gaze thread's
+last attempt to publish the zeros raised, the message says "publishing its
+zero commands on /cmd_vel failed" instead. `move_arm_to_pose` waits the same way, and refuses with `TIMEOUT`
+([HRI Task](hri.md#what-the-llm-reads)).
 
 For the full list of topics, see
 [Getting Started](../getting-started.md).
@@ -416,11 +440,12 @@ For the full list of topics, see
 
 The toolbox core of phase 2 is built in `src/walkie_agent/toolbox/`: typed
 atomic tools, the `ctx` they run with, and handles
-([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). Eight atomics
+([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). Ten atomics
 ship. Four are the HRI task's people and seat tools: `find_people`,
 `find_seats`, `recognize_person` and `remember_person`
-([HRI Task](hri.md#atomics)). Four are arm tools: `list_arm_poses`,
-`move_arm_to_pose`, `set_gripper` and `get_arm_state`
+([HRI Task](hri.md#atomics)). Two are its gaze tools, `look_at` and
+`stop_looking` ([HRI Task](hri.md#gaze)). Four are arm tools:
+`list_arm_poses`, `move_arm_to_pose`, `set_gripper` and `get_arm_state`
 ([Arm Manipulation](manipulation.md#tools)). Bundles, the linker, access
 levels and tool search are not built
 ([Self-Evolving Agent](self-evolving-agent.md#tiers-and-folders)).
@@ -686,7 +711,7 @@ one place.
   `ValueError`, unless the call passes that exact name in
   `allow_forbidden`. It is a `ValueError`, not a `StepError`, because it is
   a bug in reviewed code: it must fail the tests, not reach the LLM. The
-  one planned exception is the gaze loop, which passes
+  one exception is the gaze loop's publisher, which passes
   `allow_forbidden=("/cmd_vel",)`
   ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). Like the list
   itself, this is a guard rail, not a security boundary
@@ -703,11 +728,26 @@ one place.
   lock, the same lock under which a starting run clears it. A cancel set
   after a run started cancels that run. One set before is cleared when the
   next run starts, so a new task never inherits an old cancel.
-- **Listeners.** `Toolbox.on_interrupt(callback)` and
-  `on_new_task(callback)` let later parts react, such as the gaze loop
-  stopping on an interrupt. Interrupt listeners run after the lock is
-  released, because one may block. A listener that raises is logged, and
-  the others still run.
+- **Listeners.** `Toolbox.on_interrupt(callback)`,
+  `on_new_task(callback)` and `on_stop_heard(callback)` let other parts
+  react. The gaze loop registers all three, so a stop, a reset or a new
+  task stops the base turning. The mock people memory clears on a new
+  task. Interrupt listeners run after the lock is released, because one
+  may block. A listener that raises is logged, and the others still run.
+- **Stop-heard listeners.** `Toolbox.stop_heard()` runs them for every
+  utterance that is just "stop" or "never mind", during a task or not.
+  They run on the thread that delivered the utterance, once the agent has
+  queued it and decided, under its buffer lock, whether a task runs. Called
+  before that decision, they could stop the gaze loop during a `look_at`
+  of a task that then ended, and the stop would count as idle, with no
+  interrupt and no cancel. During a task, the cancel is already set when
+  they run, and the interrupt listeners follow them. They are for what
+  runs between tasks, such as the gaze loop: while the agent is idle, the
+  stop interrupts nothing. They set no cancel and hold back no run, so
+  between tasks the stop's own run may start while they run. A `look_at`
+  in it that began before the stop fails with `CANCELLED` or has its
+  target stopped, because it reads the loop's stop generation first
+  ([HRI Task](hri.md#stops)).
 - **No run starts during the listeners.** The interrupt counts as
   pending from the cancel until its last listener returns. Until then
   `Toolbox.begin_task()` refuses, and the agent leaves the next message
@@ -757,15 +797,27 @@ one place.
   check the arms before they drive. Without a commander running, the arm
   atomics fail with `UNAVAILABLE`, and the robot drives with the arm state
   unknown.
+- **`gaze` is always there.** It is a `GazeLoop`
+  (`src/walkie_agent/gaze.py`), which turns the base toward a person or a
+  seat for `look_at` ([HRI Task](hri.md#gaze)). `create_walkie_agent`
+  builds it before the `Toolbox`, with the `vision` backend and, with
+  `--arms`, the commander client, then registers it for the Toolbox's
+  interrupts and new tasks. It also passes it to `navigate_to_location`
+  and `move_relative`, which stop it before they drive, and to
+  `WalkieAgent`, whose `stop()` shuts it down. Until `look_at` gives it a
+  target, it publishes nothing on `/cmd_vel`. Its two ROS entities are
+  that publisher and a subscription to Nav2's `navigate_to_pose` goal
+  status.
 - **After the other tools.** `build_walkie_tools` appends the atomic
   tools. An atomic named like an existing tool stops the agent with a
   `ValueError`, because the agent keeps one tool per name and would
   silently replace the older one.
-- **Eight ship.** `find_people`, `find_seats`, `recognize_person` and
+- **Ten ship.** `find_people`, `find_seats`, `recognize_person` and
   `remember_person`, with what they share in `_perception.py`. The rules
   they use, ported from walkie-agent-v2, are plain functions in
   `src/walkie_agent/perception/`, which tests run without LangChain.
-  `list_arm_poses`, `move_arm_to_pose`, `set_gripper` and `get_arm_state`,
+  `look_at` and `stop_looking`, with what they share in `_gaze.py`; the
+  loop itself is `src/walkie_agent/gaze.py`. `list_arm_poses`, `move_arm_to_pose`, `set_gripper` and `get_arm_state`,
   with what they share in `_arm.py`. The pose loader and the pose matching
   are in `src/walkie_agent/arm/`.
 

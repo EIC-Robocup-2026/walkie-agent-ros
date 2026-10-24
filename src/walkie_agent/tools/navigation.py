@@ -92,6 +92,12 @@ class Nav2GoalTool(BaseROS2Tool):
     With `arm`, the agent's CommanderClient, every drive first checks that
     both arms are in travel-safe poses (ADR-0025). Without it, as on a robot
     run without --arms, there is no check.
+
+    With `gaze`, the agent's GazeLoop, every drive first stops the loop
+    (ADR-0051): it would otherwise keep turning the base toward a person
+    until Nav2's goal status reached it. The drive is refused, with no goal
+    sent, when the loop's zero commands are not published within
+    STOP_WAIT_S.
     """
 
     handle_tool_error: bool = True
@@ -102,6 +108,9 @@ class Nav2GoalTool(BaseROS2Tool):
     # A walkie_agent.arm.commander.CommanderClient, or None. Typed Any: the
     # arm package imports walkie_agent.toolbox, which imports this module.
     arm: Any = None
+    # A walkie_agent.gaze.GazeLoop, or None. Typed Any for the same reason:
+    # walkie_agent.gaze imports walkie_agent.toolbox and this module.
+    gaze: Any = None
 
     _client: ActionClient | None = PrivateAttr(default=None)
 
@@ -121,6 +130,24 @@ class Nav2GoalTool(BaseROS2Tool):
         leading space for the caller to add to its answer."""
         if not self.is_writable(self.action_name):
             raise ToolException(f"Action {self.action_name} is not writable by this agent.")
+        if self.gaze is not None:
+            # Here, not at the top: walkie_agent.gaze imports this module.
+            from walkie_agent.gaze import NAVIGATION, STOP_UNCONFIRMED_NEXT, STOP_WAIT_S
+            from walkie_agent.toolbox.types import StepError
+
+            # Before the arm check, which may wait 3 s for the commander:
+            # the base stops turning as soon as a drive is asked for, even
+            # one the check then refuses. The gaze thread publishes the
+            # stop's zeros; the wait, of at most STOP_WAIT_S, lets them go
+            # out before the goal. When they are not published by then, the
+            # base may still be turning, or turn again, so no goal is sent.
+            try:
+                self.gaze.stop(NAVIGATION, wait_s=STOP_WAIT_S)
+            except StepError as e:
+                raise ToolException(
+                    f"Not driving. {e.message} No navigation goal was sent. "
+                    f"{STOP_UNCONFIRMED_NEXT}"
+                ) from e
         note = self._check_arms()
 
         client = self._get_client()
@@ -156,63 +183,19 @@ class Nav2GoalTool(BaseROS2Tool):
     def _check_arms(self) -> str:
         """The interlock: refuse to drive with an arm out (ADR-0025).
 
-        The decision is the arm client's check_for_driving(), made under its
-        call lock, so no goal starts between its steps, all within
-        ARM_CHECK_TIMEOUT_S. Raises ToolException while a goal sent to the
-        commander may still move an arm or a gripper; while the arms are
-        unverified after the client abandoned a goal, until the commander
-        shows every such goal to be no longer active and a settled read
-        shows the arms still; when another call keeps the commander past
-        the timeout; when an arm is known to be out of every travel-safe
-        pose; and when the commander answers with a reading that cannot show
-        the arms are safe. When the commander's
-        /get_joint_states service is not found, its read does not answer or
-        it gives no reading, the robot drives, and the returned note says why
-        the arms were not checked: failing open keeps navigation working
-        while the arm stack is down, at the cost that a crashed commander
-        disables the check (ADR-0025). It never fails open while the arms
-        are unverified. Returns "" after a check that passed.
+        check_arms() decides; this turns its refusal into the ToolException
+        the LLM reads. Returns "" or the note that says why the arms were not
+        checked.
         """
-        if self.arm is None:
-            return ""
-        # Here, not at the top: walkie_agent.toolbox imports this module, and
-        # walkie_agent.arm imports walkie_agent.toolbox.
-        from walkie_agent.arm.commander import NO_ANSWER, NO_READING, NOT_FOUND
+        # Here, not at the top: walkie_agent.toolbox imports this module.
         from walkie_agent.toolbox.types import StepError
 
         try:
-            # The tool has no cancel event; a fresh one is never set, so only
-            # the timeouts end the check.
-            check = self.arm.check_for_driving(threading.Event(), timeout_s=ARM_CHECK_TIMEOUT_S)
+            # The tool has no cancel event: check_arms() then uses a fresh
+            # one, never set, so only the timeouts end the check.
+            return check_arms(self.arm, "driving", "'home'")
         except StepError as e:
-            if e.code == "INTERNAL":
-                # An answer that is malformed, lacks an arm's joints or holds
-                # a position that is not a number.
-                raise ToolException(
-                    "Not driving: the commander's reading does not show that the arms are safe "
-                    f"for driving. {e.message} Tell the person that the arms cannot be checked."
-                ) from e
-            # PRECONDITION_FAILED: a goal runs or is outstanding, or the arms
-            # are unverified and recovery could not clear that: the commander
-            # did not show an earlier goal to be no longer active, the arms
-            # could not be read, or a settled read did not show them still.
-            # TIMEOUT: another call kept the commander past the check's
-            # timeout.
-            retry = " Try again in a few seconds." if e.code == "TIMEOUT" else ""
-            raise ToolException(f"Not driving. {e.message}{retry}") from e
-        if check.state is None:
-            notes = {NOT_FOUND: ARMS_NOT_FOUND, NO_ANSWER: ARMS_UNKNOWN, NO_READING: ARMS_NOT_READ}
-            return f" {notes[check.unread]}"
-        state = check.state
-        if state.unsafe_arms:
-            raise ToolException(_arms_not_safe(state.unsafe_arms))
-        if state.travel_safe is None:
-            # Only for an arm that no pose has a table for.
-            raise ToolException(
-                "Not driving: the commander's reading does not show where both arms are. "
-                "Tell the person that the arms cannot be checked."
-            )
-        return ""
+            raise ToolException(e.message) from e
 
     def _make_pose(self, x: float, y: float, yaw: float) -> PoseStamped:
         pose = PoseStamped()
@@ -378,15 +361,100 @@ def tf_publisher_hint(node: Node) -> str:
     )
 
 
-def _arms_not_safe(arms: tuple[str, ...]) -> str:
+def check_arms(
+    arm: Any, action: str, example: str, cancel: threading.Event | None = None
+) -> str:
+    """The arm interlock before the base moves: refuse with an arm out (ADR-0025, ADR-0051).
+
+    One decision for every base motion, so a drive and a gaze turn agree:
+    the drives call it with `action` "driving", look_at with "starting a
+    turn toward" and the handle, such as "starting a turn toward per_51c0.1".
+    `arm` is the agent's CommanderClient, or None for no check, as on a run
+    without --arms. `example` names the poses the refusal suggests for one
+    arm, quoted, such as "'home'"; for both arms it is always 'home', the
+    one travel-safe pose that takes both. `cancel` ends the read early;
+    without it, only the timeout does.
+
+    The decision is the arm client's check_for_driving(), made under its
+    call lock, so no goal starts between its steps, all within
+    ARM_CHECK_TIMEOUT_S. Raises StepError PRECONDITION_FAILED while a goal
+    sent to the commander may still move an arm or a gripper; while the arms
+    are unverified after the client abandoned a goal, until the commander
+    shows every such goal to be no longer active and a settled read shows
+    the arms still; and when an arm is known to be out of every travel-safe
+    pose. TIMEOUT when another call kept the
+    commander past the check's timeout; INTERNAL when the commander answers
+    with a reading that cannot show the arms are safe; CANCELLED when
+    `cancel` is set during the check. When the commander's
+    /get_joint_states service is not found, its read does not answer or it
+    gives no reading, the base moves, and the returned note says why the
+    arms were not checked: failing open keeps the base working while the arm
+    stack is down, at the cost that a crashed commander disables the check
+    (ADR-0025). It never fails open while the arms are unverified. Returns
+    "" after a check that passed, else the note with a leading space.
+    """
+    if arm is None:
+        return ""
+    # Here, not at the top: walkie_agent.toolbox imports this module, and
+    # walkie_agent.arm imports walkie_agent.toolbox.
+    from walkie_agent.arm.commander import NO_ANSWER, NO_READING, NOT_FOUND
+    from walkie_agent.toolbox.types import StepError
+
+    if cancel is None:
+        cancel = threading.Event()
+    try:
+        # The module's value, read on every call, so a test can shorten it.
+        check = arm.check_for_driving(cancel, timeout_s=ARM_CHECK_TIMEOUT_S)
+    except StepError as e:
+        if e.code == "CANCELLED" and cancel.is_set():
+            # A stop or a reset, not a commander that did not answer: the
+            # caller stops instead of moving with the arms unchecked.
+            raise
+        if e.code == "INTERNAL":
+            # An answer that is malformed, lacks an arm's joints or holds a
+            # position that is not a number.
+            raise StepError(
+                "INTERNAL",
+                f"Not {action}: the commander's reading does not show that the arms are safe "
+                f"for driving. {e.message} Tell the person that the arms cannot be checked.",
+                e.data,
+            ) from e
+        # PRECONDITION_FAILED: a goal runs or is outstanding, or the arms are
+        # unverified and recovery could not clear that: the commander did not
+        # show an earlier goal to be no longer active, the arms could not be
+        # read, or a settled read did not show them still. TIMEOUT: another
+        # call kept the commander past the check's timeout.
+        retry = " Try again in a few seconds." if e.code == "TIMEOUT" else ""
+        raise StepError(e.code, f"Not {action}. {e.message}{retry}", e.data) from e
+    if check.state is None:
+        notes = {NOT_FOUND: ARMS_NOT_FOUND, NO_ANSWER: ARMS_UNKNOWN, NO_READING: ARMS_NOT_READ}
+        return f" {notes[check.unread]}"
+    state = check.state
+    if state.unsafe_arms:
+        raise StepError(
+            "PRECONDITION_FAILED",
+            _arms_not_safe(state.unsafe_arms, action, example),
+            {"arms": list(state.unsafe_arms)},
+        )
+    if state.travel_safe is None:
+        # Only for an arm that no pose has a table for.
+        raise StepError(
+            "INTERNAL",
+            f"Not {action}: the commander's reading does not show where both arms are. "
+            "Tell the person that the arms cannot be checked.",
+        )
+    return ""
+
+
+def _arms_not_safe(arms: tuple[str, ...], action: str, example: str) -> str:
     """The refusal for `arms`, the arms out of every travel-safe pose, left first."""
     if len(arms) == 1:
         return (
-            f"Not driving: the {arms[0]} arm is not in a pose that is safe for driving. "
-            "Move it with move_arm_to_pose first, for example 'home'."
+            f"Not {action}: the {arms[0]} arm is not in a pose that is safe for driving. "
+            f"Move it with move_arm_to_pose first, for example {example}."
         )
     return (
-        "Not driving: the arms are not in a pose that is safe for driving. Move them with "
+        f"Not {action}: the arms are not in a pose that is safe for driving. Move them with "
         "move_arm_to_pose first, for example 'home'."
     )
 

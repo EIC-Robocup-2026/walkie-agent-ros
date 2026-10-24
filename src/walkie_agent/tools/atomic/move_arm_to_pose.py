@@ -18,6 +18,7 @@ from walkie_agent.arm.poses import ARM_GROUPS, ARMS, BOTH, BOTH_ARMS_GROUP, RIGH
 from walkie_agent.arm.state import MATCH_TOLERANCE_RAD, unread_joints, worst_joint
 from walkie_agent.toolbox import Effect, StepError, ToolContext, ToolMeta, ToolOutput
 from walkie_agent.tools.atomic import _arm as shared
+from walkie_agent.tools.atomic import _gaze as gaze
 
 # The commander's status for a success in plan-only mode, where nothing moved.
 PLAN_ONLY = "Plan Only"
@@ -94,6 +95,22 @@ def run(ctx: ToolContext, args: Args) -> Out:
     arms = ARMS if args.arm == BOTH else (args.arm,)
     group = BOTH_ARMS_GROUP if args.arm == BOTH else ARM_GROUPS[args.arm]
     targets = {joint: value for arm in arms for joint, value in pose.tables[arm].items()}
+    # Before the first call to the commander on the way to a move, so the
+    # base is still before the arm leaves its pose (ADR-0051). A request
+    # refused above moves nothing and leaves the gaze loop running.
+    try:
+        gaze.stop_before_arm_motion(ctx)
+    except StepError as e:
+        # The base may still be turning, so nothing goes to the commander,
+        # not even a read for the sentence. state_sentence() reads only the
+        # client's memory, and never says that the robot may drive while
+        # the arms are unverified.
+        raise StepError(
+            e.code,
+            f"Could not move to {name!r}: {shared.full_stop(e.message)} {gaze.NO_ARM_GOAL} "
+            f"{shared.state_sentence(client)}",
+            {"pose": name, **e.data},
+        ) from None
     try:
         order = client.joint_names(group, ctx.cancel, shared.CONFIG.read_timeout_s)
     except StepError as e:

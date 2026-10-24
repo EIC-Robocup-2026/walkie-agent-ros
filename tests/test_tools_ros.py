@@ -1,16 +1,18 @@
 """Walkie tools against the fake robot over real ROS 2 (no LLM)."""
 
 import math
+import re
 import time
 
 import pytest
-from geometry_msgs.msg import TransformStamped, Twist
+from geometry_msgs.msg import TransformStamped, TwistStamped
 from rai.tools.ros2.navigation.nav2_blocking import GetCurrentPoseTool
 from std_msgs.msg import Empty, String
 from tf2_ros import StaticTransformBroadcaster
 
 from walkie_agent.locations import Location
 from walkie_agent.tools import (
+    FORBIDDEN_NAMES,
     MoveRelativeTool,
     NavigateToLocationTool,
     SpeakTool,
@@ -153,10 +155,21 @@ def test_speak_changes_speech_id_only_on_stop(fake_walkie, connector):
 
 def test_tools_hide_forbidden_topics(connector, locations):
     node = connector.node
-    node.create_publisher(Twist, "/cmd_vel", 10)
-    node.create_publisher(Empty, "/walkie/reset", 10)
-    node.create_publisher(String, "/walkie/task", 10)
-    node.create_publisher(String, "/walkie/todos", 10)
+    # Each forbidden name with its type on the robot: twist_mux's inputs and
+    # output are stamped.
+    types = {
+        "/cmd_vel": TwistStamped,
+        "/cmd_vel_nav": TwistStamped,
+        "/cmd_vel_joy": TwistStamped,
+        "/cmd_vel_key": TwistStamped,
+        "/omni_wheel_drive_controller/cmd_vel": TwistStamped,
+        "/walkie/reset": Empty,
+        "/walkie/task": String,
+        "/walkie/todos": String,
+    }
+    assert sorted(types) == sorted(FORBIDDEN_NAMES)
+    for name, msg_type in types.items():
+        node.create_publisher(msg_type, name, 10)
     node.create_publisher(String, "/walkie/visible_test_topic", 10)
     lister = next(
         t for t in build_walkie_tools(connector, locations)
@@ -165,8 +178,11 @@ def test_tools_hide_forbidden_topics(connector, locations):
 
     assert wait_until(lambda: "/walkie/visible_test_topic" in lister.invoke({}))
     topics = lister.invoke({})
-    for forbidden in ("/cmd_vel", "/walkie/reset", "/walkie/task", "/walkie/todos"):
-        assert forbidden not in topics
+    for forbidden in FORBIDDEN_NAMES:
+        # The name alone. An earlier test's /cmd_vel action client can outlive
+        # its test until garbage collection, and its /cmd_vel/_action/* topics
+        # are other names.
+        assert re.search(rf"{re.escape(forbidden)}(?![\w/])", topics) is None
 
 
 def test_rai_get_current_pose_reads_fake_tf(fake_walkie, connector):

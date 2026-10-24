@@ -4,12 +4,14 @@ LLM and the fake robot."""
 import json
 import logging
 import random
+import re
 import threading
 import time
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
+from rai.communication.hri_connector import HRIMessage
 from rai.communication.ros2 import ROS2Connector, ROS2HRIConnector, ROS2HRIMessage
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Empty, String
@@ -18,11 +20,12 @@ from conftest import PROJECT_ROOT
 from scripted_llm import ScriptedChatModel, tool_call
 from walkie_agent.agent import ARM_RULES, SYSTEM_PROMPT, WalkieAgent, create_walkie_agent
 from walkie_agent.arm.commander import CommanderClient
+from walkie_agent.gaze import STOP_HEARD, GazeLoop
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory, ModelVector
 from walkie_agent.perception.vision_feed import VisionFeed
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, hash_vector
 from walkie_agent.tasks import TaskTemplate
-from walkie_agent.toolbox import AtomicTool, Toolbox
+from walkie_agent.toolbox import AtomicTool, StepError, Toolbox
 
 # The agent's plain-text replies; speech goes to /to_human instead.
 CONSOLE = "/walkie/console"
@@ -116,8 +119,8 @@ def test_agent_sees_tool_failure(connector, locations):
     assert "Navigation is unavailable" in last_tool.content
 
 
-def test_the_agent_gets_a_toolbox_with_only_the_vision_atomics(connector, locations):
-    """create_walkie_agent builds one Toolbox with a VisionFeed and no people memory."""
+def test_the_agent_gets_a_toolbox_with_only_the_vision_and_gaze_atomics(connector, locations):
+    """create_walkie_agent builds one Toolbox with a VisionFeed, a GazeLoop and no people memory."""
     agent = create_walkie_agent(
         ScriptedChatModel(responses=[]), connector, locations, target_connectors={}
     )
@@ -130,13 +133,78 @@ def test_the_agent_gets_a_toolbox_with_only_the_vision_atomics(connector, locati
     # atomics need the arm backend, which only --arms adds, so a robot run
     # without them never offers those tools, nor checks the arms before a drive.
     assert not agent.toolbox.ctx.has_backend("arm")
-    assert [t.name for t in agent.toolbox.tools()] == ["find_people", "find_seats"]
+    # The gaze loop loads in every run, sim or robot, with or without --arms.
+    gaze = agent.toolbox.ctx.backend("gaze")
+    assert isinstance(gaze, GazeLoop)
+    assert agent.gaze is gaze
+    assert [t.name for t in agent.toolbox.tools()] == [
+        "find_people",
+        "find_seats",
+        "look_at",
+        "stop_looking",
+    ]
     assert [t.name for t in agent.tools.visible() if isinstance(t, AtomicTool)] == [
         "find_people",
         "find_seats",
+        "look_at",
+        "stop_looking",
     ]
     assert agent.tools.get("navigate_to_location").arm is None
     assert agent.tools.get("move_relative").arm is None
+    # Both drives stop the loop before they send a goal.
+    assert agent.tools.get("navigate_to_location").gaze is gaze
+    assert agent.tools.get("move_relative").gaze is gaze
+    assert "`look_at`" in SYSTEM_PROMPT and "`stop_looking`" in SYSTEM_PROMPT
+    # The arm clause is only for runs with arms.
+    assert "with an arm out" not in SYSTEM_PROMPT
+    assert "Never call `look_at` with an arm out" in ARM_RULES
+
+
+def test_stopping_the_agent_stops_the_gaze_loop_and_shuts_it_down(connector, locations):
+    agent = create_walkie_agent(
+        ScriptedChatModel(responses=[]), connector, locations, target_connectors={}
+    )
+    gaze = agent.gaze
+    gaze.hold_heading("seat_77aa.2", 0.5, cancel=threading.Event())
+    agent.run()
+
+    agent.stop()
+
+    status = gaze.status()
+    # The interrupt listener stopped the target; shutdown() then ended the thread.
+    assert (status.running, status.stop_reason) == (False, "interrupt")
+    assert gaze._thread is not None and not gaze._thread.is_alive()
+    with pytest.raises(StepError) as error:
+        gaze.hold_heading("seat_77aa.2", 0.5, cancel=threading.Event())
+    assert error.value.code == "UNAVAILABLE"
+
+
+def test_a_stop_while_the_agent_is_idle_stops_the_gaze_loop(connector, locations):
+    llm = ScriptedChatModel(responses=[AIMessage("There is nothing to stop.")])
+    agent = create_walkie_agent(llm, connector, locations, target_connectors={})
+    gaze = agent.gaze
+    agent.run()
+    try:
+        assert wait_until(agent.ready)
+        # As after a look_at at a seat that ended its task.
+        gaze.hold_heading("seat_77aa.2", 0.5, cancel=threading.Event())
+
+        agent(HRIMessage(text="stop", message_author="human"))
+
+        # Stopped before agent() returned, though there was no run to interrupt.
+        status = gaze.status()
+        assert (status.running, status.stop_reason) == (False, STOP_HEARD)
+        stop_looking = next(t for t in agent.toolbox.tools() if t.name == "stop_looking")
+        assert re.fullmatch(
+            r"Not looking at anyone\. The last target, seat_77aa\.2, was stopped \d+ s ago "
+            r'because someone said "stop" or "never mind"\.',
+            stop_looking.call().summary,
+        )
+        # The stop still reaches the LLM as an ordinary message.
+        assert wait_until(lambda: llm.received and agent.ready())
+        assert "stop\n" in [m.content for m in llm.received[0]]
+    finally:
+        agent.stop()
 
 
 def test_the_mock_people_memory_loads_the_people_atomics_and_clears_on_a_new_task(
@@ -157,8 +225,10 @@ def test_the_mock_people_memory_loads_the_people_atomics_and_clears_on_a_new_tas
     assert [t.name for t in agent.toolbox.tools()] == [
         "find_people",
         "find_seats",
+        "look_at",
         "recognize_person",
         "remember_person",
+        "stop_looking",
     ]
     assert len(memory) == 1
     agent.toolbox.new_task()
@@ -191,11 +261,16 @@ def test_arms_loads_the_arm_atomics_the_arm_rules_and_the_drive_check(
             "find_seats",
             "get_arm_state",
             "list_arm_poses",
+            "look_at",
             "move_arm_to_pose",
             "set_gripper",
+            "stop_looking",
         ]
         assert agent.tools.get("navigate_to_location").arm is commander
         assert agent.tools.get("move_relative").arm is commander
+        # The gaze loop reads the same client's last state, and look_at
+        # checks the arms through the arm backend.
+        assert agent.gaze._arm is commander
 
         agent.agent.invoke({"messages": [HumanMessage(content="Go to the kitchen.")]})
 

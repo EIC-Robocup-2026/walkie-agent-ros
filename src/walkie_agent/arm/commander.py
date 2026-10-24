@@ -271,6 +271,21 @@ class Recovery:
     grippers: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ClientSnapshot:
+    """What the client knows at one moment (snapshot())."""
+
+    # last_state: the arms as of the last read.
+    state: ArmsState
+    # last_recovery: what the recovery that last cleared the unverified
+    # state checked, else None.
+    recovery: Recovery | None
+    # unverified_count: how many times the arms became unverified so far.
+    count: int
+    # unverified: why the arms are unverified, or None.
+    unverified: str | None
+
+
 @dataclass(eq=False)
 class _Goal:
     """A goal sent to the commander, kept until the client knows that it ended."""
@@ -455,9 +470,10 @@ class CommanderClient:
     def unverified_count(self) -> int:
         """How many times the arms became unverified so far. Never waits.
 
-        Read before `unverified` and before a call that may recover: when
-        `unverified` was set then, the call cleared the state if
-        last_recovery.count equals this count afterwards.
+        Read before `unverified`, or with it in one snapshot(), and before a
+        call that may recover: when `unverified` was set then, the call
+        cleared the state if last_recovery.count equals this count
+        afterwards.
         """
         with self._state_lock:
             return self._unverified_count
@@ -479,6 +495,23 @@ class CommanderClient:
         """
         with self._state_lock:
             return self._last_state
+
+    def snapshot(self) -> ClientSnapshot:
+        """last_state, last_recovery, unverified_count and unverified, read together. Never waits.
+
+        For an answer whose parts must agree. When the commander accepts an
+        arm's goal late, the arms become unverified and that arm unknown in
+        one step, and a recovery clears the state and keeps the arms it read
+        in one step. Separate reads can see one half of such a step and miss
+        the other, so an answer built from them could say that the arms have
+        to be checked again and still give that arm's pose. A snapshot is
+        one moment: a goal accepted right after it is not in it, and the
+        next snapshot shows it.
+        """
+        with self._state_lock:
+            return ClientSnapshot(
+                self._last_state, self._last_recovery, self._unverified_count, self._unverified
+            )
 
     def last_gripper_position(self, group: str) -> float | None:
         """The position last commanded to `group`, or None when unknown.

@@ -11,16 +11,18 @@ While the arms are unverified (CommanderClient.unverified), the read of the
 arms recovers first. The commander must show every earlier goal to be no
 longer active, and a settled read must agree. A goal from an earlier call
 can make the arms unverified again at any time, as when the commander
-accepts it late. So every sentence about recovery and safety is built after
-the last read, from what the client knows then:
+accepts it late. So the answer is built after the last read, from one
+snapshot of what the client knows then (CommanderClient.snapshot()), and its
+sentences about recovery, each arm and safety agree:
   - when the arms were unverified at the start, the state was cleared, and
     the arms did not become unverified again, the answer starts with why
     they had to be checked and what was checked;
   - when they became unverified during the call, it says so and to call
     get_arm_state again, and never that the tools can be used again.
-While the arms are unverified, no answer and no error says that the robot
-may drive. When recovery fails, so does the call, and unless a stop or a
-reset ended it, its message says why the arms had to be checked.
+A goal accepted late after that snapshot shows in the next answer. While the
+arms are unverified, no answer and no error says that the robot may drive.
+When recovery fails, so does the call, and unless a stop or a reset ended
+it, its message says why the arms had to be checked.
 """
 
 from pydantic import BaseModel
@@ -90,17 +92,17 @@ class Out(ToolOutput):
 
 def run(ctx: ToolContext, args: Args) -> Out:
     client = shared.commander(ctx)
-    # Before the first read, and the count before the cause, as
-    # unverified_count says. At the end, a last_recovery with this count
+    # Before the first read. At the end, a last_recovery with this count
     # cleared the state that the call began with, and a changed count means
     # that the arms became unverified during the call.
-    count = client.unverified_count
-    unverified = client.unverified
+    start = client.snapshot()
     try:
         # It recovers first while the arms are unverified.
         client.read_arms(ctx.cancel, shared.CONFIG.read_timeout_s)
     except StepError as e:
-        cause = client.unverified
+        # The cause and the sentence from one snapshot, so that they agree.
+        now = client.snapshot()
+        cause = now.unverified
         # Why the arms had to be checked, unless the message says it, as
         # when they became unverified during the check, or a stop or a
         # reset ended the call.
@@ -109,7 +111,7 @@ def run(ctx: ToolContext, args: Args) -> Out:
             if cause is not None and e.code != "CANCELLED" and "unverified" not in e.data
             else ""
         )
-        raise shared.with_sentence(e, checked, shared.state_sentence(client)) from None
+        raise shared.with_sentence(e, checked, shared.state_sentence(client, now)) from None
 
     grippers: dict[str, str | None] = {}
     gaps: dict[str, float | None] = {}
@@ -132,24 +134,26 @@ def run(ctx: ToolContext, args: Args) -> Out:
             f"{arm.capitalize()} gripper: {_STATE_WORDS[named]} (gap {gap:.3f} m)."
         )
 
-    # After the last read, what the client knows at the end of the call. The
-    # count before the cause, so that the arms becoming unverified between
-    # the two is seen either way.
-    state = client.last_state
-    recovery = client.last_recovery
-    changed = client.unverified_count != count
-    cause = client.unverified
+    # After the last read, what the client knows at the end of the call, in
+    # one snapshot, so that the sentences about recovery, each arm and safety
+    # agree.
+    end = client.snapshot()
+    changed = end.count != start.count
     lines = []
-    if changed or cause is not None:
-        lines.append(_unverified_again(cause))
-    elif unverified is not None and recovery is not None and recovery.count == count:
+    if changed or end.unverified is not None:
+        lines.append(_unverified_again(end.unverified))
+    elif (
+        start.unverified is not None
+        and end.recovery is not None
+        and end.recovery.count == start.count
+    ):
         lines.append(
-            f"{_checked(unverified)} {_recovered(recovery)} "
+            f"{_checked(start.unverified)} {_recovered(end.recovery)} "
             "Arm and gripper tools can be used again."
         )
     poses: dict[str, str | None] = {}
     for arm in ARMS:
-        arm_state = state.arm(arm)
+        arm_state = end.state.arm(arm)
         if arm_state is None:
             # Such as the arm of a goal that the commander accepted late
             # during the call.
@@ -161,7 +165,7 @@ def run(ctx: ToolContext, args: Args) -> Out:
         safe = "safe" if arm_state.travel_safe else "not safe"
         lines.append(f"{arm.capitalize()} arm: {where}, {safe} for driving.")
     lines.extend(gripper_lines)
-    travel_safe, sentence = _safety(state, changed or cause is not None)
+    travel_safe, sentence = _safety(end.state, changed or end.unverified is not None)
     lines.append(sentence)
     return Out(
         summary="\n".join(lines),
@@ -203,7 +207,7 @@ def _recovered(recovery: Recovery) -> str:
 def _unverified_again(cause: str | None) -> str:
     """The first line when the arms became unverified during the call.
 
-    `cause` is CommanderClient.unverified at the end of the call, or None
+    `cause` is `unverified` in the snapshot at the end of the call, or None
     when a recovery has cleared the state again since. The answer then still
     says to check again: the count alone does not show what that recovery
     checked.

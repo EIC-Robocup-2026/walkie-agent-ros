@@ -254,17 +254,20 @@ gap: "Left gripper: closed (gap 0.020 m)." When a finger cannot be read,
 the line gives the last command the agent sent that gripper instead.
 
 While the arms are unverified, `get_arm_state` recovers first, as the drive
-check does. Its answer is built after its last read, from what the client
-knows then. When the call cleared the state, the answer starts with why the
-arms had to be checked and what was checked: "The arms had to be checked,
-as the move of left_arm from an earlier call was given up on before its end
-was known. The commander confirmed that the move of left_arm from an
-earlier call ended, and two reads of both arms 0.3 s apart agree. Arm and
-gripper tools can be used again." The second sentence says how the
-commander showed each goal to be no longer active: that the goal ended, by
-its result or by its answer to a cancel; that the commander rejected it; or
-that the commander does not know it, as after a restart. The reads also
-name each gripper whose finger the settled read checked.
+check does. Its answer is built after its last read, from one snapshot of
+what the client knows then (`CommanderClient.snapshot()`), so its sentences
+about recovery, each arm and safety agree. A goal that the commander accepts
+late after that snapshot shows in the next answer. When the call cleared the
+state, the answer starts with why the arms had to be checked and what was
+checked: "The arms had to be checked, as the move of left_arm from an
+earlier call was given up on before its end was known. The commander
+confirmed that the move of left_arm from an earlier call ended, and two
+reads of both arms 0.3 s apart agree. Arm and gripper tools can be used
+again." The second sentence says how the commander showed each goal to be
+no longer active: that the goal ended, by its result or by its answer to a
+cancel; that the commander rejected it; or that the commander does not know
+it, as after a restart. The reads also name each gripper whose finger the
+settled read checked.
 
 A goal from an earlier call can make the arms unverified again during the
 call, as when the commander accepts it late. The answer then starts with

@@ -125,7 +125,11 @@ def run(ctx: ToolContext, args: Args) -> Out:
             {"pose": name, "status": status, "read_error": e.code},
         ) from None
 
-    sentence = shared.state_sentence(client)
+    # The sentence and travel_safe from one snapshot, so that a goal from an
+    # earlier call that the commander accepts late cannot come between them.
+    snapshot = client.snapshot()
+    sentence = shared.state_sentence(client, snapshot)
+    travel_safe = shared.travel_safe(snapshot)
     worst = worst_joint(targets, reading)
     if worst is None:
         missing = unread_joints(targets, reading)
@@ -164,7 +168,7 @@ def run(ctx: ToolContext, args: Args) -> Out:
         arm=args.arm,
         status=status,
         max_error_rad=error,
-        travel_safe=client.last_state.travel_safe,
+        travel_safe=travel_safe,
     )
 
 

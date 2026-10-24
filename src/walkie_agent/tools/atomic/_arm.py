@@ -11,9 +11,9 @@ module's name starts with "_", so the registry does not load it as a tool.
 import threading
 from dataclasses import dataclass
 
-from walkie_agent.arm.commander import CommanderClient
+from walkie_agent.arm.commander import ClientSnapshot, CommanderClient
 from walkie_agent.arm.poses import ARMS, BOTH, GRIPPER_GROUPS, ArmPose
-from walkie_agent.arm.state import UNKNOWN_SENTENCE, ArmsState
+from walkie_agent.arm.state import UNKNOWN_SENTENCE
 from walkie_agent.toolbox import StepError, ToolContext
 
 # The backend name in META.requires and ctx.backend().
@@ -112,31 +112,43 @@ def arm_sentence(client: CommanderClient, cancel: threading.Event, read: bool = 
     or after a move that did not end with a read, and always with `read`,
     as after a failed move, which may have stopped the arms part way. A read
     that fails leaves the memory's sentence: the answer is about the call,
-    and the read is only for its last sentence.
+    and the read is only for its last sentence. The sentence comes from one
+    snapshot of the memory, taken after any read (state_sentence()).
     """
-    state = client.last_state
-    if (read or state.travel_safe is None) and client.available():
+    if (read or client.last_state.travel_safe is None) and client.available():
         try:
-            state = client.read_arms(cancel, CONFIG.read_timeout_s)
+            client.read_arms(cancel, CONFIG.read_timeout_s)
         except StepError:
-            state = client.last_state
-    return state_sentence(client, state)
+            pass
+    return state_sentence(client)
 
 
-def state_sentence(client: CommanderClient, state: ArmsState | None = None) -> str:
-    """The arm state sentence of `state`, by default the client's last_state.
+def state_sentence(client: CommanderClient, snapshot: ClientSnapshot | None = None) -> str:
+    """The arm state sentence of `snapshot`, by default one taken now (CommanderClient.snapshot()).
 
     Never that the robot may drive while the arms are unverified
     (CommanderClient.unverified): the drive check then recovers first, and
     refuses when it cannot. last_state keeps the arms known while only a
     gripper goal made them unverified, so it can say that they are safe for
-    driving then.
+    driving then. The arms and whether they are unverified come from the
+    one snapshot, so that they agree.
     """
-    if state is None:
-        state = client.last_state
-    if state.travel_safe and client.unverified is not None:
+    if snapshot is None:
+        snapshot = client.snapshot()
+    if travel_safe(snapshot) is None:
         return UNKNOWN_SENTENCE
-    return state.sentence()
+    return snapshot.state.sentence()
+
+
+def travel_safe(snapshot: ClientSnapshot) -> bool | None:
+    """Whether the robot may drive, by `snapshot`, as state_sentence() says it.
+
+    None while the arms are unverified and last_state would say that they
+    are safe, as while only a gripper goal made them unverified.
+    """
+    if snapshot.state.travel_safe and snapshot.unverified is not None:
+        return None
+    return snapshot.state.travel_safe
 
 
 def interrupted(error: StepError, gripper: bool) -> str | None:

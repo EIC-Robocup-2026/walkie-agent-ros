@@ -166,6 +166,38 @@ def pose_line(poses: ArmPoses, name: str, arms: str, safe: bool) -> str:
     return f"{name}: {arms}; {driving} for driving. {poses.poses[name].description}"
 
 
+class StateLockHook:
+    """Stands in for a client's state lock, and runs an action right after one release of it.
+
+    arm() sets the action for the next release by the calling thread. So the
+    action changes what the client knows between two reads that an answer
+    takes under separate holds of the lock, and an answer built from one
+    snapshot (CommanderClient.snapshot()) sees none of the change.
+    """
+
+    def __init__(self, client: CommanderClient, monkeypatch) -> None:
+        self._lock = client._state_lock
+        self._thread: int | None = None
+        self._action = None
+        monkeypatch.setattr(client, "_state_lock", self)
+
+    def arm(self, action) -> None:
+        self._thread, self._action = threading.get_ident(), action
+
+    @property
+    def fired(self) -> bool:
+        return self._thread is not None and self._action is None
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *exc) -> None:
+        self._lock.release()
+        if self._action is not None and threading.get_ident() == self._thread:
+            action, self._action = self._action, None
+            action()
+
+
 # -- list_arm_poses -----------------------------------------------------------------
 
 
@@ -2008,6 +2040,51 @@ def test_get_arm_state_says_why_it_checked_when_the_commander_refuses_a_cancel(
     assert client.last_recovery.goals == (("the move of left_arm", "result"),)
 
 
+def test_get_arm_state_fails_with_the_state_of_one_moment_when_its_recovery_fails(
+    toolbox, fake, poses, monkeypatch
+):
+    # As above, but right after the failed call's first read of what the
+    # client knows, another call verifies the arms. The error's cause and
+    # its sentence are both of the moment before, when the arms were
+    # unverified.
+    monkeypatch.setattr(commander_module, "ABANDON_AFTER_S", 0.3)
+    fake.never_answer = True
+    fake.reject_cancels = True
+    client = client_of(toolbox)
+    standby = targets(poses, "standby", "left")
+    order = client.joint_names("left_arm", threading.Event())
+    with pytest.raises(StepError):
+        client.set_joint_position("left_arm", [standby[j] for j in order], threading.Event(), 0.3)
+    assert wait_until(lambda: client.busy() is None)
+    hook = StateLockHook(client, monkeypatch)
+    read_arms = client.read_arms
+
+    def verify() -> None:
+        fake.reject_cancels = False
+        read_arms(threading.Event())
+
+    def fails(*args, **kwargs) -> ArmsState:
+        try:
+            return read_arms(*args, **kwargs)
+        except StepError:
+            hook.arm(verify)
+            raise
+
+    monkeypatch.setattr(client, "read_arms", fails)
+
+    error = error_of(toolbox, "get_arm_state")
+
+    assert hook.fired
+    assert (client.unverified, client.last_state.sentence()) == (None, SAFE_SENTENCE)
+    assert (error.code, error.message) == (
+        "PRECONDITION_FAILED",
+        f"The arms had to be checked, as {ABANDONED}. The commander refused the cancel of the "
+        "move of left_arm from an earlier call, so an arm may still be moving. Wait a few "
+        "seconds, then try again; if it fails again, tell the person that the arms cannot be "
+        f"checked. {UNKNOWN_SENTENCE}",
+    )
+
+
 def test_get_arm_state_says_when_a_move_is_accepted_late_during_its_reads(
     toolbox, fake, poses, monkeypatch
 ):
@@ -2044,6 +2121,95 @@ def test_get_arm_state_says_when_a_move_is_accepted_late_during_its_reads(
     error = error_of(toolbox, "move_arm_to_pose", pose="home")
     assert (error.code, error.data) == ("PRECONDITION_FAILED", {"unverified": ACCEPTED_LATE})
     # The move's result comes, and the next call verifies the arms.
+    assert wait_until(lambda: fake.results == [("left_arm", "Canceled")])
+    out = call(toolbox, "get_arm_state")
+    assert out.summary.splitlines()[0] == (
+        f"The arms had to be checked, as {ACCEPTED_LATE}. The commander confirmed that the move "
+        "of left_arm from an earlier call ended, and two reads of both arms 0.3 s apart agree. "
+        "Arm and gripper tools can be used again."
+    )
+
+
+def test_get_arm_state_answers_from_one_moment_when_a_move_is_accepted_late_after_its_reads(
+    toolbox, fake, poses, monkeypatch
+):
+    # As above, but the move is accepted late after both gripper reads, and
+    # the acceptance completes right after the first read of what the client
+    # knows at the end of the call. The answer agrees with itself all the
+    # same: it never says that the arms have to be checked again while it
+    # gives a pose for the arm that the client holds unknown since.
+    monkeypatch.setattr(commander_module, "ABANDON_AFTER_S", 0.3)
+    client = client_of(toolbox)
+    order = client.joint_names("left_arm", threading.Event())
+    gate = threading.Event()
+    fake.accept_gate = gate
+    fake.plan_time_s = 0.5
+    standby = targets(poses, "standby", "left")
+    with pytest.raises(StepError) as error:
+        client.set_joint_position("left_arm", [standby[j] for j in order], threading.Event(), 0.3)
+    assert error.value.data == {"cancel": "pending"}
+    assert wait_until(lambda: client.busy() is None)
+    assert client.unverified == ABANDONED
+    requests = len(fake.joint_state_requests)
+    hook = StateLockHook(client, monkeypatch)
+
+    def read_the_grippers() -> bool:
+        return not gate.is_set() and "right_gripper" in fake.joint_state_requests[requests:]
+
+    def accept() -> None:
+        gate.set()
+        assert wait_until(lambda: client.unverified == ACCEPTED_LATE)
+
+    class AcceptsLate(CommanderClient):
+        # The acceptance follows whichever read of the client's state comes
+        # first after the gripper reads: last_state for an answer that reads
+        # the fields one at a time, or the first release of the state lock in
+        # snapshot(), for a snapshot that takes the lock more than once.
+        @property
+        def last_state(self) -> ArmsState:
+            state = super().last_state
+            if read_the_grippers():
+                accept()
+            return state
+
+        def snapshot(self):
+            if read_the_grippers():
+                hook.arm(accept)
+            return super().snapshot()
+
+    monkeypatch.setattr(client, "__class__", AcceptsLate)
+
+    out = call(toolbox, "get_arm_state")
+
+    assert gate.is_set()
+    assert client.unverified == ACCEPTED_LATE
+    assert client.last_state.left is None
+    lines = out.summary.splitlines()
+    for arm in ("left", "right"):
+        [line] = [line for line in lines if line.startswith(f"{arm.capitalize()} arm: ")]
+        pose = out.poses[arm]
+        assert line == (
+            f"{arm.capitalize()} arm: state unknown."
+            if pose is None
+            else f"{arm.capitalize()} arm: {pose}, safe for driving."
+        )
+    checked_again = "have to be checked again" in out.summary
+    assert not (checked_again and out.poses["left"] is not None), out.summary
+    assert not (checked_again and out.travel_safe), out.summary
+    sentences = {True: SAFE_SENTENCE, False: NOT_SAFE_SENTENCE, None: UNKNOWN_SENTENCE}
+    assert lines[-1] == sentences[out.travel_safe]
+    # The answer is of the moment before the acceptance, when recovery had
+    # verified the arms.
+    assert lines == [
+        VERIFIED,
+        "Left arm: home, safe for driving.",
+        "Right arm: home, safe for driving.",
+        "Left gripper: open (gap 0.044 m).",
+        "Right gripper: open (gap 0.044 m).",
+        SAFE_SENTENCE,
+    ]
+    assert (out.poses, out.travel_safe) == ({"left": "home", "right": "home"}, True)
+    # The next answer reports the move accepted late.
     assert wait_until(lambda: fake.results == [("left_arm", "Canceled")])
     out = call(toolbox, "get_arm_state")
     assert out.summary.splitlines()[0] == (
@@ -2175,6 +2341,145 @@ def test_no_arm_tool_says_the_robot_may_drive_while_a_gripper_goal_is_unverified
     # The commander accepts the command at last, and the client cancels it.
     fake.accept_gate.set()
     assert wait_until(lambda: fake.results == [("left_gripper", "Canceled")])
+
+
+def test_a_refusal_ends_with_the_state_of_one_moment_while_a_gripper_goal_is_unverified(
+    toolbox, fake, poses, monkeypatch
+):
+    # As above, but right after the refusal's first read of what the client
+    # knows, the left arm is found out of home and another call verifies the
+    # arms. The refusal's sentence is of the moment before: the arms were
+    # unverified then, so it never says that the robot may drive.
+    monkeypatch.setattr(commander_module, "ABANDON_AFTER_S", 0.3)
+    client = client_of(toolbox)
+    client.read_arms(threading.Event())
+    gate = threading.Event()
+    fake.accept_gate = gate
+    with pytest.raises(StepError):
+        client.control_gripper("left_gripper", 0.044, threading.Event(), timeout_s=0.3)
+    assert wait_until(lambda: client.busy() is None)
+    assert client.unverified == GRIPPER_ABANDONED
+    assert client.last_state.sentence() == SAFE_SENTENCE
+    hook = StateLockHook(client, monkeypatch)
+    read_arms = client.read_arms
+
+    def verify_out_of_home() -> None:
+        gate.set()
+        assert wait_until(lambda: fake.results == [("left_gripper", "Canceled")])
+        fake.teleport(targets(poses, "standby", "left"))
+        read_arms(threading.Event())
+
+    set_joint_position = client.set_joint_position
+
+    def refused(*args, **kwargs) -> str:
+        try:
+            return set_joint_position(*args, **kwargs)
+        except StepError:
+            hook.arm(verify_out_of_home)
+            raise
+
+    monkeypatch.setattr(client, "set_joint_position", refused)
+
+    error = error_of(toolbox, "move_arm_to_pose", pose="home")
+
+    assert hook.fired
+    assert (client.unverified, client.last_state.sentence()) == (None, NOT_SAFE_SENTENCE)
+    assert (error.code, error.message) == (
+        "PRECONDITION_FAILED",
+        "Could not move to 'home': Cannot move both_arms: an arm or a gripper may still be "
+        f"moving, as {GRIPPER_ABANDONED}. Call get_arm_state to check the arms, then try "
+        f"again. {UNKNOWN_SENTENCE}",
+    )
+
+
+def test_a_move_ends_with_a_sentence_that_agrees_with_its_travel_safe(
+    toolbox, fake, poses, monkeypatch
+):
+    # Right after the move's first read of what the client knows, the left
+    # arm is found out of home. The sentence and travel_safe are both of the
+    # moment before.
+    client = client_of(toolbox)
+    hook = StateLockHook(client, monkeypatch)
+    read_arms = client.read_arms
+    joint_states = client.joint_states
+    moved = threading.Event()
+
+    def find_out_of_home() -> None:
+        fake.teleport(targets(poses, "standby", "left"))
+        read_arms(threading.Event())
+
+    def read(group: str, *args, **kwargs) -> dict[str, float]:
+        reading = joint_states(group, *args, **kwargs)
+        if group == "both_arms" and fake.joint_goals and not moved.is_set():
+            # The read after the move.
+            moved.set()
+            hook.arm(find_out_of_home)
+        return reading
+
+    monkeypatch.setattr(client, "joint_states", read)
+
+    out = call(toolbox, "move_arm_to_pose", pose="home")
+
+    assert hook.fired
+    assert client.last_state.sentence() == NOT_SAFE_SENTENCE
+    assert (out.summary, out.travel_safe) == (f"Moved to 'home'. {SAFE_SENTENCE}", True)
+
+
+def test_a_move_gives_no_travel_safe_while_a_gripper_goal_is_unverified(
+    toolbox, fake, monkeypatch
+):
+    # Right after the move's read, a gripper goal is abandoned, as when the
+    # commander accepts one from an earlier call late. The arms stay known
+    # and in home, but the answer never says that the robot may drive.
+    monkeypatch.setattr(commander_module, "ABANDON_AFTER_S", 0.3)
+    client = client_of(toolbox)
+    joint_states = client.joint_states
+    moved = threading.Event()
+
+    def read(group: str, *args, **kwargs) -> dict[str, float]:
+        reading = joint_states(group, *args, **kwargs)
+        if group == "both_arms" and fake.joint_goals and not moved.is_set():
+            # The read after the move.
+            moved.set()
+            fake.accept_gate = threading.Event()
+            with pytest.raises(StepError):
+                client.control_gripper("left_gripper", 0.044, threading.Event(), timeout_s=0.3)
+            assert wait_until(lambda: client.busy() is None)
+        return reading
+
+    monkeypatch.setattr(client, "joint_states", read)
+
+    out = call(toolbox, "move_arm_to_pose", pose="home")
+
+    assert client.unverified == GRIPPER_ABANDONED
+    assert client.last_state.sentence() == SAFE_SENTENCE
+    assert (out.summary, out.travel_safe) == (f"Moved to 'home'. {UNKNOWN_SENTENCE}", None)
+    # The commander accepts the command at last, and the client cancels it.
+    fake.accept_gate.set()
+    assert wait_until(lambda: ("left_gripper", "Canceled") in fake.results)
+
+
+def test_an_answer_that_reads_the_arms_ends_with_what_the_client_knows_after_the_read(
+    toolbox, fake, poses, monkeypatch
+):
+    # Nothing had read the arms, so list_arm_poses reads them. Right after
+    # that read, another read finds the left arm out of home. The sentence
+    # is of the later read, not of the one that the tool made.
+    client = client_of(toolbox)
+    read_arms = client.read_arms
+
+    def read_twice(*args, **kwargs) -> ArmsState:
+        state = read_arms(*args, **kwargs)
+        fake.teleport(targets(poses, "standby", "left"))
+        read_arms(threading.Event())
+        return state
+
+    monkeypatch.setattr(client, "read_arms", read_twice)
+
+    out = call(toolbox, "list_arm_poses")
+
+    assert client.last_state.sentence() == NOT_SAFE_SENTENCE
+    assert out.summary.splitlines()[-1] == NOT_SAFE_SENTENCE
 
 
 # -- Stop and reset through the agent ------------------------------------------------------

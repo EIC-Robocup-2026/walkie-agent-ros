@@ -139,7 +139,7 @@ flowchart TB
 | `recognize_person(person)` | R | Built (sim) | Takes one handle or the whole set from one `find_people` call. Matches the face first, else the appearance, else `UNKNOWN`. Each model among the person's vectors is matched on its own, within that model's distance limit. Over a set, names go to people closest match first, so no name is given twice |
 | `remember_person(person, name, facts={})` | W | Built (sim) | Stores the name, `facts` such as `{"drink": "milk"}`, the handle's own face and appearance vectors, and those collected for its track, minus outliers. On the robot, walkie-database will keep the facts in `person.attributes`. Takes one handle, not a set. Declares the code's provisional `W` effect until [Perception question 3](perception.md#open-questions) is decided |
 | `find_seats()` | P | Built (sim) | Seat handles, one per place to sit, left to right by the place's centre. A sofa gives a left, a middle and a right place. Each is `free` or `taken`, and the last line counts the free places |
-| `look_at(target)` | N | Built (sim) ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)) | Starts the gaze loop on a person handle, or turns to a seat handle and holds. For a person it returns at once, and the loop follows them. For a seat it returns once the base faces it, within 10 s. Refuses with an arm out, as the drives do ([Gaze](#gaze)) |
+| `look_at(target)` | N | Built (sim) ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)) | Starts the gaze loop on a person handle, or turns to a seat handle and holds. For a person it returns once the base faces them, or after 4 s with the loop still following them, and then says the base is still turning. For a seat it returns once the base faces it, within 10 s. Both limits are on the node clock. Refuses with an arm out, as the drives do ([Gaze](#gaze)) |
 | `stop_looking()` | N | Built (sim) | Stops the gaze loop. When nothing runs, says which target ran last, why it stopped and how long ago. Never fails |
 | `wait_for_person(question)` | — | Phase 1, a core tool | Speaks, marks the todo item waiting and ends the turn |
 | `move_arm_to_pose(pose, arm)` | M | Built (sim), as on [Manipulation](manipulation.md#tools), with two new poses | Moves the left arm to `receive` or `carry`, and checks the joints |
@@ -507,13 +507,16 @@ flowchart TB
 - **Lost at the start.** `follow_person` checks the sighting's age before
   it sets the target, and the newest array's before its wait for TF, of
   up to 0.2 s, so the sighting can be more than 1 s old once the loop
-  takes the person. Before it answers, `look_at` reads
-  the loop's status and applies the loop's own rule once. For a person
-  last seen more than 1 s ago, it stops the loop for `lost` and fails with
-  `STALE`, saying how long ago they were last seen and to call
-  `find_people`. A person the loop has already stopped for another
-  reason, such as a navigation goal that became active, fails as a seat's
-  ended turn does. Only a person the loop still follows gets "Looking at".
+  takes the person. So at the start `look_at` reads the loop's status and
+  applies the loop's own rule. For a person last seen more than 1 s ago,
+  it stops the loop for `lost` and fails with `STALE`, saying how long ago
+  they were last seen and to call `find_people`. While it then waits for
+  the base to face them, it leaves the rule to the loop, whose tick first
+  sights the arrays that came since the last one, and fails the same way
+  once the loop has lost them. A person the loop has already stopped for
+  another reason, such as a navigation goal that became active, fails as a
+  seat's ended turn does. Only a person the loop still follows gets
+  "Looking at".
 - **Each sighting.** The gaze thread looks up the camera's transform at
   the array's stamp without waiting. An array whose stamp TF has not
   reached yet is tried again on the next ticks, for up to 0.2 s after it
@@ -697,8 +700,20 @@ stop_looking()
 Not looking at anyone. The last target, per_51c0.1, was lost 12 s ago.
 ```
 
-- **A person returns at once.** The loop keeps following them while
-  `wait_for_person` waits for their answer.
+- **A person returns once the base faces them,** within the 6° deadband,
+  so a `speak` that follows is said to them, not on the way to them. When
+  it returned at once, a simulation run spoke an introduction 0.7 s after
+  `look_at`, still turning, 12.6° off the listener. After 4 s, as for
+  someone who keeps walking, it returns anyway, and the answer adds "The
+  base does not face them yet and is still turning." Either way the loop
+  keeps following them while `wait_for_person` waits for their answer. A
+  person lost before the base faces them is `STALE`, as one lost at the
+  start is.
+- **Both waits are on the node clock,** which follows `/clock` in
+  simulation. A simulation run at 0.4 to 0.5 of real time took 4.4 s of
+  real time for a 30° turn, so a limit on the computer's clock would run
+  out mid-turn. A wait also ends at three times its limit on the
+  computer's clock, for a `/clock` that stalls or moves back.
 - **A seat returns once the base faces it,** within the 6° deadband, so a
   `speak` or a `find_people` that follows sees the right place. After
   10 s the loop stops and `look_at` fails with `TIMEOUT`.
@@ -709,8 +724,13 @@ Not looking at anyone. The last target, per_51c0.1, was lost 12 s ago.
   "when a drive was asked for" or 'because someone said "stop" or "never
   mind"'.
 - **The prompt.** The system prompt tells the LLM to look at the person
-  it is talking to with `look_at`, and to stop with `stop_looking` before
-  it does something else. With `--arms`, the arm rules add: never call
+  it is talking to with `look_at` while it talks to them, that a drive or
+  an arm move stops it by itself, and to call `stop_looking` only when
+  someone asks it to stop turning, or when it stays where it is after its
+  last line to them. `look_at`'s and `stop_looking`'s descriptions say the
+  same. An earlier rule, stop with `stop_looking` before doing something
+  else, made the LLM stop before its last line at the door, while the
+  guest still talked. With `--arms`, the arm rules add: never call
   `look_at` with an arm out.
 
 How `look_at` fails:
@@ -723,7 +743,7 @@ How `look_at` fails:
 | An untracked person | `REFUSED: per_51c0.1 is not tracked, cannot follow. Call find_people again for a handle the robot can follow.` |
 | A person with no stored heading, and not in view now | `UNAVAILABLE: No heading toward per_51c0.1: none was stored when they were seen, and they are not in view now. Call find_people again.` |
 | A person seen more than 1 s ago, and not in the newest array | `STALE: Not turning toward per_51c0.1: the handle saw them 5.2 s ago, and the newest people array does not show them. The robot stops following a person 1 s after the last sighting. Call find_people for a current handle.` The reason may instead be that no people array came in the last 1 s, or that the newest array gives no heading toward them |
-| A person last seen more than 1 s ago once the loop takes them, as after a slow wait for TF | `STALE: Not turning toward per_51c0.1: they were last seen 1.3 s ago. The robot stops following a person 1 s after the last sighting. Call find_people for a current handle.` The loop is stopped for `lost`. After a clock that moved back, the reason is instead that their last sighting is stamped ahead of the robot's clock |
+| A person last seen more than 1 s ago once the loop takes them, as after a slow wait for TF, or before the base faces them | `STALE: Not turning toward per_51c0.1: they were last seen 1.3 s ago. The robot stops following a person 1 s after the last sighting. Call find_people for a current handle.` The loop is stopped for `lost`. After a clock that moved back, the reason is instead that their last sighting is stamped ahead of the robot's clock |
 | A seat with no stored heading | `UNAVAILABLE: No heading toward seat_7a1e.2: TF had no camera position when it was seen. Call find_seats again.` |
 | One arm out | `PRECONDITION_FAILED: Not starting a turn toward per_51c0.1: the left arm is not in a pose that is safe for driving. Move it with move_arm_to_pose first, for example 'carry' or 'home'.` |
 | Both arms out | `PRECONDITION_FAILED: Not starting a turn toward per_51c0.1: the arms are not in a pose that is safe for driving. Move them with move_arm_to_pose first, for example 'home'.` |

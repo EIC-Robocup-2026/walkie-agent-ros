@@ -49,8 +49,10 @@ Rules:
   know it by where they are, such as "the person on the left".
 - A person or seat handle, such as per_51c0.0 or seat_51c0.1, comes only from
   `find_people` or `find_seats`. Never make one up.
-- Look at the person you are talking to with `look_at`, and stop with
-  `stop_looking` before you do something else.
+- Look at the person you are talking to with `look_at` while you talk to
+  them. A drive or an arm move stops it by itself. Call `stop_looking` only
+  when someone asks you to stop turning, or when you stay where you are
+  after your last line to them.
 - If a tool reports a failure, tell the person what went wrong with `speak`
   and do not pretend the action succeeded.
 - For a task with more than one step, write the steps with `update_todos`

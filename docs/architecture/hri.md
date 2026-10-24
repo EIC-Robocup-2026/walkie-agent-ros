@@ -646,9 +646,14 @@ flowchart TB
   and an abandoned gripper goal leaves both arms known. Each tick takes
   the last reading and the unverified state from one `snapshot()`, since
   a recovery changes both in one step. Then it calls `busy()`, which
-  catches a goal that started after the snapshot, and reads the
-  unverified state again, since `busy()` may itself abandon a goal. So the
-  tick that abandons a goal stops the loop rather than turning once more.
+  catches a goal that started after the snapshot while an arm was unknown
+  in it, and reads the unverified state again, since `busy()` may itself
+  abandon a goal. So the tick that abandons a goal stops the loop rather
+  than turning once more. When the snapshot shows both arms known, a goal
+  that starts after it stops the next tick, which sees its arm unknown.
+  `busy()` runs on every tick that passes the snapshot's checks, not only
+  while an arm is unknown, so the loop itself abandons a gripper goal
+  that a call gave up on, on time.
 
 ### What the LLM reads
 

@@ -1216,7 +1216,8 @@ class GazeLoop:
 
     def _arms_known(self) -> frozenset[str]:
         # The last reading alone: a goal, an abandonment or a recovery that
-        # it misses shows in the first tick's checks, before any command.
+        # it misses shows in the first tick's checks, before any command, or
+        # in the second tick's when it lands during the first.
         state = self._arm_state()
         if state is None:
             return frozenset()
@@ -1229,7 +1230,12 @@ class GazeLoop:
         moment. A recovery stores a reading and clears `unverified` in one
         step, so separate reads could pair a reading from before it with
         the cleared state from after it. busy() comes after the snapshot, so
-        a goal that starts after it still counts. `unverified` is read once
+        a goal that starts after it still counts while the snapshot shows an
+        arm unknown, as when the arms were unknown from the start. When the
+        snapshot shows both arms known, a goal that starts after it stops the
+        next tick, which sees its arm unknown; no read order stops this one,
+        since a goal shows in busy() before its arm becomes unknown.
+        `unverified` is read once
         more after busy(), since busy() may abandon a goal that a call gave
         up on, and so may another thread meanwhile: the arms are then
         unverified, and busy() returns None. The reads after the snapshot

@@ -1,10 +1,11 @@
 # HRI Task (Proposed)
 
-!!! note "Status: Proposed, four atomics built"
-    The four people and seat atomics are built and tested on fakes. Their
-    status is in the [Atomics](#atomics) table. The rest of this page is the
-    design for team review. Each of the [open questions](#open-questions)
-    says what it blocks.
+!!! note "Status: Proposed, six atomics built"
+    The four people and seat atomics are built and tested on fakes. The arm
+    atomics `move_arm_to_pose` and `set_gripper` are built too, and call the
+    commander. Their status is in the [Atomics](#atomics) table. The rest of
+    this page is the design for team review. Each of the
+    [open questions](#open-questions) says what it blocks.
 
 The HRI task (RoboCup@Home 2026 rulebook, section 5.1) is the first task
 the [self-evolving agent](self-evolving-agent.md) will run end to end. It
@@ -23,8 +24,8 @@ test on the robot. This page plans that first slice, on top of
   and the skill server.
 - **On its path:** walkie-vision's torch and face nodes, walkie-database's
   people services, and in this repository phase 1, six atomics (four are
-  built), the arm atomics and an HRI template. On the robot, also the real
-  arm clients.
+  built), the arm atomics (built) and an HRI template. On the robot, also
+  the MotionSupervisor.
 - **The bag goes in the left hand.** The robot holds out its hand, the
   guest says when the bag is in it, and the gripper closes. The two poses
   it needs, `receive` and `carry`, come from walkie-agent-v2's hand-over.
@@ -127,15 +128,18 @@ flowchart TB
 | `look_at(target)` | N | New ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)) | Starts the gaze loop on a person, or turns to a seat and holds. Returns at once |
 | `stop_looking()` | N | New | Stops the gaze loop |
 | `wait_for_person(question)` | — | Phase 1, a core tool | Speaks, marks the todo item waiting and ends the turn |
-| `move_arm_to_pose(pose, arm)` | M | As on [Manipulation](manipulation.md#tools), with two new poses | Moves the left arm to `receive` or `carry`, and checks the joints |
-| `set_gripper(arm, state)` | M | As on [Manipulation](manipulation.md#tools) | Opens or closes the left gripper. After a close, says whether it holds something |
+| `move_arm_to_pose(pose, arm)` | M | Built (sim), as on [Manipulation](manipulation.md#tools), with two new poses | Moves the left arm to `receive` or `carry`, and checks the joints |
+| `set_gripper(arm, state)` | M | Built (sim), as on [Manipulation](manipulation.md#tools) | Opens or closes the left gripper. After a close, says whether it holds something |
 
 `navigate_to_location` and `speak` exist today. `refind_person` is not
 needed: the gaze loop follows the track, and the face is matched again at
 the introductions.
 
 **Built (sim)** means built and tested in this repository, not yet run on
-the robot or with walkie-vision:
+the robot or with walkie-vision. The two arm atomics are tested on the
+`FakeCommander` and load only with `--arms`
+([Manipulation](manipulation.md#backends)). For the people and seat
+atomics:
 
 - **Where the code is.** Each atomic is a module in
   `src/walkie_agent/tools/atomic/`, with what they share in
@@ -348,8 +352,8 @@ Why it works this way:
   request to press on the hand was the same kind of request.
 - **No new atomics.** The two arm atomics from
   [Manipulation](manipulation.md#tools) do it. `move_arm_to_pose` checks
-  the joints after the move, and `set_gripper` reports the commander's
-  `grasped` flag and the finger gap.
+  the joints after the move, and `set_gripper` reads the fingers after a
+  close and judges it from that read and the commander's `grasped` flag.
 - **Two new poses** in `config/arm_poses.toml`, both from walkie-agent-v2's
   hand-over:
 
@@ -358,14 +362,16 @@ Why it works this way:
     | `receive` | left | false | The left hand held out in front, open, for the guest to hang the bag on |
     | `carry` | left, right | true | The arm folded close to the body, holding the bag. The right table mirrors the left, as `home`'s does |
 
-- **Recorded on the robot.** v2 reached both poses with Cartesian goals
-  through the commander's `/go_to_pose`, which the agent never calls
-  ([Forbidden names](manipulation.md#forbidden-names)). A team member sends
-  the two goals once, with the lift at the top, reads
-  `/get_joint_states`, and copies the joint values into the file. From
-  then on they are joint poses like the SRDF ones, tried with collision
-  checking on before the LLM gets them. In sim the mock needs only the
-  names.
+- **Recorded in the simulation, to be re-recorded on the robot.** v2
+  reached both poses with Cartesian goals through the commander's
+  `/go_to_pose`, which the agent never calls
+  ([Forbidden names](manipulation.md#forbidden-names)). On 2026-10-23 the
+  two goals were sent once in walkie-ros's MuJoCo simulation, with the lift
+  at 0.7435 m, and the joint values read from `/get_joint_states` were
+  copied into the file. From then on they are joint poses like the SRDF
+  ones. Before the robot run, a team member records them the same way on
+  the robot, and tries them with collision checking on. Until then they
+  have `tried_on_robot = false`, so only the simulation offers them.
 - **Speed.** The arm moves toward a person, and the commander runs at full
   speed until walkie-ros change W2 lands
   ([Manipulation](manipulation.md#safety)). Until then the hand-over runs
@@ -467,7 +473,7 @@ flowchart TB
     di["<b>walkie-database</b><br/>People services:<br/>interface agreed"]:::proposed
     a0["<b>walkie-agent-ros</b><br/>Pin walkie_vision_msgs"]
     p1["<b>walkie-agent-ros</b><br/>Phase 1: host, todos,<br/>wait_for_person"]
-    a1["<b>walkie-agent-ros</b><br/>HRI and arm<br/>atomics on mocks"]:::proposed
+    a1["<b>walkie-agent-ros</b><br/>HRI atomics, and arm<br/>atomics on the commander"]:::proposed
     g["<b>walkie-agent-ros</b><br/>Gaze loop"]:::proposed
     s["<b>walkie-agent-ros</b><br/>oracle_perception:<br/>guests, seats, bag"]:::proposed
     t["<b>walkie-agent-ros</b><br/>HRI template,<br/>sim run passes"]:::proposed
@@ -490,8 +496,8 @@ flowchart LR
     v1["<b>walkie-vision</b><br/>Torch node: YOLOE with<br/>seat classes, pose, OSNet"]
     v2["<b>walkie-vision</b><br/>Face node, faces in<br/>PersonDetection"]
     d3["<b>walkie-database</b><br/>People services built"]:::proposed
-    ac["<b>walkie-agent-ros</b><br/>Commander client,<br/>MotionSupervisor"]
-    rp["<b>walkie-agent-ros</b><br/>receive and carry<br/>recorded on the robot"]:::proposed
+    ac["<b>walkie-agent-ros</b><br/>MotionSupervisor"]
+    rp["<b>walkie-agent-ros</b><br/>receive and carry<br/>re-recorded on the robot"]:::proposed
     w2["<b>walkie-ros</b><br/>W2: arm speed scaling"]
     r["<b>walkie-agent-ros</b><br/>Real clients,<br/>run on the robot"]
 
@@ -510,14 +516,18 @@ flowchart LR
   and the pinned messages. walkie-vision and walkie-database are needed
   only for the robot.
 - **From phase 2,** the slice takes only the toolbox core and the atomics
-  above, with the arm atomics on `MockArmBackend`
-  ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The linker, the
-  bundle runtime, the presets and the level checks are not needed, because
-  the run calls reviewed atomics only.
-- **On the robot,** the arm atomics need the commander client from
-  Manipulation's real-backends track. W2 is drawn dotted: the run works
-  without it, but only with team members and an operator at the emergency
-  stop ([The bag hand-over](#the-bag-hand-over)).
+  above ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The arm
+  atomics call the real commander through `CommanderClient`. In sim the
+  commander runs in walkie-ros's MuJoCo simulation, started with
+  `launch/commander_sim.launch.py`
+  ([Getting Started](../getting-started.md#arms-in-the-simulation)). The
+  linker, the bundle runtime, the presets and the level checks are not
+  needed, because the run calls reviewed atomics only.
+- **On the robot,** the arm atomics need the MotionSupervisor from
+  Manipulation's real-backends track, and the agent then runs with
+  `--arms`. W2 is drawn dotted: the run works without it, but only with
+  team members and an operator at the emergency stop
+  ([The bag hand-over](#the-bag-hand-over)).
 - **The order on the robot** is: the gaze loop alone, with someone pacing
   and the joystick at hand, then the seats in the arena's living room,
   then the hand-over with a team member as the guest, then the whole run.
@@ -541,10 +551,12 @@ flowchart LR
 - **Answers.** The scenario answers each question on `/from_human` after
   the robot's line on `/to_human`. Once, it answers with nothing, to test
   asking again.
-- **The bag.** When the second guest answers the hand-over request, the
-  scenario puts a bag between the left fingers in `MockArmBackend`, so the
-  next close holds it. In one variant the guest answers before hanging the
-  bag, to test the retry.
+- **The bag.** The world has no bag, so an empty close would end near a
+  gap of 0 and read as holding nothing. When the second guest answers the
+  hand-over request, the scenario sets the commander's `grasp_detect_min`
+  parameter to -1 through `/bimanual_commander/set_parameters`, so the next
+  close reads as holding the bag. In one variant the guest answers before
+  hanging the bag, to test the retry.
 
 A run passes when:
 

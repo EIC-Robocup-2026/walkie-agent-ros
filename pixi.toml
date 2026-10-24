@@ -101,19 +101,21 @@ outputs = [
   "ros2_ws/src/rai_interfaces/package.xml",
   "ros2_ws/src/walkie-database/ros2_ws/src/walkie_database_msgs/package.xml",
   "ros2_ws/src/walkie-vision/ros2_ws/src/walkie_vision_msgs/package.xml",
+  "ros2_ws/src/walkie-ros/manipulate/my_robot_interfaces/package.xml",
 ]
-description = "Clone source-only ROS 2 packages (rai_interfaces, walkie-database, walkie-vision)"
+description = "Clone source-only ROS 2 packages (rai_interfaces, walkie-database, walkie-vision, walkie-ros)"
 
 # Python3_EXECUTABLE is passed explicitly so a user-level ~/.colcon/defaults.yaml
 # (often set for an apt ROS install) cannot point CMake at the system Python.
 # --packages-select is an allow-list: colcon builds only the packages named
-# here. The walkie-database and walkie-vision clones hold whole repositories,
-# and the agent needs only their messages. Name every message package from
-# ros2_ws.repos here; a package missing from the list is not built, and fails
-# only at import.
+# here. The walkie-database, walkie-vision and walkie-ros clones hold whole
+# repositories, and the agent needs only their messages; walkie-ros's other
+# packages need MoveIt, ros2_control and drivers that this environment does
+# not have. Name every message package from ros2_ws.repos here; a package
+# missing from the list is not built, and fails only at import.
 [tasks.build-ros2]
 cmd = """colcon build --symlink-install \
-  --packages-select rai_interfaces walkie_database_msgs walkie_vision_msgs \
+  --packages-select rai_interfaces walkie_database_msgs walkie_vision_msgs my_robot_interfaces \
   --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python"""
 cwd = "ros2_ws"
 depends-on = ["clone-ros2-ws"]
@@ -159,10 +161,12 @@ description = "Run the Walkie RAI agent (reads tasks from /from_human)"
 # Zenoh router on localhost:7447, from either repository, and the calling
 # shell's ROS_DOMAIN_ID, which must match the simulation's (ADR-0036). See
 # docs/getting-started.md. --mock-people-memory loads recognize_person and
-# remember_person on an in-memory mock, cleared at every new task; the robot
-# task `agent` leaves it out.
+# remember_person on an in-memory mock, cleared at every new task. --arms
+# loads the arm tools on walkie-ros's bimanual_commander and the arm check
+# before every drive. The robot task `agent` leaves both out: --arms waits
+# for the robot track's MotionSupervisor (manipulation.md).
 [tasks.agent-sim]
-cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.sim.toml --mock-people-memory"
+cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.sim.toml --mock-people-memory --arms"
 description = "Run the agent against walkie-ros's MuJoCo simulation (the shell's ROS_DOMAIN_ID)"
 
 # The tests run on Fast DDS, which tests/conftest.py sets, so they need no

@@ -36,8 +36,10 @@ runs, and only if the reports are too long to read.
   the stranger and red-team sets at Competition. Unrestricted code is
   evidence, never a candidate ([ADR-0039](decisions/0039-access-levels.md),
   [ADR-0040](decisions/0040-sim-interlock.md)).
-- **Mocked arms.** A `FakeSkillServer` returns the ADR-0027 outcomes, and
-  MoveIt 2 is never called ([ADR-0044](decisions/0044-mocked-arm-atomics.md)).
+- **Mocked skills.** A `FakeSkillServer` returns the ADR-0027 outcomes for
+  `run_skill` ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The pose
+  and gripper atomics drive the simulated arms through walkie-ros's
+  commander and MoveIt 2.
 - **Isolated workers.** The harness sets each worker's domain and runs a
   loopback Zenoh router for it. `agent-sim` still follows the calling
   shell's domain ([ADR-0036](decisions/0036-agent-sim-shell-domain.md)).
@@ -228,7 +230,8 @@ living-room spawn, which should read about (1.76, −1.48).
 after the new sim is ready, so the [sim interlock](access-levels.md) never
 reads a relaunch as a reason to demote. chula_pat14_6 uses the default
 world's MuJoCo launch and robot description, so the interlock sees the same
-hardware plugin and node. The arms are mocked, and MoveIt 2 is never called
+hardware plugin and node. `run_skill` is mocked; the pose and gripper
+atomics move the simulated arms through the commander
 ([Arm Manipulation](manipulation.md)).
 
 ### Isolation

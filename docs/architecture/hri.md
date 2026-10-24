@@ -976,15 +976,18 @@ agent-sim-hri` gives the agent, so both use one pose each.
 - **Seats.** The seats are the world's sofa, with its three cushions as
   the left, middle and right places. The host sits on the left place from
   the start. One view from `living_room` sees the whole sofa.
-- **Seat offers.** A robot line that mentions sitting or a seat, while a
-  guest follows, is an offer. It seats the guest at the place with the
-  smallest bearing from the base, by TF, if that bearing is within 25° and
-  the place is free. Otherwise the scenario logs a bad offer, and the
-  guest keeps following. The rule works in the map, not on image thirds:
-  after a turn to a side third, the image's centre column no longer falls
-  inside that third. A turn to `box_heading` of a third leaves its place
-  up to 17.5° off the heading, because perspective biases the ray through
-  a third's centre outward, so 25° leaves room for the turn's own error.
+- **Seat offers.** A robot line that mentions sitting, a seat or
+  something to sit on (a sofa, couch, chair, armchair, stool or bench),
+  while a guest follows, is an offer. "Please take the middle place on
+  the sofa." is one; a place or a spot alone is not. It seats the guest
+  at the place with the smallest bearing from the base, by TF, if that
+  bearing is within 25° and the place is free. Otherwise the scenario logs
+  a bad offer, and the guest keeps following. The rule works in the map,
+  not on image thirds: after a turn to a side third, the image's centre
+  column no longer falls inside that third. A turn to `box_heading` of a
+  third leaves its place up to 17.5° off the heading, because perspective
+  biases the ray through a third's centre outward, so 25° leaves room for
+  the turn's own error.
 - **The seat switch.** Two guests and the host need four places for a
   switch, and the sofa has three. By default the two guests swap places
   before the introductions, which the rulebook allows

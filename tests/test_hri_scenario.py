@@ -1331,6 +1331,15 @@ def test_the_robot_frame_is_the_navigation_tools():
         ("Welcome! What is your name? Did you find us easily?", True, (NAME, OTHER), False),
         ("Please have a seat.", False, (), True),
         ("Would you like to sit here?", True, (OTHER,), True),
+        # The offer a run's LLM made: no sitting word, but the sofa.
+        ("Sam, please take the middle place on the sofa. It is free.", False, (), True),
+        ("The couch on your left is free.", False, (), True),
+        ("Please take the armchair.", False, (), True),
+        ("There are two chairs by the window.", False, (), True),
+        ("The stools are free.", False, (), True),
+        ("Please take the bench.", False, (), True),
+        ("This is a nice place to relax.", False, (), False),
+        ("Please take the spot on the left.", False, (), False),
         ("Nice to meet you, Sam.", False, (), False),
     ],
 )

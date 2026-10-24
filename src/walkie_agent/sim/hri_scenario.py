@@ -50,11 +50,12 @@ Rules
   each on a new track after the guest's, stand at their place facing the
   robot, and leave when the guest starts to follow. They never sit,
   follow, answer, take a seat offer or join the seat switch.
-- Seat offers. A line that mentions sitting or a seat, while a guest
-  follows, is an offer. It seats the guest at the place with the smallest
-  bearing from the robot's base, by TF, if that bearing is within
-  offer_window_deg and the place is free; on a tie, the place first in the
-  file wins. Otherwise it is a bad offer and the guest keeps following.
+- Seat offers. A line that mentions sitting, a seat or something to sit
+  on, such as the sofa, while a guest follows, is an offer. It seats the
+  guest at the place with the smallest bearing from the robot's base, by
+  TF, if that bearing is within offer_window_deg and the place is free; on
+  a tie, the place first in the file wins. Otherwise it is a bad offer and
+  the guest keeps following.
 - Seat switch. When the todo item whose text contains "introduce" becomes
   in_progress or waiting, the switch fires as soon as every person in
   seat_switch.people is seated. swap exchanges two people's places; move
@@ -876,7 +877,7 @@ class Line(NamedTuple):
     question: bool
     # NAME, DRINK, BAG and OTHER, in the order asked, each once.
     asks: tuple[str, ...]
-    # It mentions sitting or a seat.
+    # It mentions sitting, a seat or something to sit on.
     seat: bool
 
 
@@ -956,7 +957,13 @@ _REQUEST_OPENING = re.compile(
     r"(?:(?:okay|ok|alright|now|so|then|just|go\s+ahead\s+and)\b,?\s*)*"
     r"(?:put|place|hand|give|pass|set|hang|rest|leave|drop)\b"
 )
-_SEAT_WORDS = re.compile(r"\b(sit|sits|sitting|seat|seats|seated)\b")
+# Sitting, a seat, or something to sit on: "Please take the middle place on
+# the sofa." is an offer. Place and spot alone are not, since they also come
+# up in other talk while a guest follows.
+_SEAT_WORDS = re.compile(
+    r"\b(sit|sits|sitting|seat|seats|seated|sofas?|couch(?:es)?|(?:arm)?chairs?|stools?"
+    r"|bench(?:es)?)\b"
+)
 
 
 def classify_line(text: str) -> Line:
@@ -975,7 +982,8 @@ def classify_line(text: str) -> Line:
         mentions a drink or a beverage asks for the drink, and a question
         that asks for none of the three asks OTHER;
       - the line mentions a seat when a sentence holds sit, sits, sitting,
-        seat, seats or seated.
+        seat, seats or seated, or names a sofa, couch, chair, armchair,
+        stool or bench, in the singular or the plural.
     """
     question = False
     seat = False

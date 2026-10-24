@@ -396,12 +396,24 @@ class GuestSpotSpec(_Spec):
 
 
 class PacingSpec(_Spec):
-    """The talking guest's pacing: a sinusoid across the line from the spot to the door."""
+    """The talking guest's pacing: a sinusoid through the spot, along `axis`."""
 
     # Meters to each side of the spot; 0 stands still.
     amplitude: float = Field(default=0.2, ge=0)
     # Seconds for one swing to each side and back.
     period: float = Field(default=6.0, gt=0)
+    # The direction of the pacing in the map frame, as (x, y); its length
+    # does not matter. None paces across the line from the spot to the door,
+    # so the guest's bearing from the door pose changes while the distance
+    # hardly does. A narrow hallway that is not square to that line needs
+    # its own direction, so that the guest stays in its free span.
+    axis: tuple[float, float] | None = None
+
+    @model_validator(mode="after")
+    def _check_axis(self) -> "PacingSpec":
+        if self.axis is not None and math.hypot(*self.axis) == 0:
+            raise ValueError("axis must not be (0, 0).")
+        return self
 
 
 class GuestSpec(_Spec):
@@ -962,11 +974,17 @@ class HriScenario:
         self._living_room = _location_pose(locations["living_room"])
         self._places = spec.places()
         self._spot = (spec.guest_spot.x, spec.guest_spot.y)
-        # The pacing runs across the line from the spot to the door, so the
-        # guest's bearing from the door pose changes while the distance hardly does.
-        dx, dy = self._door.x - self._spot[0], self._door.y - self._spot[1]
-        length = math.hypot(dx, dy)
-        self._across = (-dy / length, dx / length) if length > 0 else (0.0, 1.0)
+        # The pacing's direction (PacingSpec.axis): by default across the
+        # line from the spot to the door, so the guest's bearing from the
+        # door pose changes while the distance hardly does.
+        if spec.pacing.axis is not None:
+            ax, ay = spec.pacing.axis
+            length = math.hypot(ax, ay)
+            self._pacing_axis = (ax / length, ay / length)
+        else:
+            dx, dy = self._door.x - self._spot[0], self._door.y - self._spot[1]
+            length = math.hypot(dx, dy)
+            self._pacing_axis = (-dy / length, dx / length) if length > 0 else (0.0, 1.0)
         self._bag_owner = spec.bag_owner()
 
         # Track ids: the seats first, then each appearance of a person.
@@ -1471,7 +1489,7 @@ class HriScenario:
         if state == TALKING and talk_start is not None and pacing.amplitude > 0:
             phase = 2 * math.pi * max(0.0, t - talk_start) / pacing.period
             offset = pacing.amplitude * math.sin(phase)
-            x, y = x + offset * self._across[0], y + offset * self._across[1]
+            x, y = x + offset * self._pacing_axis[0], y + offset * self._pacing_axis[1]
         return x, y
 
     def _bystander_window(self) -> tuple[float, float] | None:

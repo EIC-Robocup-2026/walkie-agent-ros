@@ -898,9 +898,34 @@ def test_the_bystander_walks_its_path_once_from_3_s_after_the_first_question():
     assert BYSTANDER_ID not in scenario.people_at(end + 5.0)
 
 
-def test_the_talking_guest_paces_across_the_line_to_the_door():
+def test_the_talking_guest_paces_along_the_hallway():
     scenario, clock = make_scenario()
     assert scenario.talking() is None
+    t0 = clock.t
+    scenario.robot_said("What is your name?")
+
+    for share, offset in ((0.0, 0.0), (0.25, 0.28), (0.5, 0.0), (0.75, -0.28)):
+        guest = scenario.people_at(t0 + share * 6.0)["guest1"]
+        # x stays on the hallway's line.
+        assert (guest.x, guest.y) == pytest.approx((0.65, 0.03 + offset), abs=1e-9)
+        # Turned to the robot all the while.
+        assert guest.facing == pytest.approx(math.atan2(DOOR.y - guest.y, DOOR.x - guest.x))
+
+    talking = scenario.talking(t0 + 1.5)
+    assert talking == {
+        "guest": "guest1",
+        "x": 0.65,
+        "y": 0.31,
+        "bearing_deg": round(bearing_deg(DOOR, 0.65, 0.31), 2),
+    }
+    # About 9 degrees to each side of the spot, as seen from the door pose.
+    spot = bearing_deg(DOOR, 0.65, 0.03)
+    assert bearing_deg(DOOR, 0.65, 0.31) - spot == pytest.approx(-9.06, abs=0.01)
+    assert bearing_deg(DOOR, 0.65, -0.25) - spot == pytest.approx(9.40, abs=0.01)
+
+
+def test_without_an_axis_the_guest_paces_across_the_line_to_the_door():
+    scenario, clock = make_scenario(pacing={"amplitude": 0.2, "axis": None})
     t0 = clock.t
     scenario.robot_said("What is your name?")
     dx, dy = DOOR.x - 0.65, DOOR.y - 0.03
@@ -911,17 +936,10 @@ def test_the_talking_guest_paces_across_the_line_to_the_door():
         assert (guest.x, guest.y) == pytest.approx(
             (0.65 + offset * across[0], 0.03 + offset * across[1]), abs=1e-9
         )
-        # Turned to the robot all the while.
-        assert guest.facing == pytest.approx(math.atan2(DOOR.y - guest.y, DOOR.x - guest.x))
-
-    talking = scenario.talking(t0 + 1.5)
-    assert talking == {
-        "guest": "guest1",
-        "x": 0.6734,
-        "y": 0.2286,
-        "bearing_deg": round(bearing_deg(DOOR, 0.65 + 0.2 * across[0], 0.03 + 0.2 * across[1]), 2),
-    }
-
+        # The distance to the door hardly changes.
+        assert math.hypot(DOOR.x - guest.x, DOOR.y - guest.y) == pytest.approx(
+            math.hypot(dx, dy), abs=0.012
+        )
 
 def test_people_at_a_time_before_a_seat_offer_draws_everyone_as_they_were_then():
     scenario, clock = make_scenario()
@@ -989,6 +1007,7 @@ def test_people_at_a_time_before_a_seat_offer_draws_everyone_as_they_were_then()
             "bag.owner must be a guest of this file (guest1, guest2), got 'guest3'.",
         ),
         ({"oracle": {"outlier_rate": 2.0}}, "oracle: outlier_rate must lie in [0, 1]."),
+        ({"pacing": {"axis": [0.0, 0.0]}}, "pacing: axis must not be (0, 0)."),
     ],
 )
 def test_a_scenario_file_with_a_mistake_is_refused_with_what_to_fix(tmp_path, change, message):
@@ -1289,10 +1308,10 @@ def test_the_pacing_ends_lie_in_the_hallways_free_span_outside_the_frame():
 
     ends = [scenario.people_at(t0 + share * period)["guest1"] for share in (0.25, 0.75)]
 
-    assert (ends[0].x, ends[0].y) == pytest.approx((0.673, 0.229), abs=1e-3)
-    assert (ends[1].x, ends[1].y) == pytest.approx((0.627, -0.169), abs=1e-3)
+    assert (ends[0].x, ends[0].y) == pytest.approx((0.65, 0.31), abs=1e-9)
+    assert (ends[1].x, ends[1].y) == pytest.approx((0.65, -0.25), abs=1e-9)
     for end in ends:
-        assert abs(end.x - HALLWAY_X) < 0.03
+        assert end.x == pytest.approx(HALLWAY_X)
         assert HALLWAY_FREE_Y[0] < end.y < HALLWAY_FREE_Y[1]
         assert end.x < FRAME_X[0]
 

@@ -883,9 +883,11 @@ agent-sim-hri` gives the agent, so both use one pose each.
   appearance, as on the robot.
 - **Guests.** Guest 1 waits in the hallway outside the entrance from the
   start, facing the robot. Guest k+1 arrives once guest k is seated. The
-  guest at the door paces while talking, up to 0.2 m to either side of
-  the line to the robot, with a 6 s period. The hallway is only 0.64 m
-  wide there. A bystander walks once across the doorway's view, 1 m behind
+  guest at the door paces while talking, up to 0.28 m to either side
+  along the hallway, with a 6 s period. That is about 9° to either side
+  as seen from `door`. The hallway is only 0.64 m wide there, so the
+  pacing runs along it rather than square to the line to the robot,
+  which would push the guest off the hallway's line. A bystander walks once across the doorway's view, 1 m behind
   the guest, 3 s after the first question. It faces along its path, so it
   shows no face.
 - **Following.** Once the base is more than 0.5 m from `door`, the guest
@@ -980,9 +982,13 @@ records (next PR). A run passes when:
 - the people memory, the mock in sim, holds each guest's name and drink
   as in the scenario, judged from the agent's record of its tool calls;
 - the heading stays within 10° of the talking guest for at least 80% of
-  each conversation, and its mean bearing error is at most half that of
-  the heading held fixed at the conversation's start, so a robot that
-  never turns cannot pass;
+  each conversation, and its mean bearing error is at most 0.9 times
+  that of the heading held fixed at the conversation's start, so a robot
+  that never turns cannot pass. The ratio cannot be much lower: the
+  pacing swings only about 9° to either side, and the gaze loop's 6°
+  deadband holds the heading still for most of each swing. A simulation
+  of the loop gave 0.77 with no perception delay and 0.87 with 0.3 s.
+  The hallway is too narrow for a wider swing;
 - each seat offer faces a free place, never a taken one;
 - each introduction faces the listener;
 - the only questions are the four essential ones and the hand-over

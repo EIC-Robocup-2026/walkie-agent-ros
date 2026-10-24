@@ -41,7 +41,8 @@ GRASP_CLOSE_THRESHOLD = 0.03
 # The commander's default grasp_detect_min and grasp_detect_max, in metres: a
 # close holds something when the settled finger travel is within them, above
 # an empty close and below fully open. set_gripper applies them to its own
-# read of the fingers when the commander's result carries no measurement.
+# read of the fingers when the commander's gap does not agree with that read
+# and the commander's own band cannot be read.
 GRASP_DETECT_MIN = 0.005
 GRASP_DETECT_MAX = 0.044
 

@@ -14,6 +14,7 @@ from typing import Any, Protocol
 from langchain_core.tools import BaseTool, ToolException
 from pydantic import BaseModel
 
+from walkie_agent.tool_log import hand_out
 from walkie_agent.toolbox.types import StepError, ToolMeta, ToolOutput
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,8 @@ class AtomicTool(BaseTool):
     pydantic ValidationError from the LLM's arguments reaches RAI's
     ToolRunner unchanged and gets its usual message. The tool returns plain
     text and never an artifact: RAI pickles every artifact to disk, and the
-    full Out stays with Python callers of call().
+    full Out stays with Python callers of call() and the tool-call record
+    (tool_log.py).
     """
 
     handle_tool_error: bool = True
@@ -88,6 +90,8 @@ class AtomicTool(BaseTool):
                 f"{self.name} returned {type(out).__name__} instead of "
                 f"{self.atomic.Out.__name__}.",
             )
+        # The LLM reads only the summary; the tool-call record keeps the rest.
+        hand_out(out)
         return out
 
     def _run(self, **kwargs: Any) -> str:

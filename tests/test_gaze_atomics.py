@@ -16,12 +16,14 @@ import re
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import TwistStamped
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.time import Time
 from std_msgs.msg import Empty, Header
 
 from test_arm_atomics import MODEL_PATH, POSES_PATH, targets
@@ -80,6 +82,8 @@ TRACK_ID = 7
 # the old command until the loop's zero reaches it.
 SETTLE = 0.02
 LOOKING = "The robot turns to keep them in view, and stops once it has not seen them for 1 s."
+# What look_at adds when it answers before the base faces the person.
+STILL_TURNING = " The base does not face them yet and is still turning."
 # look_at's STALE for a person last seen too long ago, with the reason in {why}.
 NOT_SEEN = (
     r"Not turning toward {target}: {why}\. The robot stops following a person 1 s after the "
@@ -266,6 +270,17 @@ def world(make_world):
     return make_world()
 
 
+@pytest.fixture
+def answer_at_once(monkeypatch):
+    """look_at answers for a person without waiting for the base to face them.
+
+    For tests of something else on a base that cannot turn, or with one
+    image of the person, where the wait would run its course or lose them.
+    Unless the base already faces them, the answer then says it still turns.
+    """
+    monkeypatch.setattr(look_at_module, "PERSON_TURN_S", 0.0)
+
+
 @pytest.fixture(scope="module")
 def poses():
     return load_arm_poses(POSES_PATH, MODEL_PATH)
@@ -349,6 +364,164 @@ def test_look_at_a_person_stops_once_they_are_out_of_view_for_one_second(world):
         out.summary,
     )
     assert (out.stopped, out.last_target, out.reason) == (None, target, LOST)
+
+
+def test_look_at_a_person_answers_once_the_base_faces_them(world):
+    base = world.base(0.0)
+    world.camera(lambda: base.yaw, heading=0.5)
+    target = world.find_person()
+
+    out = world.call("look_at", target=target)
+
+    # A speak right after is said to them, not on the way to them.
+    assert faces(base, 0.5)
+    assert out.summary == f"Looking at {target}. {LOOKING}"
+    assert out.facing is True
+    status = world.gaze.status()
+    assert (status.running, status.target) == (True, target)
+    world.call("stop_looking")
+
+
+def test_look_at_a_person_the_base_cannot_face_answers_after_the_limit_and_keeps_following(
+    world, connector, monkeypatch
+):
+    # A base that never turns, with the person in every image.
+    place_base(connector, 0.0)
+    world.camera(lambda: 0.0, heading=0.4)
+    target = world.find_person()
+    monkeypatch.setattr(look_at_module, "PERSON_TURN_S", 0.5)
+
+    start = time.monotonic()
+    out = world.call("look_at", target=target)
+    waited = time.monotonic() - start
+
+    assert 0.5 <= waited < 1.4
+    # The LLM learns that a speak now would start on the way to them.
+    assert out.summary == f"Looking at {target}.{STILL_TURNING} {LOOKING}"
+    assert out.facing is False
+    status = world.gaze.status()
+    assert (status.running, status.target, status.kind) == (True, target, PERSON)
+    assert world.turning()
+    assert world.call("stop_looking").summary == f"Stopped looking at {target}."
+    assert_silent_after_stop(world.recorder)
+
+
+def run_node_clock_at(monkeypatch, ctx, rate: float) -> None:
+    """From now on, ctx.now() runs at `rate` times real time, as /clock does in a slow sim."""
+    start_ns = ctx.now().nanoseconds
+    start = time.monotonic()
+
+    def now() -> Time:
+        return Time(nanoseconds=start_ns + int((time.monotonic() - start) * rate * 1e9))
+
+    monkeypatch.setattr(ctx, "now", now)
+
+
+@pytest.mark.parametrize(
+    ("rate", "low", "high"),
+    [(0.5, 0.95, 1.4), (0.0, 1.45, 2.2)],
+    ids=["half speed", "stalled"],
+)
+def test_the_wait_for_a_person_runs_on_the_node_clock_with_a_backstop(
+    world, connector, monkeypatch, rate, low, high
+):
+    # A base that never turns, with the person in every image. At half
+    # speed, 0.5 s of node clock takes 1 s; a stalled clock ends the wait
+    # at the backstop, three times the limit on the monotonic clock.
+    place_base(connector, 0.0)
+    world.camera(lambda: 0.0, heading=0.4)
+    target = world.find_person()
+    monkeypatch.setattr(look_at_module, "PERSON_TURN_S", 0.5)
+    run_node_clock_at(monkeypatch, world.ctx, rate)
+
+    start = time.monotonic()
+    out = world.call("look_at", target=target)
+    waited = time.monotonic() - start
+
+    assert low <= waited < high
+    assert out.facing is False
+    assert world.call("stop_looking").summary == f"Stopped looking at {target}."
+
+
+def test_look_at_a_person_lost_before_the_base_faces_them_is_stale(world, connector):
+    # A base that never turns, and one image of the person: they are lost
+    # 1 s after it, well inside the wait.
+    place_base(connector, 0.0)
+    target = world.show_person(0.4)
+
+    start = time.monotonic()
+    error = world.fails("look_at", target=target)
+
+    assert time.monotonic() - start < look_at_module.PERSON_TURN_S
+    assert (error.code, error.data) == ("STALE", {"handle": target})
+    assert re.fullmatch(
+        NOT_SEEN.format(target=re.escape(target), why=r"they were last seen \d+\.\d s ago"),
+        error.message,
+    )
+    status = world.gaze.status()
+    assert (status.running, status.target, status.stop_reason) == (False, target, LOST)
+    assert_silent_after_stop(world.recorder)
+
+
+def test_a_poll_of_the_wait_leaves_the_loss_of_a_person_to_the_loop(
+    world, connector, monkeypatch, answer_at_once
+):
+    # Between two ticks, the status can show a sighting older than
+    # lost_after_s while a newer array waits for the next tick, which would
+    # still sight the person. Each status read of the wait shows that here.
+    base = world.base(0.0)
+    world.camera(lambda: base.yaw, heading=0.4)
+    target = world.find_person()
+    gaze = world.gaze
+    status = gaze.status
+    face = look_at_module._face
+    waiting = threading.Event()
+
+    def between_ticks():
+        real = status()
+        if not waiting.is_set():
+            return real
+        return replace(real, last_seen=real.now - 2 * gaze.config.lost_after_s)
+
+    def flagged(*args, **kwargs):
+        waiting.set()
+        return face(*args, **kwargs)
+
+    monkeypatch.setattr(gaze, "status", between_ticks)
+    monkeypatch.setattr(look_at_module, "_face", flagged)
+
+    out = world.call("look_at", target=target)
+
+    assert out.summary == f"Looking at {target}.{STILL_TURNING} {LOOKING}"
+    assert out.facing is False
+    # The poll did not stop the loop, which still follows them.
+    real = status()
+    assert (real.running, real.target, real.stop_reason) == (True, target, None)
+
+
+def test_an_interrupt_while_look_at_waits_to_face_a_person_cancels_it(world, connector):
+    place_base(connector, 0.0)
+    world.camera(lambda: 0.0, heading=0.4)
+    target = world.find_person()
+    errors: list[StepError] = []
+
+    def look() -> None:
+        try:
+            world.call("look_at", target=target)
+        except StepError as e:
+            errors.append(e)
+
+    looking = threading.Thread(target=look)
+    looking.start()
+    assert wait_until(world.turning)
+    world.toolbox.interrupt()
+    looking.join(timeout=2)
+
+    assert not looking.is_alive()
+    assert [e.code for e in errors] == ["CANCELLED"]
+    status = world.gaze.status()
+    assert (status.running, status.stop_reason) == (False, INTERRUPT)
+    assert_silent_after_stop(world.recorder)
 
 
 def test_look_at_refuses_a_person_lost_by_the_time_the_loop_takes_them(
@@ -630,7 +803,9 @@ def test_an_interrupt_during_a_turn_to_a_seat_cancels_look_at(world):
     assert_silent_after_stop(world.recorder)
 
 
-def test_stop_looking_says_what_it_stopped_and_what_was_looked_at_last(world, connector):
+def test_stop_looking_says_what_it_stopped_and_what_was_looked_at_last(
+    world, connector, answer_at_once
+):
     nothing = world.call("stop_looking")
     assert nothing.summary == "Not looking at anyone."
     assert (nothing.stopped, nothing.last_target, nothing.reason) == (None, None, None)
@@ -665,7 +840,7 @@ def test_a_new_task_stops_the_loop_and_its_handles_are_gone(world):
     assert world.call("stop_looking").summary.endswith("when a new task started.")
 
 
-def test_after_shutdown_look_at_is_unavailable(world, connector):
+def test_after_shutdown_look_at_is_unavailable(world, connector, answer_at_once):
     place_base(connector, 0.0)
     target = world.show_person(0.3)
     world.call("look_at", target=target)
@@ -686,7 +861,7 @@ def test_after_shutdown_look_at_is_unavailable(world, connector):
     ],
 )
 def test_a_drive_stops_the_loop_before_it_checks_the_arms_and_the_handle_goes_stale(
-    drive, args, answer, fake_walkie, world, connector, locations, monkeypatch
+    drive, args, answer, fake_walkie, world, connector, locations, monkeypatch, answer_at_once
 ):
     mount_camera(connector)
     assert wait_until(lambda: pose_known(world.ctx))
@@ -784,7 +959,9 @@ def test_a_drive_refuses_and_sends_no_goal_while_the_loop_cannot_confirm_its_sto
     assert reached == ["arm check", "Nav2 client"]
 
 
-def test_the_loop_stays_silent_while_a_navigation_goal_is_active(world, connector):
+def test_the_loop_stays_silent_while_a_navigation_goal_is_active(
+    world, connector, answer_at_once
+):
     place_base(connector, 0.0)
     target = world.show_person(0.4)
     world.call("look_at", target=target)
@@ -1225,7 +1402,10 @@ def test_an_arm_out_from_the_start_stops_the_loop_once_read_and_stop_looking_doe
     )
 
 
-def test_look_at_turns_and_says_so_when_no_commander_is_found(make_world, connector, poses):
+def test_look_at_turns_and_says_so_when_no_commander_is_found(
+    make_world, connector, poses, answer_at_once
+):
+    # Without the wait for the turn, the time below is the arm check's alone.
     client = CommanderClient(connector, poses)
     try:
         # A commander of an earlier test may linger on the graph for a moment.
@@ -1240,7 +1420,7 @@ def test_look_at_turns_and_says_so_when_no_commander_is_found(make_world, connec
 
         # No read and no timeout: the client knows at once that it is alone.
         assert time.monotonic() - start < 0.5
-        assert out.summary == f"Looking at {target}. {LOOKING} {ARMS_NOT_FOUND}"
+        assert out.summary == f"Looking at {target}.{STILL_TURNING} {LOOKING} {ARMS_NOT_FOUND}"
         assert out.arms_unknown is True
         assert wait_until(lambda: faces(base, 0.4), 5.0)
         world.close()

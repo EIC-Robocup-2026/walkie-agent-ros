@@ -21,7 +21,7 @@ import random
 import re
 import threading
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +34,7 @@ import yaml
 from action_msgs.msg import GoalStatus, GoalStatusArray
 from builtin_interfaces.msg import Time as TimeMsg
 from geometry_msgs.msg import TransformStamped, TwistStamped
+from langchain_core.messages import ToolMessage
 from nav_msgs.msg import Odometry
 from rai_interfaces.msg import HRIMessage
 from rcl_interfaces.msg import ParameterType, ParameterValue, SetParametersResult
@@ -62,6 +63,8 @@ from walkie_agent.arm.poses import (
     load_arm_poses,
     load_robot_model,
 )
+from walkie_agent.gaze import GazeStatus
+from walkie_agent.jsonl import EventLog, read_jsonl
 from walkie_agent.locations import load_locations
 from walkie_agent.perception.geometry import MAP_FRAME, box_heading
 from walkie_agent.perception.gestures import COCO_KEYPOINTS
@@ -73,7 +76,7 @@ from walkie_agent.perception.seating import (
 )
 from walkie_agent.perception.vision_feed import DEFAULT_CONFIG as FEED_CONFIG
 from walkie_agent.perception.vision_feed import PeopleFrame, TrackKey, face_trusted
-from walkie_agent.sim import hri_scenario, oracle_perception
+from walkie_agent.sim import hri_check, hri_scenario, oracle_perception
 from walkie_agent.sim.hri_scenario import (
     ABSENT,
     AT_DOOR,
@@ -95,12 +98,12 @@ from walkie_agent.sim.hri_scenario import (
     ROBOT_FRAME,
     SEATED,
     STANDING,
+    STATE_PERIOD_S,
     TAKEN,
     TALKING,
     TO_HUMAN_QOS,
     TODOS_QOS,
     Answer,
-    EventLog,
     GraspParameter,
     HriScenario,
     HriScenarioNode,
@@ -119,11 +122,14 @@ from walkie_agent.sim.hri_scenario import (
 from walkie_agent.sim.oracle_perception import DETECTION_SCORE, KEYPOINT_SCORE, draw_detections
 from walkie_agent.sim.projection import camera_position
 from walkie_agent.sim.scene import DEFAULT_SEAT_TOP_M, FACE_LIMIT_DEG, MapBox, Scene
+from walkie_agent.tasks import load_task_templates
 from walkie_agent.todo import TodoItem
-from walkie_agent.toolbox import ToolContext
-from walkie_agent.tools.atomic import find_people
+from walkie_agent.tool_log import CURRENT_CALL, ToolLog, hand_out, mark_run
+from walkie_agent.toolbox import HandleStore, Pose2D, ToolContext, ToolOutput
+from walkie_agent.tools.atomic import find_people, move_arm_to_pose, remember_person, set_gripper
 from walkie_agent.tools.atomic.find_people import FACE_SEEN, NO_FACE
 from walkie_agent.tools.navigation import ROBOT_FRAME as NAVIGATION_ROBOT_FRAME
+from walkie_agent.tools.navigation import _arms_not_safe
 
 SCENARIOS = PROJECT_ROOT / "config" / "scenarios"
 DEFAULT_FILE = SCENARIOS / "hri.yaml"
@@ -826,6 +832,27 @@ def test_a_finished_introduction_skips_nothing_while_another_is_still_to_come():
     assert of_type(step.events, "seat_switch")[0]["item"] == "t4"
 
 
+def test_only_the_hri_templates_introduction_item_fires_the_swap():
+    scenario, _ = make_scenario()
+    seat(scenario, "sofa.middle")
+    seat(scenario, "sofa.right")
+    steps = load_task_templates(PROJECT_ROOT / "config" / "task_templates.toml")["hri"].todos
+    contents = [step["content"] for step in steps]
+
+    def listed(active: int) -> list[dict[str, Any]]:
+        """The template's list with the items before `active` completed."""
+        statuses = ["completed"] * active + ["in_progress"] + ["pending"] * len(contents)
+        return todos(*((f"t{n + 1}", c, s) for n, (c, s) in enumerate(zip(contents, statuses))))
+
+    # Each item before the last one, in progress in turn, fires nothing.
+    for active in range(len(contents) - 1):
+        assert types(scenario.todos_changed(listed(active))) == ["todos"]
+    step = scenario.todos_changed(listed(len(contents) - 1))
+
+    [switch] = of_type(step.events, "seat_switch")
+    assert switch["item"] == f"t{len(contents)}"
+
+
 def test_the_early_bag_variant_hangs_the_bag_only_on_the_second_request():
     scenario, clock = make_scenario(EARLY_BAG_FILE)
     seat(scenario, "sofa.middle")
@@ -1304,6 +1331,15 @@ def test_the_robot_frame_is_the_navigation_tools():
         ("Welcome! What is your name? Did you find us easily?", True, (NAME, OTHER), False),
         ("Please have a seat.", False, (), True),
         ("Would you like to sit here?", True, (OTHER,), True),
+        # The offer a run's LLM made: no sitting word, but the sofa.
+        ("Sam, please take the middle place on the sofa. It is free.", False, (), True),
+        ("The couch on your left is free.", False, (), True),
+        ("Please take the armchair.", False, (), True),
+        ("There are two chairs by the window.", False, (), True),
+        ("The stools are free.", False, (), True),
+        ("Please take the bench.", False, (), True),
+        ("This is a nice place to relax.", False, (), False),
+        ("Please take the spot on the left.", False, (), False),
         ("Nice to meet you, Sam.", False, (), False),
     ],
 )
@@ -1982,12 +2018,6 @@ def near(record_pose: dict[str, float] | None, pose: Pose, tolerance: float = 1e
     )
 
 
-def read_records(path: Path) -> list[dict[str, Any]]:
-    """An event log's complete lines so far."""
-    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    return [json.loads(line) for line in lines if line.endswith("\n")]
-
-
 def goal_status(status: int) -> GoalStatusArray:
     return GoalStatusArray(status_list=[GoalStatus(status=status)])
 
@@ -2103,7 +2133,7 @@ class ScenarioRig:
 
     def records(self) -> list[dict[str, Any]]:
         """The log's complete lines so far."""
-        return read_records(self.log_path)
+        return read_jsonl(self.log_path)
 
     def find(
         self, type_: str, where: Callable[[dict], bool] | None = None, **fields: Any
@@ -2251,7 +2281,7 @@ class IdleNode:
     log_path: Path
 
     def records(self) -> list[dict[str, Any]]:
-        return read_records(self.log_path)
+        return read_jsonl(self.log_path)
 
 
 @pytest.fixture
@@ -2363,6 +2393,12 @@ def test_robot_lines_on_to_human_get_answers_on_from_human(make_rig):
         "sofa.right": [3.115, -2.2],
     }
     assert start["scenario"]["answers"] == {"delay": 0.1, "mumble_once": None}
+    # The pass check reads who is who from here, as it cannot import the scenario's rules.
+    assert start["guests"] == {
+        "guest1": {"name": "Sam", "drink": "milk"},
+        "guest2": {"name": "Ana", "drink": "cola"},
+    }
+    assert (start["bag_owner"], start["onlookers"]) == ("guest2", ["onlooker1", "onlooker2"])
     assert start["oracle"]["camera_info_topic"] == rig.oracle_config.camera_info_topic
     assert datetime.fromisoformat(start["wall_time"]).tzinfo is not None
     state = rig.wait_for("state", where=lambda r: r["t"] > line["t"])
@@ -2892,6 +2928,391 @@ def test_a_hung_value_left_from_another_run_is_restored_at_start(make_rig):
     restored = rig.wait_for("bag_restored")
     assert (restored["value"], restored["cause"]) == (GRASP_DETECT_MIN, "start")
     assert rig.commander_value() == GRASP_DETECT_MIN
+
+
+# -- A whole run through the pass check -----------------------------------------------------
+
+
+class InstantGrasp:
+    """A commander that takes every hang at once, logged as GraspParameter logs it.
+
+    The idle node has no executor to talk to a commander, so its bag_hung
+    record comes from here.
+    """
+
+    def __init__(self, record: Callable[..., None]) -> None:
+        self._record = record
+
+    def hang(self) -> threading.Event:
+        self._record("bag_hung", value=HUNG_VALUE, already_held=False)
+        done = threading.Event()
+        done.set()
+        return done
+
+    def restore(self, _cause: str) -> None:
+        return None
+
+    def finish(self) -> None:
+        return None
+
+    def close(self) -> None:
+        pass
+
+
+class RunGaze:
+    """The gaze loop as the tool log reads it: what look_at last gave, and whether it runs."""
+
+    def __init__(self, clock: Callable[[], float]) -> None:
+        self.clock = clock
+        self.target: str | None = None
+        self.running = False
+
+    def status(self) -> GazeStatus:
+        return GazeStatus(
+            target=self.target,
+            kind=None if self.target is None else "person",
+            running=self.running,
+            setpoint=None,
+            last_seen=None,
+            stop_reason=None,
+            stopped_at=None,
+            navigation_active=False,
+            now=self.clock(),
+        )
+
+
+def turn_rate(angular_z: float = 0.0) -> TwistStamped:
+    msg = TwistStamped()
+    msg.header.frame_id = ROBOT_FRAME
+    msg.twist.angular.z = angular_z
+    return msg
+
+
+class PlayedRun:
+    """A whole HRI run on the idle node's fake clock, and the agent's tool log of it.
+
+    The test plays the agent and the simulation. Each tool call goes to a
+    real ToolLog as WalkieToolRunner records it, and its effect reaches the
+    node through the node's own callbacks, on the same clock. The node logs
+    its state every 0.1 s, and while the gaze loop runs the robot faces the
+    talking guest and turns on /cmd_vel.
+    """
+
+    def __init__(
+        self,
+        make_idle_node: Callable[..., IdleNode],
+        monkeypatch: pytest.MonkeyPatch,
+        tool_path: Path,
+    ) -> None:
+        # On the class, so the start record is on the fake clock too.
+        self.clock = FakeClock()
+        monkeypatch.setattr(HriScenarioNode, "_now", lambda _node: self.clock())
+        idle = make_idle_node()
+        self.node = node = idle.node
+        self.scenario = node.scenario
+        self.events_path = idle.log_path
+        self.tool_path = tool_path
+        self.pose = LIVING_ROOM
+        monkeypatch.setattr(node, "_lookup_pose", lambda: self.pose)
+        monkeypatch.setattr(node, "_grasp", InstantGrasp(node._record))
+        self.handles = HandleStore(lambda: Pose2D(*self.pose))
+        self.gaze = RunGaze(self.clock)
+        self.log = ToolLog(tool_path, self.clock, self.handles, self.gaze)
+        self.arm_poses = load_arm_poses().poses
+        self.joints: dict[str, float] = {}
+        home = self.arm_poses["home"].tables
+        self._set_joints({**home["left"], **home["right"]})
+        self.steps = load_task_templates(PROJECT_ROOT / "config" / "task_templates.toml")["hri"]
+        self._calls = 0
+
+    def wait(self, seconds: float) -> None:
+        """Let `seconds` pass, in the node's 0.1 s ticks."""
+        for _ in range(round(seconds / STATE_PERIOD_S)):
+            self.clock.advance(STATE_PERIOD_S)
+            talking = self.scenario.talking(self.clock.t)
+            if self.gaze.running and talking is not None:
+                yaw = math.atan2(talking["y"] - self.pose.y, talking["x"] - self.pose.x)
+                self.pose = Pose(self.pose.x, self.pose.y, yaw)
+                self.node._on_cmd_vel(turn_rate(0.2))
+            self.node._on_tick()
+
+    def call(
+        self,
+        tool: str,
+        args: dict[str, Any],
+        result: str,
+        *,
+        out: ToolOutput | None = None,
+        error: bool = False,
+        effect: Callable[[], None] | None = None,
+    ) -> None:
+        """One tool call, recorded as WalkieToolRunner records it, with `effect` while it runs."""
+        self._calls += 1
+        pending = self.log.begin(tool, {"name": tool, "args": args, "id": f"call_{self._calls}"})
+        token = CURRENT_CALL.set(pending)
+        try:
+            mark_run()
+            if effect is not None:
+                effect()
+            if out is not None:
+                hand_out(out)
+        finally:
+            CURRENT_CALL.reset(token)
+        status = "error" if error else "success"
+        message = ToolMessage(content=result, name=tool, tool_call_id=pending.call_id, status=status)
+        self.log.end(pending, message, None)
+        self.wait(0.2)
+
+    def say(self, text: str) -> None:
+        self.call(
+            "speak",
+            {"text": text},
+            f"Said: {text}",
+            effect=lambda: self.node._on_to_human(HRIMessage(text=text)),
+        )
+
+    def ask(self, question: str) -> None:
+        """A question, and the wait for its answer after the scenario's 1 s delay."""
+        self.call(
+            "wait_for_person",
+            {"question": question},
+            f"Asked: {question}",
+            effect=lambda: self.node._on_to_human(HRIMessage(text=question)),
+        )
+        self.wait(1.5)
+
+    def find_people(self, people: Sequence[str], in_front: bool) -> tuple[str, dict[str, str]]:
+        """find_people's set of `people`, each on their track now: its id and each one's handle."""
+        payloads = [
+            SimpleNamespace(track=TrackKey(self.scenario.person(p).track_id, 1)) for p in people
+        ]
+        found = self.handles.put_set("person", payloads)
+        self.call("find_people", {"in_front": in_front}, "\n".join(found.member_ids))
+        return found.id, dict(zip(people, found.member_ids))
+
+    def find_seat(self) -> str:
+        found = self.handles.put_set("seat", [SimpleNamespace(free=True)])
+        self.call("find_seats", {}, f"{found.member_ids[0]}: sofa, free")
+        return found.member_ids[0]
+
+    def look_at(self, handle: str, turn_to: Pose | None = None) -> None:
+        def effect() -> None:
+            self.gaze.target, self.gaze.running = handle, True
+            if turn_to is not None:
+                self.pose = turn_to
+
+        self.call("look_at", {"target": handle}, f"Looking at {handle}.", effect=effect)
+
+    def remember(self, handle: str, name: str, drink: str) -> None:
+        out = remember_person.Out(
+            summary=f"Remembered {handle} as {name}.",
+            person_id=name.lower(),
+            faces=3,
+            appearances=3,
+            dropped_faces=0,
+            dropped_appearances=0,
+        )
+        args = {"person": handle, "name": name, "facts": {"drink": drink}}
+        self.call("remember_person", args, out.summary, out=out)
+
+    def move_arm(self, pose: str) -> None:
+        def effect() -> None:
+            # The gaze loop stops on any arm motion (ADR-0051).
+            self.gaze.running = False
+            # Half way, the arm is in no pose, so whether it is safe is unknown.
+            target = self.arm_poses[pose].tables["left"]
+            self._set_joints({name: (self.joints[name] + v) / 2 for name, v in target.items()})
+            self.wait(1.0)
+            self._set_joints(target)
+
+        safe = self.arm_poses[pose].travel_safe
+        out = move_arm_to_pose.Out(
+            summary=f"The left arm is in {pose}.",
+            pose=pose,
+            arm="left",
+            status="Success",
+            max_error_rad=0.01,
+            travel_safe=safe,
+        )
+        args = {"pose": pose, "arm": "left"}
+        self.call("move_arm_to_pose", args, out.summary, out=out, effect=effect)
+
+    def close_left(self) -> None:
+        out = set_gripper.Out(
+            summary="Closed the left gripper. It is holding something.",
+            arm="left",
+            state="close",
+            holding={"left": True},
+        )
+        args = {"arm": "left", "state": "close"}
+        self.call("set_gripper", args, out.summary, out=out, effect=lambda: self.wait(0.5))
+
+    def drive(self, location: str, to: Pose) -> None:
+        def effect() -> None:
+            # A drive stops the gaze loop, whose stop sends three zeros.
+            self.gaze.running = False
+            self.node._on_nav_status(goal_status(GoalStatus.STATUS_EXECUTING))
+            self.node._on_cmd_vel(turn_rate())
+            start = self.pose
+            heading = math.atan2(to.y - start.y, to.x - start.x)
+            for k in range(1, 31):
+                x = start.x + (to.x - start.x) * k / 30
+                y = start.y + (to.y - start.y) * k / 30
+                self.pose = Pose(x, y, to.yaw if k == 30 else heading)
+                self.wait(STATE_PERIOD_S)
+            self.node._on_nav_status(goal_status(GoalStatus.STATUS_SUCCEEDED))
+
+        self.call(
+            "navigate_to_location", {"location": location}, f"Arrived at {location}.", effect=effect
+        )
+
+    def refused_drive(self, location: str) -> None:
+        refusal = _arms_not_safe(("left",), "driving", "'carry'")
+        self.call("navigate_to_location", {"location": location}, refusal, error=True)
+
+    def todos(self, done: int) -> None:
+        """The template's list with the first `done` items completed and the next in progress."""
+        contents = [step["content"] for step in self.steps.todos]
+        statuses = [
+            "completed" if n < done else "in_progress" if n == done else "pending"
+            for n in range(len(contents))
+        ]
+        items = todos(*((f"t{n + 1}", c, s) for n, (c, s) in enumerate(zip(contents, statuses))))
+        self.node._on_todos(String(data=json.dumps(items)))
+
+    def _set_joints(self, joints: Mapping[str, float]) -> None:
+        self.joints.update(joints)
+        self.node._on_joint_states(
+            JointState(name=list(self.joints), position=list(self.joints.values()))
+        )
+
+
+def play_hri_run(run: PlayedRun, mistake: str | None = None) -> None:
+    """The template's run as hri.md's "One run" draws it, with at most one `mistake`."""
+    guests = {f"guest{n + 1}": g for n, g in enumerate(read_yaml(DEFAULT_FILE)["guests"])}
+    places = {"guest1": "sofa.middle", "guest2": "sofa.right"}
+    run.todos(0)
+    run.wait(1.0)
+    for n, (guest, info) in enumerate(guests.items()):
+        name, drink = info["name"], info["drink"]
+        run.drive("door", DOOR)
+        if mistake == "onlooker" and guest == "guest2":
+            _, seen = run.find_people([guest, "onlooker1", "onlooker2"], in_front=False)
+            run.look_at(seen["onlooker1"])
+        _, found = run.find_people([guest], in_front=True)
+        handle = found[guest]
+        run.look_at(handle)
+        run.ask("Hello, I am Walkie. What is your name?")
+        run.ask(f"Nice to meet you, {name}. What would you like to drink?")
+        if guest == "guest1":
+            # The scenario mumbles guest 1's first drink answer.
+            run.ask(f"Sorry {name}, I did not hear you. What would you like to drink?")
+        run.remember(handle, name, "water" if mistake == "wrong drink" else drink)
+        run.todos(2 * n + 1)
+        if guest == "guest2":
+            run.say(f"{name}, I will hold out my left hand for your bag.")
+            run.move_arm("receive")
+            run.ask(f"{name}, could you put your bag in my hand, please?")
+            run.say("Thank you. I will close my hand now.")
+            run.close_left()
+            if mistake == "drive with an arm out":
+                run.refused_drive("living_room")
+            run.say("I will move my arm to the carry pose.")
+            run.move_arm("carry")
+            # The arm motion stopped the gaze loop.
+            run.look_at(handle)
+            run.todos(4)
+        run.say(f"Please follow me, {name}.")
+        run.drive("living_room", LIVING_ROOM)
+        seat_handle = run.find_seat()
+        run.look_at(seat_handle, turn_to=facing(run.scenario, places[guest]))
+        run.say(f"{name}, please take a seat here.")
+        run.todos(2 * n + 2 if guest == "guest1" else 5)
+    # The introduction item is in progress, so the guests have swapped places.
+    set_id, seated = run.find_people(["host", "guest1", "guest2"], in_front=False)
+    run.call(
+        "recognize_person",
+        {"person": set_id},
+        f"{seated['guest1']} is Sam. {seated['guest2']} is Ana. {seated['host']} is unknown.",
+    )
+    for listener, other in (("guest2", "guest1"), ("guest1", "guest2")):
+        place = run.scenario.person(listener).place
+        assert place is not None
+        run.look_at(seated[listener], turn_to=facing(run.scenario, place))
+        heard, said = guests[listener], guests[other]
+        run.say(
+            f"{heard['name']}, this is {said['name']}. {said['name']} likes {said['drink']}."
+        )
+    run.todos(6)
+    run.wait(1.0)
+    run.log.close()
+    run.node.close()
+
+
+@pytest.mark.parametrize(
+    ("mistake", "failed"),
+    [
+        (None, []),
+        ("wrong drink", ["memory"]),
+        ("drive with an arm out", ["drives"]),
+        ("onlooker", ["people"]),
+    ],
+)
+def test_a_played_run_and_its_tool_log_pass_the_check_on_every_criterion(
+    make_idle_node, monkeypatch, tmp_path, capsys, mistake, failed
+):
+    run = PlayedRun(make_idle_node, monkeypatch, tmp_path / "agent_tools.jsonl")
+    play_hri_run(run, mistake)
+
+    code = hri_check.main([str(run.events_path), str(run.tool_path)])
+
+    lines = capsys.readouterr().out.splitlines()
+    names = [
+        "memory",
+        "gaze guest1",
+        "gaze guest2",
+        "offers",
+        "introductions",
+        "questions",
+        "arm_motion",
+        "bag",
+        "drives",
+        "cmd_vel",
+        "valid",
+        "time",
+        "people",
+    ]
+    assert [line.split(":")[0].split(" ", 1)[1] for line in lines[:-1]] == names
+    assert [line.split(":")[0].split(" ", 1)[1] for line in lines if line.startswith("FAIL ")] == (
+        failed
+    )
+    assert (code, lines[-1]) == ((1, "FAIL") if failed else (0, "PASS"))
+    verdicts = {line.split(":")[0].split(" ", 1)[1]: line for line in lines[:-1]}
+    # Each criterion judged what the run did, not an empty log.
+    if mistake != "wrong drink":
+        assert verdicts["memory"] == "PASS memory: guest1 Sam milk, guest2 Ana cola"
+    for guest in ("guest1", "guest2"):
+        assert re.fullmatch(
+            rf"PASS gaze {guest}: 100% within 10 deg, ratio 0\.\d\d \(\d+ samples\)",
+            verdicts[f"gaze {guest}"],
+        )
+    assert verdicts["offers"] == "PASS offers: guest1 at sofa.middle, guest2 at sofa.right"
+    assert verdicts["introductions"].startswith("PASS introductions: guest1 faced within")
+    assert verdicts["arm_motion"] == "PASS arm_motion: a line before each of 3 arm calls"
+    assert verdicts["bag"].startswith("PASS bag: held in the left hand from t=")
+    drives = 5 if mistake == "drive with an arm out" else 4
+    if mistake != "drive with an arm out":
+        assert verdicts["drives"] == f"PASS drives: none of {drives} drives refused for an arm out"
+    else:
+        assert verdicts["drives"].startswith(f"FAIL drives: 1 of {drives} drives refused")
+    assert re.fullmatch(r"PASS cmd_vel: \d+ messages", verdicts["cmd_vel"])
+    assert re.fullmatch(r"PASS time: \d+\.\d s, within 360 s", verdicts["time"])
+    # Two onlookers with each guest and the bystander.
+    if mistake != "onlooker":
+        assert verdicts["people"] == "PASS people: no call on the 5 other tracks"
+    else:
+        assert verdicts["people"].startswith("FAIL people: look_at at t=")
+        assert verdicts["people"].endswith(", onlooker1")
 
 
 # -- The entry point ----------------------------------------------------------------------

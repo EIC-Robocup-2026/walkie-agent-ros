@@ -13,6 +13,16 @@ from walkie_agent.tasks import (
     match_template,
     parse_task_message,
 )
+from walkie_agent.toolbox.registry import discover
+from walkie_agent.tools import (
+    FindObjectsTool,
+    ListLocationsTool,
+    MoveRelativeTool,
+    NavigateToLocationTool,
+    SpeakTool,
+    UpdateTodosTool,
+    WaitForPersonTool,
+)
 
 TEMPLATES_FILE = PROJECT_ROOT / "config" / "task_templates.toml"
 
@@ -70,14 +80,47 @@ def test_a_missing_templates_file_means_no_templates(tmp_path):
     assert load_task_templates(tmp_path / "task_templates.toml") == {}
 
 
-def test_the_shipped_file_has_no_templates_and_a_valid_example(tmp_path):
-    assert load_task_templates(TEMPLATES_FILE) == {}
-
-    # The commented example still loads once its "# " prefixes are removed.
+def shipped_example(tmp_path: Path) -> dict[str, TaskTemplate]:
+    """The shipped file's commented example, loaded once its "# " prefixes are removed."""
     lines = TEMPLATES_FILE.read_text().splitlines()
     start = next(n for n, line in enumerate(lines) if line.startswith("# [templates."))
     example = "\n".join(line.removeprefix("#").removeprefix(" ") for line in lines[start:])
-    assert list(load_task_templates(write(tmp_path, example))) == ["tour"]
+    return load_task_templates(write(tmp_path, example))
+
+
+def test_the_shipped_file_has_the_hri_template_and_a_valid_example(tmp_path):
+    assert list(load_task_templates(TEMPLATES_FILE)) == ["hri"]
+
+    assert list(shipped_example(tmp_path)) == ["tour"]
+
+
+def test_every_requires_tool_in_the_shipped_file_names_a_real_tool(tmp_path):
+    # Nothing at load checks the name, and a step whose tool does not exist
+    # can never be completed.
+    tools = {
+        cls.model_fields["name"].default
+        for cls in (
+            FindObjectsTool,
+            ListLocationsTool,
+            MoveRelativeTool,
+            NavigateToLocationTool,
+            SpeakTool,
+            UpdateTodosTool,
+            WaitForPersonTool,
+        )
+    }
+    tools |= {atomic.META.name for atomic in discover()}
+    templates = [*load_task_templates(TEMPLATES_FILE).values(), *shipped_example(tmp_path).values()]
+
+    required = {
+        (template.name, step["requires_tool"])
+        for template in templates
+        for step in template.todos
+        if isinstance(step, dict) and "requires_tool" in step
+    }
+
+    assert {name for name, _ in required} == {"hri", "tour"}
+    assert [(name, tool) for name, tool in sorted(required) if tool not in tools] == []
 
 
 @pytest.mark.parametrize(

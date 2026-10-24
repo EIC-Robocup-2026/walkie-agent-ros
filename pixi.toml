@@ -187,8 +187,16 @@ description = "Play the HRI scenario with the early bag answer (the shell's ROS_
 # agent-sim on the chula_pat14_6 world's named places, for the HRI scenario.
 # agent-sim stays on config/locations.sim.toml for the blank map.
 [tasks.agent-sim-hri]
-cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.chula_pat14_6.toml --mock-people-memory --arms"
+cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.chula_pat14_6.toml --mock-people-memory --arms --tool-log"
 description = "Run the agent on the chula_pat14_6 world's places (the shell's ROS_DOMAIN_ID)"
+
+# The HRI pass check on a finished run: give it the scenario's event log and
+# the agent's tool log, as in `pixi run hri-check logs/hri_scenario_<time>.jsonl
+# logs/agent_tools_<time>.jsonl`. It needs no ROS. Exit code 0 is a pass, 1 a
+# fail and 2 a run that is not valid (docs/architecture/hri.md).
+[tasks.hri-check]
+cmd = "python -m walkie_agent.sim.hri_check"
+description = "Check an HRI run's event log and tool log against the pass criteria"
 
 # The tests run on Fast DDS, which tests/conftest.py sets, so they need no
 # Zenoh router (ADR-0019).

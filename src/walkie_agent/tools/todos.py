@@ -78,6 +78,8 @@ class WaitForPersonTool(BaseTool):
         "Ask the person a question out loud and wait for the answer. "
         "Use this instead of speak when you cannot go on without an answer, "
         "for example to learn which object they mean. "
+        "It says the question itself, so never say the question, a rewording of it, "
+        "or a request you wait on with speak as well: a person asked twice answers twice. "
         "Your turn ends, and the answer arrives as the next message."
     )
     args_schema: Type[WaitForPersonToolInput] = WaitForPersonToolInput

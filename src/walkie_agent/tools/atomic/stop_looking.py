@@ -15,9 +15,11 @@ META = ToolMeta(
     name="stop_looking",
     description=(
         "Stop turning toward the person or seat that look_at chose; the robot then stays "
-        "still. Call it when you have finished talking to the person, before you do "
-        "something else. Driving and moving an arm stop it too. Safe to call when the "
-        "robot is not looking at anyone: the answer then says what it looked at last."
+        "still. Call it only when someone asks you to stop looking at them or to stop "
+        "turning, or when you stay where you are after your last line to the person. "
+        "Driving and moving an arm stop it by themselves, so you need not call it before "
+        "those. Safe to call when the robot is not looking at anyone: the answer "
+        "then says what it looked at last."
     ),
     effects=frozenset({Effect.N}),
     questions=(

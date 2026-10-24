@@ -13,12 +13,12 @@ a rai-core upgrade, what phase 1 left for later, and five exercises.
 | [`src/walkie_agent/graph.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/graph.py) | `ToolSet`, `repair_history`, `WalkieToolRunner` and `build_walkie_graph` | ~420 |
 | [`src/walkie_agent/agent.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/agent.py) | `WalkieAgent`: queue, stop, reset, seeds, `/walkie/task`, `/walkie/todos` and console lines. Also `create_walkie_agent` | ~570 |
 | [`src/walkie_agent/tasks.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/tasks.py) | `TaskTemplate`, `load_task_templates`, `match_template` and `parse_task_message` | ~150 |
-| [`src/walkie_agent/main.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/main.py) | The ROS entry point and its flags, such as `--task-templates` and `--todos-topic` | ~100 |
-| [`config/task_templates.toml`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/config/task_templates.toml) | The task templates. It ships with one commented example | ~30 |
+| [`src/walkie_agent/main.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/main.py) | The ROS entry point and its flags, such as `--task-templates`, `--todos-topic` and `--tool-log` | ~130 |
+| [`config/task_templates.toml`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/config/task_templates.toml) | The task templates. It ships with the HRI template and one commented example | ~60 |
 | [`src/walkie_agent/tools/`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/tree/main/src/walkie_agent/tools) | The ROS tools in `navigation.py`, `speech.py` and `memory.py`. A failure raises `ToolException`, so its result has status `error` | ~660 |
 | [`tests/test_todo.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_todo.py) | One test per list rule, on a plain `TodoList` | ~880 |
 | [`tests/test_graph.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_graph.py) | Routes, gate, repair, queue, stop, reset and seeding, with no ROS | ~1650 |
-| [`tests/test_tasks.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_tasks.py) | Template loading, keyword matching and `/walkie/task` parsing | ~170 |
+| [`tests/test_tasks.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_tasks.py) | Template loading, keyword matching and `/walkie/task` parsing | ~210 |
 | [`tests/test_agent.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_agent.py) | The agent over ROS topics, against the fake robot | ~620 |
 | [`tests/scripted_llm.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/scripted_llm.py) | `ScriptedChatModel`, the fake LLM that replays scripted replies and records what it was sent | ~70 |
 
@@ -28,7 +28,8 @@ a rai-core upgrade, what phase 1 left for later, and five exercises.
    `_Draft._check_completion`. With the rest of `_Draft`, that is the whole rulebook.
 2. **`tests/test_todo.py`.** Each test is one rule on a concrete list.
 3. **`build_walkie_graph` in `graph.py`.** It is about 90 lines and maps onto
-   [The Graph](the-graph.md). Then read `WalkieToolRunner._run_call`.
+   [The Graph](the-graph.md). Then read `WalkieToolRunner._dispatch`, and
+   `_run_call`, which wraps it to record each call with `--tool-log`.
 4. **`WalkieAgent._run_agent` and `_prepare_todos` in `agent.py`,** next to
    RAI's `LangChainAgent._run_agent`, as the next section shows.
 5. **The ADRs, for the why.** [ADR-0038](../architecture/decisions/0038-own-graph-per-turn-binding.md)
@@ -100,7 +101,7 @@ Then walk this table, run `pixi run test`, and only then update the block above.
 !!! example "Try it"
     In `pixi run python`, print `inspect.getsource(ToolRunner._func)` and
     find the `try` block inside `run_one`. Which two exceptions does it
-    catch? Then read `WalkieToolRunner._run_call` in `graph.py` and say why
+    catch? Then read `WalkieToolRunner._dispatch` in `graph.py` and say why
     it records `ok=False` and re-raises, instead of returning its own error.
 
 ## Not in phase 1 yet
@@ -117,10 +118,6 @@ These parts are proposed but not built yet.
 - **The rest of the [roadmap](../architecture/self-evolving-agent.md#roadmap)'s
   phase 1 row:** `models.py` and per-role keys, the `--access-level` flag,
   and Ollama with an eval of the local model. None is in the code yet.
-- **The HRI template.** It is not in `config/task_templates.toml` yet. Its
-  atomics and the simulated scenario in `src/walkie_agent/sim/` are built,
-  and it comes with the sim run and its pass check
-  ([HRI Task](../architecture/hri.md#the-template)).
 
 ## Exercises
 

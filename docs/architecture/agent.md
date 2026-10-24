@@ -190,6 +190,16 @@ flowchart TD
   "Unknown tool fly." and the task goes on. Only the first `update_todos`
   call in one LLM answer is applied. Any later one gets an error that asks
   for all the changes in one call.
+- **The tool-call record.** With `--tool-log`, `_run_call` also writes
+  each call as one JSON line, to the given path or to
+  `logs/agent_tools_<time>.jsonl`. A line holds the tool, its arguments,
+  its outcome, the text the LLM read, an atomic's full result, the people
+  and seats it named with the track behind each, and what the gaze loop
+  was doing when the robot spoke. The HRI pass check reads it beside the
+  scenario's event log ([HRI Task](hri.md#in-simulation)), and
+  `pixi run agent-sim-hri` turns it on. The format is in
+  `walkie_agent.tool_log`'s docstring. A failure to write is logged once
+  and never stops a call.
 - **Completion gate.** The LLM may answer without a tool call while todo
   items are still open and none is waiting. The graph then saves this
   message in the history and calls the LLM again: "[todo] Open items: t3,
@@ -267,8 +277,9 @@ one of two forms:
 ### Task templates
 
 `config/task_templates.toml` holds named templates, one
-`[templates.<name>]` table each. The shipped file has only a commented
-example. `--task-templates` points the agent at another file.
+`[templates.<name>]` table each. The shipped file has the HRI template
+([HRI Task](hri.md#the-template)) and a commented example.
+`--task-templates` points the agent at another file.
 
 ```toml title="config/task_templates.toml"
 [templates.tour]

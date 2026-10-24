@@ -222,6 +222,28 @@ class HandleStore:
         self._check(set_id, stored, kind)
         return [_member(set_id, index, stored) for index in range(len(stored.payloads))]
 
+    def peek(self, handle_or_set_id: str) -> list[Handle]:
+        """The handle, or every member of the set, with no check at all.
+
+        For records, not for tools: a stale handle is still returned, and the
+        pose provider is never asked, so a caller never waits on TF. An
+        unknown or malformed id gives [].
+        """
+        handle_or_set_id = handle_or_set_id.strip()
+        match = _HANDLE_ID.match(handle_or_set_id)
+        if match is not None:
+            stored = self._lookup(match.group("set"))
+            index = int(match.group("index"))
+            if stored is None or index >= len(stored.payloads):
+                return []
+            return [_member(match.group("set"), index, stored)]
+        if not _SET_ID.match(handle_or_set_id):
+            return []
+        stored = self._lookup(handle_or_set_id)
+        if stored is None:
+            return []
+        return [_member(handle_or_set_id, index, stored) for index in range(len(stored.payloads))]
+
     def clear(self) -> None:
         """Forget every set."""
         with self._lock:

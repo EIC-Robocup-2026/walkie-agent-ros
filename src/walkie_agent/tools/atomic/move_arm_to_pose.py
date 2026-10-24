@@ -100,10 +100,10 @@ def run(ctx: ToolContext, args: Args) -> Out:
         if e.code == "CANCELLED" and ctx.cancel.is_set():
             raise StepError(
                 "CANCELLED",
-                f"Stopped by reset before the arms moved. {client.last_state.sentence()}",
+                f"Stopped by reset before the arms moved. {shared.state_sentence(client)}",
             ) from None
         # The read failed, so a second read for the sentence would too.
-        sentence = client.last_state.sentence()
+        sentence = shared.state_sentence(client)
         raise shared.with_sentence(e, f"Could not move to {name!r}: ", sentence) from None
     positions = _positions(ctx, client, pose, args.arm, targets, order)
 
@@ -121,11 +121,11 @@ def run(ctx: ToolContext, args: Args) -> Out:
         raise _unchecked(
             status,
             f"the arms could not be checked against {name!r}: {shared.full_stop(e.message)}",
-            client.last_state.sentence(),
+            shared.state_sentence(client),
             {"pose": name, "status": status, "read_error": e.code},
         ) from None
 
-    sentence = client.last_state.sentence()
+    sentence = shared.state_sentence(client)
     worst = worst_joint(targets, reading)
     if worst is None:
         missing = unread_joints(targets, reading)
@@ -235,7 +235,7 @@ def _move_error(
         stopped = (
             shared.interrupted(error, gripper=False) or "Stopped by reset before the arms moved."
         )
-        return StepError("CANCELLED", f"{stopped} {client.last_state.sentence()}", error.data)
+        return StepError("CANCELLED", f"{stopped} {shared.state_sentence(client)}", error.data)
     if error.code in ("SKILL_FAILED", "INTERNAL", "CANCELLED"):
         # The commander answered, so it can be read: a failed plan left the
         # arms where they were, and a failed execution may have stopped them
@@ -244,5 +244,5 @@ def _move_error(
     else:
         # TIMEOUT, UNAVAILABLE or PRECONDITION_FAILED: the commander is not
         # answering or is busy, so a read would fail or wait out its timeout.
-        sentence = client.last_state.sentence()
+        sentence = shared.state_sentence(client)
     return shared.with_sentence(error, f"Could not move to {name!r}: ", sentence)

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 from walkie_agent.arm.commander import CommanderClient
 from walkie_agent.arm.poses import ARMS, BOTH, GRIPPER_GROUPS, ArmPose
-from walkie_agent.arm.state import UNKNOWN_SENTENCE
+from walkie_agent.arm.state import UNKNOWN_SENTENCE, ArmsState
 from walkie_agent.toolbox import StepError, ToolContext
 
 # The backend name in META.requires and ctx.backend().
@@ -120,6 +120,22 @@ def arm_sentence(client: CommanderClient, cancel: threading.Event, read: bool = 
             state = client.read_arms(cancel, CONFIG.read_timeout_s)
         except StepError:
             state = client.last_state
+    return state_sentence(client, state)
+
+
+def state_sentence(client: CommanderClient, state: ArmsState | None = None) -> str:
+    """The arm state sentence of `state`, by default the client's last_state.
+
+    Never that the robot may drive while the arms are unverified
+    (CommanderClient.unverified): the drive check then recovers first, and
+    refuses when it cannot. last_state keeps the arms known while only a
+    gripper goal made them unverified, so it can say that they are safe for
+    driving then.
+    """
+    if state is None:
+        state = client.last_state
+    if state.travel_safe and client.unverified is not None:
+        return UNKNOWN_SENTENCE
     return state.sentence()
 
 

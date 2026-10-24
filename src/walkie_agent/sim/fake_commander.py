@@ -38,9 +38,12 @@ Where it differs from the real commander, so a test does not rely on it:
   - a failed execution stops exactly half way;
   - it has no planning scene and checks no collisions;
   - a cancel or a stop is seen within one 20 ms step;
-  - planning takes no time unless plan_time_s says so, so a goal cancelled
-    as soon as it is accepted ends "Execution Failed" by default, where
-    the commander would more likely still plan and end it "Canceled";
+  - planning takes no time unless plan_time_s or plan_gate says so, so a
+    goal cancelled as soon as it is accepted ends "Execution Failed" by
+    default, where the commander would more likely still plan and end it
+    "Canceled";
+  - a move takes move_time_s whatever its length, unless joint_speed_rad_s
+    sets the speed of its largest joint change;
   - never_answer holds a goal until it is cancelled, and a held gripper
     goal then ends at once, without the ramp the commander would finish;
   - a close always reports the gap, which the commander's
@@ -120,6 +123,14 @@ class FakeCommander(Node):
         # How long a joint goal plans before it moves. A cancel while it
         # plans ends it CANCELED "Canceled" once the plan is done.
         self.plan_time_s = 0.0
+        # A joint goal that plans while this is set goes on planning, after
+        # plan_time_s, until the event is set, so a test decides when the
+        # plan is done. None to plan for plan_time_s only.
+        self.plan_gate: threading.Event | None = None
+        # The speed, in rad/s, of a joint move's largest joint change, which
+        # then sets how long the move takes instead of move_time_s. None to
+        # take move_time_s.
+        self.joint_speed_rad_s: float | None = None
         # A joint goal ends ABORTED "Planning Failed" without moving.
         self.plan_failure = False
         # A joint goal stops half way and ends ABORTED "Execution Failed", as
@@ -150,6 +161,12 @@ class FakeCommander(Node):
         self.reject_cancels = False
         # How long a cancel request waits to be answered.
         self.cancel_delay_s = 0.0
+        # A cancel request that arrives while this is set waits, after
+        # cancel_delay_s, until the event is set before it is answered, so
+        # a test decides when; reject_cancels is read once it is set. None
+        # to answer at once. Only a cancel of a goal that has not ended
+        # waits: the others are answered without one.
+        self.cancel_gate: threading.Event | None = None
         # How long /get_joint_states takes to answer.
         self.joint_states_delay_s = 0.0
         # The status /get_joint_states fails with, as when MoveIt has no
@@ -330,6 +347,7 @@ class FakeCommander(Node):
                 self.cancel_requests += 1
             if self.cancel_delay_s > 0:
                 self._closing.wait(self.cancel_delay_s)
+            self._wait_gate(self.cancel_gate)
             return CancelResponse.REJECT if self.reject_cancels else CancelResponse.ACCEPT
 
     def _on_joint_cancel(self, goal_handle) -> CancelResponse:
@@ -378,6 +396,7 @@ class FakeCommander(Node):
             # plan is done.
             if self.plan_time_s > 0:
                 self._closing.wait(self.plan_time_s)
+            self._wait_gate(self.plan_gate)
             if goal_handle.is_cancel_requested:
                 return self._finish(goal_handle, result, group, False, "Canceled")
             if self.plan_failure:
@@ -397,11 +416,11 @@ class FakeCommander(Node):
                         joint: (self._joints[joint] + target) / 2
                         for joint, target in targets.items()
                     }
-                self._move(targets, self.move_time_s / 2, stopped)
+                self._move(targets, self._move_time(targets, self.move_time_s / 2), stopped)
                 return self._finish(goal_handle, result, group, False, "Execution Failed")
             # The commander stops the arms on a cancel, and MoveIt then ends
             # the execution as failed rather than cancelled.
-            if not self._move(targets, self.move_time_s, stopped):
+            if not self._move(targets, self._move_time(targets, self.move_time_s), stopped):
                 return self._finish(goal_handle, result, group, False, "Execution Failed")
             return self._finish(goal_handle, result, group, True, "Success")
 
@@ -507,8 +526,24 @@ class FakeCommander(Node):
         with self._serving():
             if self.accept_delay_s > 0:
                 self._closing.wait(self.accept_delay_s)
-            while gate is not None and not (gate.is_set() or self._closing.is_set()):
-                gate.wait(_STEP_S)
+            self._wait_gate(gate)
+
+    def _wait_gate(self, gate: threading.Event | None) -> None:
+        """Wait until `gate` is set or the fake closes; at once when `gate` is None."""
+        while gate is not None and not (gate.is_set() or self._closing.is_set()):
+            gate.wait(_STEP_S)
+
+    def _move_time(self, targets: Mapping[str, float], default_s: float) -> float:
+        """How long a joint move to `targets` takes: by joint_speed_rad_s, else `default_s`."""
+        speed = self.joint_speed_rad_s
+        if speed is None:
+            return default_s
+        with self._lock:
+            change = max(
+                (abs(target - self._joints[joint]) for joint, target in targets.items()),
+                default=0.0,
+            )
+        return change / speed
 
     def _arm_stopped(self, goal_handle) -> Callable[[], bool]:
         """True once the goal is cancelled, or once a joint cancel stops the arms."""

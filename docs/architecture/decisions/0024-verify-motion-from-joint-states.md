@@ -65,7 +65,8 @@ joint, the finger whose travel the commander's grasp detection reads.
 - The LLM gets what the robot actually did, not what the commander reported.
 - Each motion costs one extra service call, and each close at most one,
   bounded at 3 s, and `get_arm_state` makes three, or four while the arms
-  are unverified.
+  are unverified, and two more for each gripper whose abandoned command
+  made them so.
 - `/get_joint_states` calls MoveIt's `getCurrentState()`. A comment in the
   commander says that call is not thread-safe, and that concurrent calls
   crash the node. Until that is checked, the agent reads joint states only
@@ -75,7 +76,12 @@ joint, the finger whose travel the commander's grasp detection reads.
   report once the commander's action server has stayed undiscovered for
   5 s, or 60 s after the call gave up. Neither bounds the motion, since
   MoveIt lets a goal run for twice its planned duration plus 60 s, so the
-  arms are then unverified: the client refuses every goal, and
-  `get_arm_state` reads both arms twice, 0.3 s apart. Two readings that
-  agree within 0.01 rad clear that state.
+  arms are then unverified: the client refuses every goal until
+  `get_arm_state` or the drive check recovers. Recovery first needs the
+  commander to show that the goal is no longer active, by its result or
+  by its answer to a cancel. Only then does it read both arms twice,
+  0.3 s apart, so it does not read while the commander may still run that
+  goal. Two readings that agree within 0.01 rad, and within 1 mm for the
+  finger of a gripper whose command was abandoned, then clear that state
+  ([ADR-0025](/architecture/decisions/0025-travel-safe-interlock.md)).
 <!-- --8<-- [end:body] -->

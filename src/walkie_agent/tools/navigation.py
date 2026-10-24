@@ -30,8 +30,10 @@ from walkie_agent.tools.waiters import wait_for_future
 MAP_FRAME = "map"
 ROBOT_FRAME = "base_footprint"
 
-# The arm check before a drive reads the joints once, bounded like every arm
-# read (ADR-0024); twice, each so bounded, while the arms are unverified.
+# The arm check before a drive ends within this, as every arm read does
+# (ADR-0024), the wait for another call to the commander included. It reads
+# the joints once. While the arms are unverified, the whole recovery fits in
+# it: the cancels of earlier goals, the commander's answers and both reads.
 ARM_CHECK_TIMEOUT_S = 3.0
 # Added to a drive's answer when the arm check could not read the arms: the
 # commander's /get_joint_states service was not discovered, its read did not
@@ -155,12 +157,15 @@ class Nav2GoalTool(BaseROS2Tool):
         """The interlock: refuse to drive with an arm out (ADR-0025).
 
         The decision is the arm client's check_for_driving(), made under its
-        call lock, so no goal starts between its steps. Raises ToolException
-        while a goal sent to the commander may still move an arm or a
-        gripper, while the arms are unverified after the client abandoned a
-        goal and cannot be read still, when an arm is known to be out of
-        every travel-safe pose, and when the commander answers with a reading
-        that cannot show the arms are safe. When the commander's
+        call lock, so no goal starts between its steps, all within
+        ARM_CHECK_TIMEOUT_S. Raises ToolException while a goal sent to the
+        commander may still move an arm or a gripper; while the arms are
+        unverified after the client abandoned a goal, until the commander
+        shows every such goal to be no longer active and a settled read
+        shows the arms still; when another call keeps the commander past
+        the timeout; when an arm is known to be out of every travel-safe
+        pose; and when the commander answers with a reading that cannot show
+        the arms are safe. When the commander's
         /get_joint_states service is not found, its read does not answer or
         it gives no reading, the robot drives, and the returned note says why
         the arms were not checked: failing open keeps navigation working
@@ -188,7 +193,9 @@ class Nav2GoalTool(BaseROS2Tool):
                     f"for driving. {e.message} Tell the person that the arms cannot be checked."
                 ) from e
             # PRECONDITION_FAILED: a goal runs or is outstanding, or the arms
-            # are unverified and a settled read could not show them still.
+            # are unverified and recovery could not clear that: the commander
+            # did not show an earlier goal to be no longer active, the arms
+            # could not be read, or a settled read did not show them still.
             # TIMEOUT: another call kept the commander past the check's
             # timeout.
             retry = " Try again in a few seconds." if e.code == "TIMEOUT" else ""

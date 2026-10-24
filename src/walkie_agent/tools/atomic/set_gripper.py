@@ -109,13 +109,13 @@ def run(ctx: ToolContext, args: Args) -> Out:
                 )
                 raise StepError(
                     "CANCELLED",
-                    f"{_joined(done, stopped)} {client.last_state.sentence()}",
+                    f"{_joined(done, stopped)} {shared.state_sentence(client)}",
                     e.data,
                 ) from None
             raise shared.with_sentence(
                 e,
                 _joined(done, f"Could not move the {arm} gripper: "),
-                client.last_state.sentence(),
+                shared.state_sentence(client),
             ) from None
         holding[arm] = None
         if args.state != "close":
@@ -148,7 +148,7 @@ def run(ctx: ToolContext, args: Args) -> Out:
                     "something."
                 )
                 raise StepError(
-                    "CANCELLED", f"{_joined(done, stopped)} {client.last_state.sentence()}", e.data
+                    "CANCELLED", f"{_joined(done, stopped)} {shared.state_sentence(client)}", e.data
                 ) from None
             if e.code == "PRECONDITION_FAILED" and "command" in e.data:
                 # joint_states_since(): a newer command for the gripper came.

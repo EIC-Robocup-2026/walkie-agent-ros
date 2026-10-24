@@ -30,13 +30,34 @@ start between the steps of the check:
 - When such a goal stops holding off a drive before its result came, the
   client abandons it. Its end is unknown, and it may still move an arm,
   since MoveIt lets a goal run for twice its planned duration plus 60 s,
-  so the arms are then unverified. A goal that the commander accepts after
-  it was abandoned is cancelled at once and makes them unverified again.
-  While they are unverified, the check reads both arms twice, 0.3 s apart,
-  and goes on only when the two readings agree within 0.01 rad. It refuses
-  when an arm still moves, and when it cannot read the arms for any
-  reason: it never fails open while the arms are unverified. That settled
-  read clears the state, and so does the one `get_arm_state` makes.
+  so the goal is then unresolved and the arms are unverified. A goal that
+  the commander accepts after it was abandoned is cancelled at once, is
+  unresolved again and makes the arms unverified again. While the arms are
+  unverified, the check recovers, all within its 3 s limit, as
+  `get_arm_state` does. It refuses when recovery does not clear the state,
+  and when it cannot read the arms for any reason: it never fails open
+  while the arms are unverified. Recovery has two steps, and clears the
+  state only when both pass:
+    1. The commander shows that every unresolved goal is no longer active.
+       A goal's result or rejection resolves it. Otherwise the check sends
+       it a cancel by its id, which the client made when it sent the goal,
+       so even a goal whose send the commander never answered can be
+       cancelled. The answer `unknown` resolves the goal: the commander
+       does not know it, as after a restart. So does `ended`, unless a
+       cancel of the goal was accepted or is unanswered, since the
+       commander also answers `ended` to a second cancel while it still
+       stops the goal. After `accepted`, the commander has stopped both
+       arms, or the gripper finishes its current motion, and the goal's
+       result resolves it. After `refused` or no answer, the goal may
+       still move an arm or a gripper, and the check refuses.
+    2. A settled read: two reads of both arms, 0.3 s apart, agree within
+       0.01 rad, and two reads of the finger of every gripper whose
+       command was abandoned agree within 1 mm. Otherwise an arm or a
+       gripper still moves.
+- No arm or gripper goal starts until recovery clears the state. The
+  commander stops both arms for a joint cancel only while the cancelled
+  goal is active, so a cancel of an older goal that reaches the commander
+  after that goal ended cannot stop a newer one.
 - If the commander answers with a reading that cannot show the arms are
   safe, it refuses, and tells the LLM to say that the arms cannot be
   checked. Such a reading is malformed, lacks a joint of either arm, or
@@ -59,10 +80,24 @@ The check runs only when the agent has an arm backend (`--arms`).
   may still move an arm: a goal that has not ended, a goal abandoned before
   its end was known, or a reading that cannot be trusted refuses the drive.
 - A commander that dies while a goal is outstanding keeps the robot from
-  driving until the commander is back and two reads agree, or until the
-  agent restarts. The refusal tells the LLM to try again, then to tell the
-  person that the arms cannot be checked.
-- While the arms are unverified, a drive costs a second read and 0.3 s.
+  driving until the commander is back, answers the goal's cancel, and two
+  reads agree. So does a commander that refuses the cancel of an abandoned
+  goal or does not answer it; walkie-ros's commander never refuses one.
+  The refusal tells the LLM to try again, then to tell the person that the
+  arms cannot be checked.
+- The client's state lives in the agent process. An agent restart forgets
+  it, abandoned goals included, so the new agent drives after one read. A
+  restart is not evidence that a motion ended.
+- The settled read only supplements the commander's answers. It cannot
+  see a motion slower than 0.01 rad in 0.3 s. That matters only for a
+  trajectory that move_group still executes after the commander
+  restarted, since the new commander does not know its goal and answers
+  `unknown`. The full answer is the MotionSupervisor's stop
+  ([ADR-0023](/architecture/decisions/0023-motion-supervisor.md)), which
+  ends every MoveIt execution.
+- While the arms are unverified, a drive costs the cancels of abandoned
+  goals and their answers, a second round of reads and 0.3 s, all within
+  the 3 s limit.
 - It is advisory. Teleoperation or another program can still drive with the
   arms out. A robot-side interlock in walkie-ros would be stronger.
 - The team must decide which poses are safe for driving.

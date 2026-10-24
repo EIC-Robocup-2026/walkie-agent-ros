@@ -405,8 +405,9 @@ where both arms are. When the commander is not found, does not answer, or
 gives no reading, they drive, and add a note that says which to the result,
 such as "Arm state unknown: the commander did not answer." They refuse in
 those cases too while the arms are unverified, after the arm client gave up
-on a goal before its end was known. They then read both arms twice, 0.3 s
-apart, and drive only when the two readings agree.
+on a goal before its end was known. They then drive only when the commander
+shows that every such goal is no longer active, and two reads of both arms
+0.3 s apart agree, all within the check's 3 s.
 
 For the full list of topics, see
 [Getting Started](../getting-started.md).

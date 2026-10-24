@@ -1758,11 +1758,20 @@ HOME = ArmState(pose="home", travel_safe=True)
 def fake_commander(last_state: ArmsState) -> SimpleNamespace:
     """What the loop reads of a CommanderClient: `last_state`, `unverified` and busy().
 
-    busy() returns `goal`. `unverified` is None until a test sets it, as the
-    client's is until it abandons a goal.
+    busy() calls `on_busy` first when a test sets it, as the client's may
+    abandon a goal there (_outstanding), and then returns `goal`.
+    `unverified` is None until a test sets it, as the client's is until it
+    abandons a goal.
     """
-    arm = SimpleNamespace(last_state=last_state, unverified=None, goal=None)
-    arm.busy = lambda: arm.goal
+    arm = SimpleNamespace(last_state=last_state, unverified=None, goal=None, on_busy=None)
+
+    def busy() -> str | None:
+        on_busy = arm.on_busy
+        if on_busy is not None:
+            on_busy()
+        return arm.goal
+
+    arm.busy = busy
     return arm
 
 
@@ -1873,6 +1882,49 @@ def test_unverified_arms_stop_a_held_heading(recorder, make_loop):
     status = loop.status()
     assert (status.target, status.kind, status.stop_reason) == ("seat_1", HEADING, ARM_MOTION)
     assert_silent_after_stop(recorder)
+
+
+# The client's cause once a busy() call abandoned an arm goal whose call
+# gave up on it ABANDON_AFTER_S before.
+ARM_ABANDONED = "the move of left_arm from an earlier call was given up on before its end was known"
+
+
+@pytest.mark.parametrize("kind", [PERSON, HEADING])
+def test_a_goal_that_busy_abandons_stops_the_loop_before_another_turn(
+    connector, recorder, make_loop, monkeypatch, kind
+):
+    arm = fake_commander(ArmsState())
+    # A clock that stays at the handle's sighting, so the person is never lost.
+    clock = FakeClock(1000.0)
+    loop = make_loop(vision=VisionFeed(connector), arm=arm, clock=clock, yaw_source=lambda: 0.0)
+    spy = PublishSpy(loop, monkeypatch)
+    if kind == PERSON:
+        loop.follow_person("per_3", TrackKey(3, 0), 0.7, 1000 * 1_000_000_000, cancel=NO_CANCEL)
+    else:
+        loop.hold_heading("seat_1", 1.0, cancel=NO_CANCEL)
+    # Arms unknown from the start with no goal running: the check fails open.
+    assert spy.next() != 0.0
+    assert loop.status().running
+    published_before: list[int] = []
+
+    def abandon() -> None:
+        # As _outstanding() does in one step: the arms become unverified,
+        # the goal's arm is unknown, and busy() returns None. The gaze
+        # thread publishes each tick's command after the tick, so every
+        # command recorded so far came from an earlier tick.
+        arm.on_busy = None
+        published_before.append(len(spy.records()))
+        arm.unverified = ARM_ABANDONED
+        arm.last_state = ArmsState(left=None, right=arm.last_state.right)
+
+    arm.on_busy = abandon
+
+    assert wait_until(lambda: not loop.status().running)
+    status = loop.status()
+    assert (status.kind, status.stop_reason) == (kind, ARM_MOTION)
+    assert_silent_after_stop(recorder)
+    # From the tick whose busy() abandoned the goal on, only the stop's zeros.
+    assert spy.commands()[published_before[0] :] == [0.0, 0.0, 0.0]
 
 
 def test_an_arm_out_stops_the_loop_as_arm_out_while_the_arms_are_unverified(recorder, make_loop):

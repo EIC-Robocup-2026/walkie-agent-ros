@@ -643,7 +643,10 @@ flowchart TB
   unverified, after the client abandoned a goal or the commander accepted
   one late, the loop stops for `arm motion`. `busy()` and the last
   reading may not show it: an abandoned goal is no longer in `busy()`,
-  and an abandoned gripper goal leaves both arms known.
+  and an abandoned gripper goal leaves both arms known. `busy()` may
+  itself abandon a goal, so every tick calls it first and reads the rest
+  after it: the tick that abandons a goal stops the loop rather than
+  turning once more.
 
 ### What the LLM reads
 

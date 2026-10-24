@@ -1215,14 +1215,22 @@ class GazeLoop:
         return None if self._arm is None else self._arm.last_state
 
     def _arms_known(self) -> frozenset[str]:
+        # Without busy() first, unlike _arm_stop_reason: an abandonment this
+        # reading misses leaves the arms unverified, and the first tick
+        # reads that after its own busy() and before any command.
         state = self._arm_state()
         if state is None:
             return frozenset()
         return frozenset(arm for arm in ARMS if state.arm(arm) is not None)
 
     def _arm_stop_reason(self, arms_known: frozenset[str]) -> str | None:
-        """ARM_OUT, ARM_MOTION or None, from the commander's last reading, unverified and busy().
+        """ARM_OUT, ARM_MOTION or None, from busy() and then the last reading and unverified.
 
+        busy() comes first, on every tick, since it may abandon a goal that
+        a call gave up on: the arms are then unverified and the goal's arm
+        unknown, and busy() returns None. The reading and unverified are
+        read after it, so the tick that abandons the goal stops the loop
+        rather than turning once more on the state from before.
         ARM_OUT when an arm is known to be out of every travel-safe pose.
         Otherwise ARM_MOTION while the arms are unverified (`unverified`):
         the client abandoned a goal before its end was known, or the
@@ -1244,22 +1252,28 @@ class GazeLoop:
         does (ADR-0025), and like navigation's, never while the arms are
         unverified.
         """
-        state = self._arm_state()
-        if state is None:
+        if self._arm is None:
             return None
+        # busy() never waits: it reads the client's state under its short
+        # state lock, never the call lock or the executor, and checks
+        # discovery outside it. So it runs on every tick, not only while an
+        # arm is unknown.
+        busy = self._arm.busy()
+        # The reading before unverified: an abandonment or a late accept
+        # changes both in one step, so when this reading shows the change,
+        # unverified below shows it too.
+        state = self._arm.last_state
         if state.unsafe_arms:
             return ARM_OUT
         # Before the checks below, which let the loop go on with both arms
-        # known or no goal in busy(). unverified, like busy() below, never
-        # waits: it takes only the client's short state lock.
+        # known or no goal in busy(). unverified, like busy(), never waits:
+        # it takes only the client's short state lock.
         if self._arm.unverified is not None:
             return ARM_MOTION
         unknown = {arm for arm in ARMS if state.arm(arm) is None}
         if unknown & arms_known:
             return ARM_MOTION
-        # busy() never waits: it reads the client's state under its short
-        # state lock, never the call lock or the executor.
-        if unknown and self._arm.busy() is not None:
+        if unknown and busy is not None:
             return ARM_MOTION
         return None
 

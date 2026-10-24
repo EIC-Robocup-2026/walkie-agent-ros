@@ -183,7 +183,7 @@ sequenceDiagram
 
 | Atomic | Effect | Reads | Returns to the LLM |
 | ------ | ------ | ----- | ------------------ |
-| `find_people(gesture=None)` | P | The newest `/walkie_vision/people` message, at most 1 s old, waiting at most 1 s | Person handles such as `per_51c0.1`, left to right, each with its gestures and postures and whether its face is seen well enough to recognize: `face seen`, `face too small or unclear to recognize`, or `no face seen`. `NOT_FOUND` when no one matches |
+| `find_people(gesture=None, in_front=False)` | P | The newest `/walkie_vision/people` message, at most 1 s old, waiting at most 1 s. With `in_front`, also the base's pose from TF at the image's stamp | Person handles such as `per_51c0.1`, left to right, each with its gestures and postures and whether its face is seen well enough to recognize: `face seen`, `face too small or unclear to recognize`, or `no face seen`. With `in_front`, handles only for the people with a clear face of at least 0.10 rad within 25° of the base's heading, and a count of those left out by reason, for the guest at the door ([HRI Task](hri.md#one-run)). `NOT_FOUND` when no one matches |
 | `refind_person(person)` | P | The newest message again | A new handle for the same person: same track id, else the closest appearance embedding over a limit. `NOT_FOUND` otherwise |
 | `localize_person(person)`, internal | P | The person's depth, which the message lacks ([question 1](#open-questions)) | A pose handle for `navigate_to_pose`, as `localize_object` gives ([ADR-0043](decisions/0043-navigate-to-pose-provenance.md)) |
 | `recognize_person(person)` | R | walkie-database's face table, then its appearance table. Until its services exist, the mock people memory | A name and stored facts, or `UNKNOWN`. `NOT_FOUND` when one handle has neither a face nor an appearance vector. Also takes a whole set, giving each name to one person at most ([HRI Task](hri.md#atomics)) |
@@ -285,7 +285,12 @@ scenario fields ([Sim Harvest](harvest.md#h0-scenarios)).
   The oracle never enlarges a face to pass the face gate, but the gate is
   an angle, so on the simulation's 640 × 360 camera a guest at the door
   and the seated people give trusted faces. Otherwise the face fields stay
-  empty with score 0, and the face keypoints score 0.2.
+  empty with score 0, and the face keypoints score 0.2. The HRI
+  scenario's two onlookers at the door give trusted faces too, so
+  recognition can use them, but `find_people(in_front=True)` leaves them
+  out. The one in the hallway behind the guest has too small a face, about
+  0.064 rad against the 0.10 rad limit, and the one beside the robot is
+  more than 25° to the side.
 - **Objects** are map-frame boxes, each detected as the bounds of its 8
   projected corners, only for a class in the configured list. The default
   is the seat classes, since `find_seats` is the only reader so far.

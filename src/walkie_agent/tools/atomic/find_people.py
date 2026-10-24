@@ -3,15 +3,20 @@
 Reads the newest /walkie_vision/people array through the `vision` backend
 and keeps one person handle per person, left to right (ADR-0050). Gestures
 and postures come from the keypoints, by walkie-agent-v2's rules
-(walkie_agent.perception.gestures).
+(walkie_agent.perception.gestures). With in_front, only the people close in
+front of the robot get handles, by walkie_agent.perception.front's rule, so
+that at the door a passer-by or someone beside the robot is not taken for
+the guest.
 """
 
+from collections.abc import Mapping, Sequence
 from typing import NamedTuple
 
 from pydantic import BaseModel, Field
 from rclpy.time import Time
 from walkie_vision_msgs.msg import PersonDetection, PersonDetectionArray
 
+from walkie_agent.perception.front import REASONS, face_size_rad, front_reason
 from walkie_agent.perception.gestures import GESTURES, POSTURES, classify_gestures
 from walkie_agent.perception.seating import BBox, bbox_xyxy
 from walkie_agent.perception.vision_feed import (
@@ -22,6 +27,7 @@ from walkie_agent.perception.vision_feed import (
 )
 from walkie_agent.toolbox import Effect, StepError, ToolContext, ToolMeta, ToolOutput
 from walkie_agent.tools.atomic import _perception as shared
+from walkie_agent.tools.navigation import MAP_FRAME
 
 _GESTURE_LIST = ", ".join(GESTURES)
 
@@ -43,8 +49,11 @@ META = ToolMeta(
         "The first line names the set, such as per_51c0, which recognize_person takes "
         "to recognize everyone at once. With gesture, only the people who show it: one "
         f"of {_GESTURE_LIST}. raising_left_arm and raising_right_arm mean the person's "
-        "own arm; pointing_left and pointing_right are directions as you see them. A "
-        "handle stays valid for 10 minutes while you do not drive; turning keeps it."
+        "own arm; pointing_left and pointing_right are directions as you see them. "
+        "With in_front, only the people close in front of the robot, and a last line "
+        "counts those left out and why: use it at the door to find the guest, not at "
+        "the seats, where seated people sit to the side. A handle stays valid for 10 "
+        "minutes while you do not drive; turning keeps it."
     ),
     effects=frozenset({Effect.P}),
     questions=(
@@ -54,7 +63,7 @@ META = ToolMeta(
         "How many people are sitting down?",
         "Is a guest standing at the door?",
     ),
-    examples=({}, {"gesture": "waving"}),
+    examples=({}, {"gesture": "waving"}, {"in_front": True}),
     requires=(shared.VISION,),
 )
 
@@ -65,6 +74,14 @@ class Args(BaseModel):
         description=(
             f"Only people who show this gesture or posture, one of {_GESTURE_LIST}. "
             "Leave it out to find everyone."
+        ),
+    )
+    in_front: bool = Field(
+        default=False,
+        description=(
+            "Only people close in front of the robot, with a clear, large face near its "
+            "heading, such as a guest at the door. Passers-by behind them and people "
+            "beside the robot are left out."
         ),
     )
 
@@ -138,21 +155,78 @@ def run(ctx: ToolContext, args: Args) -> Out:
         _payload(feed, msg, stamp_ns, entry, face_box, heading)
         for entry, face_box, heading in zip(chosen, face_boxes, heading_maps, strict=True)
     ]
-    handle_set = shared.put_handles(ctx, "person", payloads, msg.header)
-
-    if gesture is None:
-        lines = [f"{handle_set.id}: {_count(len(seen))} in view, left to right."]
-    else:
-        verb = "shows" if len(chosen) == 1 else "show"
-        lines = [
-            f"{handle_set.id}: {len(chosen)} of {_count(len(seen))} in view {verb} "
-            f"{gesture}, left to right."
-        ]
     image_height = msg.camera_info.height
-    for handle_id, payload, entry in zip(handle_set.member_ids, payloads, chosen, strict=True):
-        share = (payload.bbox[3] - payload.bbox[1]) / image_height if image_height else None
-        description = _describe(payload.position, payload.gestures, share)
-        lines.append(f"{handle_id}: {description}, {_face_text(payload)}")
+    if not args.in_front:
+        handle_set = shared.put_handles(ctx, "person", payloads, msg.header)
+        if gesture is None:
+            lines = [f"{handle_set.id}: {_count(len(seen))} in view, left to right."]
+        else:
+            verb = "shows" if len(chosen) == 1 else "show"
+            lines = [
+                f"{handle_set.id}: {len(chosen)} of {_count(len(seen))} in view {verb} "
+                f"{gesture}, left to right."
+            ]
+        lines.extend(_person_lines(handle_set.member_ids, payloads, image_height))
+        return Out(
+            summary="\n".join(lines), set_id=handle_set.id, handles=list(handle_set.member_ids)
+        )
+
+    # The base's pose at the image's stamp, from the same TF as the
+    # headings, so the localization error cancels out of the angle between
+    # them. It is also the handles' capture pose: one lookup serves both.
+    try:
+        pose = shared.capture_pose(ctx, msg.header)
+    except StepError:
+        ctx.check_cancelled()
+        raise
+    if all(heading is None for heading in heading_maps):
+        ctx.check_cancelled()
+        raise StepError(
+            "UNAVAILABLE",
+            "Which way each person is from the robot is unknown, so nothing was stored. "
+            f"It needs the camera's transform ({MAP_FRAME} -> {msg.header.frame_id}) at the "
+            "image's stamp and a camera_info with a focal length.",
+        )
+    face_sizes = [
+        None if face_box is None else face_size_rad(face_box, msg.camera_info)
+        for face_box in face_boxes
+    ]
+    reasons = [
+        front_reason(
+            entry.person.face_det_score,
+            face_size,
+            heading,
+            pose.yaw,
+            # The feed's limit, so that a person kept here can be recognized.
+            feed.config.min_face_det_score,
+            config.front,
+        )
+        for entry, face_size, heading in zip(chosen, face_sizes, heading_maps, strict=True)
+    ]
+    kept = [i for i, reason in enumerate(reasons) if reason is None]
+    left_out = _left_out(gesture, len(seen) - len(chosen), reasons)
+    if not kept:
+        # A stop during the lookups is why nobody was kept, if one came.
+        ctx.check_cancelled()
+        raise _nobody_in_front(gesture, seen, chosen, reasons, left_out, image_height)
+
+    # Only the people kept get handles, so no handle names someone left out.
+    kept_payloads = [payloads[i] for i in kept]
+    handle_set = shared.put_handles(ctx, "person", kept_payloads, msg.header, pose=pose)
+    verb, shows = ("is", "shows") if len(kept) == 1 else ("are", "show")
+    first = (
+        f"{handle_set.id}: {len(kept)} of {_count(len(seen))} in view {verb} close in front"
+        + ("" if gesture is None else f" and {shows} {gesture}")
+        + ", left to right"
+    )
+    if len(kept) >= 2:
+        # Marked rather than put first, since the handles' numbers keep the
+        # left-to-right order. max() takes the first of a tie, the leftmost.
+        largest = max(range(len(kept)), key=lambda j: face_sizes[kept[j]])
+        first += f"; {handle_set.member_ids[largest]} has the largest face"
+    lines = [first + "."]
+    lines.extend(_person_lines(handle_set.member_ids, kept_payloads, image_height))
+    lines.append(f"Left out: {_counts_text(left_out) or 'nobody'}.")
     return Out(summary="\n".join(lines), set_id=handle_set.id, handles=list(handle_set.member_ids))
 
 
@@ -229,3 +303,62 @@ def _payload(
 
 def _count(n: int) -> str:
     return "1 person" if n == 1 else f"{n} people"
+
+
+def _person_lines(
+    handle_ids: Sequence[str], payloads: Sequence[shared.PersonPayload], image_height: int
+) -> list[str]:
+    """One line per handle, such as "per_51c0.0: centre, height 0.74, standing, face seen"."""
+    lines = []
+    for handle_id, payload in zip(handle_ids, payloads, strict=True):
+        share = (payload.bbox[3] - payload.bbox[1]) / image_height if image_height else None
+        description = _describe(payload.position, payload.gestures, share)
+        lines.append(f"{handle_id}: {description}, {_face_text(payload)}")
+    return lines
+
+
+def _left_out(
+    gesture: str | None, without_gesture: int, reasons: Sequence[str | None]
+) -> dict[str, int]:
+    """How many were left out for each reason, those without the gesture first; none at 0."""
+    left_out = {}
+    if gesture is not None and without_gesture:
+        left_out[f"not showing {gesture}"] = without_gesture
+    for reason in REASONS:
+        if count := reasons.count(reason):
+            left_out[reason] = count
+    return left_out
+
+
+def _counts_text(left_out: Mapping[str, int]) -> str:
+    """Such as "1 too far, 1 to the side"; empty for nobody."""
+    return ", ".join(f"{count} {reason}" for reason, count in left_out.items())
+
+
+def _nobody_in_front(
+    gesture: str | None,
+    seen: Sequence[_Seen],
+    chosen: Sequence[_Seen],
+    reasons: Sequence[str | None],
+    left_out: dict[str, int],
+    image_height: int,
+) -> StepError:
+    """NOT_FOUND for in_front when nobody was kept, saying why each person in view was not.
+
+    It names no way to come closer: the robot does not direct people
+    (hri.md), and the LLM can call find_people without in_front instead.
+    """
+    reason_of = {id(entry): reason for entry, reason in zip(chosen, reasons, strict=True)}
+    parts = []
+    for entry in seen:
+        box = bbox_xyxy(entry.person.bbox)
+        share = (box[3] - box[1]) / image_height if image_height else None
+        why = reason_of.get(id(entry), f"not showing {gesture}")
+        parts.append(f"{_describe(entry.position, entry.gestures, share)}, {why}")
+    who = "" if gesture is None else f" who shows {gesture}"
+    return StepError(
+        "NOT_FOUND",
+        f"Nobody in view{who} is close in front of the robot. In view, left to right: "
+        f"{'; '.join(parts)}. find_people without in_front gives each a handle.",
+        {"gesture": gesture, "people": len(seen), "left_out": left_out},
+    )

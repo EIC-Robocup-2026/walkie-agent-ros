@@ -811,23 +811,35 @@ def test_the_loop_publishes_on_cmd_vel_through_the_forbidden_names_check(
 
 def test_a_remap_of_cmd_vel_onto_another_input_is_refused(connector):
     # A remap onto cmd_vel_nav would rank the loop's commands with Nav2's.
-    # The ctx allows it, since /cmd_vel_nav is not forbidden; the publisher
-    # does not.
+    # /cmd_vel_nav is forbidden, and the gaze loop's exception covers
+    # /cmd_vel alone, so the ctx refuses it.
     node = rclpy.create_node(
         f"gaze_remapped_{random.randint(0, 1_000_000)}",
         cli_args=["--ros-args", "-r", "/cmd_vel:=/cmd_vel_nav"],
         use_global_arguments=False,
     )
     remapped = SimpleNamespace(node=node, _tf_buffer=connector._tf_buffer)
+    # A remap onto a name that twist_mux does not read: the ctx allows it,
+    # and the publisher refuses it, as the base would never turn.
+    elsewhere = rclpy.create_node(
+        f"gaze_remapped_elsewhere_{random.randint(0, 1_000_000)}",
+        cli_args=["--ros-args", "-r", "/cmd_vel:=/cmd_vel_gaze"],
+        use_global_arguments=False,
+    )
+    unread = SimpleNamespace(node=elsewhere, _tf_buffer=connector._tf_buffer)
     try:
+        with pytest.raises(ValueError, match="/cmd_vel_nav is in FORBIDDEN_NAMES"):
+            RotationPublisher(ToolContext(remapped))
+        with pytest.raises(ValueError, match="/cmd_vel_nav is in FORBIDDEN_NAMES"):
+            GazeLoop(remapped)
         with pytest.raises(
             ValueError,
-            match=r"^The gaze loop's publisher resolves to /cmd_vel_nav, not /cmd_vel "
+            match=r"^The gaze loop's publisher resolves to /cmd_vel_gaze, not /cmd_vel "
             r"\(ADR-0051\)\. Remove the remap\.$",
         ):
-            RotationPublisher(ToolContext(remapped))
-        with pytest.raises(ValueError, match="resolves to /cmd_vel_nav"):
-            GazeLoop(remapped)
+            RotationPublisher(ToolContext(unread))
+        with pytest.raises(ValueError, match="resolves to /cmd_vel_gaze"):
+            GazeLoop(unread)
         # A remap of another name onto /cmd_vel is refused by the ctx itself.
         onto = rclpy.create_node(
             f"gaze_remapped_onto_{random.randint(0, 1_000_000)}",
@@ -841,6 +853,7 @@ def test_a_remap_of_cmd_vel_onto_another_input_is_refused(connector):
             onto.destroy_node()
     finally:
         node.destroy_node()
+        elsewhere.destroy_node()
 
 
 def test_the_publisher_clamps_to_the_ceiling_and_refuses_what_is_not_finite(

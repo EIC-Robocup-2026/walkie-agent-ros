@@ -462,9 +462,11 @@ class RotationPublisher:
         self._publisher = ctx.publisher(
             TwistStamped, config.cmd_vel_topic, CMD_VEL_QOS, allow_forbidden=(CMD_VEL_TOPIC,)
         )
-        # The name as the node resolved it, remaps included: a remap onto
-        # another twist_mux input would rank the loop above Nav2 or the
-        # operator, and only /cmd_vel is forbidden, so the ctx would allow it.
+        # The name as the node resolved it, remaps included. A remap onto
+        # another twist_mux input would rank the loop with Nav2 or the
+        # operator; those names are in FORBIDDEN_NAMES, so the ctx already
+        # refuses them. A remap onto any other name would send the commands
+        # where twist_mux does not read them, and the base would never turn.
         if self._publisher.topic_name != CMD_VEL_TOPIC:
             raise ValueError(
                 f"The gaze loop's publisher resolves to {self._publisher.topic_name}, not "

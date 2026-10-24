@@ -46,7 +46,12 @@ __all__ = [
 # itself, so it only covers tools that are given it; it is a guard against
 # mistakes, not a security boundary. The atomics' ToolContext checks it for
 # every entity it creates.
-#   /cmd_vel       raw velocity commands would bypass Nav2's obstacle avoidance
+#   /cmd_vel and the other base velocity inputs (manipulation.md's Forbidden
+#                  names): raw velocity commands would bypass Nav2's
+#                  obstacle avoidance. /cmd_vel_nav is Nav2's own input to
+#                  twist_mux, /cmd_vel_joy and /cmd_vel_key the operator's,
+#                  and /omni_wheel_drive_controller/cmd_vel twist_mux's
+#                  output, which drives the wheels directly
 #   /walkie/reset  the agent must not wipe its own memory
 #   /walkie/task   the agent must not queue its own tasks or seed locked steps
 #   /walkie/todos  the operator's view of the list; only update_todos edits it
@@ -55,7 +60,16 @@ __all__ = [
 # lowest-priority input, and names it in allow_forbidden=("/cmd_vel",) to the
 # ToolContext. /cmd_vel stays listed, so every other tool and helper is still
 # refused it.
-FORBIDDEN_NAMES = ["/cmd_vel", "/walkie/reset", "/walkie/task", "/walkie/todos"]
+FORBIDDEN_NAMES = [
+    "/cmd_vel",
+    "/cmd_vel_nav",
+    "/cmd_vel_joy",
+    "/cmd_vel_key",
+    "/omni_wheel_drive_controller/cmd_vel",
+    "/walkie/reset",
+    "/walkie/task",
+    "/walkie/todos",
+]
 
 
 def build_walkie_tools(

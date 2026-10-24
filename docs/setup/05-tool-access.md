@@ -34,7 +34,16 @@ We keep a single list in `src/walkie_agent/tools/__init__.py` and pass it to
 every ROS 2 tool:
 
 ```python title="src/walkie_agent/tools/__init__.py"
-FORBIDDEN_NAMES = ["/cmd_vel", "/walkie/reset"]
+FORBIDDEN_NAMES = [
+    "/cmd_vel",
+    "/cmd_vel_nav",
+    "/cmd_vel_joy",
+    "/cmd_vel_key",
+    "/omni_wheel_drive_controller/cmd_vel",
+    "/walkie/reset",
+    "/walkie/task",
+    "/walkie/todos",
+]
 
 
 def build_walkie_tools(connector, locations, whoami_dir=None):
@@ -46,8 +55,14 @@ def build_walkie_tools(connector, locations, whoami_dir=None):
     ]
 ```
 
-- `/cmd_vel`: the robot should only move through Nav2.
+- `/cmd_vel` and the other base velocity topics: the robot should only
+  move through Nav2. `/cmd_vel_nav` is Nav2's own input to `twist_mux`,
+  `/cmd_vel_joy` and `/cmd_vel_key` are the operator's, and
+  `/omni_wheel_drive_controller/cmd_vel` is `twist_mux`'s output to the
+  wheels.
 - `/walkie/reset`: the agent must not wipe its own memory.
+- `/walkie/task` and `/walkie/todos`: the agent must not queue its own
+  tasks, and only `update_todos` edits the list.
 
 !!! note "Later: the gaze loop"
     The gaze loop, `GazeLoop` in `src/walkie_agent/gaze.py`, is the one
@@ -68,8 +83,9 @@ no longer see the topics it is allowed to read.
 pixi run test
 ```
 
-`test_tools_hide_forbidden_topics` publishes on `/cmd_vel` and checks that
-the agent's topic list does not show it.
+`test_tools_hide_forbidden_topics` publishes on every name in
+`FORBIDDEN_NAMES` and checks that the agent's topic list shows none of
+them.
 
 ## Adding a new tool
 

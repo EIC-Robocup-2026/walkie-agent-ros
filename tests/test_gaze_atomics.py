@@ -1216,6 +1216,17 @@ def test_cmd_vel_stays_forbidden_to_everything_but_the_gaze_loop(world, connecto
         world.ctx.subscription(TwistStamped, "/cmd_vel", lambda _msg: None, 10)
     with pytest.raises(ValueError, match="/walkie/reset is in FORBIDDEN_NAMES"):
         world.ctx.publisher(Empty, "/walkie/reset", 10, allow_forbidden=("/cmd_vel",))
+    # The gaze loop's exception covers /cmd_vel alone, not the other base
+    # velocity inputs or twist_mux's output.
+    for name in (
+        "/cmd_vel_nav",
+        "/cmd_vel_joy",
+        "/cmd_vel_key",
+        "/omni_wheel_drive_controller/cmd_vel",
+    ):
+        assert name in FORBIDDEN_NAMES
+        with pytest.raises(ValueError, match=f"{re.escape(name)} is in FORBIDDEN_NAMES"):
+            world.ctx.publisher(TwistStamped, name, 10, allow_forbidden=("/cmd_vel",))
 
     # The agent's own node now publishes /cmd_vel, and the LLM still does not see it.
     lister = next(

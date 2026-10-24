@@ -517,11 +517,13 @@ flowchart TB
   It raises `ValueError` for a value that is not finite, and sends one
   above 0.6 rad/s either way as 0.6 rad/s, with a warning, whatever its
   config says. It is made through the ctx helper with
-  `allow_forbidden=("/cmd_vel",)`. The config refuses any other topic,
-  and the publisher checks the name as the node resolved it, so a remap
-  onto another `twist_mux` input stops the agent at startup. `/cmd_vel`
-  stays in `FORBIDDEN_NAMES`, and a test checks that every other tool and
-  helper is still refused it.
+  `allow_forbidden=("/cmd_vel",)`. The config refuses any other topic.
+  A remap onto another `twist_mux` input stops the agent at startup:
+  those inputs are in `FORBIDDEN_NAMES` too, and the exception covers
+  `/cmd_vel` alone. The publisher also checks the name as the node
+  resolved it, so a remap onto a name `twist_mux` does not read fails the
+  same way. `/cmd_vel` stays in `FORBIDDEN_NAMES`, and a test checks that
+  every other tool and helper is still refused it.
 
 ### Stops
 

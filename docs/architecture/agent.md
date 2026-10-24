@@ -324,9 +324,9 @@ todos = [
   the music" do not. Messages queued before it are dropped, with their
   seeds. The stop message itself runs next, so the LLM can cancel the open
   steps and say so. While the agent is idle, "stop" is an ordinary message.
-  Either way, it first goes to the Toolbox's stop-heard listeners
-  ([Stop, reset and the cancel](#stop-reset-and-the-cancel)), so the gaze
-  loop stops turning the base between tasks too.
+  Either way, once it is queued, it goes to the Toolbox's stop-heard
+  listeners ([Stop, reset and the cancel](#stop-reset-and-the-cancel)), so
+  the gaze loop stops turning the base between tasks too.
 - **Reset.** A message on `/walkie/reset` drops the queued messages and
   their seeds, and stops the running task. Before the next task, the agent
   clears the history, the todo list and the handles, publishes `[]` on
@@ -422,7 +422,16 @@ check before it turns the base.
 
 Both drive tools stop the gaze loop first, before the arm check, so the base
 stops turning even when the check then refuses the drive
-([ADR-0051](decisions/0051-agent-side-gaze-loop.md)).
+([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). They wait up to 0.5 s
+for the loop's zero commands to be published. When they are not, the drive
+is refused before the arm check, with no goal sent: "Not driving. The gaze
+loop's stop was not confirmed: its zero commands on /cmd_vel were not
+published within 0.5 s, so the base may still be turning. No navigation
+goal was sent. Try again in a few seconds; if it fails again, tell the
+person that the base cannot be confirmed stopped." When the gaze thread's
+last attempt to publish the zeros raised, the message says "publishing its
+zero commands on /cmd_vel failed" instead. `move_arm_to_pose` waits the same way, and refuses with `TIMEOUT`
+([HRI Task](hri.md#what-the-llm-reads)).
 
 For the full list of topics, see
 [Getting Started](../getting-started.md).
@@ -727,12 +736,18 @@ one place.
   may block. A listener that raises is logged, and the others still run.
 - **Stop-heard listeners.** `Toolbox.stop_heard()` runs them for every
   utterance that is just "stop" or "never mind", during a task or not.
-  They run on the thread that delivered the utterance, before the agent
-  takes its buffer lock and queues it, so the stop's own run cannot start
-  before they return. They are for what runs between tasks, such as the
-  gaze loop: while the agent is idle, the stop interrupts nothing. They
-  set no cancel and hold back no run. During a task, the interrupt
-  follows them.
+  They run on the thread that delivered the utterance, once the agent has
+  queued it and decided, under its buffer lock, whether a task runs. Called
+  before that decision, they could stop the gaze loop during a `look_at`
+  of a task that then ended, and the stop would count as idle, with no
+  interrupt and no cancel. During a task, the cancel is already set when
+  they run, and the interrupt listeners follow them. They are for what
+  runs between tasks, such as the gaze loop: while the agent is idle, the
+  stop interrupts nothing. They set no cancel and hold back no run, so
+  between tasks the stop's own run may start while they run. A `look_at`
+  in it that began before the stop fails with `CANCELLED` or has its
+  target stopped, because it reads the loop's stop generation first
+  ([HRI Task](hri.md#stops)).
 - **No run starts during the listeners.** The interrupt counts as
   pending from the cancel until its last listener returns. Until then
   `Toolbox.begin_task()` refuses, and the agent leaves the next message

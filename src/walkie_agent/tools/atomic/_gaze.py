@@ -17,6 +17,7 @@ from walkie_agent.gaze import (
     SHUTDOWN,
     STOP_HEARD,
     STOP_LOOKING,
+    STOP_UNCONFIRMED_NEXT,
     STOP_WAIT_S,
     GazeLoop,
 )
@@ -27,6 +28,10 @@ GAZE = "gaze"
 
 # look_at's stop reason when the base does not face a seat in time.
 TURN_TIMEOUT = "turn timeout"
+
+# What follows the loop's message in an arm atomic's refusal when
+# stop_before_arm_motion raises.
+NO_ARM_GOAL = f"No arm goal was sent. {STOP_UNCONFIRMED_NEXT}"
 
 # Why the loop stopped, as the end of "The last target, per_51c0.1, was
 # stopped 2 s ago ..." and of "Stopped turning toward seat_77aa.2 ...".
@@ -63,8 +68,11 @@ def stop_before_arm_motion(ctx: ToolContext) -> None:
     commander's next reading shows the arm moving, keeps the base still for
     the whole motion. The gaze thread publishes the stop's zeros, and this
     waits up to STOP_WAIT_S for them, so the base has been told to stop
-    before the arm leaves its pose. The grippers do not move the arm and do
-    not stop it.
+    before the arm leaves its pose. When they are not published by then,
+    it raises the loop's StepError TIMEOUT: the base may still be turning,
+    so the caller refuses and sends nothing to the commander; its answer
+    follows the loop's message with NO_ARM_GOAL. The loop is stopped either
+    way. The grippers do not move the arm and do not stop it.
     """
     if ctx.has_backend(GAZE):
         gaze_loop(ctx).stop(ARM_MOTION, wait_s=STOP_WAIT_S)

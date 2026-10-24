@@ -117,11 +117,15 @@ inputs pass neither.
   and the acceleration cap counts the time since the last command went
   out, so a new target cannot jump the command.
 - As built, one thread is the only writer of `/cmd_vel`, and it publishes
-  outside the loop's lock. A stop queues its zeros and returns at once, so
-  a publish that blocks in the transport holds up no stop and no
-  callback. If the publish stays blocked, `twist_mux` drops the input
-  0.5 s after its last message, and the drive controller stops the base
-  0.5 s after its last command.
+  outside the loop's lock. A stop queues its zeros and, unless it waits
+  for them, returns at once, so a publish that blocks in the transport
+  holds up no listener and no callback. If the publish stays blocked,
+  `twist_mux` drops the input 0.5 s after its last message, and the drive
+  controller stops the base 0.5 s after its last command. Neither timeout
+  stops a command that the thread publishes once the block clears. So a
+  drive or an arm motion waits up to 0.5 s for the zeros to be published,
+  and refuses, sending no goal, when they are not. A publish of the zeros
+  that raises is tried again a tick later.
 - As built, a person is lost 1 s after their last sighting, with no
   allowance for the `look_at` call. `look_at` refuses with `STALE` a
   handle whose sighting is already older than that, unless the newest
@@ -134,6 +138,9 @@ inputs pass neither.
   ordinary message
   ([ADR-0038](/architecture/decisions/0038-own-graph-per-turn-binding.md)),
   but the loop outlives the turn. So the agent hands every such stop to
-  the Toolbox's stop-heard listeners before it queues it, and the loop
-  stops for `stop heard`.
+  the Toolbox's stop-heard listeners once it has queued it and decided
+  whether a task runs, and the loop stops for `stop heard`. `look_at`
+  reads the loop's stop generation before its arm check, so a stop
+  anywhere in the call makes it fail with `CANCELLED` rather than turn
+  the base after the stop's zeros.
 <!-- --8<-- [end:body] -->

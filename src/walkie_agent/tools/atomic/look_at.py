@@ -118,6 +118,11 @@ class Out(ToolOutput):
 
 def run(ctx: ToolContext, args: Args) -> Out:
     gaze = shared.gaze_loop(ctx)
+    # First, before the arm check, which may wait up to 3 s for the
+    # commander: a stop anywhere in the call, stop_looking or "stop" heard
+    # included, then makes the turn below raise CANCELLED rather than turn
+    # the base after the stop's zeros.
+    stop_calls = gaze.stop_calls()
     handle = _handle(ctx, args.target)
     payload = handle.payload
     # The handle is checked before the arms, so a handle that cannot be
@@ -150,7 +155,12 @@ def run(ctx: ToolContext, args: Args) -> Out:
 
     if handle.kind == "person":
         gaze.follow_person(
-            handle.id, payload.track, payload.heading_map, payload.stamp_ns, cancel=ctx.cancel
+            handle.id,
+            payload.track,
+            payload.heading_map,
+            payload.stamp_ns,
+            cancel=ctx.cancel,
+            stop_calls=stop_calls,
         )
         _check_following(gaze, handle.id)
         summary = (
@@ -158,7 +168,9 @@ def run(ctx: ToolContext, args: Args) -> Out:
             f"has not seen them for {gaze.config.lost_after_s:g} s.{note}"
         )
     else:
-        gaze.hold_heading(handle.id, payload.heading_map, cancel=ctx.cancel)
+        gaze.hold_heading(
+            handle.id, payload.heading_map, cancel=ctx.cancel, stop_calls=stop_calls
+        )
         _face(ctx, gaze, handle.id)
         summary = f"Turned toward {handle.id} ({_seat_words(payload)}).{note}"
     return Out(

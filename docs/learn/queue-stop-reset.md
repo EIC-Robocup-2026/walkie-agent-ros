@@ -33,12 +33,17 @@ result must be exactly `stop`, `never mind` or `nevermind`.
 ```
 
 A stop interrupts only while a task runs. `_enqueue` then drops the older
-queued messages and their seeds, keeps the stop itself queued, and sets
-`_interrupt_event`. While the agent is idle, "stop" is an ordinary message.
-Either way, `_enqueue` first calls `Toolbox.stop_heard()`, before it takes
-`_buffer_lock` and queues the stop. The gaze loop listens there, so it stops
-turning the base between tasks too
-([HRI Task](../architecture/hri.md#stops)).
+queued messages and their seeds, keeps the stop itself queued, sets
+`_interrupt_event` and cancels the running atomics with `Toolbox.cancel()`.
+While the agent is idle, "stop" is an ordinary message. Either way, once
+it has queued the stop and released `_buffer_lock`, `_enqueue` calls
+`Toolbox.stop_heard()`, and then, during a task, the interrupt listeners.
+The gaze loop listens there, so it stops turning the base between tasks too
+([HRI Task](../architecture/hri.md#stops)). The order matters. If
+`stop_heard()` came before `_enqueue` decides whether a task runs, it could
+stop the loop during a `look_at` whose task then ended before that
+decision. The stop would count as idle, with nothing interrupted or
+cancelled.
 
 ```mermaid
 sequenceDiagram

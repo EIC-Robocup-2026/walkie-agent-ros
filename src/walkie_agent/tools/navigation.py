@@ -95,7 +95,9 @@ class Nav2GoalTool(BaseROS2Tool):
 
     With `gaze`, the agent's GazeLoop, every drive first stops the loop
     (ADR-0051): it would otherwise keep turning the base toward a person
-    until Nav2's goal status reached it.
+    until Nav2's goal status reached it. The drive is refused, with no goal
+    sent, when the loop's zero commands are not published within
+    STOP_WAIT_S.
     """
 
     handle_tool_error: bool = True
@@ -130,14 +132,22 @@ class Nav2GoalTool(BaseROS2Tool):
             raise ToolException(f"Action {self.action_name} is not writable by this agent.")
         if self.gaze is not None:
             # Here, not at the top: walkie_agent.gaze imports this module.
-            from walkie_agent.gaze import NAVIGATION, STOP_WAIT_S
+            from walkie_agent.gaze import NAVIGATION, STOP_UNCONFIRMED_NEXT, STOP_WAIT_S
+            from walkie_agent.toolbox.types import StepError
 
             # Before the arm check, which may wait 3 s for the commander:
             # the base stops turning as soon as a drive is asked for, even
             # one the check then refuses. The gaze thread publishes the
             # stop's zeros; the wait, of at most STOP_WAIT_S, lets them go
-            # out before the goal.
-            self.gaze.stop(NAVIGATION, wait_s=STOP_WAIT_S)
+            # out before the goal. When they are not published by then, the
+            # base may still be turning, or turn again, so no goal is sent.
+            try:
+                self.gaze.stop(NAVIGATION, wait_s=STOP_WAIT_S)
+            except StepError as e:
+                raise ToolException(
+                    f"Not driving. {e.message} No navigation goal was sent. "
+                    f"{STOP_UNCONFIRMED_NEXT}"
+                ) from e
         note = self._check_arms()
 
         client = self._get_client()

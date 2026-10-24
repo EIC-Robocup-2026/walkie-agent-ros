@@ -38,6 +38,7 @@ from walkie_agent.gaze import (
     ARM_MOTION,
     ARM_OUT,
     DEFAULT_CONFIG,
+    ERROR,
     HEADING,
     INTERRUPT,
     LOST,
@@ -1347,8 +1348,8 @@ def test_a_blocked_publish_holds_up_no_stop_and_no_callback(
     assert recorder.commands() == commands
 
 
-def test_a_stop_that_waits_returns_once_its_zeros_are_out(
-    recorder, make_loop, monkeypatch, caplog
+def test_a_stop_that_waits_returns_once_its_zeros_are_out_and_raises_when_they_are_not(
+    recorder, make_loop, monkeypatch
 ):
     loop = make_loop(yaw_source=lambda: 0.0)
     spy = PublishSpy(loop, monkeypatch)
@@ -1361,22 +1362,112 @@ def test_a_stop_that_waits_returns_once_its_zeros_are_out(
     assert spy.commands()[-3:] == [0.0, 0.0, 0.0]
     assert_silent_after_stop(recorder)
 
-    # With the publish blocked, the wait ends at its bound and says so.
+    # With the publish blocked, the wait ends at its bound with TIMEOUT.
     loop.hold_heading("seat_1", 1.0, cancel=NO_CANCEL)
     spy.next()
     spy.gate.clear()
     assert spy.blocked.wait(2.0)
     try:
-        with caplog.at_level(logging.WARNING, logger="walkie_agent.gaze"):
-            took = timed(lambda: loop.stop(STOP_LOOKING, wait_s=0.2))
+        started = time.monotonic()
+        with pytest.raises(StepError) as error:
+            loop.stop(STOP_LOOKING, wait_s=0.2)
+        took = time.monotonic() - started
+        # A stop without a wait, as every listener makes, still returns at
+        # once and does not raise.
+        assert timed(lambda: loop.stop(STOP_LOOKING)) < 0.05
     finally:
         spy.gate.set()
 
     assert 0.2 <= took < 0.5
-    assert "The gaze loop's stop was not published within 0.2 s." in caplog.text
-    assert not loop.status().running
+    assert (error.value.code, error.value.message, error.value.data) == (
+        "TIMEOUT",
+        "The gaze loop's stop was not confirmed: its zero commands on /cmd_vel were not "
+        "published within 0.2 s, so the base may still be turning.",
+        {"gaze": "stop not confirmed"},
+    )
+    # The stop stands, and its zeros go out once the publish returns.
+    assert (loop.status().running, loop.status().stop_reason) == (False, STOP_LOOKING)
     assert wait_until(lambda: spy.commands()[-3:] == [0.0, 0.0, 0.0])
     assert_silent_after_stop(recorder)
+    # Once they are out, a stop that waits returns at once.
+    assert timed(lambda: loop.stop(STOP_LOOKING, wait_s=0.5)) < 0.05
+
+
+def test_a_publisher_that_always_raises_is_retried_each_period_logged_once_and_shut_down(
+    recorder, make_loop, monkeypatch, caplog
+):
+    loop = make_loop(yaw_source=lambda: 0.0)
+    attempts: list[tuple[float, float]] = []
+
+    def failing(angular_z: float) -> None:
+        attempts.append((time.monotonic(), angular_z))
+        raise RuntimeError("The publisher's context is not valid.")
+
+    monkeypatch.setattr(loop._publisher, "publish", failing)
+    with caplog.at_level(logging.INFO, logger="walkie_agent.gaze"):
+        loop.hold_heading("seat_1", 1.0, cancel=NO_CANCEL)
+        # The first tick fails and stops the loop; its zeros fail too, and
+        # are tried again every period.
+        assert wait_until(lambda: len(attempts) >= 5, 2.0)
+        # A stop that waits is not confirmed while no batch of zeros went
+        # out, and says the publish failed.
+        with pytest.raises(StepError) as error:
+            loop.stop(STOP_LOOKING, wait_s=0.2)
+        thread = loop._thread
+        took = timed(loop.shutdown, 3.0)
+
+    assert (error.value.code, error.value.data) == ("TIMEOUT", {"gaze": "stop not confirmed"})
+    assert error.value.message == (
+        "The gaze loop's stop was not confirmed: publishing its zero commands on /cmd_vel "
+        "failed, so the base may still be turning."
+    )
+    assert took < gaze_module._JOIN_TIMEOUT_S
+    assert not thread.is_alive()
+    assert loop.status().stop_reason == ERROR
+    first, *zeros = attempts
+    assert first[1] != 0.0
+    assert all(z == 0.0 for _, z in zeros)
+    gaps = [later - earlier for (earlier, _), (later, _) in zip(zeros, zeros[1:-1])]
+    assert all(gap >= 0.95 * PERIOD for gap in gaps), gaps
+    # One exception for the tick, and one for the whole run of failed zeros.
+    assert [r.getMessage() for r in caplog.records if r.exc_info] == [
+        "A gaze tick failed; the loop stops.",
+        "Could not publish the gaze loop's stop. Trying again every 0.067 s; the next failures "
+        "are not logged.",
+    ]
+    assert "did not end" not in caplog.text
+    assert recorder.count() == 0
+
+
+def test_zeros_that_fail_at_shutdown_are_tried_once_and_not_said_to_be_retried(
+    make_loop, monkeypatch, caplog
+):
+    loop = make_loop(yaw_source=lambda: 0.0)
+    publish = loop._publisher.publish
+    commands: list[float] = []
+    zeros: list[float] = []
+
+    def zeros_fail(angular_z: float) -> None:
+        if angular_z == 0.0:
+            zeros.append(angular_z)
+            raise RuntimeError("The publisher's context is not valid.")
+        publish(angular_z)
+        commands.append(angular_z)
+
+    monkeypatch.setattr(loop._publisher, "publish", zeros_fail)
+    loop.hold_heading("seat_1", 1.0, cancel=NO_CANCEL)
+    assert wait_until(lambda: commands)
+    thread = loop._thread
+    with caplog.at_level(logging.INFO, logger="walkie_agent.gaze"):
+        took = timed(loop.shutdown, 3.0)
+
+    assert took < gaze_module._JOIN_TIMEOUT_S
+    assert not thread.is_alive()
+    # One attempt, which stops at the first zero that raises.
+    assert zeros == [0.0]
+    assert [r.getMessage() for r in caplog.records if r.exc_info] == [
+        "Could not publish the gaze loop's stop at shutdown."
+    ]
 
 
 def test_shutdown_with_a_blocked_publish_returns_after_its_join_timeout(

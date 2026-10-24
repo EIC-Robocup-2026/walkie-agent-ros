@@ -1329,35 +1329,45 @@ def test_a_stop_utterance_cancels_a_waiting_atomic_at_once(start):
     assert not toolbox.ctx.cancel.is_set()
 
 
-def test_a_stop_during_a_task_goes_to_the_stop_heard_listeners_then_interrupts(start):
+def test_a_stop_during_a_task_sets_the_interrupt_before_the_stop_heard_listeners_run(start):
     toolbox = Toolbox(connector=None)
     arm = WaitingArm(toolbox)
-    order: list[tuple[str, bool]] = []
-    toolbox.on_stop_heard(lambda: order.append(("stop heard", toolbox.ctx.cancel.is_set())))
-    toolbox.on_interrupt(lambda: order.append(("interrupt", toolbox.ctx.cancel.is_set())))
     agent, llm = make_agent(
         [tool_call("move_arm", {}, "call_arm"), AIMessage("Stopped.")],
         tools=[arm.tool],
         toolbox=toolbox,
     )
+    order: list[tuple[str, bool, bool]] = []
+
+    def record_as(name: str):
+        def record() -> None:
+            order.append((name, toolbox.ctx.cancel.is_set(), agent._interrupt_event.is_set()))
+
+        return record
+
+    toolbox.on_stop_heard(record_as("stop heard"))
+    toolbox.on_interrupt(record_as("interrupt"))
     start(agent)
 
     agent(human("Raise the arm."))
     assert arm.started.wait(timeout=5)
     agent(human("stop"))
 
-    # Each once, before agent() returned: the stop-heard listeners, then the
-    # interrupt, which comes with the cancel.
-    assert order == [("stop heard", False), ("interrupt", True)]
+    # Each once, before agent() returned. The agent decided first that a
+    # run was going, and set its interrupt and its cancel; then come the
+    # stop-heard listeners, then the interrupt listeners.
+    assert order == [("stop heard", True, True), ("interrupt", True, True)]
     assert arm.ended.wait(timeout=5)
     assert settle(agent, llm, 2)
 
 
 @pytest.mark.parametrize("when", ["before the agent starts", "between tasks"])
-def test_a_stop_while_idle_goes_to_the_stop_heard_listeners_before_it_is_queued(start, when):
+def test_a_stop_while_idle_goes_to_the_stop_heard_listeners_once_it_is_queued(start, when):
     toolbox = Toolbox(connector=None)
-    agent, llm = make_agent([AIMessage("There is nothing to stop.")], toolbox=toolbox)
-    heard: list[tuple[bool, bool, int]] = []
+    agent, llm = make_agent(
+        [AIMessage("Hello."), AIMessage("There is nothing to stop.")], toolbox=toolbox
+    )
+    heard: list[tuple[bool, bool, bool, list[str]]] = []
     interrupted: list[bool] = []
 
     def listener() -> None:
@@ -1365,24 +1375,37 @@ def test_a_stop_while_idle_goes_to_the_stop_heard_listeners_before_it_is_queued(
         free = agent._buffer_lock.acquire(blocking=False)
         if free:
             agent._buffer_lock.release()
-        heard.append((free, toolbox.ctx.cancel.is_set(), len(agent._received_messages)))
+        queued = [msg.text for msg in agent._received_messages]
+        heard.append((free, toolbox.ctx.cancel.is_set(), agent._interrupt_event.is_set(), queued))
 
     toolbox.on_stop_heard(listener)
     toolbox.on_interrupt(lambda: interrupted.append(True))
+    poll = PauseOnce()
     if when == "between tasks":
+        agent._reset_requested = poll
         start(agent)
         assert wait_until(agent.ready)
+        # Holds the idle agent thread at the start of its next poll, so the
+        # listener sees the queue as _enqueue left it.
+        poll.pause_next()
+        assert poll.paused.wait(timeout=5)
 
+    agent(human("Say hello."))
     agent(human("Never mind."))
 
-    # Before agent() returned and before the stop was queued, with nothing cancelled.
-    assert heard == [(True, False, 0)]
-    if when == "before the agent starts":
+    # Once, before agent() returned: the agent decided first that no run was
+    # going, and queued the stop behind the waiting message, with nothing
+    # cancelled or interrupted.
+    assert heard == [(True, False, False, ["Say hello.", "Never mind."])]
+    if when == "between tasks":
+        poll.resume.set()
+    else:
         start(agent)
-    assert settle(agent, llm, 1)
+    assert settle(agent, llm, 2)
     assert interrupted == []
-    # The stop is still an ordinary message.
-    assert contents(llm.received[0]) == ["Never mind.\n"]
+    # The stop is still an ordinary message, run after the one before it.
+    assert contents(llm.received[0]) == ["Say hello.\n"]
+    assert contents(llm.received[1]) == ["Say hello.\n", "Hello.", "Never mind.\n"]
 
 
 @pytest.mark.parametrize("text", ["Say hello.", "stop the music", "Walkie, stop"])

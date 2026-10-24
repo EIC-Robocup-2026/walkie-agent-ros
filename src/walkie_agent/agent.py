@@ -135,8 +135,9 @@ class WalkieAgent(LangChainAgent):
     - With a `toolbox`, a stop or a reset also cancels the running atomic
       tool at once, and a new task that replaces the todo list forgets the
       handles of the old one. Every "stop" or "never mind", during a task
-      or not, first goes to the toolbox's stop-heard listeners, so the gaze
-      loop stops turning the base even while the agent is idle.
+      or not, also goes to the toolbox's stop-heard listeners once it is
+      queued, and before the interrupt listeners, so the gaze loop stops
+      turning the base even while the agent is idle.
     - With a `gaze` loop, stop() also shuts it down, so the base stops
       turning and its thread ends with the agent.
     - An error from the LLM or the graph is logged, and the agent keeps
@@ -291,8 +292,6 @@ class WalkieAgent(LangChainAgent):
         # Replaces RAI's __call__. The seed is stored under the same lock as
         # the message, so a reset can never separate the two.
         stop = is_stop_utterance(msg.text)
-        if stop:
-            self._notify_toolbox_stop_heard()
         interrupted = False
         with self._buffer_lock:
             if self.max_size is not None and len(self._received_messages) >= self.max_size:
@@ -319,6 +318,8 @@ class WalkieAgent(LangChainAgent):
                 self._cancel_atomics()
                 interrupted = True
                 self.logger.info("Stop heard: interrupting the task, dropping older messages.")
+        if stop:
+            self._notify_toolbox_stop_heard()
         if interrupted:
             self._notify_toolbox_interrupt()
 
@@ -341,9 +342,17 @@ class WalkieAgent(LangChainAgent):
         # For every stop utterance, during a task or not: while idle, a stop
         # interrupts nothing and stays an ordinary message, but the gaze
         # loop, which turns the base between tasks too, must still stop.
-        # Outside _buffer_lock, as for an interrupt, and before the stop is
-        # queued, so the stop's own run cannot start before the listeners
-        # are done, and they never stop a target that run sets.
+        # Outside _buffer_lock, as for an interrupt, and after _enqueue has
+        # decided under it whether a run is going. Called before that
+        # decision, it could stop the loop during a look_at of a run that
+        # then ended, and the stop would count as idle, with no interrupt
+        # and no cancel. After it, a running task already has its cancel
+        # set, and no new run starts until the interrupt listeners are done
+        # (begin_task); idle means no tool was in flight. A look_at that
+        # started before this stop, as in the stop's own run while idle,
+        # raises CANCELLED or has its target stopped (GazeLoop.stop_calls).
+        # Before the interrupt listeners, so the loop's stop reason is
+        # "stop heard".
         if self.toolbox is not None:
             self.toolbox.stop_heard()
 

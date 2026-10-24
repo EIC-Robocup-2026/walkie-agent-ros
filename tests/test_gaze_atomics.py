@@ -16,6 +16,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
+from types import SimpleNamespace
 
 import pytest
 from action_msgs.msg import GoalStatus
@@ -26,7 +27,10 @@ from std_msgs.msg import Empty, Header
 from test_arm_atomics import MODEL_PATH, POSES_PATH, targets
 from test_gaze import (
     DEADBAND,
+    NO_CANCEL,
+    Call,
     FakeBase,
+    PublishSpy,
     Recorder,
     assert_rotation_only,
     assert_silent_after_stop,
@@ -41,6 +45,7 @@ from walkie_agent.arm.poses import load_arm_poses, load_robot_model
 from walkie_agent.gaze import (
     ARM_MOTION,
     ARM_OUT,
+    DEFAULT_CONFIG,
     HEADING,
     INTERRUPT,
     LOST,
@@ -51,6 +56,8 @@ from walkie_agent.gaze import (
     SHUTDOWN,
     STOP_HEARD,
     STOP_LOOKING,
+    STOP_WAIT_S,
+    GazeConfig,
     GazeLoop,
     wrap_angle,
 )
@@ -59,6 +66,7 @@ from walkie_agent.perception.vision_feed import PEOPLE_TOPIC, VisionFeed
 from walkie_agent.sim.fake_commander import FakeCommander
 from walkie_agent.toolbox import StepError, Toolbox, ToolOutput
 from walkie_agent.tools import FORBIDDEN_NAMES, build_walkie_tools
+from walkie_agent.tools.atomic import _gaze as gaze_atomics
 from walkie_agent.tools.atomic import look_at as look_at_module
 from walkie_agent.tools.atomic._gaze import TURN_TIMEOUT
 from walkie_agent.tools.atomic._perception import SeatPayload
@@ -219,15 +227,18 @@ def recorder():
 def make_world(connector, recorder):
     """A World factory; `arm` is the CommanderClient for the arm backend, if any.
 
-    `clock` is the gaze loop's clock, the node clock by default.
+    `clock` is the gaze loop's clock, the node clock by default, and
+    `config` its settings.
     """
     made: list[World] = []
 
     def make(
-        arm: CommanderClient | None = None, clock: Callable[[], float] | None = None
+        arm: CommanderClient | None = None,
+        clock: Callable[[], float] | None = None,
+        config: GazeConfig = DEFAULT_CONFIG,
     ) -> World:
         feed = VisionFeed(connector)
-        gaze = GazeLoop(connector, vision=feed, arm=arm, clock=clock)
+        gaze = GazeLoop(connector, vision=feed, arm=arm, config=config, clock=clock)
         backends = {"vision": feed, "gaze": gaze}
         if arm is not None:
             backends["arm"] = arm
@@ -707,6 +718,69 @@ def test_a_drive_stops_the_loop_before_it_checks_the_arms_and_the_handle_goes_st
     assert stale.message.endswith("Person handles come from find_people.")
 
 
+@pytest.mark.parametrize(
+    ("drive", "args", "answer"),
+    [
+        ("navigate_to_location", {"location": "kitchen"}, "Arrived at kitchen."),
+        ("move_relative", {"forward_m": 1.0}, "Moved 1 m forward."),
+    ],
+)
+def test_a_drive_refuses_and_sends_no_goal_while_the_loop_cannot_confirm_its_stop(
+    drive, args, answer, fake_walkie, world, connector, locations, monkeypatch
+):
+    mount_camera(connector)
+    assert wait_until(lambda: pose_known(world.ctx))
+    tools = {tool.name: tool for tool in build_walkie_tools(connector, locations, gaze=world.gaze)}
+    spy = PublishSpy(world.gaze, monkeypatch)
+    # FakeWalkie does not turn, so the loop keeps commanding a turn.
+    world.gaze.hold_heading("seat_1", 1.0, cancel=NO_CANCEL)
+    spy.next()
+    # The gaze thread has computed its next command and is held in the
+    # publish, as on a transport that blocks.
+    spy.gate.clear()
+    assert spy.blocked.wait(2.0)
+    reached: list[str] = []
+    check_arms, get_client = Nav2GoalTool._check_arms, Nav2GoalTool._get_client
+
+    def check_spy(self) -> str:
+        reached.append("arm check")
+        return check_arms(self)
+
+    def client_spy(self):
+        reached.append("Nav2 client")
+        return get_client(self)
+
+    monkeypatch.setattr(Nav2GoalTool, "_check_arms", check_spy)
+    monkeypatch.setattr(Nav2GoalTool, "_get_client", client_spy)
+    try:
+        started = time.monotonic()
+        refused = tools[drive].invoke(args)
+        took = time.monotonic() - started
+    finally:
+        spy.gate.set()
+
+    assert refused == (
+        "Not driving. The gaze loop's stop was not confirmed: its zero commands on /cmd_vel "
+        "were not published within 0.5 s, so the base may still be turning. No navigation "
+        "goal was sent. Try again in a few seconds; if it fails again, tell the person that "
+        "the base cannot be confirmed stopped."
+    )
+    assert STOP_WAIT_S <= took < 1.0
+    # Neither the arm check nor Nav2 was reached, and the robot did not move.
+    assert reached == []
+    assert fake_walkie.pose() == (0.0, 0.0, 0.0)
+    status = world.gaze.status()
+    assert (status.running, status.stop_reason) == (False, NAVIGATION)
+    # Once the publish returns: the command it held, then the stop's zeros.
+    assert wait_until(lambda: spy.commands()[-3:] == [0.0, 0.0, 0.0])
+    assert_silent_after_stop(world.recorder)
+    assert all(command != 0.0 for command in spy.commands()[:-3])
+
+    # With the zeros out, the same drive goes ahead.
+    assert tools[drive].invoke(args).startswith(answer)
+    assert reached == ["arm check", "Nav2 client"]
+
+
 def test_the_loop_stays_silent_while_a_navigation_goal_is_active(world, connector):
     place_base(connector, 0.0)
     target = world.show_person(0.4)
@@ -881,6 +955,176 @@ def test_move_arm_to_pose_stops_the_loop_before_the_commander_and_set_gripper_do
     assert arm_world.call("stop_looking").summary.endswith(
         "because an arm or a gripper was about to move, or may have been moving."
     )
+
+
+def test_move_arm_to_pose_refuses_and_sends_no_goal_while_the_loop_cannot_confirm_its_stop(
+    arm_world, fake, connector, monkeypatch
+):
+    place_base(connector, 0.0)
+    spy = PublishSpy(arm_world.gaze, monkeypatch)
+    arm_world.gaze.hold_heading("seat_1", 1.0, cancel=NO_CANCEL)
+    spy.next()
+    # The gaze thread has computed its next command and is held in the
+    # publish, as on a transport that blocks.
+    spy.gate.clear()
+    assert spy.blocked.wait(2.0)
+    requests = list(fake.joint_state_requests)
+    sentence = arm_world.ctx.backend("arm").last_state.sentence()
+    try:
+        started = time.monotonic()
+        error = arm_world.fails("move_arm_to_pose", pose="home")
+        took = time.monotonic() - started
+        # Nothing reached the commander, not even a read.
+        assert fake.joint_goals == []
+        assert fake.joint_state_requests == requests
+    finally:
+        spy.gate.set()
+
+    assert STOP_WAIT_S <= took < 1.0
+    assert (error.code, error.data) == ("TIMEOUT", {"pose": "home", "gaze": "stop not confirmed"})
+    assert error.message == (
+        "Could not move to 'home': The gaze loop's stop was not confirmed: its zero commands on "
+        "/cmd_vel were not published within 0.5 s, so the base may still be turning. No arm "
+        "goal was sent. Try again in a few seconds; if it fails again, tell the person that the "
+        f"base cannot be confirmed stopped. {sentence}"
+    )
+    status = arm_world.gaze.status()
+    assert (status.running, status.stop_reason) == (False, ARM_MOTION)
+    # Once the publish returns: the command it held, then the stop's zeros.
+    assert wait_until(lambda: spy.commands()[-3:] == [0.0, 0.0, 0.0])
+    assert_silent_after_stop(arm_world.recorder)
+    commands = spy.commands()
+    assert len(commands) >= 5
+    assert all(command != 0.0 for command in commands[:-3])
+
+    # With the zeros out, the next motion goes ahead.
+    arm_world.call("move_arm_to_pose", pose="home")
+    assert len(fake.joint_goals) == 1
+
+
+def test_a_stop_whose_zeros_fail_once_refuses_the_arm_until_they_are_published_again(
+    fake, connector, poses, make_world, monkeypatch
+):
+    client = CommanderClient(connector, poses)
+    try:
+        assert wait_until(client.available, 5.0), "The client never discovered the fake."
+        # One tick a second: the period, and so the wait before the zeros
+        # are tried again, is longer than the handoff's STOP_WAIT_S.
+        world = make_world(arm=client, config=GazeConfig(rate_hz=1.0))
+        place_base(connector, 0.0)
+        publish = world.gaze._publisher.publish
+        failed: list[float] = []
+        published: list[tuple[float, float]] = []
+
+        def fails_once(angular_z: float) -> None:
+            if angular_z == 0.0 and not failed:
+                failed.append(time.monotonic())
+                raise RuntimeError("The publisher's context is not valid.")
+            publish(angular_z)
+            published.append((time.monotonic(), angular_z))
+
+        monkeypatch.setattr(world.gaze._publisher, "publish", fails_once)
+        handoffs: list[float] = []
+        handoff = gaze_atomics.stop_before_arm_motion
+
+        def timed_handoff(ctx) -> None:
+            started = time.monotonic()
+            try:
+                handoff(ctx)
+            finally:
+                handoffs.append(time.monotonic() - started)
+
+        monkeypatch.setattr(gaze_atomics, "stop_before_arm_motion", timed_handoff)
+        world.gaze.hold_heading("seat_1", 1.0, cancel=NO_CANCEL)
+        assert wait_until(lambda: published)
+        sentence = client.last_state.sentence()
+
+        error = world.fails("move_arm_to_pose", pose="home")
+
+        assert (error.code, error.data) == (
+            "TIMEOUT",
+            {"pose": "home", "gaze": "stop not confirmed"},
+        )
+        assert error.message == (
+            "Could not move to 'home': The gaze loop's stop was not confirmed: publishing its "
+            "zero commands on /cmd_vel failed, so the base may still be turning. No arm goal "
+            "was sent. Try again in a few seconds; if it fails again, tell the person that the "
+            f"base cannot be confirmed stopped. {sentence}"
+        )
+        assert STOP_WAIT_S <= handoffs[0] < 1.0
+        assert (fake.joint_goals, fake.joint_state_requests) == ([], [])
+        # A period after the failed attempt, the zeros are tried again and go out.
+        assert wait_until(lambda: [z for _, z in published[-3:]] == [0.0, 0.0, 0.0], 3.0)
+        [failed_at] = failed
+        assert published[-3][0] - failed_at >= 0.95 * world.gaze.config.period
+        assert all(z != 0.0 for _, z in published[:-3])
+        assert_silent_after_stop(world.recorder)
+
+        world.call("move_arm_to_pose", pose="home")
+
+        # The loop is idle and its zeros are out, so the handoff waits for nothing.
+        assert handoffs[1] < 0.1
+        assert len(fake.joint_goals) == 1
+        world.close()
+    finally:
+        client.destroy()
+
+
+@pytest.fixture
+def held_arm_check(arm_world, monkeypatch):
+    """Holds the arm check of look_at, the client's check_for_driving, until released."""
+    client = arm_world.ctx.backend("arm")
+    waiting, release = threading.Event(), threading.Event()
+    check_for_driving = client.check_for_driving
+
+    def held(*args, **kwargs):
+        waiting.set()
+        release.wait(5.0)
+        return check_for_driving(*args, **kwargs)
+
+    monkeypatch.setattr(client, "check_for_driving", held)
+    yield SimpleNamespace(waiting=waiting, release=release)
+    release.set()
+
+
+@pytest.mark.parametrize("stop", [STOP_LOOKING, STOP_HEARD])
+@pytest.mark.parametrize("kind", ["person", "seat"])
+def test_a_stop_during_the_arm_check_of_look_at_cancels_it_and_nothing_turns_after_the_zeros(
+    kind, stop, arm_world, held_arm_check, connector, monkeypatch
+):
+    # A seat look_at that went ahead would wait this long for a turn that
+    # the fixed base never makes.
+    monkeypatch.setattr(look_at_module, "TURN_TIMEOUT_S", 1.0)
+    place_base(connector, 0.0)
+    if kind == "person":
+        arm_world.camera(lambda: 0.0, heading=0.4)
+        target = arm_world.find_person()
+    else:
+        target = arm_world.find_seat()
+    # Another target turns the base as the call begins.
+    arm_world.gaze.hold_heading("seat_0", 1.0, cancel=NO_CANCEL)
+    assert wait_until(arm_world.turning)
+    call = Call(lambda: arm_world.call("look_at", target=target))
+    assert held_arm_check.waiting.wait(2.0)
+
+    if stop == STOP_LOOKING:
+        arm_world.call("stop_looking")
+    else:
+        # "stop" heard between tasks: no interrupt and no cancel.
+        arm_world.toolbox.stop_heard()
+    held_arm_check.release.set()
+
+    with pytest.raises(StepError) as error:
+        call.join(5.0)
+    assert (error.value.code, error.value.message) == (
+        "CANCELLED",
+        f"Not turning toward {target}: the gaze loop was stopped ({stop}) during the call. "
+        f"Call look_at again if the robot should still look at {target}.",
+    )
+    assert error.value.data == {"handle": target, "reason": stop}
+    status = arm_world.gaze.status()
+    assert (status.running, status.target, status.stop_reason) == (False, "seat_0", stop)
+    assert_silent_after_stop(arm_world.recorder)
 
 
 def test_a_drive_the_arm_check_refuses_stops_the_loop_and_stop_looking_does_not_say_it_drove(

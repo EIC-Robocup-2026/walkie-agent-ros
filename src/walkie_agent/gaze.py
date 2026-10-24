@@ -29,10 +29,13 @@ only because the loop can do no more than ADR-0051 judged safe:
 The gaze thread is the only writer of /cmd_vel, and publishes outside the
 loop's lock. Every stop queues three zero commands for it rather than
 publishing them; the thread sends them, after any command it computed before
-the stop, and then nothing, so twist_mux falls back to its other inputs. If
-the agent dies, or a publish blocks in the transport, twist_mux drops the
-input 0.5 s after its last message, and the drive controller stops the base
-0.5 s after its last command.
+the stop, and then nothing, so twist_mux falls back to its other inputs. A
+publish of the zeros that raises is tried again a period later. A drive and
+an arm motion wait up to STOP_WAIT_S for the zeros to be published, and
+refuse when they are not. If the agent dies, or a publish blocks in the
+transport, twist_mux drops the input 0.5 s after its last message, and the
+drive controller stops the base 0.5 s after its last command. Neither
+timeout stops a command that a held-up publish sends later.
 
 The control law, GazeControl, is plain logic with an injected clock that
 takes the yaw as an argument, so it is tested without ROS.
@@ -110,10 +113,17 @@ ACCEL_CEILING = 3.2
 
 # How long the callers that move the robot next, a drive and an arm
 # atomic, wait in stop() for the zeros to be published. The gaze thread
-# sends them as soon as it is awake; a wait that runs this long means it
-# is held up, as by a publish that blocks, and twist_mux drops the input
-# 0.5 s after its last message either way.
+# sends them as soon as it is awake, so a wait that runs this long means it
+# is held up, as by a publish that blocks or raises. stop() then raises
+# TIMEOUT, and the caller refuses: twist_mux and the drive controller stop
+# the base 0.5 s after its last command, but a command that the held-up
+# thread publishes later would turn the base again.
 STOP_WAIT_S = 0.5
+# What a drive or an arm atomic tells the LLM to do after that refusal.
+STOP_UNCONFIRMED_NEXT = (
+    "Try again in a few seconds; if it fails again, tell the person that the base cannot be "
+    "confirmed stopped."
+)
 
 # The goal states in which Nav2 drives, or may still drive, the base.
 # CANCELING too: until the cancel completes, Nav2's controller may still
@@ -129,8 +139,10 @@ _ACTIVE_GOAL = frozenset(
 _PENDING_KEPT = 4
 
 # How long shutdown() waits for the gaze thread to send the stop's zeros and
-# end. A tick never waits, so it ends well within this, unless a publish
-# blocks in the transport; shutdown() then logs and returns.
+# end. A tick never waits, and once the loop is closed the thread tries the
+# zeros once, without waiting a period to try again, so it ends well within
+# this, unless a publish blocks in the transport; shutdown() then logs and
+# returns.
 _JOIN_TIMEOUT_S = 2.0
 
 # Never set: the cancel of the feed read in follow_person, which does not wait.
@@ -549,7 +561,8 @@ class GazeLoop:
     publishes nothing until a target is set, a command every tick while one
     runs, three zeros when it stops, and then nothing. Only the gaze thread
     publishes: the setters and stop() only change the loop's state, and
-    stop() waits for the zeros only when its caller asks it to.
+    stop() waits for the zeros only when its caller asks it to, and then
+    raises TIMEOUT when they are not published in time.
     """
 
     def __init__(
@@ -591,18 +604,24 @@ class GazeLoop:
         self._stopped_at: float | None = None
         self._closed = False
         # The zero commands a stop queued for the gaze thread, the only
-        # writer of /cmd_vel; 0 once sent.
+        # writer of /cmd_vel; 0 once the thread has taken them. A batch
+        # whose publish raised is queued again.
         self._zeros_due = 0
         # How many stops queued their zeros, and how many of those the gaze
-        # thread has sent, for stop(wait_s=...), which waits on `_sent`.
+        # thread has sent, every zero of the batch published, for
+        # stop(wait_s=...), which waits on `_sent`.
         self._stops_queued = 0
         self._stops_sent = 0
         self._sent = threading.Condition(self._lock)
+        # Whether the gaze thread's last attempt to publish a batch of zeros
+        # raised, for the message of a stop that is not confirmed.
+        self._publish_failed = False
         # Changes with every stop() and shutdown() call, even one that
         # stops nothing, and the reason of the last: a follow_person or a
-        # hold_heading that saw another value on entry was overtaken by a
-        # stop while it prepared, and starts nothing. The loop's own stops,
-        # such as LOST, do not change it.
+        # hold_heading that saw another value on entry, or was passed
+        # another by its caller (stop_calls()), was overtaken by a stop while
+        # it, or its caller, prepared, and starts nothing. The loop's own
+        # stops, such as LOST, do not change it.
         self._stop_calls = 0
         self._last_stop_call: str | None = None
         # A dedicated thread that waits on an Event between ticks, as
@@ -633,6 +652,7 @@ class GazeLoop:
         stamp_ns: int,
         *,
         cancel: threading.Event,
+        stop_calls: int | None = None,
     ) -> None:
         """Follow a person handle's track, replacing any target.
 
@@ -644,7 +664,9 @@ class GazeLoop:
         after the last one, with no allowance for the start. It follows the
         TrackKey, not the bare track id: once VisionFeed has dropped a
         track, its id may name someone else. `name` is the handle's id, for
-        status().
+        status(). `stop_calls` is the stop generation the caller read with
+        stop_calls() before its own waits, such as look_at's arm check;
+        without it, the generation is read on entry.
 
         Raises StepError:
           - REFUSED when `track` is None, an untracked person, and while a
@@ -655,8 +677,9 @@ class GazeLoop:
             more than `lost_after_s` from the node clock: the loop would
             lose the person at once, so it starts nothing;
           - CANCELLED when `cancel`, the caller's ctx.cancel, is set, or when
-            stop() was called during the call: a stop or a reset that came
-            during the call wins.
+            stop() was called since the generation was read: a stop or a
+            reset that came during the call, or during the caller's waits
+            before it, wins.
         """
         if track is None:
             raise StepError(
@@ -668,7 +691,8 @@ class GazeLoop:
         # stop during the wait is seen in _start.
         with self._lock:
             self._check_can_start(name)
-            stop_calls = self._stop_calls
+            if stop_calls is None:
+                stop_calls = self._stop_calls
         stored = None if heading_map is None else (heading_map, stamp_ns / 1e9)
         current, unseen = self._current_sighting(track)
         if current is not None and (stored is None or current[1] >= stored[1]):
@@ -688,15 +712,21 @@ class GazeLoop:
         self._start(target, heading, seen, cancel, stop_calls)
 
     def hold_heading(
-        self, name: str, heading_map: float | None, *, cancel: threading.Event
+        self,
+        name: str,
+        heading_map: float | None,
+        *,
+        cancel: threading.Event,
+        stop_calls: int | None = None,
     ) -> None:
         """Turn toward `heading_map`, a map-frame yaw in radians, and hold it, replacing any target.
 
         For a seat handle, whose heading was fixed when it was seen. Never
-        lost. `name` is the handle's id, for status(). Raises StepError
-        UNAVAILABLE when `heading_map` is None, as for a seat seen while TF
-        had no camera transform, and after shutdown(); REFUSED while a
-        navigate_to_pose goal is active; CANCELLED as follow_person() does.
+        lost. `name` is the handle's id, for status(); `stop_calls` is as
+        for follow_person(). Raises StepError UNAVAILABLE when `heading_map`
+        is None, as for a seat seen while TF had no camera transform, and
+        after shutdown(); REFUSED while a navigate_to_pose goal is active;
+        CANCELLED as follow_person() does.
         """
         if heading_map is None:
             raise StepError(
@@ -706,8 +736,8 @@ class GazeLoop:
             )
         if not math.isfinite(heading_map):
             raise ValueError(f"heading_map must be a finite angle, not {heading_map}.")
-        with self._lock:
-            stop_calls = self._stop_calls
+        if stop_calls is None:
+            stop_calls = self.stop_calls()
         target = _Target(name, HEADING, None, self._arms_known())
         self._start(target, heading_map, None, cancel, stop_calls)
 
@@ -720,19 +750,25 @@ class GazeLoop:
         queues the zeros for the gaze thread, which sends them when it next
         wakes, after any command it computed before the stop, and sends
         nothing after them. It returns at once, unless `wait_s` is given:
-        then it waits up to that long for the zeros to be published, for a
-        caller that moves the robot next, as a drive and an arm atomic do
-        with STOP_WAIT_S. The Toolbox listeners, and every executor
-        callback, never wait. A wait that runs out is logged and
-        the stop stands: if a publish blocks in the transport, twist_mux
-        drops the input 0.5 s after its last message, and the drive
-        controller stops the base 0.5 s after its last command.
+        then it waits up to that long until the zeros of every stop queued
+        so far are published, for a caller that moves the robot next, as a
+        drive and an arm atomic do with STOP_WAIT_S. When they are not, it
+        raises StepError TIMEOUT, and the caller must not move: the gaze
+        thread is held up, or its publish of the zeros failed, so the base
+        may still be turning, and a command the thread computed before the
+        stop may still go out later. twist_mux's and the drive controller's
+        0.5 s timeouts stop the base only after its last command. The stop
+        itself stands either way: the target is stopped and its zeros stay
+        queued. The Toolbox listeners, and every executor callback, call it
+        without `wait_s`, so they never wait and it never raises for them.
+        On the gaze thread itself it never waits.
 
         Returns None, and changes nothing else, when no target runs, so that
-        the reason of the last real stop, such as LOST, stays in status().
-        Every call, even one that stops nothing, makes a follow_person() or
-        a hold_heading() still preparing its target raise CANCELLED. Safe
-        from any thread.
+        the reason of the last real stop, such as LOST, stays in status();
+        with `wait_s`, it still waits for the zeros of earlier stops. Every
+        call, even one that stops nothing, makes a follow_person() or a
+        hold_heading() whose generation was read before it raise CANCELLED
+        (stop_calls()). Safe from any thread.
         """
         with self._lock:
             self._stop_calls += 1
@@ -741,6 +777,17 @@ class GazeLoop:
             if wait_s > 0:
                 self._wait_sent_locked(wait_s)
         return name
+
+    def stop_calls(self) -> int:
+        """The stop generation, which every stop() and shutdown() call changes.
+
+        Read it before any wait that comes before follow_person() or
+        hold_heading(), and pass it to them: a stop that came since then,
+        during the wait included, makes them raise CANCELLED instead of
+        turning the base after the stop's zeros. look_at reads it first.
+        """
+        with self._lock:
+            return self._stop_calls
 
     def handle_interrupt(self) -> None:
         """The Toolbox interrupt listener: a stop or a reset ends the loop. Returns at once."""
@@ -767,9 +814,11 @@ class GazeLoop:
     def shutdown(self) -> None:
         """Stop for SHUTDOWN and end the gaze thread, which sends the stop's zeros first.
 
-        Later targets are UNAVAILABLE. Waits up to _JOIN_TIMEOUT_S for the
-        thread, and logs when it has not ended, as when a publish blocks in
-        the transport; twist_mux and the drive controller then stop the base
+        Later targets are UNAVAILABLE. The thread makes one attempt at the
+        zeros still queued, even when an earlier attempt raised, and ends
+        without trying again. Waits up to _JOIN_TIMEOUT_S for the thread,
+        and logs when it has not ended, as when a publish blocks in the
+        transport; twist_mux and the drive controller then stop the base
         0.5 s after the last command that reached them.
         """
         with self._lock:
@@ -813,7 +862,7 @@ class GazeLoop:
         cancel: threading.Event,
         stop_calls: int,
     ) -> None:
-        """Set `target`, unless a stop came since the caller read `stop_calls` on entry."""
+        """Set `target`, unless a stop came since `stop_calls`, the stop generation, was read."""
         with self._lock:
             self._check_can_start(target.name)
             # Here, under the lock: Toolbox.interrupt() sets the cancel before
@@ -822,9 +871,10 @@ class GazeLoop:
             if cancel.is_set():
                 raise StepError("CANCELLED", "A stop or a reset interrupted the call.")
             # A stop() that came while the caller prepared, such as during
-            # follow_person's TF wait, which ctx.cancel misses unless it was
-            # an interrupt: stop_looking, a new task, a drive or an arm
-            # motion. Starting now would turn the base after the stop's zeros.
+            # look_at's arm check or follow_person's TF wait, which
+            # ctx.cancel misses unless it was an interrupt: stop_looking,
+            # "stop" heard, a new task, a drive or an arm motion. Starting
+            # now would turn the base after the stop's zeros.
             if self._stop_calls != stop_calls:
                 reason = self._last_stop_call
                 raise StepError(
@@ -886,7 +936,12 @@ class GazeLoop:
         self._wake.set()
 
     def _wait_sent_locked(self, wait_s: float) -> None:
-        """Wait up to `wait_s`, under the lock, until every zero queued so far is published."""
+        """Wait up to `wait_s`, under the lock, until every stop queued so far has its zeros out.
+
+        A batch counts once every one of its zeros was published. Raises
+        StepError TIMEOUT when they are not out by then, saying whether the
+        gaze thread's last attempt raised or none finished in time.
+        """
         if threading.current_thread() is self._thread:
             # The gaze thread sends them itself, after this returns.
             return
@@ -895,12 +950,17 @@ class GazeLoop:
         while self._stops_sent < queued:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                logger.warning(
-                    f"The gaze loop's stop was not published within {wait_s:g} s. twist_mux "
-                    "drops /cmd_vel 0.5 s after its last message, and the drive controller "
-                    "stops the base 0.5 s after its last command."
+                if self._publish_failed:
+                    how = "publishing its zero commands on /cmd_vel failed"
+                else:
+                    how = f"its zero commands on /cmd_vel were not published within {wait_s:g} s"
+                logger.warning(f"The gaze loop's stop was not confirmed: {how}.")
+                raise StepError(
+                    "TIMEOUT",
+                    f"The gaze loop's stop was not confirmed: {how}, so the base may still be "
+                    "turning.",
+                    {"gaze": "stop not confirmed"},
                 )
-                return
             # Releases the lock while it waits.
             self._sent.wait(remaining)
 
@@ -951,28 +1011,58 @@ class GazeLoop:
         ticks keep a fixed schedule: a wakeup, as for a new target, does not
         bring the next command forward, and after a slow tick the schedule
         restarts a period later rather than catching up. A stop's zeros go
-        out as soon as the thread is awake.
+        out as soon as the thread is awake. A batch whose publish raises
+        stays queued, ahead of every tick, and is tried again a period
+        later; once the loop is closed, it is tried once more and the
+        thread ends.
         """
         period = self.config.period
         next_tick = time.monotonic()
+        # The failed attempts at the queued zeros since the last batch that
+        # went out, and when the next attempt is due.
+        failures = 0
+        retry_at = 0.0
         while True:
             with self._lock:
-                zeros, self._zeros_due = self._zeros_due, 0
-                queued = self._stops_queued
                 closed = self._closed
+                zeros = 0
+                if self._zeros_due and (closed or time.monotonic() >= retry_at):
+                    # Taken here, so a stop during the publish queues its own.
+                    zeros, self._zeros_due = self._zeros_due, 0
+                retrying = self._zeros_due > 0
+                queued = self._stops_queued
                 running = self._control.running
                 # Cleared under the lock, where every setter and stop sets
                 # it, so one that comes after this check ends the wait below.
                 self._wake.clear()
             if zeros:
-                self._send_zeros(zeros)
+                sent = self._send_zeros(zeros, log=failures == 0, retry=not closed)
                 with self._lock:
-                    self._control.published()
-                    self._stops_sent = queued
-                    self._sent.notify_all()
+                    self._publish_failed = not sent
+                    if sent:
+                        self._control.published()
+                        self._stops_sent = queued
+                        self._sent.notify_all()
+                    elif not self._zeros_due:
+                        # Queued again, unless a newer stop queued its own.
+                        self._zeros_due = zeros
+                if sent and failures:
+                    tries = "attempt" if failures == 1 else "attempts"
+                    logger.info(f"Published the gaze loop's stop after {failures} failed {tries}.")
+                failures = 0 if sent else failures + 1
+                # After a batch that went out, the next stop's zeros go out
+                # at once; a batch that failed is tried again a period later.
+                retry_at = 0.0 if sent else time.monotonic() + period
+                if closed:
+                    return
                 # As after a command: one for a target set since waits a
                 # full period.
                 next_tick = max(next_tick, time.monotonic() + period)
+                continue
+            if retrying:
+                # Zeros that failed come before any tick: wait for their
+                # next attempt.
+                self._wake.wait(max(retry_at - time.monotonic(), 0.0))
                 continue
             if closed:
                 return
@@ -1005,14 +1095,28 @@ class GazeLoop:
                 # never go out back to back.
                 next_tick = now + period
 
-    def _send_zeros(self, count: int) -> None:
+    def _send_zeros(self, count: int, *, log: bool, retry: bool) -> bool:
+        """Publish `count` zero commands. Returns whether every one went out.
+
+        A publish that raises, as while rclpy shuts down, must not end the
+        gaze thread. It is logged when `log` is set, for the first failure
+        of a run of them, so a publisher that keeps failing does not flood
+        the log. `retry` is whether the thread tries again, as it does until
+        the loop is closed.
+        """
         try:
             for _ in range(count):
                 self._publisher.publish(0.0)
         except Exception:
-            # The loop is stopped either way; a publisher that fails, as
-            # while rclpy shuts down, must not end the gaze thread.
-            logger.exception("Could not publish the gaze loop's stop.")
+            if log and retry:
+                logger.exception(
+                    "Could not publish the gaze loop's stop. Trying again every "
+                    f"{self.config.period:.2g} s; the next failures are not logged."
+                )
+            elif log:
+                logger.exception("Could not publish the gaze loop's stop at shutdown.")
+            return False
+        return True
 
     def _tick(self) -> list[float]:
         """One control tick: the command to publish, computed under the lock, or none.

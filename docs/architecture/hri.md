@@ -420,10 +420,13 @@ flowchart TB
 - **Stops.** 1 s after the person's last sighting, on `stop_looking`,
   before any drive or arm motion, when any `navigate_to_pose` goal
   becomes active, on reset, on "stop" or "never mind" during a task or
-  between tasks, at a new task, and on shutdown. If the agent dies, or a
+  between tasks, at a new task, and on shutdown. A drive or an arm motion
+  waits up to 0.5 s for the stop's zero commands to be published, and
+  refuses, sending nothing, when they are not. If the agent dies, or a
   publish blocks, `twist_mux` drops `/cmd_vel` 0.5 s after its last
   message, and the drive controller stops the base 0.5 s after its last
-  command.
+  command. Neither timeout stops a command that a blocked publish sends
+  later.
 - **Arms in.** `look_at` refuses with an arm out of every travel-safe
   pose, while a commander goal may still move an arm or a gripper, and on
   a reading that cannot show the arms are safe, with the check the drives
@@ -524,7 +527,7 @@ flowchart TB
 | When | Stopped by | Reason in `status()` |
 | ---- | ---------- | -------------------- |
 | The LLM calls `stop_looking` | `stop_looking` | `stop_looking` |
-| "stop" or "never mind", during a task or between tasks, before the stop is queued. During a task the interrupt listener runs next; with the loop already stopped, it changes nothing | the Toolbox's stop-heard listener | `stop heard` |
+| "stop" or "never mind", during a task or between tasks, once the agent has queued the stop and, during a task, set the cancel. During a task the interrupt listener runs next; with the loop already stopped, it changes nothing | the Toolbox's stop-heard listener | `stop heard` |
 | A reset | the Toolbox's interrupt listener | `interrupt` |
 | A new task replaces the todo list, and with it the handles | the new-task listener | `new task` |
 | `navigate_to_location` or `move_relative` is called, before its arm check, so also for a drive that the check refuses | the drive | `navigation` |
@@ -540,35 +543,56 @@ flowchart TB
 
 - **A stop returns at once.** `stop()` takes the loop's one lock only to
   mark the target stopped and queue its three zeros, wakes the gaze
-  thread and returns. The thread sends the zeros when it next wakes,
-  after any command it computed before the stop. No holder of the lock
-  publishes or waits while holding it, so a publish that blocks in the
-  transport holds up no stop, no executor callback and no listener. The
-  interrupt and stop-heard listeners return promptly, as the Toolbox
-  requires ([The Agent](agent.md#stop-reset-and-the-cancel)). Tests hold
-  the gaze thread in a tick, and in a publish, and measure
-  `Toolbox.interrupt()`, `Toolbox.stop_heard()`, the new-task listener,
-  both callbacks and `stop()` under 50 ms.
+  thread and returns, unless it is asked to wait (next item). The thread
+  sends the zeros when it next wakes, after any command it computed
+  before the stop. No holder of the lock publishes or waits while holding
+  it, so a publish that blocks in the transport holds up no executor
+  callback and no listener. The interrupt and stop-heard listeners return
+  promptly, as the Toolbox requires
+  ([The Agent](agent.md#stop-reset-and-the-cancel)). Tests hold the gaze
+  thread in a tick, and in a publish, and measure `Toolbox.interrupt()`,
+  `Toolbox.stop_heard()`, the new-task listener, both callbacks and
+  `stop()` under 50 ms.
 - **A drive and an arm motion wait for the zeros.** The drives and
-  `move_arm_to_pose` call `stop()` with `wait_s=0.5`: it returns once the
-  zeros are published, or after 0.5 s with a warning, and the stop
-  stands. The listeners and the callbacks never wait. `shutdown()` waits
-  up to 2 s for the thread to end, and logs when it has not.
+  `move_arm_to_pose` call `stop()` with `wait_s=0.5`, `STOP_WAIT_S`: it
+  returns once the zeros of every stop so far are published. When they
+  are not, it raises `TIMEOUT`, and the caller refuses with nothing sent,
+  neither a Nav2 goal nor a commander call
+  ([What the LLM reads](#what-the-llm-reads)). The gaze thread is then
+  held up, or its publish of the zeros failed, so the base may still be
+  turning, and a command it computed before the stop may still go out.
+  The stop stands either way. The listeners and the callbacks never wait
+  and never get the error.
+- **A failed publish of the zeros is tried again.** The zeros stay
+  queued, ahead of every tick, and the gaze thread tries them again a
+  tick later. Only the first failure in a row is logged with its
+  exception, and the attempt that then succeeds is logged once.
+  `shutdown()` has the thread make one more attempt, waits up to 2 s for
+  it to end, and logs when it has not.
 - **Nothing after the zeros.** A tick that overlapped a stop or a new
-  target drops its command. A `look_at` that a stop overtook while it
-  prepared, as during its wait for TF, starts nothing and fails with
-  `CANCELLED`, even when nothing was running to stop.
+  target drops its command. `look_at` reads the loop's stop generation,
+  `stop_calls()`, before anything else, and passes it to
+  `follow_person()` or `hold_heading()`. Every `stop()` changes it, so a
+  `look_at` that a stop overtook anywhere in the call, as during its arm
+  check or its wait for TF, starts nothing and fails with `CANCELLED`,
+  even when nothing was running to stop.
 - **The last reason stays.** `stop()` with nothing running changes
   nothing, so `stop_looking` after a loss still says the person was lost.
 - **A stop between tasks.** While the agent is idle, "stop" interrupts
   nothing and waits as an ordinary message
   ([The Agent](agent.md#stop-reset-and-errors)), but the loop outlives the
   task and may still turn the base. So every "stop" or "never mind" goes
-  to the Toolbox's stop-heard listeners first, on the thread that
-  delivered it and before it is queued, and the loop stops for
-  `stop heard`. The stop's own run starts after that. If it calls
-  `stop_looking`, the answer says the last target was stopped because
-  someone said "stop" or "never mind".
+  to the Toolbox's stop-heard listeners, on the thread that delivered it,
+  and the loop stops for `stop heard`. The agent calls them once it has
+  queued the stop and decided, under its buffer lock, whether a task
+  runs, and before the interrupt listeners. Called before that decision,
+  they could stop the loop during a `look_at` of a task that then ended,
+  and the stop would count as idle, with no interrupt and no cancel.
+  Between tasks, the stop's own run may start while they run: a
+  `look_at` in it that began before the stop fails with `CANCELLED`, or
+  has its target stopped. If that run calls `stop_looking`, the answer
+  says the last target was stopped because someone said "stop" or "never
+  mind".
 - **Goals the agent did not send.** ADR-0051 does not say how the loop
   learns of them. It subscribes to `/navigate_to_pose/_action/status`,
   which lists the goals of every client, an operator's included. A goal
@@ -658,12 +682,21 @@ How `look_at` fails:
 | A navigation goal is active | `REFUSED: Not turning toward per_51c0.1: a navigation goal is active.` |
 | The loop has shut down | `UNAVAILABLE: The gaze loop has shut down.` |
 | A stop or a reset during the call | `CANCELLED: A stop or a reset interrupted the call.` |
-| Any other stop of the loop during the call, as when "stop" is heard while it waits for TF, just before the interrupt | `CANCELLED: Not turning toward per_51c0.1: the gaze loop was stopped (stop heard) during the call. Call look_at again if the robot should still look at per_51c0.1.`, with the stop's reason |
+| Any other stop of the loop since the call began, one that sets no cancel, such as "stop" heard between tasks, during the arm check or the wait for TF | `CANCELLED: Not turning toward per_51c0.1: the gaze loop was stopped (stop heard) during the call. Call look_at again if the robot should still look at per_51c0.1.`, with the stop's reason |
 | The base does not face a seat within 10 s | `TIMEOUT: The robot did not face seat_7a1e.2 within 10 s, so it stopped turning.` |
 | The loop ends a seat's turn first, or stops a person before `look_at` answers, as when a navigation goal becomes active | "Stopped turning toward seat_7a1e.2" and the cause: `REFUSED` for a navigation goal, `PRECONDITION_FAILED` for an arm, `UNAVAILABLE` at shutdown, `INTERNAL` after an error in the loop, else `CANCELLED`. A newer target gives `CANCELLED: Stopped turning toward seat_7a1e.2: another target replaced it.` |
 
 The handle checks come first, so a handle that cannot be looked at never
 calls the commander.
+
+How a drive or `move_arm_to_pose` fails when the loop's stop is not
+confirmed:
+
+| Case | Answer |
+| ---- | ------ |
+| `navigate_to_location` or `move_relative`, when the loop's zeros are not published within 0.5 s | `Not driving. The gaze loop's stop was not confirmed: its zero commands on /cmd_vel were not published within 0.5 s, so the base may still be turning. No navigation goal was sent. Try again in a few seconds; if it fails again, tell the person that the base cannot be confirmed stopped.` The arms are not checked |
+| `move_arm_to_pose`, in the same case | `TIMEOUT: Could not move to 'home': The gaze loop's stop was not confirmed: its zero commands on /cmd_vel were not published within 0.5 s, so the base may still be turning. No arm goal was sent. Try again in a few seconds; if it fails again, tell the person that the base cannot be confirmed stopped. Arms: safe for driving.` The commander is not called, so the arm state is the client's last |
+| Either, when the gaze thread's last attempt to publish the zeros raised | The same answer, with "publishing its zero commands on /cmd_vel failed" in place of "its zero commands on /cmd_vel were not published within 0.5 s" |
 
 ### Gaze in simulation
 

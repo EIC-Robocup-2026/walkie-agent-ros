@@ -121,7 +121,9 @@ class Toolbox:
         nothing and waits as an ordinary message (ADR-0038), so only these
         listeners hear it. They are for what runs between tasks, such as the
         gaze loop. The callback must return promptly: it runs on the thread
-        that delivered the utterance, before the stop is queued.
+        that delivered the utterance, once the agent has queued the stop
+        and, during a task, set `ctx.cancel`, and before the interrupt
+        listeners.
         """
         with self._lock:
             self._stop_heard_listeners.append(callback)
@@ -182,9 +184,10 @@ class Toolbox:
     def stop_heard(self) -> None:
         """Call the stop-heard listeners: someone said "stop" or "never mind".
 
-        Sets no cancel and holds back no run: during a task, the interrupt
-        follows, and while idle there is nothing to interrupt. Call it
-        without locks held.
+        Sets no cancel and holds back no run: during a task, the agent has
+        already set the cancel with cancel(), and notify_interrupt() follows;
+        while idle there is nothing to interrupt. Call it without locks
+        held.
         """
         self._notify(self._stop_heard_listeners, "stop-heard")
 

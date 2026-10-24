@@ -98,7 +98,17 @@ def run(ctx: ToolContext, args: Args) -> Out:
     # Before the first call to the commander on the way to a move, so the
     # base is still before the arm leaves its pose (ADR-0051). A request
     # refused above moves nothing and leaves the gaze loop running.
-    gaze.stop_before_arm_motion(ctx)
+    try:
+        gaze.stop_before_arm_motion(ctx)
+    except StepError as e:
+        # The base may still be turning, so nothing goes to the commander,
+        # not even a read for the sentence.
+        raise StepError(
+            e.code,
+            f"Could not move to {name!r}: {shared.full_stop(e.message)} {gaze.NO_ARM_GOAL} "
+            f"{client.last_state.sentence()}",
+            {"pose": name, **e.data},
+        ) from None
     try:
         order = client.joint_names(group, ctx.cancel, shared.CONFIG.read_timeout_s)
     except StepError as e:

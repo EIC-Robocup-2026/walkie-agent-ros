@@ -112,8 +112,10 @@ flowchart TB
   run `PathAngleCritic` in forward-preference mode. Nothing more is built
   for "look in the direction of navigation", but the sim checks it.
 - **The robot drives to fixed locations,** `door` and `living_room` in
-  `config/locations.toml`, set on the setup days. It never drives to a
-  person, so `localize_person` and a person's depth stay off the path
+  `config/locations.toml`, set on the setup days. In the simulation they
+  are in `config/locations.chula_pat14_6.toml`
+  ([In simulation](#in-simulation)). It never drives to a person, so
+  `localize_person` and a person's depth stay off the path
   ([Perception question 1](perception.md#open-questions)).
 - **`wait_for_person` ends the turn,** and the guest's answer starts the
   next one. The gaze loop keeps running in between.
@@ -160,9 +162,10 @@ atomics:
   both arrays, with vectors from `src/walkie_agent/sim/fake_vectors.py`
   and the transforms from `map` to the camera on `/tf_static`. A test
   that drives the base publishes it on `/tf`.
-- **Nothing publishes in sim yet.** All four load under `agent-sim`, but
-  until `oracle_perception` exists, `find_people` and `find_seats` fail
-  with `UNAVAILABLE`. So no handle exists for the other two.
+- **In the simulation,** the HRI scenario's `OraclePerception` publishes
+  both arrays ([In simulation](#in-simulation)). Without it, as under
+  plain `agent-sim`, `find_people` and `find_seats` fail with
+  `UNAVAILABLE`, so no handle exists for the other two.
 - **Handles.** Person and seat handles go stale after 5 cm of base
   translation or 10 minutes. A turn does not stale them, because the gaze
   loop turns the base. Each keeps `heading_map`, the map-frame heading of
@@ -723,9 +726,13 @@ confirmed:
 
 ### Gaze in simulation
 
-- **No handle yet.** `look_at` and `stop_looking` load under `agent-sim`,
-  but until `oracle_perception` exists, `find_people` and `find_seats`
-  fail, so `look_at` has nothing to look at.
+- **Handles from the scenario.** `look_at` and `stop_looking` load under
+  `agent-sim`. Their handles come from the HRI scenario's
+  `OraclePerception`, which redraws the guests from TF at every image, so
+  the boxes move as the base turns and the loop closes in the simulation
+  ([In simulation](#in-simulation)). Without the scenario,
+  `find_people` and `find_seats` fail, so `look_at` has nothing to look
+  at.
 - **Tested on fakes.** `tests/test_gaze.py` covers the control law with
   fake clocks, and the loop over ROS with static TF or a fake base that
   turns at the last `/cmd_vel` command. A spy on the loop's publisher
@@ -743,8 +750,8 @@ confirmed:
 A template in `config/task_templates.toml` seeds the todo list
 ([ADR-0041](decisions/0041-todo-list-and-seeding.md)). The format is on
 [The Agent](agent.md#task-templates). The template is not in the file yet.
-The atomics it needs are built, and it comes with the sim run, which needs
-`oracle_perception` ([Delivery order](#delivery-order)):
+The atomics it needs and the simulated scenario are built, and it comes
+with the sim run and its pass check ([Delivery order](#delivery-order)):
 
 ```toml title="config/task_templates.toml"
 [templates.hri]
@@ -827,9 +834,11 @@ flowchart LR
     classDef proposed stroke-dasharray: 5 5;
 ```
 
-- **The sim run needs no other repository** beyond the agreed interface
-  and the pinned messages. walkie-vision and walkie-database are needed
-  only for the robot.
+- **The sim run needs no other repository** beyond the agreed interface,
+  the pinned messages and walkie-ros's `chula_pat14_6` world. The world is
+  on walkie-ros's branch `feat/chula-pat14-6-simulation` until its PR #58
+  merges. walkie-vision and walkie-database are needed only for the
+  robot.
 - **From phase 2,** the slice takes only the toolbox core and the atomics
   above ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The arm
   atomics call the real commander through `CommanderClient`. In sim the
@@ -851,52 +860,180 @@ flowchart LR
 
 ## In simulation
 
-`oracle_perception` gets HRI scenarios
-([Perception](perception.md#in-simulation)):
+The HRI scenario plays the guests in walkie-ros's MuJoCo world
+`chula_pat14_6`, a reconstruction of a real living room and kitchen with a
+captured occupancy map, AMCL and Nav2. The world has no person bodies, so
+the people exist only in the scenario. `src/walkie_agent/sim/hri_scenario.py`
+runs as the node `hri_scenario` on the simulation's clock
+([Getting Started](../getting-started.md#run-the-hri-scenario)).
+Its file, `config/scenarios/hri.yaml`, places everyone in the world's map
+frame. It reads `door` and `living_room` from
+`config/locations.chula_pat14_6.toml`, the file that `pixi run
+agent-sim-hri` gives the agent, so both use one pose each.
 
-- **Guests** with a name, a drink, and face and appearance vectors from
-  `hash_vector` in `src/walkie_agent/sim/fake_vectors.py`, under the model
-  names `fake_face` and `fake_reid`. One guest paces about
-  0.3 m left and right while talking, and a bystander walks behind them.
-- **The living room** with seats, a passive guest on the sofa, and a
-  switch of seats before the introductions.
-- **Projection.** Each person is projected into the camera with its
-  `camera_info` and TF, so the boxes move as the base turns, and the gaze
-  loop closes in sim.
-- **Answers.** The scenario answers each question on `/from_human` after
-  the robot's line on `/to_human`. Once, it answers with nothing, to test
-  asking again.
-- **The bag.** The world has no bag, so an empty close would end near a
-  gap of 0 and read as holding nothing. When the second guest answers the
-  hand-over request, the scenario sets the commander's `grasp_detect_min`
-  parameter to -1 through `/bimanual_commander/set_parameters`, so the next
-  close reads as holding the bag. In one variant the guest answers before
-  hanging the bag, to test the retry.
+- **Perception.** The node owns an `OraclePerception`
+  ([Perception](perception.md#in-simulation)). For each image of the head
+  camera, it projects the scenario's people, as they were at the image's
+  stamp, and the sofa with that image's `camera_info` and TF, so the boxes
+  move as the base turns and the gaze loop closes in the simulation. An
+  image older than the 5 s of history the scenario keeps, or one drawn
+  while the clock went back, gets no arrays, so an old image is never
+  drawn with a later scene. Faces
+  and appearances are hash vectors from
+  `src/walkie_agent/sim/fake_vectors.py`, under the model names
+  `fake_face` and `fake_reid`. The faces clear `VisionFeed`'s angular face
+  gate on the simulation's camera, so recognition uses faces and
+  appearance, as on the robot.
+- **Guests.** Guest 1 waits in the hallway outside the entrance from the
+  start, facing the robot. Guest k+1 arrives once guest k is seated. The
+  guest at the door paces while talking, up to 0.28 m to either side
+  along the hallway, with a 6 s period. That is about 9° to either side
+  as seen from `door`. The hallway is only 0.64 m wide there, so the
+  pacing runs along it rather than square to the line to the robot,
+  which would push the guest off the hallway's line. A bystander walks
+  once across the doorway's view, 1 m behind the guest, 3 s after the
+  first question. It faces along its path, so it shows no face.
+- **Following.** Once the base is more than 0.5 m from `door`, the guest
+  who talked follows the robot and is in no view.
+- **Seats.** The seats are the world's sofa, with its three cushions as
+  the left, middle and right places. The host sits on the left place from
+  the start. One view from `living_room` sees the whole sofa.
+- **Seat offers.** A robot line that mentions sitting or a seat, while a
+  guest follows, is an offer. It seats the guest at the place with the
+  smallest bearing from the base, by TF, if that bearing is within 25° and
+  the place is free. Otherwise the scenario logs a bad offer, and the
+  guest keeps following. The rule works in the map, not on image thirds:
+  after a turn to a side third, the image's centre column no longer falls
+  inside that third. A turn to `box_heading` of a third leaves its place
+  up to 17.5° off the heading, because perspective biases the ray through
+  a third's centre outward, so 25° leaves room for the turn's own error.
+- **The seat switch.** Two guests and the host need four places for a
+  switch, and the sofa has three. By default the two guests swap places
+  before the introductions, which the rulebook allows
+  ([Introductions](#introductions)). The swap fires when the todo item
+  whose text contains "introduce" goes in progress or waiting, as soon as
+  both guests are seated. So a robot that starts the introductions before
+  it seats guest 2 still sees it. The scenario file can choose another
+  option instead (below).
+- **Answers.** The current guest answers each robot line on `/to_human`
+  that asks something, on `/from_human` 1 s later: "My name is Sam." for
+  the name, "I would like milk." for the drink, both for a line that asks
+  both, and "Okay." for any other question, which the log counts as an
+  extra question. Guest 1's first drink question gets "Hmm." instead, to
+  test asking again. It is a mumble with no answer in it, not an empty
+  message, because the agent puts the text into an LLM message, which
+  rejects a blank one.
+- **The bag.** The world has no guest's bag, so an empty close ends near a
+  gap of 0 and reads as holding nothing. When the robot asks guest 2 for
+  the bag, in a sentence that mentions it and is a question, holds
+  "please", or opens with a request verb, as in "Put your bag on my
+  hand.", the scenario sets the real commander's `grasp_detect_min`
+  parameter to -1 through `/bimanual_commander/set_parameters`. Then it
+  answers "It is on your hand.", and the next close reads as holding the
+  bag. The answer waits until the commander has taken the value, for at
+  most 2 s. After that it goes out first, the log has `bag_unconfirmed`,
+  and the hang still lands when the commander takes it. The commander
+  runs in the simulation, started with `launch/commander_sim.launch.py`.
+  `config/scenarios/hri_early_bag.yaml` (`pixi run
+  hri-scenario-early-bag`) answers the first request without hanging the
+  bag, so the first close reads empty, and the second request hangs it.
+  On a reset (`/walkie/reset`) and on exit, the parameter goes back to the
+  value read at start. The scenario sends the commander one request at a
+  time, and sends a failed or unanswered one again until the commander
+  holds the value wanted (`bag_retry`). Without a commander, or when the
+  commander refuses it, the hang is logged as skipped, and the guest still
+  answers. A hang while the commander still holds -1, as after a restore
+  it refused, is logged at once as `bag_hung` with `already_held`. On
+  exit, the restore gets 2 s from when it can first go out, once a
+  request in flight is answered or dropped at its 2 s timeout. So the
+  scenario waits at most 4 s for it, and logs a restore not taken by then
+  as skipped.
+- **`door` keeps the hand clear of the door leaf.** The door has no
+  actuator and stays open into the room. At `door`, the left gripper in
+  `receive` is 0.205 m from the leaf, and at least 0.10 m anywhere in
+  Nav2's goal tolerance. `tests/test_door_clearance.py` computes this from
+  `config/arm_poses.toml`, so a retuned `receive` that comes nearer fails.
+- **The event log.** One JSON object per line, with the sim time, in
+  `logs/hri_scenario_<time>.jsonl` or the file given with `--log`. The
+  first line has the world, the file, the seed and the resolved `door` and
+  `living_room`. Then come robot lines, answers, guest states, seats taken
+  and bad offers (each with the heading and every place's bearing), seat
+  switches, bag events, the todo list on each change, and every `/cmd_vel`
+  message. At 10 Hz it adds the robot pose from TF, the ground-truth pose
+  from `/mujoco_ground_truth/odom`, the talking guest's bearing, whether a
+  conversation is on, whether a Nav2 goal is active, and whether both arms
+  are travel-safe. A clock that goes back, as when the simulation
+  restarts, is logged as `clock_jump`, and that run is not valid. The
+  module's docstring lists every record and field.
 
-A run passes when:
+The seat options, each a change of the scenario file's `seats`, `seated`
+and `seat_switch`, not of the code:
+
+| Option | Scenario file | Cost |
+| ------ | ------------- | ---- |
+| Swap guests 1 and 2 (the default) | `seat_switch: {mode: swap, people: [guest1, guest2]}` | The switch waits until guest 2 is seated, so it can come mid-introduction. Guest 2 gets the only free place, so their offer has one right answer |
+| A virtual armchair | add a `seats` entry; `mode: move, people: [guest1]` | Not in MuJoCo, so a camera-based run later disagrees with the oracle. There is little free space for one, and from `living_room` it is mostly out of view or confused with a sofa place by the offer rule |
+| The host stands | `seated: []`, the host out of the sofa's view; `mode: move` | No taken place when guest 1 is offered a seat, so "never a taken one" goes untested for guest 1 |
+| A kitchen stool | the stools as seats; `mode: move` | 2.8 to 4.4 m from `living_room`, far to its right, so the introductions need a second view, and faces are small |
+| No switch | `mode: off` | No re-recognition after a change of places |
+
+`mode: move` takes each listed person to `to: <place>` if given, else to
+the first free place in file order. When the todo item finishes or leaves
+the list before the switch fires, the log has `seat_switch_skipped`.
+
+The pass check comes with the template. It reads the event log. Two
+criteria need what the scenario cannot see: what the people memory holds,
+and whether a drive was refused because an arm was out. For those, the
+check reads the agent's record of its tool calls, which the template
+records (next PR). A run passes when:
 
 - the people memory, the mock in sim, holds each guest's name and drink
-  as in the scenario;
-- the heading stays within 10° of the talking guest for at least 80% of
-  each conversation;
+  as in the scenario, judged from the agent's record of its tool calls;
+- the heading follows the talking guest in each conversation. A
+  conversation is one guest's time talking at the door. Its samples are
+  the 10 Hz `state` records in it with a known pose. A sample's error is
+  the absolute value of the guest's bearing from the base, wrapped into
+  (-180°, 180°]. The error is at most 10° in at least 80% of the samples.
+  The gaze value is the mean error over the samples. The baseline is the
+  same mean with each bearing taken against the heading of the
+  conversation's first sample instead. The gaze value is at most 0.9
+  times the baseline, so a robot that never turns cannot pass. A
+  conversation with no samples fails. When the baseline is zero or below
+  1°, the ratio is skipped, and only the 10° and 80% criterion applies.
+  The ratio cannot be much lower: the pacing swings only about 9° to
+  either side, and the gaze loop's 6° deadband holds the heading still
+  for most of each swing. A simulation of the loop gave 0.77 with no
+  perception delay and 0.87 with 0.3 s. The hallway is too narrow for a
+  wider swing;
 - each seat offer faces a free place, never a taken one;
 - each introduction faces the listener;
 - the only questions are the four essential ones and the hand-over
-  request, plus one repeat after the empty answer, and one more hand-over
+  request, plus one repeat after the mumble, and one more hand-over
   request in the early-answer variant;
 - the robot speaks before every arm motion, and closes the gripper only
   after the guest's answer;
-- the left gripper holds the bag before the second guest is guided, and
-  no navigation is refused because an arm is out;
+- the left gripper holds the bag before the second guest is guided;
+- no drive is refused because an arm is out, judged from the agent's
+  record of its tool calls;
 - every `/cmd_vel` message has zero linear velocity, and none but a
   stop's three zeros is sent while a Nav2 goal is active or an arm is out
   of a travel-safe pose;
+- its log has no `clock_jump`: a run whose simulation restarted is not
+  valid;
 - it finishes within 6 minutes of sim time.
 
 The 10° and 80% are first targets, to be tuned. Unit tests in
 `tests/test_perception.py` cover the seating and gesture rules ported from
 walkie-agent-v2, and the name assignment of `recognize_person`. The gaze
 loop's tests are listed under [Gaze in simulation](#gaze-in-simulation).
+`tests/test_hri_scenario.py` runs the scenario's rules on a fake clock and
+`GraspParameter` on fake service clients, checks the default files against
+the simulation's camera (each seated hip well inside its third of the
+sofa, a turn to each third's `box_heading` picking that third's place, the
+guest's face and hips seen over the whole pacing), and runs the node over
+ROS with a fake commander. `tests/test_projection.py` and
+`tests/test_oracle_perception.py` cover the oracle
+([Perception](perception.md#in-simulation)).
 
 ## What changes in other repositories
 
@@ -918,6 +1055,8 @@ loop's tests are listed under [Gaze in simulation](#gaze-in-simulation).
 2. **Whether one view sees every seat.** If the arena's living room is
    wider than the camera's view, `find_seats` needs walkie-agent-v2's
    sweep: turn with `look_at`, look again, and merge places by heading.
+   In the simulation, one view from `living_room` sees the whole sofa
+   ([In simulation](#in-simulation)), so this stays open for the arena.
    Blocks: `find_seats` in such a room.
 3. **Names through speech-to-text.** A wrong name costs 40 points. The
    rulebook's predefined names (section 3.2.7), announced on the setup

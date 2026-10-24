@@ -5,10 +5,11 @@ with the changes a test needs. The tests of the default files put
 test_projection's simulated head camera at the poses of
 config/locations.chula_pat14_6.toml and draw the scenario's scene with the
 oracle's draw_detections, without noise, so they check what walkie-ros's
-world chula_pat14_6 shows the agent. The ROS tests run HriScenarioNode on
-topics of their own, next to a node that plays the agent and the simulation
-and a fake bimanual_commander that has only its parameters. All of it runs
-on Fast DDS and a random domain (ADR-0019).
+world chula_pat14_6 shows the agent. GraspParameter's own tests use fake
+service clients whose requests the test answers, and a fake clock. The ROS
+tests run HriScenarioNode on topics of their own, next to a node that plays
+the agent and the simulation and a fake bimanual_commander that has only its
+parameters. All of it runs on Fast DDS and a random domain (ADR-0019).
 """
 
 import copy
@@ -34,9 +35,12 @@ from builtin_interfaces.msg import Time as TimeMsg
 from geometry_msgs.msg import TwistStamped
 from nav_msgs.msg import Odometry
 from rai_interfaces.msg import HRIMessage
-from rcl_interfaces.msg import SetParametersResult
+from rcl_interfaces.msg import ParameterType, ParameterValue, SetParametersResult
+from rcl_interfaces.srv import GetParameters, SetParameters
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import qos_profile_action_status_default
+from rclpy.task import Future
 from sensor_msgs.msg import CameraInfo, JointState
 from std_msgs.msg import Empty, String
 from tf2_msgs.msg import TFMessage
@@ -92,6 +96,7 @@ from walkie_agent.sim.hri_scenario import (
     TODOS_QOS,
     Answer,
     EventLog,
+    GraspParameter,
     HriScenario,
     HriScenarioNode,
     Line,
@@ -106,8 +111,8 @@ from walkie_agent.sim.hri_scenario import (
     classify_line,
     load_scenario,
 )
-from walkie_agent.sim.oracle_perception import DETECTION_SCORE, draw_detections
-from walkie_agent.sim.projection import camera_position, in_image
+from walkie_agent.sim.oracle_perception import DETECTION_SCORE, KEYPOINT_SCORE, draw_detections
+from walkie_agent.sim.projection import camera_position
 from walkie_agent.sim.scene import DEFAULT_SEAT_TOP_M, FACE_LIMIT_DEG, MapBox, Scene
 from walkie_agent.todo import TodoItem
 from walkie_agent.tools.navigation import ROBOT_FRAME as NAVIGATION_ROBOT_FRAME
@@ -302,7 +307,9 @@ def test_the_host_sits_and_guest1_waits_at_the_guest_spot_from_the_start():
     tracks = {sofa.track_id, people["host"].track_id, people["guest1"].track_id}
     assert len(tracks) == 3 and 0 not in tracks
     host_seen, guest_seen = people["host"], people["guest1"]
-    assert (host_seen.posture, host_seen.seat_top) == ("sitting", DEFAULT_SEAT_TOP_M)
+    # The file gives the sofa its cushions' top; a seat without one gets the default.
+    assert (host_seen.posture, host_seen.seat_top) == ("sitting", 0.4575)
+    assert make_spec(seats=with_armchair()).places()["armchair"].seat_top == DEFAULT_SEAT_TOP_M
     assert host_seen.facing == pytest.approx(3.1416)
     assert (guest_seen.face, guest_seen.appearance, guest_seen.height) == ("guest1", "guest1", 1.70)
     # Before the robot's pose comes, guest 1 faces the door pose, where it will stand.
@@ -831,6 +838,32 @@ def test_a_reset_drops_the_answers_not_sent_and_restores_the_bag():
     assert scenario.tick(clock.t + 2.0).answers == ()
 
 
+def test_a_clock_that_goes_back_moves_the_pending_answers_and_the_pacing_with_it():
+    scenario, clock = make_scenario(answers={"mumble_once": None})
+    said = clock.t
+    scenario.robot_said("What is your name?")
+    old_t = said + 0.5
+    talking = scenario.talking(old_t)
+
+    # The simulation restarts: its clock goes from 100.5 back to 0.5.
+    step = scenario.clock_jumped(old_t, 0.5)
+
+    assert step.events == (
+        {"type": "clock_jump", "t": 0.5, "from": old_t, "to": 0.5, "pending": 1},
+    )
+    # The line was said at 0.0 on the new clock, so its answer is due 1 s later.
+    assert scenario.tick(0.99).answers == ()
+    [answer] = scenario.tick(1.0).answers
+    assert (answer.text, answer.asked_t) == ("My name is Sam.", said)
+    # The guest paces on from where they were, in the log and in the scene.
+    assert scenario.talking(0.5) == talking
+    guest = scenario.people_at(0.5)["guest1"]
+    assert (guest.x, guest.y) == pytest.approx((talking["x"], talking["y"]), abs=1e-4)
+    # The bystander still sets off 3 s after the first question.
+    assert not of_type(scenario.tick(2.99).events, "bystander")
+    assert of_type(scenario.tick(3.0).events, "bystander")[0]["state"] == "walking"
+
+
 def test_the_bystander_walks_its_path_once_from_3_s_after_the_first_question():
     scenario, clock = make_scenario()
     assert scenario.tick(clock.t + 60.0).events == ()
@@ -888,6 +921,28 @@ def test_the_talking_guest_paces_across_the_line_to_the_door():
         "y": 0.2286,
         "bearing_deg": round(bearing_deg(DOOR, 0.65 + 0.2 * across[0], 0.03 + 0.2 * across[1]), 2),
     }
+
+
+def test_people_at_a_time_before_a_seat_offer_draws_everyone_as_they_were_then():
+    scenario, clock = make_scenario()
+    guide(scenario)
+    scenario.robot_pose(facing(scenario, "sofa.middle"))
+    before = clock.t
+    taken = clock.advance(1.0)
+
+    scenario.robot_said("Please sit here.")
+
+    # An image taken before the offer: guest 1 follows, in no view, and
+    # guest 2 has not come yet.
+    then = scenario.people_at(before + 0.5)
+    assert set(then) == {"host"}
+    # From the offer on, guest 1 sits and guest 2 waits at the guest spot.
+    for t in (taken, taken + 0.5):
+        people = scenario.people_at(t)
+        assert set(people) == {"host", "guest1", "guest2"}
+        guest1, guest2 = people["guest1"], people["guest2"]
+        assert (guest1.posture, guest1.x, guest1.y) == ("sitting", 3.115, -1.65)
+        assert (guest2.x, guest2.y) == (0.65, 0.03)
 
 
 @pytest.mark.parametrize(
@@ -1028,6 +1083,12 @@ def test_the_robot_frame_is_the_navigation_tools():
         ("What is your name and your favourite drink?", True, (NAME, DRINK), False),
         ("Could you hand me your bag?", True, (BAG,), False),
         ("Please put the bag in my hand.", False, (BAG,), False),
+        ("Put your bag on my hand.", False, (BAG,), False),
+        ("Place the bag on my hand.", False, (BAG,), False),
+        ("Now, hand me your bag.", False, (BAG,), False),
+        ("Go ahead and put your bag on my hand.", False, (BAG,), False),
+        ("I will put your bag down later.", False, (), False),
+        ("Let me take your bag.", False, (), False),
         ("I will hold out my hand for your bag.", False, (), False),
         ("How was your trip?", True, (OTHER,), False),
         ("Welcome! What is your name? Did you find us easily?", True, (NAME, OTHER), False),
@@ -1213,8 +1274,11 @@ def test_from_the_door_the_pacing_guest_shows_the_whole_face_and_the_hips(guest,
     assert 0.0 < x1 < x2 < WIDTH and 0.0 < y1 < y2 < HEIGHT
     assert seen.face_det_score == pytest.approx(DETECTION_SCORE) and len(seen.face_embedding)
     assert face_trusted(seen, people.camera_info)
-    hips = np.reshape(seen.keypoints, (-1, 2))[[LEFT_HIP, RIGHT_HIP]]
-    assert in_image(hips, WIDTH, HEIGHT).all()
+    # Seen, not only inside the image: the oracle clips every keypoint into
+    # it, and scores one it does not see 0.
+    hip_scores = np.asarray(seen.keypoint_scores)[[LEFT_HIP, RIGHT_HIP]]
+    assert hip_scores.tolist() == pytest.approx([KEYPOINT_SCORE] * 2)
+    assert hip_scores.min() > DEFAULT_SEATING_CONFIG.min_hip_score
 
 
 def test_the_pacing_ends_lie_in_the_hallways_free_span_outside_the_frame():
@@ -1266,6 +1330,245 @@ def test_the_bystander_crosses_the_doorways_sight_cone_and_shows_no_face():
     assert in_cone >= 20
 
 
+# -- GraspParameter, on fake service clients ----------------------------------------------
+
+COMMANDER = "/bimanual_commander"
+
+
+class FakeClient:
+    """A service client whose requests the test answers.
+
+    call_async keeps each request with its future. A future without an
+    executor runs its done callbacks at once, on the thread that answers it.
+    """
+
+    def __init__(self) -> None:
+        self.ready = True
+        self.calls: list[tuple[Any, Future]] = []
+        # Run once, at the start of the next call_async: what another thread
+        # may do after a request was decided and before it is sent.
+        self.on_call: Callable[[], None] | None = None
+
+    def service_is_ready(self) -> bool:
+        return self.ready
+
+    def call_async(self, request: Any) -> Future:
+        hook, self.on_call = self.on_call, None
+        if hook is not None:
+            hook()
+        future = Future()
+        self.calls.append((request, future))
+        return future
+
+
+class FakeTimer:
+    """A timer that fires only when the test fires it."""
+
+    def __init__(self, callback: Callable[[], None]) -> None:
+        self.callback = callback
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+class FakeNode:
+    """What GraspParameter takes from its node: a client for each service, and a timer."""
+
+    def __init__(self) -> None:
+        self.clients: dict[type, FakeClient] = {}
+        self.timer: FakeTimer | None = None
+
+    def create_client(self, srv_type: type, _name: str, **_kwargs: Any) -> FakeClient:
+        self.clients[srv_type] = FakeClient()
+        return self.clients[srv_type]
+
+    def create_timer(
+        self, _period: float, callback: Callable[[], None], **_kwargs: Any
+    ) -> FakeTimer:
+        self.timer = FakeTimer(callback)
+        return self.timer
+
+
+class GraspRig:
+    """GraspParameter on a FakeNode, with a commander whose answers the test sends.
+
+    `value` is the commander's grasp_detect_min; a set that succeeds changes
+    it. `clock` is GraspParameter's monotonic clock, and `records` what it
+    logged.
+    """
+
+    def __init__(self, value: float = GRASP_DETECT_MIN) -> None:
+        self.value = value
+        self.clock = FakeClock()
+        self.records: list[dict[str, Any]] = []
+        self.node = FakeNode()
+        self.grasp = GraspParameter(self.node, COMMANDER, self._record, monotonic=self.clock)
+        self.get = self.node.clients[GetParameters]
+        self.set = self.node.clients[SetParameters]
+
+    @classmethod
+    def read(cls) -> "GraspRig":
+        """A rig whose commander was read at its value."""
+        rig = cls()
+        rig.fire()
+        rig.answer_read()
+        return rig
+
+    def types(self) -> list[str]:
+        return [record["type"] for record in self.records]
+
+    def fire(self) -> None:
+        """One period of the retry timer."""
+        timer = self.node.timer
+        assert timer is not None and not timer.cancelled
+        timer.callback()
+
+    def sets(self) -> list[float]:
+        """The value of every set sent, in the order sent."""
+        return [request.parameters[0].value.double_value for request, _ in self.set.calls]
+
+    def answer_read(self, index: int = -1) -> None:
+        """Answer a read, the last one sent unless `index` says, with the commander's value."""
+        _, future = self.get.calls[index]
+        value = ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=self.value)
+        future.set_result(GetParameters.Response(values=[value]))
+
+    def answer_set(self, index: int = -1, *, successful: bool = True, reason: str = "") -> None:
+        """Answer a set, the last one sent unless `index` says."""
+        request, future = self.set.calls[index]
+        if successful:
+            self.value = request.parameters[0].value.double_value
+        result = SetParametersResult(successful=successful, reason=reason)
+        future.set_result(SetParameters.Response(results=[result]))
+
+    def _record(self, type_: str, **fields: Any) -> None:
+        self.records.append({"type": type_, **fields})
+
+
+def test_a_reset_as_the_hang_that_waited_for_the_read_goes_out_ends_at_the_original():
+    rig = GraspRig()
+    # A bag request before the commander was read: the hang waits for the read.
+    hang = rig.grasp.hang()
+    assert hang is not None and rig.sets() == []
+    # A reset comes just as the read's answer sends the hang.
+    rig.set.on_call = lambda: rig.grasp.restore("reset")
+
+    rig.answer_read()
+
+    # The restore waits for the hang's answer, so it goes out last.
+    assert rig.sets() == [HUNG_VALUE]
+    rig.answer_set()
+    assert rig.sets() == [HUNG_VALUE, GRASP_DETECT_MIN]
+    rig.answer_set()
+    assert rig.value == GRASP_DETECT_MIN and hang.is_set()
+    assert rig.records == [
+        {"type": "commander", "node": COMMANDER, "grasp_detect_min": GRASP_DETECT_MIN},
+        {"type": "bag_hung", "value": HUNG_VALUE},
+        {"type": "bag_restored", "value": GRASP_DETECT_MIN, "cause": "reset"},
+    ]
+
+
+@pytest.mark.parametrize(
+    ("failure", "reason"),
+    [
+        ("gone", f"no {COMMANDER}: {COMMANDER}/set_parameters has no server"),
+        ("refused", "the arm is moving"),
+        ("error", "setting grasp_detect_min failed: the commander went away"),
+    ],
+)
+def test_a_restore_that_fails_is_sent_again_until_the_commander_takes_it(failure, reason):
+    rig = GraspRig.read()
+    rig.grasp.hang()
+    rig.answer_set()
+    rig.set.ready = failure != "gone"
+
+    done = rig.grasp.restore("reset")
+
+    if failure == "refused":
+        rig.answer_set(successful=False, reason=reason)
+    elif failure == "error":
+        rig.set.calls[-1][1].set_exception(RuntimeError("the commander went away"))
+    assert rig.records[-1] == {"type": "bag_retry", "action": RESTORE, "reason": reason}
+    assert done is not None and not done.is_set()
+    assert rig.value == HUNG_VALUE
+    rig.set.ready = True
+    rig.fire()
+    rig.answer_set()
+    assert done.is_set() and rig.value == GRASP_DETECT_MIN
+    assert rig.records[-1] == {"type": "bag_restored", "value": GRASP_DETECT_MIN, "cause": "reset"}
+    assert "bag_skipped" not in rig.types()
+
+
+def test_a_second_hang_while_the_first_is_pending_gets_the_same_event():
+    rig = GraspRig.read()
+    first = rig.grasp.hang()
+
+    second = rig.grasp.hang()
+
+    assert first is not None and second is first and not first.is_set()
+    assert rig.sets() == [HUNG_VALUE]
+    rig.answer_set()
+    assert first.is_set() and rig.types() == ["commander", "bag_hung"]
+    # Once the commander holds the hang, a request gets that hang's event, already set.
+    assert rig.grasp.hang() is first
+    assert rig.sets() == [HUNG_VALUE]
+
+
+def test_a_request_without_an_answer_is_sent_again_after_request_timeout_s(monkeypatch):
+    monkeypatch.setattr(hri_scenario, "REQUEST_TIMEOUT_S", 0.5)
+    rig = GraspRig()
+    rig.fire()
+    rig.clock.advance(0.25)
+    rig.fire()
+    assert len(rig.get.calls) == 1
+    rig.clock.advance(0.25)
+
+    rig.fire()
+
+    # The read got no answer within 0.5 s, so it went out again.
+    assert len(rig.get.calls) == 2
+    # The first read's late answer is ignored; the second one's counts.
+    rig.answer_read(0)
+    assert rig.records == []
+    rig.answer_read()
+    assert rig.types() == ["commander"]
+    hang = rig.grasp.hang()
+    assert hang is not None and rig.sets() == [HUNG_VALUE]
+    rig.clock.advance(0.5)
+    rig.fire()
+    assert rig.sets() == [HUNG_VALUE, HUNG_VALUE]
+    assert rig.records[-1] == {
+        "type": "bag_retry",
+        "action": HANG,
+        "reason": f"{COMMANDER} did not answer within 0.5 s",
+    }
+    assert not hang.is_set()
+    rig.answer_set()
+    assert hang.is_set() and rig.records[-1] == {"type": "bag_hung", "value": HUNG_VALUE}
+
+
+def test_once_finishing_a_hang_is_skipped_and_only_the_restore_goes_out():
+    rig = GraspRig.read()
+    rig.grasp.hang()
+    rig.answer_set()
+    done = rig.grasp.finish()
+
+    # A bag request while the exit's restore is in flight.
+    assert rig.grasp.hang() is None
+
+    assert rig.records[-1] == {
+        "type": "bag_skipped",
+        "action": HANG,
+        "reason": "the scenario is closing",
+    }
+    rig.answer_set()
+    rig.fire()
+    assert done is not None and done.is_set()
+    assert rig.sets() == [HUNG_VALUE, GRASP_DETECT_MIN] and rig.value == GRASP_DETECT_MIN
+    assert rig.records[-1] == {"type": "bag_restored", "value": GRASP_DETECT_MIN, "cause": "exit"}
+
+
 # -- The node over ROS --------------------------------------------------------------------
 
 
@@ -1273,6 +1576,12 @@ def near(record_pose: dict[str, float] | None, pose: Pose, tolerance: float = 1e
     return record_pose is not None and all(
         abs(record_pose[key] - value) < tolerance for key, value in zip(("x", "y", "yaw"), pose)
     )
+
+
+def read_records(path: Path) -> list[dict[str, Any]]:
+    """An event log's complete lines so far."""
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    return [json.loads(line) for line in lines if line.endswith("\n")]
 
 
 def goal_status(status: int) -> GoalStatusArray:
@@ -1390,8 +1699,7 @@ class ScenarioRig:
 
     def records(self) -> list[dict[str, Any]]:
         """The log's complete lines so far."""
-        lines = self.log_path.read_text(encoding="utf-8").splitlines(keepends=True)
-        return [json.loads(line) for line in lines if line.endswith("\n")]
+        return read_records(self.log_path)
 
     def find(
         self, type_: str, where: Callable[[dict], bool] | None = None, **fields: Any
@@ -1440,12 +1748,16 @@ class ScenarioRig:
                 return record
         raise AssertionError(f"No {type_} record came of 10 messages.")
 
+    def publish_line(self, text: str) -> None:
+        """Publish a robot line on /to_human once, as the speak tool does."""
+        self.to_human_pub.publish(
+            HRIMessage(text=text, communication_id=uuid.uuid4().hex, seq_no=0, seq_end=True)
+        )
+
     def say(self, text: str) -> dict[str, Any]:
         """Publish a robot line on /to_human, as the speak tool does, and return its record."""
         for _ in range(3):
-            self.to_human_pub.publish(
-                HRIMessage(text=text, communication_id=uuid.uuid4().hex, seq_no=0, seq_end=True)
-            )
+            self.publish_line(text)
             if wait_until(lambda: self.find("robot_line", text=text) is not None, timeout=1.0):
                 return self.wait_for("robot_line", text=text)
         raise AssertionError(f"The line {text!r} was not logged.")
@@ -1521,6 +1833,82 @@ def make_rig(tmp_path, monkeypatch):
     yield make
     for rig in rigs:
         rig.close()
+
+
+@dataclasses.dataclass(frozen=True)
+class IdleNode:
+    """HriScenarioNode on topics of its own that no executor spins, and its log.
+
+    The test runs the node's callbacks itself, on its own thread.
+    """
+
+    node: HriScenarioNode
+    topics: ScenarioTopics
+    log_path: Path
+
+    def records(self) -> list[dict[str, Any]]:
+        return read_records(self.log_path)
+
+
+@pytest.fixture
+def make_idle_node(tmp_path):
+    """An IdleNode factory that closes every node it made.
+
+    The keyword arguments change the default scenario.
+    """
+    made: list[tuple[IdleNode, EventLog]] = []
+
+    def make(**changes: Any) -> IdleNode:
+        prefix = f"/hri_idle_{random.randint(0, 1_000_000)}"
+        topics = ScenarioTopics(
+            **{name: prefix + topic for name, topic in dataclasses.asdict(ScenarioTopics()).items()}
+        )
+        oracle_config = dataclasses.replace(
+            QUIET,
+            camera_info_topic=f"{prefix}/camera_info",
+            people_topic=f"{prefix}/people",
+            objects_topic=f"{prefix}/objects",
+        )
+        log_path = tmp_path / f"events_{len(made)}.jsonl"
+        log = EventLog(log_path)
+        spec = make_spec(**changes)
+        loaded = LoadedScenario(DEFAULT_FILE, spec, load_locations(LOCATIONS_FILE), LOCATIONS_FILE)
+        node = HriScenarioNode(
+            loaded, log, use_sim_time=False, topics=topics, oracle_config=oracle_config
+        )
+        idle = IdleNode(node, topics, log_path)
+        made.append((idle, log))
+        return idle
+
+    yield make
+    for idle, log in made:
+        idle.node.close()
+        idle.node.destroy_node()
+        log.close()
+
+
+@pytest.fixture
+def idle_node(make_idle_node):
+    return make_idle_node()
+
+
+class StubGrasp:
+    """The node's GraspParameter, whose hang() calls return the events given, in order."""
+
+    def __init__(self, *events: threading.Event | None) -> None:
+        self.events = list(events)
+
+    def hang(self) -> threading.Event | None:
+        return self.events.pop(0)
+
+    def restore(self, _cause: str) -> None:
+        return None
+
+    def finish(self) -> None:
+        return None
+
+    def close(self) -> None:
+        pass
 
 
 def test_robot_lines_on_to_human_get_answers_on_from_human(make_rig):
@@ -1650,6 +2038,104 @@ def test_the_state_and_cmd_vel_records_carry_nav_arms_grippers_and_ground_truth(
     rig.wait_for("state", where=lambda r: r["t"] > record["t"] and r["ground_truth"] is None)
 
 
+def test_each_state_stream_has_a_mutually_exclusive_group_of_its_own(idle_node):
+    groups = {sub.topic_name: sub.callback_group for sub in idle_node.node.subscriptions}
+    topics = idle_node.topics
+
+    streams = [
+        groups[topic]
+        for topic in (topics.cmd_vel, topics.nav_status, topics.joint_states, topics.ground_truth)
+    ]
+
+    assert all(isinstance(group, MutuallyExclusiveCallbackGroup) for group in streams)
+    assert len({id(group) for group in streams}) == 4
+    # The scenario's inputs share a group of their own.
+    inputs = groups[topics.to_human]
+    assert groups[topics.todos] is inputs and groups[topics.reset] is inputs
+    assert all(group is not inputs for group in streams)
+
+
+def test_the_node_logs_a_clock_that_goes_back_and_drops_the_ground_truth_of_before(
+    idle_node, monkeypatch
+):
+    node = idle_node.node
+    clock = FakeClock(node._now())
+    monkeypatch.setattr(node, "_now", clock)
+    truth = Pose(1.9, -1.6, 0.5)
+    node._on_ground_truth(odometry(truth))
+    node._on_tick()
+    assert near(idle_node.records()[-1]["ground_truth"], truth)
+    old_t = clock.t
+
+    # The simulation restarts, and its clock goes back 100 s.
+    new_t = clock.advance(-100.0)
+    node._on_tick()
+
+    jump, state = idle_node.records()[-2:]
+    # The log keeps times to the millisecond.
+    assert jump == {
+        "type": "clock_jump",
+        "t": round(new_t, 3),
+        "from": round(old_t, 3),
+        "to": round(new_t, 3),
+        "pending": 0,
+    }
+    assert (state["type"], state["t"], state["ground_truth"]) == ("state", round(new_t, 3), None)
+    # A ground truth stamped after the node's time was taken before the jump.
+    clock.advance(0.5)
+    node._on_ground_truth(odometry(truth))
+    clock.advance(-0.4)
+    node._on_tick()
+    state = idle_node.records()[-1]
+    assert (state["type"], state["ground_truth"]) == ("state", None)
+    assert len(of_type(idle_node.records(), "clock_jump")) == 1
+
+
+def test_after_close_no_callback_calls_into_the_scenario(idle_node, monkeypatch):
+    node = idle_node.node
+    node.close()
+    called: list[str] = []
+    for name in ("robot_pose", "robot_said", "todos_changed", "reset", "tick", "scene"):
+        monkeypatch.setattr(
+            node.scenario, name, lambda *_args, _name=name, **_kwargs: called.append(_name)
+        )
+
+    node._on_to_human(HRIMessage(text="Could you hand me your bag, please?"))
+    node._on_todos(String(data=json.dumps(todos(("t2", INTRODUCTION, "in_progress")))))
+    node._on_reset(Empty())
+    node._on_tick()
+    scene = node._scene_at(node.get_clock().now())
+
+    assert called == []
+    assert scene == Scene()
+
+
+def test_a_bag_request_skipped_while_a_hang_is_pending_keeps_the_answers_waiting(
+    make_idle_node, monkeypatch
+):
+    # Far beyond the test's run, so the wait cannot end at its deadline.
+    monkeypatch.setattr(hri_scenario, "HANG_WAIT_S", 60.0)
+    idle = make_idle_node(bag={"owner": "guest1"}, answers={"delay": 0.1, "mumble_once": None})
+    node = idle.node
+    clock = FakeClock(node._now())
+    monkeypatch.setattr(node, "_now", clock)
+    # The second request's hang is skipped at once, as when the commander
+    # went away while the first one's was still pending.
+    pending = threading.Event()
+    monkeypatch.setattr(node, "_grasp", StubGrasp(pending, None))
+    node._on_to_human(HRIMessage(text="Could you hand me your bag, please?"))
+    node._on_to_human(HRIMessage(text="Please give me your bag."))
+    clock.advance(0.5)
+
+    node._on_tick()
+
+    assert of_type(idle.records(), "answer") == []
+    pending.set()
+    node._on_tick()
+    answers = of_type(idle.records(), "answer")
+    assert [a["text"] for a in answers] == ["It is on your hand."] * 2
+
+
 def test_until_tf_has_the_robot_the_node_logs_once_that_it_waits_for_amcl(make_rig, caplog):
     caplog.set_level(logging.INFO, logger=hri_scenario.__name__)
     rig = make_rig()
@@ -1742,7 +2228,7 @@ def test_closing_restores_the_hung_bag_and_ends_the_log(make_rig):
     rig = make_rig(bag={"owner": "guest1"})
     rig.wait_for("commander")
     rig.say("Could you hand me your bag, please?")
-    rig.wait_for("bag_hung")
+    rig.wait_for_answer("It is on your hand.")
 
     rig.node.close()
 
@@ -1752,8 +2238,124 @@ def test_closing_restores_the_hung_bag_and_ends_the_log(make_rig):
     restored = records[found.index("bag_restored")]
     assert (restored["value"], restored["cause"]) == (GRASP_DETECT_MIN, "exit")
     assert rig.commander_value() == GRASP_DETECT_MIN
-    # The node still spins, but nothing comes after the end.
-    assert not wait_until(lambda: len(rig.records()) > len(records), timeout=0.3)
+    # The node still spins, but a bag request after the end hangs nothing
+    # and gets no answer, and nothing comes after the end.
+    rig.publish_line("Could you hand me your bag, please?")
+    assert not wait_until(
+        lambda: len(rig.answers) > 1 or rig.commander_value() != GRASP_DETECT_MIN, timeout=0.5
+    )
+    assert rig.records() == records
+
+
+def test_after_close_no_input_reaches_the_commander_or_the_agent(make_rig):
+    rig = make_rig(bag={"owner": "guest1"}, answers={"delay": 0.5})
+    rig.wait_for("commander")
+    sets: list[Any] = []
+
+    def taken(parameters) -> SetParametersResult:
+        sets.extend(parameter.value for parameter in parameters)
+        return SetParametersResult(successful=True)
+
+    rig.commander.add_on_set_parameters_callback(taken)
+    # Its answer is due 0.5 s after the line, after the close.
+    line = rig.say("What is your name?")
+
+    rig.node.close()
+    end = rig.records()[-1]
+    assert end["type"] == "end"
+    assert end["t"] < line["t"] + 0.5, "The node closed after the answer was due."
+    rig.publish_line("Could you hand me your bag, please?")
+    rig.reset_pub.publish(Empty())
+
+    # Until well after the answer was due.
+    assert not wait_until(lambda: rig.answers or sets, timeout=0.8)
+    assert rig.commander_value() == GRASP_DETECT_MIN
+    assert rig.records()[-1]["type"] == "end"
+
+
+def test_an_exit_restore_the_commander_refuses_once_is_sent_again_within_the_wait(make_rig):
+    rig = make_rig(bag={"owner": "guest1"})
+    rig.wait_for("commander")
+    rig.say("Could you hand me your bag, please?")
+    rig.wait_for("bag_hung")
+    refused: list[Any] = []
+
+    def refuse_once(parameters) -> SetParametersResult:
+        if refused:
+            return SetParametersResult(successful=True)
+        refused.extend(parameter.value for parameter in parameters)
+        return SetParametersResult(successful=False, reason="the arm is moving")
+
+    rig.commander.add_on_set_parameters_callback(refuse_once)
+
+    rig.node.close()
+
+    records = rig.records()
+    found = [r["type"] for r in records]
+    assert refused == [GRASP_DETECT_MIN]
+    retry = records[found.index("bag_retry")]
+    assert (retry["action"], retry["reason"]) == (RESTORE, "the arm is moving")
+    restored = records[found.index("bag_restored")]
+    assert (restored["value"], restored["cause"]) == (GRASP_DETECT_MIN, "exit")
+    assert found.index("bag_retry") < found.index("bag_restored") < len(found) - 1
+    assert found[-1] == "end" and "bag_skipped" not in found
+    assert rig.commander_value() == GRASP_DETECT_MIN
+
+
+def test_a_second_bag_request_while_the_hang_is_pending_waits_for_the_same_hang(
+    make_rig, monkeypatch
+):
+    # Beyond the test's run, so the wait cannot end at its deadline on a slow machine.
+    monkeypatch.setattr(hri_scenario, "HANG_WAIT_S", 10.0)
+    rig = make_rig(bag={"owner": "guest1"})
+    rig.wait_for("commander")
+    # The commander takes the hang only once the test lets it.
+    gate = threading.Event()
+
+    def held(_parameters) -> SetParametersResult:
+        gate.wait(5.0)
+        return SetParametersResult(successful=True)
+
+    rig.commander.add_on_set_parameters_callback(held)
+    rig.say("Could you hand me your bag, please?")
+
+    rig.say("Please give me your bag.")
+
+    assert not wait_until(lambda: rig.answers, timeout=0.5)
+    gate.set()
+    assert wait_until(lambda: len(rig.answers) == 2)
+    found = [r["type"] for r in rig.records()]
+    assert found.count("bag_hung") == 1 and found.count("answer") == 2
+    assert found.index("bag_hung") < found.index("answer")
+    assert "bag_skipped" not in found and "bag_unconfirmed" not in found
+
+
+def test_a_hang_not_taken_by_the_deadline_is_unconfirmed_and_still_lands(make_rig, monkeypatch):
+    monkeypatch.setattr(hri_scenario, "HANG_WAIT_S", 0.3)
+    rig = make_rig(bag={"owner": "guest1"})
+    rig.wait_for("commander")
+    gate = threading.Event()
+
+    def held(_parameters) -> SetParametersResult:
+        gate.wait(5.0)
+        return SetParametersResult(successful=True)
+
+    rig.commander.add_on_set_parameters_callback(held)
+
+    rig.say("Could you hand me your bag, please?")
+
+    unconfirmed = rig.wait_for("bag_unconfirmed")
+    assert unconfirmed["waited_s"] >= 0.3
+    assert unconfirmed["reason"] == (
+        f"{rig.topics.commander} had not taken the hang within 0.3 s, so the answer went out first"
+    )
+    rig.wait_for_answer("It is on your hand.")
+    # The hang is still wanted, and is logged once the commander takes it.
+    gate.set()
+    rig.wait_for("bag_hung")
+    found = [r["type"] for r in rig.records()]
+    assert found.index("bag_unconfirmed") < found.index("answer") < found.index("bag_hung")
+    assert rig.commander_value() == HUNG_VALUE
 
 
 def test_without_a_commander_the_bag_is_skipped_and_still_answered(make_rig):

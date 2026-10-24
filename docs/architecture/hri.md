@@ -873,10 +873,11 @@ agent-sim-hri` gives the agent, so both use one pose each.
 
 - **Perception.** The node owns an `OraclePerception`
   ([Perception](perception.md#in-simulation)). For each image of the head
-  camera, it projects the scenario's people and the sofa with that image's
-  `camera_info` and TF, so the boxes move as the base turns and the gaze
-  loop closes in the simulation. Faces and appearances are hash vectors
-  from `src/walkie_agent/sim/fake_vectors.py`, under the model names
+  camera, it projects the scenario's people, as they were at the image's
+  stamp, and the sofa with that image's `camera_info` and TF, so the boxes
+  move as the base turns and the gaze loop closes in the simulation. Faces
+  and appearances are hash vectors from
+  `src/walkie_agent/sim/fake_vectors.py`, under the model names
   `fake_face` and `fake_reid`. The faces clear `VisionFeed`'s angular face
   gate on the simulation's camera, so recognition uses faces and
   appearance, as on the robot.
@@ -919,17 +920,24 @@ agent-sim-hri` gives the agent, so both use one pose each.
   rejects a blank one.
 - **The bag.** The world has no guest's bag, so an empty close ends near a
   gap of 0 and reads as holding nothing. When the robot asks guest 2 for
-  the bag, in a question or a "please" sentence that mentions it, the
-  scenario sets the real commander's `grasp_detect_min` parameter to -1
-  through `/bimanual_commander/set_parameters`. Then it answers "It is on
-  your hand.", and the next close reads as holding the bag. The commander
+  the bag, in a sentence that mentions it and is a question, holds
+  "please", or opens with a request verb, as in "Put your bag on my
+  hand.", the scenario sets the real commander's `grasp_detect_min`
+  parameter to -1 through `/bimanual_commander/set_parameters`. Then it
+  answers "It is on your hand.", and the next close reads as holding the
+  bag. The answer waits until the commander has taken the value, for at
+  most 2 s. After that it goes out first, the log has `bag_unconfirmed`,
+  and the hang still lands when the commander takes it. The commander
   runs in the simulation, started with `launch/commander_sim.launch.py`.
   `config/scenarios/hri_early_bag.yaml` (`pixi run
   hri-scenario-early-bag`) answers the first request without hanging the
   bag, so the first close reads empty, and the second request hangs it.
   On a reset (`/walkie/reset`) and on exit, the parameter goes back to the
-  value read at start. Without a commander, the bag events are logged as
-  skipped, and the guest still answers.
+  value read at start. The scenario sends the commander one request at a
+  time, and sends a failed or unanswered one again until the commander
+  holds the value wanted (`bag_retry`). Without a commander, or when the
+  commander refuses it, the hang is logged as skipped, and the guest still
+  answers.
 - **`door` keeps the hand clear of the door leaf.** The door has no
   actuator and stays open into the room. At `door`, the left gripper in
   `receive` is 0.205 m from the leaf, and at least 0.10 m anywhere in
@@ -944,7 +952,9 @@ agent-sim-hri` gives the agent, so both use one pose each.
   message. At 10 Hz it adds the robot pose from TF, the ground-truth pose
   from `/mujoco_ground_truth/odom`, the talking guest's bearing, whether a
   conversation is on, whether a Nav2 goal is active, and whether both arms
-  are travel-safe. The module's docstring lists every record and field.
+  are travel-safe. A clock that goes back, as when the simulation
+  restarts, is logged as `clock_jump`, and that run is not valid. The
+  module's docstring lists every record and field.
 
 The seat options, each a change of the scenario file's `seats`, `seated`
 and `seat_switch`, not of the code:
@@ -961,13 +971,18 @@ and `seat_switch`, not of the code:
 the first free place in file order. When the todo item finishes or leaves
 the list before the switch fires, the log has `seat_switch_skipped`.
 
-The pass check reads only the event log. It comes with the template. A run
-passes when:
+The pass check comes with the template. It reads the event log. Two
+criteria need what the scenario cannot see: what the people memory holds,
+and whether a drive was refused because an arm was out. For those, the
+check reads the agent's record of its tool calls, which the template
+records (next PR). A run passes when:
 
 - the people memory, the mock in sim, holds each guest's name and drink
-  as in the scenario;
+  as in the scenario, judged from the agent's record of its tool calls;
 - the heading stays within 10° of the talking guest for at least 80% of
-  each conversation;
+  each conversation, and its mean bearing error is at most half that of
+  the heading held fixed at the conversation's start, so a robot that
+  never turns cannot pass;
 - each seat offer faces a free place, never a taken one;
 - each introduction faces the listener;
 - the only questions are the four essential ones and the hand-over
@@ -975,24 +990,28 @@ passes when:
   request in the early-answer variant;
 - the robot speaks before every arm motion, and closes the gripper only
   after the guest's answer;
-- the left gripper holds the bag before the second guest is guided, and
-  no navigation is refused because an arm is out;
+- the left gripper holds the bag before the second guest is guided;
+- no drive is refused because an arm is out, judged from the agent's
+  record of its tool calls;
 - every `/cmd_vel` message has zero linear velocity, and none but a
   stop's three zeros is sent while a Nav2 goal is active or an arm is out
   of a travel-safe pose;
+- its log has no `clock_jump`: a run whose simulation restarted is not
+  valid;
 - it finishes within 6 minutes of sim time.
 
 The 10° and 80% are first targets, to be tuned. Unit tests in
 `tests/test_perception.py` cover the seating and gesture rules ported from
 walkie-agent-v2, and the name assignment of `recognize_person`. The gaze
 loop's tests are listed under [Gaze in simulation](#gaze-in-simulation).
-`tests/test_hri_scenario.py` runs the scenario's rules on a fake clock,
-checks the default files against the simulation's camera (each seated
-hip well inside its third of the sofa, a turn to each third's
-`box_heading` picking that third's place, the guest's face and hips in
-view over the whole pacing), and runs the node over ROS with a fake
-commander. `tests/test_projection.py` and `tests/test_oracle_perception.py`
-cover the oracle ([Perception](perception.md#in-simulation)).
+`tests/test_hri_scenario.py` runs the scenario's rules on a fake clock and
+`GraspParameter` on fake service clients, checks the default files against
+the simulation's camera (each seated hip well inside its third of the
+sofa, a turn to each third's `box_heading` picking that third's place, the
+guest's face and hips seen over the whole pacing), and runs the node over
+ROS with a fake commander. `tests/test_projection.py` and
+`tests/test_oracle_perception.py` cover the oracle
+([Perception](perception.md#in-simulation)).
 
 ## What changes in other repositories
 

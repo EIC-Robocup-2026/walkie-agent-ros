@@ -363,6 +363,8 @@ pixi run agent-sim-hri
   the robot's questions on `/from_human`. Until AMCL runs, it logs once
   that it waits for AMCL, and publishes no arrays. It writes its event log
   to `logs/hri_scenario_<time>.jsonl`, or to the file given with `--log`.
+  A simulation restart sends the clock back, and the log then has
+  `clock_jump`: that run is not valid, so start the scenario again too.
   `pixi run hri-scenario-early-bag` plays the variant in which guest 2
   answers the first hand-over request before the bag hangs.
 - **Faces count.** The faces the scenario draws clear the agent's angular

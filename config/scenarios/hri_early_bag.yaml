@@ -16,6 +16,7 @@ seats:
     box: {center: [3.1675, -1.65, 0.4175], size: [0.575, 1.88, 0.835], yaw: 0.0}
     facing: 3.1416                # sitters face -x, towards the TV desk
     places: {left: [3.115, -1.10], middle: [3.115, -1.65], right: [3.115, -2.20]}
+    seat_top: 0.4575              # the cushions' top
 seated:
   - {id: host, place: sofa.left, face: host, appearance: host, height: 1.75}
 seat_switch: {when: introduction, mode: swap, people: [guest1, guest2]}

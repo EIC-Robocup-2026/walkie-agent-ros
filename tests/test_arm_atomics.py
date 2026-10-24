@@ -883,15 +883,25 @@ def test_a_stuck_gripper_fails_and_the_other_still_closes(toolbox, fake):
     assert fake.gripper_goals[-2:] == [("left_gripper", 0.0), ("right_gripper", 0.0)]
 
 
-def test_grasp_detect_min_below_zero_reads_an_empty_close_as_held(toolbox, fake):
+def test_grasp_detect_min_below_zero_reads_an_empty_close_as_held(toolbox, fake, monkeypatch):
     # The atomic trusts the commander's detection parameters, so a band
     # that includes a closed gripper reads every close as a grasp.
     fake.set_parameters([Parameter("grasp_detect_min", value=-1.0)])
+    band_reads = []
+
+    def no_band(cancel, timeout_s):
+        band_reads.append(timeout_s)
+        raise StepError("TIMEOUT", "The commander's band did not come.")
+
+    monkeypatch.setattr(client_of(toolbox), "grasp_band", no_band)
 
     out = call(toolbox, "set_gripper", arm="left", state="close")
 
     assert out.summary == f"Closed the left gripper. It is holding something. {SAFE_SENTENCE}"
     assert out.holding == {"left": True}
+    # The commander's gap agrees with the read, so its grasped decides, and
+    # the band, whose failed read would give the default, is not read.
+    assert band_reads == []
 
 
 @pytest.mark.parametrize(
@@ -920,6 +930,88 @@ def test_a_close_reported_reached_without_a_measurement_is_judged_from_a_read(
     # With an object, the gap of 0.0 does not agree with the read, so the band decides.
     assert out.summary == f"Closed the left gripper. It is holding {held}. {SAFE_SENTENCE}"
     assert out.holding == {"left": held == "something"}
+
+
+def measure_before_settling(fake: FakeCommander, monkeypatch, gap: float = 0.0077) -> None:
+    """Make the fake measure an empty close of the left gripper at `gap`, before the fingers settle.
+
+    As the commander can in a loaded simulation: it reads the finger once
+    the controller answers, and then judges that gap by its band.
+    """
+    finish = fake._finish
+
+    def early(goal_handle, result, group, success, status):
+        if group == "left_gripper":
+            low = fake.get_parameter("grasp_detect_min").value
+            high = fake.get_parameter("grasp_detect_max").value
+            result.gripper_gap = gap
+            result.grasped = low <= gap <= high
+        return finish(goal_handle, result, group, success, status)
+
+    monkeypatch.setattr(fake, "_finish", early)
+
+
+@pytest.mark.parametrize(
+    ("detect_min", "held"), [(-1.0, "something"), (0.005, "nothing")], ids=["hung", "default"]
+)
+def test_a_close_measured_before_the_fingers_settle_is_judged_by_the_commanders_band(
+    toolbox, fake, monkeypatch, detect_min, held
+):
+    # The HRI scenario hangs a bag by setting grasp_detect_min to -1. Either
+    # way the commander reports grasped true, from a gap 7.7 mm from the read.
+    fake.set_parameters([Parameter("grasp_detect_min", value=detect_min)])
+    measure_before_settling(fake, monkeypatch)
+
+    out = call(toolbox, "set_gripper", arm="left", state="close")
+
+    # The read, about 0.0, is judged by the band the commander holds now.
+    assert out.summary == f"Closed the left gripper. It is holding {held}. {SAFE_SENTENCE}"
+    assert out.holding == {"left": held == "something"}
+
+
+def test_a_close_whose_band_cannot_be_read_is_judged_by_the_default_band(
+    toolbox, fake, monkeypatch, caplog
+):
+    fake.set_parameters([Parameter("grasp_detect_min", value=-1.0)])
+    measure_before_settling(fake, monkeypatch)
+
+    def no_answer(cancel, timeout_s):
+        raise StepError("TIMEOUT", "The commander's band did not come.")
+
+    monkeypatch.setattr(client_of(toolbox), "grasp_band", no_answer)
+
+    with caplog.at_level(logging.WARNING):
+        out = call(toolbox, "set_gripper", arm="left", state="close")
+
+    # The default band, 0.005 to 0.044 m, does not hold a read of about 0.0.
+    assert out.summary == f"Closed the left gripper. It is holding nothing. {SAFE_SENTENCE}"
+    assert out.holding == {"left": False}
+    assert (
+        "Judging a close by the commander's default grasp detection band: The commander's band "
+        "did not come."
+    ) in caplog.text
+
+
+def test_an_interrupt_while_the_band_is_read_stops_the_call(toolbox, fake, monkeypatch):
+    measure_before_settling(fake, monkeypatch)
+    client = client_of(toolbox)
+    grasp_band = client.grasp_band
+
+    def interrupted_first(cancel, timeout_s):
+        toolbox.interrupt()
+        return grasp_band(cancel, timeout_s)
+
+    monkeypatch.setattr(client, "grasp_band", interrupted_first)
+
+    error = error_of(toolbox, "set_gripper", arm="both", state="close")
+
+    assert (error.code, error.message) == (
+        "CANCELLED",
+        "Stopped by reset before checking whether the left gripper holds something. "
+        f"{UNKNOWN_SENTENCE}",
+    )
+    # The right gripper was never sent.
+    assert fake.gripper_goals == [("left_gripper", 0.0)]
 
 
 # set_gripper's answer after a close of the left gripper that the commander

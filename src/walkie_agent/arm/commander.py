@@ -1,9 +1,10 @@
 """CommanderClient: the agent's one client of walkie-ros's bimanual_commander (ADR-0021).
 
 The arm atomics and the navigation interlock reach the arms only through it,
-as the `arm` backend. It uses the three names ADR-0021 allows:
-/set_joint_position and /control_gripper (my_robot_interfaces actions) and
-/get_joint_states (a service).
+as the `arm` backend. It uses the names ADR-0021 allows:
+/set_joint_position and /control_gripper (my_robot_interfaces actions),
+/get_joint_states (a service), and, to read the grasp detection band only,
+the commander's /bimanual_commander/get_parameters.
 
 It is created once per agent from the connector, like VisionFeed: its
 clients are made here, once, on the connector's node, and its methods block
@@ -16,9 +17,10 @@ the goal to end.
 One call at a time. The commander runs every goal in its own thread with no
 lock on the arms, so two goals would fight, and its /get_joint_states calls
 MoveIt's getCurrentState(), which the commander's own comments call unsafe
-to run concurrently (ADR-0021, ADR-0024). So every call holds a lock, and a
-read or a second goal while a goal runs is refused at once rather than
-queued behind a move that can take 30 s.
+to run concurrently (ADR-0021, ADR-0024). So every goal and every read of
+the joints holds a lock, and one while a goal runs is refused at once
+rather than queued behind a move that can take 30 s. grasp_band(), which
+reads only two of the commander's parameters, takes no lock.
 
 A goal outlives the call that sent it. It is outstanding from its send
 until the client sees its result, sees it rejected, or abandons it, and
@@ -58,6 +60,8 @@ from action_msgs.srv import CancelGoal
 from my_robot_interfaces.action import ControlGripper, SetJointPosition
 from my_robot_interfaces.srv import GetJointStates
 from rai.communication.ros2 import ROS2Connector
+from rcl_interfaces.msg import ParameterType
+from rcl_interfaces.srv import GetParameters
 from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
 from rclpy.task import Future
@@ -84,6 +88,11 @@ logger = logging.getLogger(__name__)
 SET_JOINT_POSITION_ACTION = "/set_joint_position"
 CONTROL_GRIPPER_ACTION = "/control_gripper"
 GET_JOINT_STATES_SERVICE = "/get_joint_states"
+# The commander node's standard parameter service, read for its grasp
+# detection band and nothing else (ADR-0021).
+GET_PARAMETERS_SERVICE = "/bimanual_commander/get_parameters"
+# The parameters a close's `grasped` is judged by, lowest first, in metres.
+GRASP_BAND_PARAMETERS = ("grasp_detect_min", "grasp_detect_max")
 
 # Added to every UNAVAILABLE message.
 COMMANDER_HINT = "Is bimanual_commander running?"
@@ -370,6 +379,7 @@ class CommanderClient:
         node = connector.node
         # Created here, once: rclpy entities must not be created per call.
         self._joint_states = node.create_client(GetJointStates, GET_JOINT_STATES_SERVICE)
+        self._parameters = node.create_client(GetParameters, GET_PARAMETERS_SERVICE)
         self._set_joint_position = ActionClient(node, SetJointPosition, SET_JOINT_POSITION_ACTION)
         self._control_gripper = ActionClient(node, ControlGripper, CONTROL_GRIPPER_ACTION)
         self._node = node
@@ -578,6 +588,45 @@ class CommanderClient:
             self._remember_reading(group, reading, count)
             return reading
 
+    def grasp_band(
+        self, cancel: threading.Event, timeout_s: float = READ_TIMEOUT_S
+    ) -> tuple[float, float]:
+        """The commander's grasp detection band now, (grasp_detect_min, grasp_detect_max), in m.
+
+        The band a close's `grasped` is judged by. The commander reads it
+        afresh on every close, so a band changed while it runs, as the HRI
+        scenario changes it to hang a bag, is the one returned. Read once,
+        from the commander's parameter service, without the call lock: it
+        reads no joints and sends no goal, so it cannot fight one. Raises
+        StepError CANCELLED once `cancel` is set, UNAVAILABLE when the
+        service is not discovered, or the commander lacks either parameter
+        or holds one that is not a finite number, and TIMEOUT when it does
+        not answer within `timeout_s`.
+        """
+        deadline = _deadline(timeout_s)
+        self._wait_ready(
+            self._parameters.service_is_ready, f"{GET_PARAMETERS_SERVICE} service", deadline, cancel
+        )
+        future = self._parameters.call_async(
+            GetParameters.Request(names=list(GRASP_BAND_PARAMETERS))
+        )
+        try:
+            response = _wait(future, deadline, cancel)
+        except StepError as e:
+            # The answer would otherwise be kept for a caller that left.
+            self._parameters.remove_pending_request(future)
+            if e.code == "CANCELLED":
+                raise StepError(
+                    "CANCELLED",
+                    "A stop or a reset interrupted the read of the commander's grasp detection "
+                    "band.",
+                ) from None
+            raise StepError(
+                "TIMEOUT",
+                f"The commander's {GET_PARAMETERS_SERVICE} did not answer within {timeout_s:g} s.",
+            ) from None
+        return _band(response)
+
     def joint_names(
         self, group: str, cancel: threading.Event, timeout_s: float = READ_TIMEOUT_S
     ) -> tuple[str, ...]:
@@ -760,6 +809,7 @@ class CommanderClient:
         self._set_joint_position.destroy()
         self._control_gripper.destroy()
         self._node.destroy_client(self._joint_states)
+        self._node.destroy_client(self._parameters)
 
     # -- Helpers ----------------------------------------------------------------
 
@@ -1890,6 +1940,29 @@ def _check_cancelled(cancel: threading.Event) -> None:
 def _check_group(group: str, allowed: frozenset[str]) -> None:
     if group not in allowed:
         raise ValueError(f"{group!r} is not one of the groups {sorted(allowed)}.")
+
+
+def _band(response: Any) -> tuple[float, float]:
+    """The two values of GRASP_BAND_PARAMETERS in a GetParameters answer, or UNAVAILABLE.
+
+    The commander declares both as doubles. When it lacks either, its
+    parameter service answers no values at all.
+    """
+    values = list(response.values) if response is not None else []
+    if len(values) != len(GRASP_BAND_PARAMETERS):
+        raise StepError(
+            "UNAVAILABLE",
+            f"The commander answered {len(values)} values for {', '.join(GRASP_BAND_PARAMETERS)}.",
+        )
+    band = []
+    for name, value in zip(GRASP_BAND_PARAMETERS, values, strict=True):
+        if value.type != ParameterType.PARAMETER_DOUBLE or not math.isfinite(value.double_value):
+            raise StepError(
+                "UNAVAILABLE",
+                f"The commander's {name} is not a finite number (parameter type {value.type}).",
+            )
+        band.append(value.double_value)
+    return band[0], band[1]
 
 
 def _deadline(timeout_s: float) -> float:

@@ -88,7 +88,7 @@ flowchart TB
   llm_tools --> ms
   nav_tool --> ms
   skill_tools --> ms
-  ms -- "/set_joint_position<br/>/control_gripper<br/>/get_joint_states" --> cmd
+  ms -- "/set_joint_position<br/>/control_gripper<br/>/get_joint_states<br/>read: /bimanual_commander/get_parameters" --> cmd
   ms -- "stop: /trajectory_execution_event" --> mg
   ms -- "/navigate_to_pose" --> nav2
   ms -- "/run_skill, /list_skills" --> skills
@@ -499,8 +499,10 @@ description = "Holding an object close to the body."
     - otherwise `grasped` is the answer when the commander's gap is within
       2 mm of the read;
     - when it is not, as after a close reported reached but not measured,
-      the read is judged by the commander's default detection band, 0.005
-      to 0.044 m.
+      or one measured before the fingers settled, the read is judged by
+      the commander's detection band, read from
+      `/bimanual_commander/get_parameters`, or by its default band, 0.005
+      to 0.044 m, when that read fails.
 - **Generated code.** Tools written by the self-evolving agent can never
   reach the arm controllers or the MoveIt and commander planning names. They
   move the arms only in simulation, and only through the atomics: the
@@ -661,8 +663,8 @@ contract:
 
 | Backend           | File                                | What it does |
 | ----------------- | ----------------------------------- | ------------ |
-| `CommanderClient` | `src/walkie_agent/arm/commander.py` | Built. The `arm` backend, created only with `--arms`. Calls `/set_joint_position`, `/control_gripper` and `/get_joint_states` on `bimanual_commander`, one call at a time, and cancels a running goal on a cancel or a timeout. A goal whose call gave up still holds off every call until it ends, or until it is abandoned, after its action server stayed undiscovered for 5 s or 60 s after its call gave up. The arms are then unverified, and goals are refused, until recovery clears that: the commander shows the goal to be no longer active, by its result or its answer to a cancel by the goal's id, which the client made, and a settled read of both arms, and of the finger of an abandoned gripper command, shows them still. `check_for_driving()` makes the drive check's whole decision under the call lock. A reading with a position that is not a finite number is refused, and an arm whose joints a reading lacks becomes unknown. It loads `config/arm_poses.toml`, remembers the arms' last read state and each gripper's last command, and counts each gripper's commands for `joint_states_since()`. In simulation it talks to the real commander in walkie-ros's MuJoCo simulation. |
-| `FakeCommander`   | `src/walkie_agent/sim/fake_commander.py` | Built. A ROS-level fake of `bimanual_commander` ([ADR-0019](decisions/0019-test-fakes-fast-dds.md)) for the tests. It serves the same three names, and has knobs for slow moves, a joint speed (`joint_speed_rad_s`), planning time, a plan held until a test releases it (`plan_gate`), plan and execution failures, plan-only mode, joint errors, rejected goals, no answer, an acceptance held until a test releases it (`accept_gate`), late results, refused and slow cancels, a cancel answer held until a test releases it (`cancel_gate`), failed and incomplete reads, `right_joint2_fixed`, and object widths for grasps. `vanish()` takes all or some of its servers off the graph, and `come_back()` serves them again as new instances that do not know the old goals. `supersede()` commands a gripper as another node can, which ends the ramp of the gripper's goal. Its docstring lists where it differs from the commander. |
+| `CommanderClient` | `src/walkie_agent/arm/commander.py` | Built. The `arm` backend, created only with `--arms`. Calls `/set_joint_position`, `/control_gripper` and `/get_joint_states` on `bimanual_commander`, one call at a time, and reads `grasp_detect_min` and `grasp_detect_max` from `/bimanual_commander/get_parameters` without the call lock. It cancels a running goal on a cancel or a timeout. A goal whose call gave up still holds off every call until it ends, or until it is abandoned, after its action server stayed undiscovered for 5 s or 60 s after its call gave up. The arms are then unverified, and goals are refused, until recovery clears that: the commander shows the goal to be no longer active, by its result or its answer to a cancel by the goal's id, which the client made, and a settled read of both arms, and of the finger of an abandoned gripper command, shows them still. `check_for_driving()` makes the drive check's whole decision under the call lock. A reading with a position that is not a finite number is refused, and an arm whose joints a reading lacks becomes unknown. It loads `config/arm_poses.toml`, remembers the arms' last read state and each gripper's last command, and counts each gripper's commands for `joint_states_since()`. In simulation it talks to the real commander in walkie-ros's MuJoCo simulation. |
+| `FakeCommander`   | `src/walkie_agent/sim/fake_commander.py` | Built. A ROS-level fake of `bimanual_commander` ([ADR-0019](decisions/0019-test-fakes-fast-dds.md)) for the tests. It serves the same names, the parameter service through rclpy, since the node is named `bimanual_commander`, and has knobs for slow moves, a joint speed (`joint_speed_rad_s`), planning time, a plan held until a test releases it (`plan_gate`), plan and execution failures, plan-only mode, joint errors, rejected goals, no answer, an acceptance held until a test releases it (`accept_gate`), late results, refused and slow cancels, a cancel answer held until a test releases it (`cancel_gate`), failed and incomplete reads, `right_joint2_fixed`, and object widths for grasps. `vanish()` takes all or some of its three commander servers off the graph, though not the parameter service, and `come_back()` serves them again as new instances that do not know the old goals. `supersede()` commands a gripper as another node can, which ends the ramp of the gripper's goal. Its docstring lists where it differs from the commander. |
 | `MockSkillServer` | `src/walkie_agent/sim/mock_skill.py` (new) | Serves `run_skill` with the seven ADR-0027 outcomes. Each skill has fault knobs: a forced outcome and a delay. A successful pick attaches the `FakeScene` object to the arm. |
 | `FakeScene`       | `src/walkie_agent/sim/fake_scene.py` (new) | Loads a TOML scene of objects (label, description, map pose, size, graspable) for the perception mocks and the picks. |
 
@@ -885,8 +887,8 @@ the `FakeSkillServer` serves in the sim harvest
   rejected goals, goals that never finish, an acceptance or a cancel answer
   held until the test releases it, late results, refused and slow cancels,
   failed and incomplete reads, `right_joint2_fixed` and grasping an object.
-  `vanish()` takes all or some of its servers off the graph, as when the
-  commander stops, and `come_back()` serves them again, as a restarted
+  `vanish()` takes all or some of its three commander servers off the
+  graph, as when the commander stops, and `come_back()` serves them again, as a restarted
   commander. `supersede()` commands a gripper from outside the agent. Tests
   run on Fast DDS ([ADR-0019](decisions/0019-test-fakes-fast-dds.md)).
   `tests/test_commander.py` covers `CommanderClient`, including goals that

@@ -988,9 +988,13 @@ agent-sim-hri` gives the agent, so both use one pose each.
   hand.", the scenario sets the real commander's `grasp_detect_min`
   parameter to -1 through `/bimanual_commander/set_parameters`. Then it
   answers "It is on your hand.", and the next close reads as holding the
-  bag. The answer waits until the commander has taken the value, for at
-  most 2 s. After that it goes out first, the log has `bag_unconfirmed`,
-  and the hang still lands when the commander takes it. The commander
+  bag. That holds after an open too: a close from open can be measured
+  before the fingers settle, a few millimetres from `set_gripper`'s own
+  read, and `set_gripper` then judges the read by the band the commander
+  holds, which it reads back ([Safety](manipulation.md#safety)). The
+  answer waits until the commander has taken the value, for at most 2 s.
+  After that it goes out first, the log has `bag_unconfirmed`, and the
+  hang still lands when the commander takes it. The commander
   runs in the simulation, started with `launch/commander_sim.launch.py`.
   `config/scenarios/hri_early_bag.yaml` (`pixi run
   hri-scenario-early-bag`) answers the first request without hanging the

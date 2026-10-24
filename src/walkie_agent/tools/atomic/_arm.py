@@ -61,7 +61,10 @@ class ArmConfig:
     # within this of set_gripper's own read of the fingers. A close that the
     # commander did not measure reports a gap of 0.0, and every read that the
     # default detection band counts as holding, GRASP_DETECT_MIN or more, is
-    # further than this from it.
+    # further than this from it. A close that meets nothing can be measured
+    # before the fingers settle, up to 7.7 mm from the read in a loaded
+    # simulation. Either way the read is then judged by the commander's band,
+    # as set_gripper reads it.
     gap_agreement_m: float = 0.002
 
 

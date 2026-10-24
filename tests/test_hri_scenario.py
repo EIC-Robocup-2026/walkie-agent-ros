@@ -24,6 +24,7 @@ import uuid
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -32,7 +33,7 @@ import rclpy
 import yaml
 from action_msgs.msg import GoalStatus, GoalStatusArray
 from builtin_interfaces.msg import Time as TimeMsg
-from geometry_msgs.msg import TwistStamped
+from geometry_msgs.msg import TransformStamped, TwistStamped
 from nav_msgs.msg import Odometry
 from rai_interfaces.msg import HRIMessage
 from rcl_interfaces.msg import ParameterType, ParameterValue, SetParametersResult
@@ -41,6 +42,7 @@ from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.qos import qos_profile_action_status_default
 from rclpy.task import Future
+from rclpy.time import Time
 from sensor_msgs.msg import CameraInfo, JointState
 from std_msgs.msg import Empty, String
 from tf2_msgs.msg import TFMessage
@@ -69,7 +71,8 @@ from walkie_agent.perception.seating import (
     hip_anchor,
     split_seat_regions,
 )
-from walkie_agent.perception.vision_feed import face_trusted
+from walkie_agent.perception.vision_feed import DEFAULT_CONFIG as FEED_CONFIG
+from walkie_agent.perception.vision_feed import PeopleFrame, TrackKey, face_trusted
 from walkie_agent.sim import hri_scenario, oracle_perception
 from walkie_agent.sim.hri_scenario import (
     ABSENT,
@@ -79,6 +82,7 @@ from walkie_agent.sim.hri_scenario import (
     DRINK,
     FOLLOWING,
     FROM_HUMAN_QOS,
+    GONE,
     GRASP_DETECT_MIN_PARAM,
     HANG,
     HUNG_VALUE,
@@ -90,6 +94,7 @@ from walkie_agent.sim.hri_scenario import (
     RESTORE,
     ROBOT_FRAME,
     SEATED,
+    STANDING,
     TAKEN,
     TALKING,
     TO_HUMAN_QOS,
@@ -115,6 +120,9 @@ from walkie_agent.sim.oracle_perception import DETECTION_SCORE, KEYPOINT_SCORE, 
 from walkie_agent.sim.projection import camera_position
 from walkie_agent.sim.scene import DEFAULT_SEAT_TOP_M, FACE_LIMIT_DEG, MapBox, Scene
 from walkie_agent.todo import TodoItem
+from walkie_agent.toolbox import ToolContext
+from walkie_agent.tools.atomic import find_people
+from walkie_agent.tools.atomic.find_people import FACE_SEEN, NO_FACE
 from walkie_agent.tools.navigation import ROBOT_FRAME as NAVIGATION_ROBOT_FRAME
 
 SCENARIOS = PROJECT_ROOT / "config" / "scenarios"
@@ -301,11 +309,11 @@ def test_the_host_sits_and_guest1_waits_at_the_guest_spot_from_the_start():
     assert sofa.label == "sofa"
     assert sofa.box == MapBox((3.1675, -1.65, 0.4175), (0.575, 1.88, 0.835), 0.0)
     people = scenario.people_at()
-    assert set(people) == {"host", "guest1"}
-    assert len(scene.people) == 2
-    # The seat, the host and guest 1 each have a track of their own; 0 is no track.
-    tracks = {sofa.track_id, people["host"].track_id, people["guest1"].track_id}
-    assert len(tracks) == 3 and 0 not in tracks
+    assert set(people) == {"host", "guest1", "onlooker1", "onlooker2"}
+    assert len(scene.people) == 4
+    # The seat and each person have a track of their own; 0 is no track.
+    tracks = {sofa.track_id, *(person.track_id for person in people.values())}
+    assert len(tracks) == 5 and 0 not in tracks
     host_seen, guest_seen = people["host"], people["guest1"]
     # The file gives the sofa its cushions' top; a seat without one gets the default.
     assert (host_seen.posture, host_seen.seat_top) == ("sitting", 0.4575)
@@ -340,7 +348,12 @@ def test_name_and_drink_questions_get_the_guests_answers_after_the_delay():
         "asks": [NAME],
         "offer": False,
         "pose": {"x": 2.35, "y": -0.17, "yaw": 3.01},
-        "bearings_deg": {"host": line["bearings_deg"]["host"], "guest1": 0.83},
+        "bearings_deg": {
+            "host": line["bearings_deg"]["host"],
+            "guest1": 0.83,
+            "onlooker1": -5.79,
+            "onlooker2": 35.61,
+        },
     }
     assert of_type(step.events, "person")[0]["state"] == TALKING
     assert scenario.tick(t0 + 0.99).answers == ()
@@ -502,19 +515,23 @@ def test_the_guest_who_talked_follows_once_the_robot_is_away_from_the_door():
     assert scenario.person("guest1").state == TALKING
     step = scenario.robot_pose(Pose(DOOR.x + 0.6, DOOR.y, DOOR.yaw))
 
-    assert step.events == (
-        {
-            "type": "person",
-            "t": clock.t,
-            "person": "guest1",
-            "name": "Sam",
-            "state": FOLLOWING,
-            "track_id": None,
-            "place": None,
-            "x": None,
-            "y": None,
-        },
-    )
+    following, *gone = step.events
+    assert following == {
+        "type": "person",
+        "t": clock.t,
+        "person": "guest1",
+        "name": "Sam",
+        "state": FOLLOWING,
+        "track_id": None,
+        "place": None,
+        "x": None,
+        "y": None,
+    }
+    # The onlookers leave as the guest follows.
+    assert [(g["type"], g["onlooker"], g["state"]) for g in gone] == [
+        ("onlooker", "onlooker1", GONE),
+        ("onlooker", "onlooker2", GONE),
+    ]
     assert "guest1" not in scenario.people_at()
     assert scenario.talking() is None
     # A following guest still answers.
@@ -898,6 +915,118 @@ def test_the_bystander_walks_its_path_once_from_3_s_after_the_first_question():
     assert BYSTANDER_ID not in scenario.people_at(end + 5.0)
 
 
+def onlooker_records(step: Step) -> list[tuple[str, str, int]]:
+    return [(e["onlooker"], e["state"], e["track_id"]) for e in of_type(step.events, "onlooker")]
+
+
+def test_the_onlookers_stand_with_each_guest_on_new_tracks_and_leave_as_the_guest_follows():
+    clock = FakeClock()
+    scenario = HriScenario(make_spec(), load_locations(LOCATIONS_FILE), clock)
+
+    step = scenario.tick()
+
+    # Absent until guest 1 arrives, then on the next tracks.
+    assert [(e["type"], e.get("person", e.get("onlooker"))) for e in step.events] == [
+        ("person", "host"),
+        ("person", "guest1"),
+        ("onlooker", "onlooker1"),
+        ("onlooker", "onlooker2"),
+    ]
+    guest1 = scenario.person("guest1").track_id
+    assert of_type(step.events, "onlooker") == [
+        {
+            "type": "onlooker",
+            "t": clock.t,
+            "onlooker": "onlooker1",
+            "state": STANDING,
+            "track_id": guest1 + 1,
+            "x": -0.90,
+            "y": 0.60,
+        },
+        {
+            "type": "onlooker",
+            "t": clock.t,
+            "onlooker": "onlooker2",
+            "state": STANDING,
+            "track_id": guest1 + 2,
+            "x": 1.45,
+            "y": -0.65,
+        },
+    ]
+    assert scenario.person("onlooker1") == PersonState(
+        "onlooker1", None, STANDING, guest1 + 1, None
+    )
+    scenario.robot_pose(DOOR)
+    near = scenario.people_at()["onlooker2"]
+    assert (near.x, near.y, near.posture, near.height) == (1.45, -0.65, "standing", 1.30)
+    assert (near.face, near.appearance) == ("onlooker2", "onlooker2")
+    # Turned to the robot, as the guest at the door is.
+    assert near.facing == pytest.approx(math.atan2(DOOR.y - near.y, DOOR.x - near.x))
+
+    # Gone as guest 1 follows, each record with the track that ended.
+    step = guide(scenario)
+
+    assert onlooker_records(step) == [
+        ("onlooker1", GONE, guest1 + 1),
+        ("onlooker2", GONE, guest1 + 2),
+    ]
+    assert scenario.person("onlooker1") == PersonState("onlooker1", None, ABSENT, 0, None)
+    assert {"onlooker1", "onlooker2"}.isdisjoint(scenario.people_at())
+
+    # Back with guest 2, on new tracks.
+    scenario.robot_pose(facing(scenario, "sofa.middle"))
+    step = scenario.robot_said("Please sit here.")
+
+    guest2 = scenario.person("guest2").track_id
+    assert guest2 > guest1 + 2
+    assert onlooker_records(step) == [
+        ("onlooker1", STANDING, guest2 + 1),
+        ("onlooker2", STANDING, guest2 + 2),
+    ]
+    assert {"onlooker1", "onlooker2"} <= set(scenario.people_at())
+    # Gone again as guest 2 follows, and back with nobody, as no guest is left.
+    scenario.robot_pose(DOOR)
+    assert onlooker_records(guide(scenario)) == [
+        ("onlooker1", GONE, guest2 + 1),
+        ("onlooker2", GONE, guest2 + 2),
+    ]
+    scenario.robot_pose(facing(scenario, "sofa.right"))
+    step = scenario.robot_said("Please sit here.")
+    assert offer_of(step)["type"] == "seat_taken"
+    assert onlooker_records(step) == []
+    assert {"onlooker1", "onlooker2"}.isdisjoint(scenario.people_at())
+
+
+def test_an_onlooker_never_answers_follows_takes_a_seat_or_joins_the_switch():
+    scenario, clock = make_scenario(answers={"mumble_once": None})
+    records = list(scenario.todos_changed(todos(("t2", INTRODUCTION, "in_progress"))).events)
+
+    for place in ("sofa.middle", "sofa.right"):
+        records += scenario.robot_said("What is your name? Could you hand me your bag?").events
+        records += scenario.robot_pose(LIVING_ROOM).events
+        # Turned away from the sofa first, so that one offer is a bad one.
+        scenario.robot_pose(Pose(LIVING_ROOM.x, LIVING_ROOM.y, math.pi))
+        records += scenario.robot_said("Please sit here.").events
+        scenario.robot_pose(facing(scenario, place))
+        records += scenario.robot_said("Please sit here.").events
+        records += scenario.robot_pose(DOOR).events
+        records += scenario.tick(clock.advance(2.0)).events
+
+    onlookers = {"onlooker1", "onlooker2"}
+    answers = of_type(records, "answer")
+    assert {a["guest"] for a in answers} == {"guest1", "guest2"}
+    assert {line["guest"] for line in of_type(records, "robot_line")} == {"guest1", "guest2"}
+    assert {r["person"] for r in of_type(records, "person")}.isdisjoint(onlookers)
+    assert {r["guest"] for r in of_type(records, "bag_request")} == {"guest2"}
+    offers = of_type(records, "seat_taken") + of_type(records, "bad_offer")
+    assert len(offers) == 4 and {o["guest"] for o in offers} == {"guest1", "guest2"}
+    [switch] = of_type(records, "seat_switch")
+    assert set(switch["old"]) == set(switch["new"]) == {"guest1", "guest2"}
+    assert {r["state"] for r in of_type(records, "onlooker")} == {STANDING, GONE}
+    for onlooker in onlookers:
+        assert scenario.person(onlooker).state == ABSENT
+
+
 def test_the_talking_guest_paces_along_the_hallway():
     scenario, clock = make_scenario()
     assert scenario.talking() is None
@@ -954,10 +1083,11 @@ def test_people_at_a_time_before_a_seat_offer_draws_everyone_as_they_were_then()
     # guest 2 has not come yet.
     then = scenario.people_at(before + 0.5)
     assert set(then) == {"host"}
-    # From the offer on, guest 1 sits and guest 2 waits at the guest spot.
+    # From the offer on, guest 1 sits, and guest 2 waits at the guest spot
+    # with the onlookers.
     for t in (taken, taken + 0.5):
         people = scenario.people_at(t)
-        assert set(people) == {"host", "guest1", "guest2"}
+        assert set(people) == {"host", "guest1", "guest2", "onlooker1", "onlooker2"}
         guest1, guest2 = people["guest1"], people["guest2"]
         assert (guest1.posture, guest1.x, guest1.y) == ("sitting", 3.115, -1.65)
         assert (guest2.x, guest2.y) == (0.65, 0.03)
@@ -980,7 +1110,7 @@ def test_the_scene_at_a_time_older_than_the_history_kept_or_before_the_start_is_
     assert scenario.people_at(start + 8.0)["guest1"].posture == "sitting"
     # Nor is anything before the scenario started.
     fresh, clock = make_scenario()
-    assert set(fresh.people_at(clock.t)) == {"host", "guest1"}
+    assert set(fresh.people_at(clock.t)) == {"host", "guest1", "onlooker1", "onlooker2"}
     assert fresh.people_at(clock.t - 0.1) is None
 
 
@@ -1029,6 +1159,46 @@ def test_the_scene_at_a_time_older_than_the_history_kept_or_before_the_start_is_
         ),
         ({"oracle": {"outlier_rate": 2.0}}, "oracle: outlier_rate must lie in [0, 1]."),
         ({"pacing": {"axis": [0.0, 0.0]}}, "pacing: axis must not be (0, 0)."),
+        ({"onlookers": [{"x": 1.0, "y": 0.0}]}, "onlookers.0.face: Field required"),
+        (
+            {"onlookers": [{"x": 1.0, "y": 0.0, "face": ""}]},
+            "onlookers.0.face: String should have at least 1 character",
+        ),
+        (
+            {"onlookers": [{"x": 1.0, "y": 0.0, "face": "a", "height": 0.0}]},
+            "onlookers.0.height: Input should be greater than 0",
+        ),
+        (
+            {
+                "onlookers": [
+                    {"x": 1.0, "y": 0.0, "face": "a"},
+                    {"x": 1.0, "y": 0.0, "face": "guest1"},
+                ]
+            },
+            "onlookers.1.face: 'guest1' is guest1's face key too; an onlooker's keys must be its "
+            "own, or recognize_person could name it guest1.",
+        ),
+        (
+            {"onlookers": [{"x": 1.0, "y": 0.0, "face": "a", "appearance": "passerby"}]},
+            "onlookers.0.appearance: 'passerby' is bystander's appearance key too;",
+        ),
+        (
+            {"onlookers": [{"x": 1.0, "y": 0.0, "face": "host"}]},
+            "onlookers.0.face: 'host' is host's face key too;",
+        ),
+        (
+            {"onlookers": [{"x": 1.0, "y": 0.0, "face": "a", "appearance": "host"}]},
+            "onlookers.0.appearance: 'host' is host's appearance key too;",
+        ),
+        (
+            {"onlookers": [{"x": 1.0, "y": 0.0, "face": "a"}, {"x": 1.0, "y": 0.0, "face": "a"}]},
+            "onlookers.1.face: 'a' is onlooker1's face key too;",
+        ),
+        (
+            {"seated": [{"id": "onlooker2", "place": "sofa.left"}]},
+            "seated.0.id: 'onlooker2' is taken: guests are guest1, guest2 and onlookers "
+            "onlooker1, onlooker2 in file order, and 'bystander' is the bystander.",
+        ),
     ],
 )
 def test_a_scenario_file_with_a_mistake_is_refused_with_what_to_fix(tmp_path, change, message):
@@ -1368,6 +1538,89 @@ def test_the_bystander_crosses_the_doorways_sight_cone_and_shows_no_face():
             seen = seen_as(view(DOOR, scenario.scene(t))[0], walker.track_id)
             assert seen.face_det_score == 0.0 and len(seen.face_embedding) == 0
     assert in_cone >= 20
+
+
+# Where the base may stop at the door: the pose, and 0.13 m off it every 45
+# deg, past Nav2's 0.1 m goal tolerance; each at the door's yaw and 0.01 rad,
+# Nav2's yaw tolerance, to either side.
+DOOR_STOPS = [
+    Pose(DOOR.x + r * math.cos(a), DOOR.y + r * math.sin(a), DOOR.yaw + turn)
+    for r, a in [(0.0, 0.0)] + [(0.13, k * math.pi / 4) for k in range(8)]
+    for turn in (-0.01, 0.0, 0.01)
+]
+
+
+class TfOnlyConnector:
+    """The agent's connector as find_people and the handle store use it: TF, and no node."""
+
+    node = None
+
+    def __init__(self, buffer: Buffer) -> None:
+        self._tf_buffer = buffer
+
+    def get_transform(self, target: str, source: str, timeout_sec: float) -> TransformStamped:
+        # The handle store's stale check asks for the pose now.
+        return self._tf_buffer.lookup_transform(target, source, Time())
+
+
+def door_context(pose: Pose, people: PersonDetectionArray) -> ToolContext:
+    """A ToolContext with the base at `pose` and a vision backend whose newest array is `people`."""
+    frame = PeopleFrame(
+        people, tuple(TrackKey(p.track_id, 0) if p.track_id else None for p in people.people)
+    )
+    feed = SimpleNamespace(config=FEED_CONFIG, latest_people=lambda *_: frame)
+    return ToolContext(TfOnlyConnector(robot_buffer(pose)), {"vision": feed})
+
+
+@pytest.mark.parametrize("share", [0.0, 0.25, 0.5, 0.75])
+@pytest.mark.parametrize("guest", ["guest1", "guest2"])
+def test_at_the_door_in_front_keeps_only_the_guest_and_says_why_the_onlookers_are_left_out(
+    guest, share
+):
+    scenario, clock = make_scenario()
+    if guest == "guest2":
+        seat(scenario, "sofa.middle")
+    t0 = clock.advance(10.0)
+    scenario.robot_said("What is your name?")
+    t = t0 + share * make_spec().pacing.period
+    guest_track = scenario.person(guest).track_id
+    names = {scenario.person(pid).track_id: pid for pid in (guest, "onlooker1", "onlooker2")}
+    walker = scenario.people_at(t).get(BYSTANDER_ID)
+    if walker is not None:
+        names[walker.track_id] = BYSTANDER_ID
+    # The bystander walks once, while guest 1 talks, and crosses the view from
+    # 3 s after the first question.
+    bystander_in_view = guest == "guest1" and share >= 0.5
+
+    for pose in DOOR_STOPS:
+        # Turned to the base where it stopped, as the guest and the onlookers are.
+        scenario.robot_pose(pose)
+        people, _ = view(pose, scenario.scene(t))
+        expected = {guest: FACE_SEEN, "onlooker1": FACE_SEEN, "onlooker2": FACE_SEEN}
+        if bystander_in_view:
+            expected[BYSTANDER_ID] = NO_FACE
+
+        ctx = door_context(pose, people)
+        plain = find_people.run(ctx, find_people.Args())
+
+        said = dict(line.split(": ", 1) for line in plain.summary.splitlines()[1:])
+        listed = {
+            names.get(h.payload.track.track_id): said[h.id].rsplit(", ", 1)[1]
+            for h in ctx.handles.get_set(plain.set_id, kind="person")
+        }
+        assert listed == expected, pose
+
+        ctx = door_context(pose, people)
+        out = find_people.run(ctx, find_people.Args(in_front=True))
+
+        kept = ctx.handles.get_set(out.set_id, kind="person")
+        assert [h.payload.track.track_id for h in kept] == [guest_track], pose
+        first, _, last = out.summary.splitlines()
+        assert first == (
+            f"{out.set_id}: 1 of {len(expected)} people in view is close in front, left to right."
+        )
+        left_out = "1 with no clear face, " if bystander_in_view else ""
+        assert last == f"Left out: {left_out}1 too far, 1 to the side.", pose
 
 
 # -- GraspParameter, on fake service clients ----------------------------------------------
@@ -2357,13 +2610,17 @@ def test_the_nodes_oracle_draws_the_guest_at_the_door_with_a_trusted_face(make_r
     rig = make_rig()
     rig.place_robot(DOOR)
     track = rig.wait_for("person", person="guest1")["track_id"]
+    onlookers = {
+        rig.wait_for("onlooker", onlooker=onlooker)["track_id"]
+        for onlooker in ("onlooker1", "onlooker2")
+    }
 
     info, people = rig.capture()
 
     assert people.header == info.header and people.camera_info == info
-    # The host sits behind the robot.
-    [guest] = people.people
-    assert guest.track_id == track
+    # The host sits behind the robot; the onlookers stand in view.
+    assert {p.track_id for p in people.people} == {track, *onlookers}
+    [guest] = [p for p in people.people if p.track_id == track]
     x1, y1, x2, y2 = bbox_xyxy(guest.face_bbox)
     assert 0.0 < x1 < x2 < WIDTH and 0.0 < y1 < y2 < HEIGHT
     assert face_trusted(guest, people.camera_info)

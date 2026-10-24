@@ -242,6 +242,18 @@ def test_face_trusted_measures_width_by_fx_and_height_by_fy():
     assert not face_trusted(face_detection(0.9, 60.0), stretched)
 
 
+@pytest.mark.parametrize(("scale", "trusted"), [(1.0 - 1e-6, False), (1.0, True), (1.0 + 1e-6, True)])
+def test_a_face_on_the_size_limit_is_trusted(scale, trusted):
+    # 42.7 x 58.537... px at fx 1066 spans exactly 0.0469 rad. Its centre is
+    # off the image's corner, where the box's corners, centre minus and plus
+    # half a size, would give back a size a little under its own.
+    person = face_detection(0.9, 42.7, 58.537237029508184 * scale)
+    person.face_bbox.center.position.x = 1084.715
+    person.face_bbox.center.position.y = 549.918
+    assert VisionFeedConfig().min_face_size_rad == 0.0469
+    assert face_trusted(person, camera_info(ROBOT_FX)) is trusted
+
+
 def test_face_trusted_names_nobody_by_a_camera_info_never_filled_in():
     assert not face_trusted(face_detection(0.9, 500.0), CameraInfo(width=1280, height=720))
     # A focal length on one axis only is no better.

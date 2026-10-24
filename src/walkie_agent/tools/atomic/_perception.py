@@ -19,6 +19,7 @@ from std_msgs.msg import Header
 from tf2_ros import Buffer, TransformException
 from tf_transformations import euler_from_quaternion
 
+from walkie_agent.perception.front import DEFAULT_FRONT_CONFIG, FrontConfig
 from walkie_agent.perception.gestures import DEFAULT_GESTURE_CONFIG, GestureConfig
 from walkie_agent.perception.geometry import camera_transform, ray_heading
 from walkie_agent.perception.identity import DEFAULT_IDENTITY_CONFIG, IdentityConfig
@@ -54,7 +55,9 @@ class PerceptionConfig:
     The thresholds are walkie-agent-v2's, tuned on the robot, and live with
     the logic they tune: the gesture rules in GestureConfig, the per-model
     face and appearance distance limits in IdentityConfig, and the seat and
-    sofa classes in SeatingConfig. The timings are ADR-0050's.
+    sofa classes in SeatingConfig. The exception is FrontConfig, who counts
+    as close in front for find_people(in_front=True), which is new and was
+    tuned in simulation only. The timings are ADR-0050's.
     """
 
     # The newest array may be this old on the node clock. An image a second
@@ -73,6 +76,7 @@ class PerceptionConfig:
     gestures: GestureConfig = DEFAULT_GESTURE_CONFIG
     identity: IdentityConfig = DEFAULT_IDENTITY_CONFIG
     seating: SeatingConfig = DEFAULT_SEATING_CONFIG
+    front: FrontConfig = DEFAULT_FRONT_CONFIG
 
 
 # Read by the atomics on every call, as `_perception.CONFIG`, so a test can
@@ -245,21 +249,30 @@ def capture_pose(ctx: ToolContext, header: Header) -> Pose2D:
 
 
 def put_handles(
-    ctx: ToolContext, kind: str, payloads: Sequence[object], header: Header
+    ctx: ToolContext,
+    kind: str,
+    payloads: Sequence[object],
+    header: Header,
+    pose: Pose2D | None = None,
 ) -> HandleSet:
     """Store the payloads of one image as a handle set, with the base's pose at its stamp.
+
+    `pose` is that pose when the caller already looked it up with
+    capture_pose, as find_people(in_front=True) does for the base's yaw,
+    so TF is asked once. Without it, the pose is looked up here.
 
     Raises StepError CANCELLED when a stop or a reset came during the call,
     so a stopped step leaves no handles behind, and capture_pose's
     UNAVAILABLE.
     """
-    try:
-        pose = capture_pose(ctx, header)
-    except StepError:
-        # A stop that came while the lookup waited is why the step ended,
-        # not the missing transform, so it is reported first.
-        ctx.check_cancelled()
-        raise
+    if pose is None:
+        try:
+            pose = capture_pose(ctx, header)
+        except StepError:
+            # A stop that came while the lookup waited is why the step
+            # ended, not the missing transform, so it is reported first.
+            ctx.check_cancelled()
+            raise
     # Last, after the TF lookups, which can wait. put_set is given the
     # pose, so it never calls its pose provider, and nothing that can wait
     # comes after this check.

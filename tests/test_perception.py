@@ -1,4 +1,4 @@
-"""The pure perception logic: gestures, seating, identity and box headings.
+"""The pure perception logic: gestures, seating, identity, box headings and who is in front.
 
 No ROS graph: messages are built in memory, and the headings read a
 tf2_ros.Buffer filled by hand, which needs no node. The gesture, seating and
@@ -21,6 +21,15 @@ from vision_msgs.msg import BoundingBox2D
 from walkie_vision_msgs.msg import ObjectDetection, PersonDetection
 
 from walkie_agent.perception import gestures
+from walkie_agent.perception.front import (
+    NO_CLEAR_FACE,
+    REASONS,
+    TO_THE_SIDE,
+    TOO_FAR,
+    FrontConfig,
+    face_size_rad,
+    front_reason,
+)
 from walkie_agent.perception.geometry import box_heading, camera_transform, ray_heading
 from walkie_agent.perception.identity import (
     IdentityConfig,
@@ -740,3 +749,109 @@ def test_ray_heading_of_a_camera_pitched_straight_down_depends_on_the_column():
 
 def test_ray_heading_is_none_without_a_focal_length():
     assert ray_heading(_box(_CX, 100, 40, 80), CameraInfo(), _camera_transform(0.0)) is None
+
+
+# -- Close in front: face_size_rad and front_reason ---------------------------
+
+# The feed's limit on face_det_score, and a base yaw other than 0, so the
+# heading is checked against the base's yaw and not the map's x axis.
+_MIN_SCORE = 0.5
+_YAW = 0.3
+_FRONT = FrontConfig()
+
+
+def _reason(
+    score: float = 0.9,
+    face_rad: float | None = 0.2,
+    heading: float | None = _YAW,
+    yaw: float = _YAW,
+    config: FrontConfig = _FRONT,
+) -> str | None:
+    return front_reason(score, face_rad, heading, yaw, _MIN_SCORE, config)
+
+
+def test_face_size_rad_is_the_box_as_an_angle_by_fx_and_fy():
+    info = _camera_info()
+    # 50 px over a 500 px focal length on both sides.
+    assert face_size_rad((300.0, 100.0, 350.0, 150.0), info) == pytest.approx(0.1)
+    # Width over fx and height over fy, so a stretched image measures the same face.
+    stretched = _camera_info()
+    stretched.k = [1000.0, 0.0, _CX, 0.0, 500.0, 240.0, 0.0, 0.0, 1.0]
+    assert face_size_rad((0.0, 0.0, 100.0, 50.0), stretched) == pytest.approx(0.1)
+
+
+def test_face_size_rad_is_none_without_a_focal_length():
+    assert face_size_rad((300.0, 100.0, 350.0, 150.0), CameraInfo()) is None
+
+
+def test_face_size_rad_of_a_box_with_no_area_is_zero():
+    assert face_size_rad((300.0, 100.0, 300.0, 150.0), _camera_info()) == 0.0
+
+
+def test_a_large_face_near_the_heading_is_in_front():
+    assert _reason() is None
+
+
+def test_front_reason_names_the_first_check_that_fails():
+    assert REASONS == (NO_CLEAR_FACE, TOO_FAR, TO_THE_SIDE)
+    # A doubtful, small face to the side fails every check: the first names it.
+    assert _reason(score=0.3, face_rad=0.01, heading=_YAW + 1.0) == NO_CLEAR_FACE
+    assert _reason(face_rad=0.01, heading=_YAW + 1.0) == TOO_FAR
+    assert _reason(heading=_YAW + 1.0) == TO_THE_SIDE
+
+
+@pytest.mark.parametrize(
+    ("score", "reason"), [(0.0, NO_CLEAR_FACE), (0.49, NO_CLEAR_FACE), (0.5, None)]
+)
+def test_a_face_needs_the_feeds_detection_score(score, reason):
+    assert _reason(score=score) == reason
+
+
+def test_a_person_without_a_measured_face_has_no_clear_face():
+    assert _reason(face_rad=None) == NO_CLEAR_FACE
+
+
+@pytest.mark.parametrize(("delta", "reason"), [(-1e-6, TOO_FAR), (0.0, None), (1e-6, None)])
+def test_a_face_on_the_size_limit_is_kept(delta, reason):
+    assert _reason(face_rad=_FRONT.min_face_rad + delta) == reason
+
+
+@pytest.mark.parametrize("side", [1.0, -1.0])
+@pytest.mark.parametrize(("delta", "reason"), [(-1e-6, None), (0.0, None), (1e-6, TO_THE_SIDE)])
+def test_a_face_on_the_cones_edge_is_kept(side, delta, reason):
+    off = math.radians(side * (_FRONT.half_angle_deg + delta))
+    assert _reason(heading=_YAW + off) == reason
+
+
+def test_the_angle_off_the_base_wraps_around_pi():
+    # 0.083 rad apart across the -pi / pi seam, not 6.2.
+    assert _reason(heading=3.1, yaw=-3.1) is None
+
+
+def test_a_face_whose_heading_is_unknown_is_to_the_side():
+    assert _reason(heading=None) == TO_THE_SIDE
+
+
+def test_front_reason_follows_the_config():
+    strict = FrontConfig(min_face_rad=0.3, half_angle_deg=5.0)
+    assert _reason(config=strict) == TOO_FAR
+    assert _reason(face_rad=0.3, heading=_YAW + math.radians(10), config=strict) == TO_THE_SIDE
+
+
+def test_front_config_defaults():
+    assert (_FRONT.min_face_rad, _FRONT.half_angle_deg) == (0.10, 25.0)
+
+
+@pytest.mark.parametrize(
+    ("fields", "name"),
+    [
+        ({"min_face_rad": 0.0}, "min_face_rad"),
+        ({"min_face_rad": -0.1}, "min_face_rad"),
+        ({"half_angle_deg": 0.0}, "half_angle_deg"),
+        ({"half_angle_deg": 180.0}, "half_angle_deg"),
+        ({"half_angle_deg": -5.0}, "half_angle_deg"),
+    ],
+)
+def test_front_config_refuses_values_out_of_range(fields, name):
+    with pytest.raises(ValueError, match=f"FrontConfig.{name}"):
+        FrontConfig(**fields)

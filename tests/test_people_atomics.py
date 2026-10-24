@@ -701,6 +701,293 @@ def test_a_stop_after_the_read_stores_no_handle(world, monkeypatch):
     assert stored == []
 
 
+# -- find_people(in_front=True) ------------------------------------------------------------
+#
+# At FX, FrontConfig's 0.10 rad is a 32 px face, so SMALL_BUT_NEAR_FACE is
+# too far, and its 25 degrees off the base's heading are columns 170.8 and
+# 469.2. Column 100 is 34.5 degrees off, and column 530 33.3.
+
+
+def test_in_front_keeps_only_a_large_face_near_the_heading(world, monkeypatch):
+    world.vision.show(
+        people=[
+            person(100, "ana", track_id=1),
+            person(250, "kim", track_id=2, face_side=0),
+            person(320, "sam", track_id=3),
+            person(530, "bob", track_id=4, face_side=SMALL_BUT_NEAR_FACE),
+        ]
+    )
+    capture_pose = _perception.capture_pose
+    lookups = []
+
+    def count(*args):
+        lookups.append(args)
+        return capture_pose(*args)
+
+    monkeypatch.setattr(_perception, "capture_pose", count)
+
+    out = world.call("find_people", in_front=True)
+
+    s = out.set_id
+    assert lines(out) == [
+        f"{s}: 1 of 4 people in view is close in front, left to right.",
+        f"{s}.0: centre, height 0.83, standing, face seen",
+        "Left out: 1 with no clear face, 1 too far, 1 to the side.",
+    ]
+    # Only the person kept gets a handle, numbered from 0.
+    assert out.handles == [f"{s}.0"]
+    [sam] = world.ctx.handles.get_set(s, kind="person")
+    assert sam.payload.track.track_id == 3
+    # One lookup of the base's pose gives both the yaw and the handles' pose.
+    assert len(lookups) == 1
+
+
+def test_in_front_keeps_a_face_on_the_cones_edge_and_leaves_out_one_past_it(world):
+    world.vision.show(
+        people=[
+            person(170.7, "ana", track_id=1),
+            person(171.0, "sam", track_id=2),
+            person(469.0, "kim", track_id=3),
+            person(469.3, "bob", track_id=4),
+        ]
+    )
+
+    out = world.call("find_people", in_front=True)
+
+    tracks = [h.payload.track.track_id for h in world.ctx.handles.get_set(out.set_id, "person")]
+    assert tracks == [2, 3]
+    assert lines(out)[-1] == "Left out: 2 to the side."
+
+
+def test_in_front_and_a_gesture_both_apply(world):
+    world.vision.show(
+        people=[
+            person(100, "ana", track_id=1, pose="waving"),
+            person(320, "sam", track_id=2, pose="waving"),
+            person(400, "kim", track_id=3),
+            person(450, "bob", track_id=4),
+        ]
+    )
+
+    out = world.call("find_people", gesture="waving", in_front=True)
+
+    s = out.set_id
+    assert lines(out) == [
+        f"{s}: 1 of 4 people in view is close in front and shows waving, left to right.",
+        f"{s}.0: centre, height 0.83, standing, waving, raising_right_arm, face seen",
+        "Left out: 2 not showing waving, 1 to the side.",
+    ]
+    [sam] = world.ctx.handles.get_set(s, kind="person")
+    assert sam.payload.track.track_id == 2
+
+
+def test_in_front_marks_the_largest_face_without_reordering(world):
+    world.vision.show(
+        people=[
+            person(280, "ana", track_id=1, face_side=40.0),
+            person(380, "sam", track_id=2, face_side=60.0),
+        ]
+    )
+    largest_right = world.call("find_people", in_front=True)
+    world.vision.show(people=[person(280, "ana", track_id=1), person(380, "sam", track_id=2)])
+    tie = world.call("find_people", in_front=True)
+    # Someone left out to the left of the two kept: the mark still names
+    # the kept person with the largest face, not one counted with them.
+    world.vision.show(
+        people=[
+            person(200, "kim", track_id=3, face_side=SMALL_BUT_NEAR_FACE),
+            person(280, "ana", track_id=1, face_side=60.0),
+            person(380, "sam", track_id=2, face_side=40.0),
+        ]
+    )
+    behind_one_left_out = world.call("find_people", in_front=True)
+
+    s = largest_right.set_id
+    assert lines(largest_right) == [
+        f"{s}: 2 of 2 people in view are close in front, left to right; "
+        f"{s}.1 has the largest face.",
+        f"{s}.0: centre, height 0.83, standing, face seen",
+        f"{s}.1: centre, height 0.83, standing, face seen",
+        "Left out: nobody.",
+    ]
+    # A tie goes to the leftmost.
+    assert lines(tie)[0].endswith(f"; {tie.set_id}.0 has the largest face.")
+    s = behind_one_left_out.set_id
+    assert lines(behind_one_left_out)[0] == (
+        f"{s}: 2 of 3 people in view are close in front, left to right; "
+        f"{s}.0 has the largest face."
+    )
+
+
+def test_in_front_with_nobody_left_out_says_so(world):
+    world.vision.show(people=[person(320, "sam", track_id=1)])
+
+    out = world.call("find_people", in_front=True)
+
+    assert lines(out) == [
+        f"{out.set_id}: 1 of 1 person in view is close in front, left to right.",
+        f"{out.set_id}.0: centre, height 0.83, standing, face seen",
+        "Left out: nobody.",
+    ]
+
+
+def test_in_front_with_nobody_in_front_stores_nothing_and_says_why(world, monkeypatch):
+    stored = spy_on_put_set(world, monkeypatch)
+    world.vision.show(
+        people=[
+            person(100, "ana", track_id=1),
+            person(320, "sam", track_id=2, top=200, height=200, face_side=SMALL_BUT_NEAR_FACE),
+        ]
+    )
+    nobody = world.fails("find_people", in_front=True)
+    world.vision.show(
+        people=[person(100, "ana", track_id=1, pose="waving"), person(320, "sam", track_id=2)]
+    )
+    nobody_waving = world.fails("find_people", gesture="waving", in_front=True)
+
+    assert nobody.code == "NOT_FOUND"
+    assert nobody.message == (
+        "Nobody in view is close in front of the robot. In view, left to right: "
+        "left, height 0.83, standing, to the side; centre, height 0.42, standing, too far. "
+        "find_people without in_front gives each a handle."
+    )
+    assert nobody.data == {
+        "gesture": None,
+        "people": 2,
+        "left_out": {"too far": 1, "to the side": 1},
+    }
+    assert nobody_waving.code == "NOT_FOUND"
+    assert nobody_waving.message == (
+        "Nobody in view who shows waving is close in front of the robot. In view, left to "
+        "right: left, height 0.83, standing, waving, raising_right_arm, to the side; "
+        "centre, height 0.83, standing, not showing waving. "
+        "find_people without in_front gives each a handle."
+    )
+    assert nobody_waving.data == {
+        "gesture": "waving",
+        "people": 2,
+        "left_out": {"not showing waving": 1, "to the side": 1},
+    }
+    assert stored == []
+
+
+def test_recognize_person_on_an_in_front_set_sees_only_those_kept(world):
+    meet(
+        world,
+        {
+            "Ana": {"cx": 100, "key": "ana", "track_id": 1},
+            "Sam": {"cx": 320, "key": "sam", "track_id": 2},
+        },
+    )
+    world.vision.show(
+        people=[
+            person(100, "ana", track_id=3, shot=1),
+            person(320, "sam", track_id=4, shot=1),
+        ]
+    )
+    found = world.call("find_people", in_front=True)
+
+    out = world.call("recognize_person", person=found.set_id)
+
+    assert lines(out) == [f"{found.set_id}.0 (centre): Sam"]
+    assert [p.name for p in out.people] == ["Sam"]
+
+
+def test_in_front_without_the_camera_transform_is_unavailable(world, monkeypatch):
+    world.vision.show(people=[person(320, "sam", track_id=1)])
+    stored = spy_on_put_set(world, monkeypatch)
+    monkeypatch.setattr(_perception, "headings", lambda boxes, *args: [None] * len(boxes))
+
+    error = world.fails("find_people", in_front=True)
+    # Without in_front a heading is not needed.
+    plain = world.call("find_people")
+
+    assert error.code == "UNAVAILABLE"
+    assert error.message == (
+        "Which way each person is from the robot is unknown, so nothing was stored. "
+        f"It needs the camera's transform (map -> {CAMERA_FRAME}) at the image's stamp "
+        "and a camera_info with a focal length."
+    )
+    assert stored == ["person"]
+    assert len(plain.handles) == 1
+
+
+def test_in_front_without_the_base_pose_at_the_stamp_is_unavailable(world, monkeypatch):
+    # Nobody in front, so with the pose the call is NOT_FOUND.
+    world.vision.show(people=[person(100, "ana", track_id=1)])
+    with_pose = world.fails("find_people", in_front=True)
+    world.vision.drive_base(world.ctx, [0.01])
+    stored = spy_on_put_set(world, monkeypatch)
+
+    error = world.fails("find_people", in_front=True)
+
+    assert with_pose.code == "NOT_FOUND"
+    # The rule needs the base's yaw, so the missing pose comes first.
+    assert error.code == "UNAVAILABLE"
+    assert "when the camera saw this is unknown, so nothing was stored" in error.message
+    assert stored == []
+
+
+# A stop during the lookups ends the step, whatever the rule found: someone
+# in front, nobody in front, or no heading at all.
+@pytest.mark.parametrize(
+    ("column", "with_headings", "without_a_stop"),
+    [(320, True, None), (100, True, "NOT_FOUND"), (320, False, "UNAVAILABLE")],
+)
+def test_a_stop_during_the_in_front_lookups_is_a_cancel(
+    world, monkeypatch, column, with_headings, without_a_stop
+):
+    world.vision.show(people=[person(column, "sam", track_id=1)])
+    headings = _perception.headings
+    stop = threading.Event()
+
+    def stop_meanwhile(boxes, *args):
+        result = headings(boxes, *args) if with_headings else [None] * len(boxes)
+        if stop.is_set():
+            world.ctx.cancel.set()
+        return result
+
+    monkeypatch.setattr(_perception, "headings", stop_meanwhile)
+    if without_a_stop is None:
+        assert lines(world.call("find_people", in_front=True))[-1] == "Left out: nobody."
+    else:
+        assert world.fails("find_people", in_front=True).code == without_a_stop
+    stored = spy_on_put_set(world, monkeypatch)
+    stop.set()
+
+    error = world.fails("find_people", in_front=True)
+
+    assert error.code == "CANCELLED"
+    assert stored == []
+
+
+def test_a_stop_while_the_in_front_base_pose_lookup_fails_is_a_cancel(world, monkeypatch):
+    world.vision.show(people=[person(320, "sam", track_id=1)])
+    assert lines(world.call("find_people", in_front=True))[-1] == "Left out: nobody."
+    world.vision.drive_base(world.ctx, [0.01])
+    stored = spy_on_put_set(world, monkeypatch)
+    lookup = world.ctx.tf_buffer.lookup_transform
+
+    def stop_meanwhile(target, source, *args, **kwargs):
+        if (target, source) == (MAP_FRAME, ROBOT_FRAME):
+            world.ctx.cancel.set()
+        return lookup(target, source, *args, **kwargs)
+
+    monkeypatch.setattr(world.ctx.tf_buffer, "lookup_transform", stop_meanwhile)
+
+    error = world.fails("find_people", in_front=True)
+
+    assert error.code == "CANCELLED"
+    assert stored == []
+
+
+def test_find_people_describes_in_front_for_the_door_only(world):
+    description = world.tools["find_people"].description
+
+    assert "use it at the door" in description
+    assert "not at the seats" in description
+
+
 # -- remember_person and recognize_person ----------------------------------------------------
 
 

@@ -25,6 +25,7 @@ from rclpy.executors import MultiThreadedExecutor
 from std_msgs.msg import Empty, Header
 
 from test_arm_atomics import MODEL_PATH, POSES_PATH, targets
+from test_commander import GRIPPER_ABANDONED
 from test_gaze import (
     DEADBAND,
     NO_CANCEL,
@@ -40,8 +41,10 @@ from test_gaze import (
 )
 from test_people_atomics import CAMERA_FRAME, CX, FX, HEIGHT, WIDTH, FakeVision, person, thing
 from walkie_agent import gaze as gaze_module
+from walkie_agent.arm import commander as commander_module
 from walkie_agent.arm.commander import CommanderClient
 from walkie_agent.arm.poses import load_arm_poses, load_robot_model
+from walkie_agent.arm.state import UNKNOWN_SENTENCE
 from walkie_agent.gaze import (
     ARM_MOTION,
     ARM_OUT,
@@ -1000,6 +1003,48 @@ def test_move_arm_to_pose_refuses_and_sends_no_goal_while_the_loop_cannot_confir
     # With the zeros out, the next motion goes ahead.
     arm_world.call("move_arm_to_pose", pose="home")
     assert len(fake.joint_goals) == 1
+
+
+def test_a_move_refused_for_an_unconfirmed_stop_never_says_the_robot_may_drive_while_unverified(
+    arm_world, fake, connector, monkeypatch
+):
+    # A gripper command from an earlier call was given up on before its end
+    # was known, so the arms are unverified while last_state still says
+    # that they are safe for driving. The refusal sends nothing to the
+    # commander, and its sentence comes from the client's memory.
+    monkeypatch.setattr(commander_module, "ABANDON_AFTER_S", 0.3)
+    client = arm_world.ctx.backend("arm")
+    client.read_arms(threading.Event())
+    assert client.last_state.travel_safe is True
+    place_base(connector, 0.0)
+    spy = PublishSpy(arm_world.gaze, monkeypatch)
+    arm_world.gaze.hold_heading("seat_1", 1.0, cancel=NO_CANCEL)
+    spy.next()
+    accept = threading.Event()
+    fake.accept_gate = accept
+    try:
+        # The gaze thread is held in a publish, so it cannot stop the loop
+        # for the unverified arms itself, and the stop is not confirmed.
+        spy.gate.clear()
+        assert spy.blocked.wait(2.0)
+        with pytest.raises(StepError):
+            client.control_gripper("left_gripper", 0.044, threading.Event(), timeout_s=0.3)
+        assert wait_until(lambda: client.busy() is None)
+        assert client.unverified == GRIPPER_ABANDONED
+        assert client.last_state.travel_safe is True
+        requests = list(fake.joint_state_requests)
+
+        error = arm_world.fails("move_arm_to_pose", pose="home")
+
+        assert fake.joint_goals == []
+        assert fake.joint_state_requests == requests
+    finally:
+        spy.gate.set()
+        accept.set()
+
+    assert (error.code, error.data) == ("TIMEOUT", {"pose": "home", "gaze": "stop not confirmed"})
+    assert error.message.endswith(f"{gaze_atomics.NO_ARM_GOAL} {UNKNOWN_SENTENCE}")
+    assert "safe for driving" not in error.message
 
 
 def test_a_stop_whose_zeros_fail_once_refuses_the_arm_until_they_are_published_again(

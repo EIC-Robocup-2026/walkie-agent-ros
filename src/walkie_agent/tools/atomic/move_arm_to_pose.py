@@ -102,11 +102,13 @@ def run(ctx: ToolContext, args: Args) -> Out:
         gaze.stop_before_arm_motion(ctx)
     except StepError as e:
         # The base may still be turning, so nothing goes to the commander,
-        # not even a read for the sentence.
+        # not even a read for the sentence. state_sentence() reads only the
+        # client's memory, and never says that the robot may drive while
+        # the arms are unverified.
         raise StepError(
             e.code,
             f"Could not move to {name!r}: {shared.full_stop(e.message)} {gaze.NO_ARM_GOAL} "
-            f"{client.last_state.sentence()}",
+            f"{shared.state_sentence(client)}",
             {"pose": name, **e.data},
         ) from None
     try:

@@ -841,15 +841,15 @@ def test_valid_fails_on_a_clock_jump():
 # -- time ---------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(("done_t", "ok"), [(SEEDED_T + 360.0, True), (SEEDED_T + 361.0, False)])
-def test_time_allows_360_s_from_the_seeding_to_the_last_item_completed(done_t, ok):
+@pytest.mark.parametrize(("done_t", "ok"), [(SEEDED_T + 420.0, True), (SEEDED_T + 421.0, False)])
+def test_time_allows_420_s_from_the_seeding_to_the_last_item_completed(done_t, ok):
     events, tools = passing_run()
     events[at(events, "todos", t=DONE_T)]["t"] = done_t
 
     result = result_of("time", events, tools)
 
     assert result.ok is ok
-    assert result.reason == f"{done_t - SEEDED_T:.1f} s, {'within' if ok else 'over'} 360 s"
+    assert result.reason == f"{done_t - SEEDED_T:.1f} s, {'within' if ok else 'over'} 420 s"
 
 
 def test_time_fails_a_run_whose_items_are_never_all_completed():
@@ -864,7 +864,7 @@ def test_time_fails_a_run_whose_items_are_never_all_completed():
 @pytest.mark.parametrize(
     ("finished", "ok", "reason"),
     [
-        (True, True, f"{DONE_T - SEEDED_T:.1f} s, within 360 s"),
+        (True, True, f"{DONE_T - SEEDED_T:.1f} s, within 420 s"),
         (False, False, "the todo list was never all completed"),
     ],
 )

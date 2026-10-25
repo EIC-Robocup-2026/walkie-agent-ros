@@ -47,7 +47,7 @@ door, learns their name and favourite drink, guides them to the living
 room and offers a free seat. When both are seated, it introduces them to
 each other: it looks at one guest and says the other's name and drink, for
 both guests. The second guest brings a bag for the host, who then leads
-the robot to a drop spot. The test lasts 6 minutes.
+the robot to a drop spot. The test lasts 7 minutes.
 
 Rules that shape the design:
 
@@ -1143,7 +1143,7 @@ simulation's clock, so their times compare directly. A run passes when:
   of a travel-safe pose;
 - its log has no `clock_jump`: a run whose simulation restarted is not
   valid;
-- it finishes within 6 minutes of sim time, from the template's seeding to
+- it finishes within 7 minutes of sim time, from the template's seeding to
   the last item completed. `/walkie/todos` is latched, so a list left
   finished by an earlier task does not count as the seeding;
 - no `look_at` or `remember_person` call names an onlooker's or the

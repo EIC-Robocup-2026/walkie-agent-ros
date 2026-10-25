@@ -77,7 +77,7 @@ explains each step and lists the topics.
 | ----------------------- | ----------------------------------------------------------------- |
 | `src/walkie_agent/`     | The agent, its tools, the voice nodes and the fake robot          |
 | `tests/`                | Tests that run on real ROS 2 with a fake robot and a scripted LLM |
-| `config.toml`           | RAI settings: LLM vendor and models, voice, tracing               |
+| `config.toml`           | RAI settings (LLM vendor and models, voice, tracing) and the perception and gaze values to tune on the robot |
 | `config/locations.toml` | The places Walkie can drive to                                    |
 | `whoami/`               | Walkie's identity sources for RAI's whoami                        |
 | `ros2_ws/`              | Message packages built from source (`rai_interfaces`, `walkie_database_msgs`, `walkie_vision_msgs`, `my_robot_interfaces`) |

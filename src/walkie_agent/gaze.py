@@ -132,11 +132,16 @@ _ACTIVE_GOAL = frozenset(
     (GoalStatus.STATUS_ACCEPTED, GoalStatus.STATUS_EXECUTING, GoalStatus.STATUS_CANCELING)
 )
 
-# How many people arrays that show the target wait for TF at once. The gaze
-# thread looks each one up without waiting and tries again next tick, so a
-# few are kept: with only the newest, arrays that always arrive just before
-# TF reaches their stamp would never give a sighting.
+# How many people arrays that show the target wait for TF at once, at
+# least. The gaze thread looks each one up without waiting and tries again
+# next tick, so a few are kept: with only the newest, arrays that always
+# arrive just before TF reaches their stamp would never give a sighting.
+# A tf_wait_s longer than these cover at the camera's rate keeps more
+# (pending_kept()).
 _PENDING_KEPT = 4
+# The camera's frame rate, and so the most people arrays per second that
+# walkie-vision publishes (hri.md, "Faces collected while talking").
+_PEOPLE_RATE_HZ = 15.0
 
 # How long shutdown() waits for the gaze thread to send the stop's zeros and
 # end. A tick never waits, and once the loop is closed the thread tries the
@@ -174,7 +179,10 @@ class GazeConfig:
     """The loop's settings.
 
     The control values are walkie-agent-v2's FaceTracker's, tuned on the
-    robot; the acceleration cap is walkie-ros's velocity_smoother's.
+    robot; the acceleration cap is walkie-ros's velocity_smoother's. Only
+    tf_wait_s, which is not v2's and was chosen in simulation, can be set
+    in config.toml, in [walkie.gaze] (walkie_agent.tuning). The checks
+    below still apply to it.
     """
 
     # Control ticks per second. v2's HRI_FACE_TRACK_HZ, tuned on the robot.
@@ -208,7 +216,8 @@ class GazeConfig:
     cmd_vel_topic: str = CMD_VEL_TOPIC
     # How long a people array may wait for TF to reach its stamp before it
     # is dropped, as perception's tf_timeout_s. Not v2's: v2 read the
-    # heading when it captured the image.
+    # heading when it captured the image. Chosen in simulation: how far TF
+    # lags the image on the robot is not measured yet.
     tf_wait_s: float = 0.2
     # The live heading counts as unknown, and the command is 0, once the
     # newest map -> base_footprint is this much older than the node clock.
@@ -263,6 +272,16 @@ class GazeConfig:
 
 
 DEFAULT_CONFIG = GazeConfig()
+
+
+def pending_kept(config: GazeConfig) -> int:
+    """How many people arrays wait for TF at once: enough to cover `tf_wait_s` at 15 Hz.
+
+    With arrays at 15 Hz, the oldest one kept arrived at least tf_wait_s
+    before the newest, so tf_wait_s, not the count, ends an array's wait.
+    _PENDING_KEPT at the default tf_wait_s of 0.2 s.
+    """
+    return max(_PENDING_KEPT, math.ceil(config.tf_wait_s * _PEOPLE_RATE_HZ) + 1)
 
 
 # -- The control law, without ROS -------------------------------------------------
@@ -601,6 +620,7 @@ class GazeLoop:
         # while either happened drops its result instead of publishing it.
         self._run_id = 0
         self._pending: list[_Pending] = []
+        self._pending_kept = pending_kept(config)
         self._navigation_active = False
         self._stop_reason: str | None = None
         self._stopped_at: float | None = None
@@ -1148,7 +1168,7 @@ class GazeLoop:
                 self._stop_locked(arm_reason)
                 return []
             # Before the arrays that came during the tick, which are newer.
-            self._pending = (waiting + self._pending)[-_PENDING_KEPT:]
+            self._pending = (waiting + self._pending)[-self._pending_kept :]
             if sighting is not None:
                 self._control.sight(*sighting)
             commands = self._control.tick(yaw)
@@ -1304,7 +1324,7 @@ class GazeLoop:
                 return
             index = frame.tracks.index(target.track)
             self._pending.append(_Pending(frame.msg, index, stamp, time.monotonic()))
-            del self._pending[:-_PENDING_KEPT]
+            del self._pending[: -self._pending_kept]
 
     def _on_navigation_status(self, msg: GoalStatusArray) -> None:
         # Every message lists all the goals the server still keeps, so the

@@ -103,6 +103,8 @@ class VisionFeedConfig:
     # same nominal fx, 1066 px, as HD1080 is a crop of HD2K. The robot's
     # own calibration was not read, so check it there: 50 px over its k[0].
     # 50 / 1066 is 0.0469 rad, 2.7 degrees, and 10.5 px in the simulation.
+    # config.toml can set it: [walkie.perception.vision_feed]
+    # min_face_size_rad.
     min_face_size_rad: float = 0.0469
 
     def __post_init__(self) -> None:

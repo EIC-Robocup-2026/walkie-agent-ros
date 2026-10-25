@@ -66,3 +66,46 @@ transcription_model_name = "tiny"
 vendor = "KokoroTTS"
 voice = ""
 speaker_device_name = "default"
+
+# Perception and gaze values to tune on the robot, read by the agent at
+# start-up (src/walkie_agent/tuning.py; hri.md, Delivery order). The values
+# shown are the defaults in the code. Uncomment a table and the keys you
+# change. A missing key keeps its default. An unknown table, key or model, a
+# table such as [gaze] without its walkie. prefix, or a value that is not a
+# number or out of range, stops the agent with a list of the problems.
+# The same file runs the simulation, so values tuned here change sim runs too.
+#
+# How long find_people and find_seats wait for TF at an image's stamp, in
+# seconds. Chosen in simulation; raise it if TF lags the camera on the robot.
+# [walkie.perception]
+# tf_timeout_s = 0.2
+#
+# Who counts as close in front for find_people(in_front=True). Tuned in
+# simulation only; tune at the arena's door with team members walking past.
+# min_face_rad is the smallest face, as an angle. 0.10 rad is about 107 px at
+# the ZED 2i's nominal fx of 1066 px. It may not go below min_face_size_rad,
+# so that a person kept in front can be recognized. half_angle_deg is the
+# largest angle, in degrees, between the face's heading and the base's.
+# [walkie.perception.front]
+# min_face_rad = 0.10
+# half_angle_deg = 25.0
+#
+# The smallest face that is collected and recognized, as an angle: v2's 50 px
+# over the ZED 2i's nominal fx. Set it to 50 px over the robot's own k[0].
+# [walkie.perception.vision_feed]
+# min_face_size_rad = 0.0469
+#
+# The largest cosine distance, above 0 and below 2, at which a stored face or
+# appearance names a person, by model. Only the models listed in
+# perception/identity.py can be set. Tune them with team members.
+# [walkie.perception.identity.face_distance_limits]
+# arcface_w600k_r50 = 0.4
+# [walkie.perception.identity.appearance_distance_limits]
+# osnet_x1_0_msmt17 = 0.5
+#
+# How long the gaze loop (ADR-0051) keeps a people array that waits for TF to
+# reach its stamp, in seconds. Chosen in simulation; raise it if TF lags the
+# camera on the robot. The loop's gain, speeds and deadband are v2's, tuned on
+# the robot, and stay in the code.
+# [walkie.gaze]
+# tf_wait_s = 0.2

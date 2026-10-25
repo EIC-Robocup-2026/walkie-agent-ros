@@ -73,10 +73,24 @@ class IdentityConfig:
     outlier_mad_k: float = 3.0
     # The largest cosine distance at which a stored face names a person, by
     # face_model. A model without a limit is never matched, so an unknown
-    # model cannot produce a confident wrong name.
+    # model cannot produce a confident wrong name. Tuned again on the robot
+    # with team members (perception.md, question 2), so config.toml can set
+    # the limit of a model listed here, in
+    # [walkie.perception.identity.face_distance_limits].
     face_distance_limits: Mapping[str, float] = field(default_factory=_face_limits)
-    # The same for appearance vectors, by appearance_model.
+    # The same for appearance vectors, by appearance_model, set in
+    # [walkie.perception.identity.appearance_distance_limits].
     appearance_distance_limits: Mapping[str, float] = field(default_factory=_appearance_limits)
+
+    def __post_init__(self) -> None:
+        # A cosine distance lies from 0 to 2, and a limit of 2 would name
+        # every person by the nearest stored one.
+        for name in ("face_distance_limits", "appearance_distance_limits"):
+            for model, limit in getattr(self, name).items():
+                if not 0 < limit < 2:
+                    raise ValueError(
+                        f"IdentityConfig.{name}[{model!r}] must lie in (0, 2), not {limit}."
+                    )
 
 
 DEFAULT_IDENTITY_CONFIG = IdentityConfig()

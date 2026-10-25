@@ -31,6 +31,8 @@ from walkie_agent.todo import TodoItem, TodoList, console_line
 from walkie_agent.tool_log import ToolLog
 from walkie_agent.toolbox import Toolbox
 from walkie_agent.tools import build_walkie_tools
+from walkie_agent.tools.atomic import _perception
+from walkie_agent.tuning import Tuning
 from walkie_agent.whoami import build_system_prompt
 
 SYSTEM_PROMPT = """\
@@ -531,6 +533,7 @@ def create_walkie_agent(
     mock_people_memory: bool = False,
     arms: bool = False,
     tool_log_path: Path | None = None,
+    tuning: Tuning | None = None,
 ) -> WalkieAgent:
     """Build the agent. `whoami_dir` adds the robot description and documentation
     search from `pixi run whoami-build`, when they have been built (see whoami.py).
@@ -542,13 +545,20 @@ def create_walkie_agent(
     when that file is wrong. The gaze loop is always created, as the `gaze`
     backend, so look_at and stop_looking load in every run. `tool_log_path`
     writes the tool-call record there (tool_log.py), stamped on the node's
-    clock."""
+    clock. `tuning` holds the perception and gaze configs that config.toml
+    sets (tuning.py); its perception config replaces the atomics'
+    `_perception.CONFIG` for the whole process. Without it, every config
+    keeps the code's defaults."""
+    if tuning is not None:
+        # The perception atomics read this module attribute on every call.
+        _perception.CONFIG = tuning.perception
+    tuning = tuning if tuning is not None else Tuning()
     # One list, shared by the todo tools and the graph.
     todos = TodoList()
     # VisionFeed is always created: without a walkie-vision publisher it only
     # holds two idle subscriptions, and find_people and find_seats then fail
     # with UNAVAILABLE.
-    vision = VisionFeed(connector)
+    vision = VisionFeed(connector, tuning.vision_feed)
     backends: dict[str, Any] = {"vision": vision}
     memory = None
     if mock_people_memory:
@@ -569,7 +579,7 @@ def create_walkie_agent(
     # target it publishes nothing on /cmd_vel. With the commander, it stops
     # when an arm leaves the travel-safe poses; without, as without --arms,
     # it turns with no arm check, as the drives do (ADR-0051).
-    gaze = GazeLoop(connector, vision=vision, arm=commander)
+    gaze = GazeLoop(connector, vision=vision, arm=commander, config=tuning.gaze)
     backends["gaze"] = gaze
     toolbox = Toolbox(connector, backends)
     # A stop, a reset or a new task stops the loop.

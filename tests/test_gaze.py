@@ -1282,6 +1282,48 @@ def test_an_array_waits_for_tf_at_its_stamp_for_tf_wait_s_and_no_longer(
     assert_silent_after_stop(recorder)
 
 
+def test_the_arrays_kept_for_tf_cover_tf_wait_s_at_the_cameras_rate():
+    # Four at the default, as before tf_wait_s could be set.
+    assert gaze_module.pending_kept(DEFAULT_CONFIG) == 4
+    for tf_wait_s in (0.05, 0.2, 0.27, 0.35, 0.5, 1.0):
+        kept = gaze_module.pending_kept(GazeConfig(tf_wait_s=tf_wait_s))
+        # At 15 Hz, the oldest one kept arrived at least tf_wait_s before
+        # the newest, so the count never ends an array's wait early.
+        assert (kept - 1) / 15 >= tf_wait_s - 1e-9
+
+
+def test_a_long_tf_wait_gives_a_sighting_when_tf_lags_more_than_four_arrays(
+    connector, recorder, make_loop
+):
+    feed = VisionFeed(connector)
+    clock = connector.node.get_clock()
+    mount_camera(connector)
+    config = GazeConfig(tf_wait_s=0.6, lost_after_s=3.0)
+    loop = make_loop(vision=feed, config=config, yaw_source=lambda: 0.0)
+    first = clock.now().to_msg()
+    base_at(connector, first)
+    feed._on_people(people_array([person(3, 0.2, 0.0)], first))
+    [key] = feed.people_at(first, 0.0, NO_CANCEL).tracks
+    loop.follow_person("per_3", key, None, 0, cancel=NO_CANCEL)
+    assert loop.status().setpoint == pytest.approx(0.2, abs=1e-6)
+
+    # Eight arrays a camera frame apart, about 0.5 s of them, all stamped
+    # after TF's newest transform.
+    start = clock.now()
+    stamps = [(start + Duration(seconds=i / 15)).to_msg() for i in range(8)]
+    for i, stamp in enumerate(stamps):
+        feed._on_people(people_array([person(3, -0.5 if i == 0 else 0.5, 0.0)], stamp))
+    time.sleep(0.15)
+    assert loop.status().setpoint == pytest.approx(0.2, abs=1e-6)
+    # TF reaches the oldest one's stamp only. Four arrays kept would have
+    # dropped it; within tf_wait_s it still waits, and is the sighting.
+    base_at(connector, stamps[0])
+    assert wait_until(lambda: abs(loop.status().setpoint + 0.5) < 1e-6, timeout=0.4)
+    assert loop.status().last_seen == pytest.approx(stamp_ns(stamps[0]) / 1e9)
+    loop.stop(STOP_LOOKING)
+    assert_silent_after_stop(recorder)
+
+
 def test_an_interrupt_returns_at_once_while_the_gaze_thread_is_mid_tick(recorder, make_loop):
     calls = 0
     mid_tick = threading.Event()

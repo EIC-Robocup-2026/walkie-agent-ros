@@ -206,7 +206,12 @@ sequenceDiagram
   appearance of `osnet_x1_0_msmt17` matches at 0.5 or less, still to be
   tuned on the robot. The fake models `fake_face` and `fake_reid` match at
   0.2 or less. The limits live in `IdentityConfig`, in
-  `perception/identity.py`.
+  `perception/identity.py`. `config.toml` changes the limit of a model
+  listed there, in `[walkie.perception.identity.face_distance_limits]` or
+  `[walkie.perception.identity.appearance_distance_limits]`, so tuning
+  them on the robot needs no code change
+  ([HRI Task](hri.md#delivery-order)). A model not listed is refused, as
+  a misspelt name would leave the real model on its old limit.
 - **One query per model.** A track holds vectors of two models after a
   model switch, and the stored person may have been met under either. So
   `recognize_person` averages a person's vectors of each model with a
@@ -392,9 +397,11 @@ flowchart TB
    needs the image the detection came from. Blocks: `localize_person`.
 2. **walkie-database's people services.** Their requests, the session rules
    of walkie-database ADR-0010, and who tunes the face distance limit. The
-   HRI task needs a person stored with facts and several vectors, and a
-   set of faces recognized at once. `PeopleMemory` in
-   `perception/people_memory.py` is the interface the atomics call today.
+   limit is a `config.toml` key, so the tuning itself is a config edit
+   ([HRI Task](hri.md#delivery-order)). The HRI task needs a person
+   stored with facts and several vectors, and a set of faces recognized
+   at once. `PeopleMemory` in `perception/people_memory.py` is the
+   interface the atomics call today.
    Blocks: `recognize_person` and `remember_person` on the robot, and so
    the HRI task there. In sim they run on the mock.
 3. **No effect covers a memory write.** R, P, S, N and M cover reading,

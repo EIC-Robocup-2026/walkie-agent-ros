@@ -14,8 +14,10 @@ from config/task_templates.toml when it exists. With --tool-log, every tool
 call also goes to a JSON lines record, which the HRI pass check reads.
 
 The LLM is selected by config.toml (see RAI's get_llm_model), which is read
-from the current working directory. API keys are read from the environment, or
-from a .env file in the working directory (see .env.example).
+from the current working directory. The same file's [walkie.perception] and
+[walkie.gaze] tables set the perception and gaze values to tune on the robot
+(see tuning.py). API keys are read from the environment, or from a .env file
+in the working directory (see .env.example).
 """
 
 import argparse
@@ -30,6 +32,7 @@ from rai.communication.ros2 import ROS2Connector, ROS2Context, ROS2HRIConnector
 from walkie_agent.agent import create_walkie_agent
 from walkie_agent.locations import load_locations
 from walkie_agent.tasks import load_task_templates
+from walkie_agent.tuning import load_tuning
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -101,6 +104,7 @@ def main() -> None:
     # Built before ROS starts so a config or credential error fails fast.
     llm = get_llm_model("complex_model", streaming=True)
     templates = load_task_templates(args.task_templates)
+    tuning = load_tuning()
 
     with ROS2Context():
         connector = ROS2Connector(node_name="walkie_agent", use_sim_time=args.use_sim_time)
@@ -115,6 +119,7 @@ def main() -> None:
             mock_people_memory=args.mock_people_memory,
             arms=args.arms,
             tool_log_path=tool_log_path(args.tool_log),
+            tuning=tuning,
         )
         agent.subscribe_source(args.input_topic, hri_connector)
         agent.subscribe_reset(connector, args.reset_topic)

@@ -74,7 +74,7 @@ What a teammate wants from `send_vel` maps onto these calls:
 | Nudge forward or sideways | `ctx.base.move_relative(forward_m=0.3)` |
 | Keep facing a person | `ctx.gaze.look_at(handle)` |
 | Stop | `ctx.base.stop()` |
-| Follow someone | `ctx.base.follow`, ADR-0053's loop through Nav2's FollowPoint tree |
+| Follow someone | `ctx.base.follow`, ADR-0053's loop through `WalkieFollowPoint`, walkie-ros's copy of Nav2's FollowPoint tree |
 | Visual servoing | A robot-side skill behind `run_skill` ([ADR-0027](decisions/0027-runskill-action.md)) |
 
 A velocity verb waits for a collision-checked input in walkie-ros. It would
@@ -167,7 +167,7 @@ Every base verb runs these steps in this order:
    for its zero commands
    ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). Once the follow
    loop exists, stop it too, and wait for its goal to end and the base to
-   be still, within the bound ADR-0053 sets. The follow loop publishes no
+   be still, within the bounds ADR-0053 sets. The follow loop publishes no
    velocity, so there are no zeros to wait for. Stopping both before any
    Nav2 step keeps a live loop from sending again while step 4 cancels.
 3. **One base goal at a time.** A second verb is refused while a goal of
@@ -175,8 +175,8 @@ Every base verb runs these steps in this order:
    stopped it.
 4. **Cancel other goals.** It cancels every active `navigate_to_pose` goal,
    whoever sent it, and waits up to 5 s for the status topic to show none
-   active. A follow goal left by a dead loop makes Nav2 abort, at once,
-   every goal on another tree, and keeps the gaze loop silent
+   active. A follow goal that a dead loop left active makes Nav2 abort, at
+   once, every goal on another tree, and keeps the gaze loop silent
    ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)).
 5. **Check the arms** with `ctx.cancel`, keeping the check's code
    ([ADR-0025](decisions/0025-travel-safe-interlock.md)). Its notes, such as
@@ -259,10 +259,11 @@ The sim does not.
 The head ramps at 0.6 rad/s. After a drive longer than 1.5 m, the camera
 looks at the floor for about 3 s after arrival. In the HRI task that is
 when `find_people` looks at the door and `find_seats` at the sofa. The
-follow is one long goal, with the remaining distance measured along the
-path to the host. Each time the host pulls more than 1.5 m ahead and the
-robot catches up, the head tilts down. It stays down until the gap is back
-above 1.7 m.
+follow is a run of goals, because the loop sends the goal again after an
+abort, such as error 105. Each new goal resets the head to 0.25 rad. Within a goal, the remaining
+distance is measured along the path to the host. Each time the host pulls
+more than 1.5 m ahead and the robot catches up, the head tilts down. It
+stays down until the gap is back above 1.7 m.
 
 The tilt was made for STVL, which marks tabletops from the head camera.
 STVL is disabled on the robot, because the head camera joint is broken, so
@@ -677,9 +678,11 @@ and fakes.
     2. **Reset mid-drive.** During a `navigate_to_location`, a reset
        cancels the goal, and the base is still within 1 s of the cancel's
        answer, by ground truth.
-    3. **An orphaned goal on another tree.** A script sends a goal that
-       names a scratch copy of the FollowPoint tree by its path, as
-       ADR-0053's smoke test does, and leaves it active. Once before the
+    3. **An orphaned goal on another tree.** A script sends a goal on a
+       follow tree, `WalkieFollowPoint` by its ID or a scratch copy by its
+       path, as ADR-0053's smoke test does, and leaves it active. The tree
+       can end a goal with error 105 on its own, so the script checks that
+       the goal is still active and sends it again if not. Once before the
        agent starts: the start-up cancel ends it, and a drive succeeds.
        Once while the agent runs: the next drive cancels it first, then
        succeeds.
@@ -773,8 +776,8 @@ and fakes.
 
 | Repository | Change | Status |
 | ---------- | ------ | ------ |
-| navigation (walkie-ros's `navigation` submodule) | A `head_tilt_near_goal` launch switch in `robot_navigation`'s `localization_Nav2_real.launch.py` and `mapping_Nav2_real.launch.py`, default `true`. Agent runs pass `false` | Commit `22dc4ef` on the branch `feat/hri-follow-and-head-tilt`, not yet pushed or in a pull request. Needed before the HRI task runs on the robot |
-| walkie-ros | Bump the `navigation` submodule from `7f15b1c` to a commit with `22dc4ef`, and with `53e4ed1`, the follow tree of [HRI slice 2](hri.md#what-changes-in-other-repositories) | Not started. The follow loop needs it in sim, and the robot run needs the switch |
+| navigation (walkie-ros's `navigation` submodule) | A `head_tilt_near_goal` launch switch in `robot_navigation`'s `localization_Nav2_real.launch.py` and `mapping_Nav2_real.launch.py`, default `true`. Agent runs pass `false` | Commit `22dc4ef` on the local branch `feat/hri-follow-and-head-tilt`, not yet pushed or in a pull request. Needed before the HRI task runs on the robot |
+| walkie-ros | Bump the `navigation` submodule from `7f15b1c` to a commit with `22dc4ef`, and with `53e4ed1`, the follow tree `WalkieFollowPoint` of [HRI slice 2](hri.md#what-changes-in-other-repositories) | Not started. The follow loop needs it in sim, and the robot run needs the switch. This is main's pin. The HRI world's branch `feat/chula-pat14-6-simulation` (PR #58) pins `359719f` and loads a params file that `7f15b1c` deleted, so it has to take main's unified Nav2 config (PR #60) before the bump reaches it ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)). walkie-ros's docs for the switch are on its local branch `docs/head-tilt-launch-arg` (`e08d0ec`), not pushed |
 | walkie-ros | A collision-checked velocity input | Only if a velocity verb is ever needed |
 
 ## Open questions

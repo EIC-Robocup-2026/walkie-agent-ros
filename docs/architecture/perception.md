@@ -419,11 +419,13 @@ flowchart TB
    which an LLM turn cannot run. Settled: a reviewed loop in the agent,
    `ctx.base.follow`, built after the capability layer
    ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)). Proposed: the loop
-   sends Nav2 a copy of its FollowPoint tree and the person's position. The
+   sends Nav2 a goal on `WalkieFollowPoint`, walkie-ros's copy of its
+   FollowPoint tree, and the person's position. The
    2D lidar gives the range and the camera the identity, so following does
    not wait on question 1
    ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)). A smoke
-   test on the sim stack settles the tree. It may move behind `run_skill`
+   test on the MuJoCo sim settles how the tree behaves behind a host who
+   walks and stops. It may move behind `run_skill`
    ([ADR-0027](decisions/0027-runskill-action.md)) once a skill server
    exists.
 6. **Memory search by description.** "The red mug I saw in the kitchen"

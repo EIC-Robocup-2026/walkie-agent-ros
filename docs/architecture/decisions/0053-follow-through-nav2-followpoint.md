@@ -97,8 +97,10 @@ Facts that shape the design:
 - **Nav2 drives.**
     - The loop sends one `navigate_to_pose` goal that names a copy of the
       FollowPoint tree. The copy's `FollowPath` sets
-      `goal_checker_id="general_goal_checker"`. Where the copy lives is
-      [HRI question 9](/architecture/hri.md#open-questions).
+      `goal_checker_id="general_goal_checker"`. It lives in walkie-ros's
+      `robot_navigation`, beside walkie's other trees, and the goal names
+      it by its ID
+      ([HRI question 9](/architecture/hri.md#open-questions)).
     - It publishes the host's map position on `/goal_update` at 2 Hz,
       twice the tree's rate.
     - The goal and every update are stamped with the node clock, which is

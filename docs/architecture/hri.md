@@ -1307,7 +1307,7 @@ repository:
 | walkie-ros | W2, arm speed scaling, before the hand-over runs with anyone but team members ([The bag hand-over](#the-bag-hand-over)) | Planned on [Manipulation](manipulation.md#changes-needed-in-walkie-ros) |
 | walkie-ros | A collision-checked input for the gaze loop, if [question 4](#open-questions) asks for one | — |
 | walkie-ros | Person bodies in the MuJoCo world, so the lidars, the depth image and the costmaps see the scenario's people | A proposal, after slice 2 passes with legs in the scan ([Slice 2](#slice-2-following-the-host)) |
-| walkie-ros | A copy of Nav2's `follow_point.xml` whose `FollowPath` sets `goal_checker_id="general_goal_checker"`, since walkie-ros loads two goal checkers | Recommended there ([question 9](#open-questions)) |
+| walkie-ros | A copy of Nav2's `follow_point.xml` whose `FollowPath` sets `goal_checker_id="general_goal_checker"`, since walkie-ros loads two goal checkers | New, before the follow loop ([question 9](#open-questions)) |
 | walkie-ros | A follow speed above the base's 0.3 m/s | Open, once the robot has followed real hosts |
 
 ## Open questions
@@ -1363,16 +1363,16 @@ repository:
    the Technical Committee whether passive guests sit before the first
    guest arrives. Blocks: the follow in such an arena, not in sim, where
    only the host is seated.
-9. **Where the follow tree lives.** Nav2's stock FollowPoint tree names no
-   goal checker, so walkie-ros's controller server rejects it. The follow
-   needs a copy that names `general_goal_checker`. A goal can name a tree
-   by its ID, from walkie-ros's tree directory, or by a file path, so this
-   repository could ship the copy itself. That works only where
-   `bt_navigator` can read this repository's files, which holds in sim on
-   one machine but not if the agent runs off the robot. Recommended: the
-   copy in walkie-ros's `robot_navigation`, beside its other trees, such as
-   `object_follower_bt.xml`. The smoke test uses a scratch copy by path
-   until then. Blocks: the follow loop, not the smoke test.
+9. **Where the follow tree lives.** Settled: in walkie-ros's
+   `robot_navigation`, beside its other trees, such as
+   `object_follower_bt.xml`, and named by its ID. Nav2's stock FollowPoint
+   tree names no goal checker, so walkie-ros's controller server rejects
+   it, and the follow needs a copy that names `general_goal_checker`. A
+   goal could also name a copy in this repository by its file path, but
+   only where `bt_navigator` can read this repository's files, which fails
+   if the agent runs off the robot. The smoke test uses a scratch copy by
+   path until the walkie-ros copy exists. Blocks: the follow loop, not the
+   smoke test.
 
 ## Decisions
 

@@ -28,7 +28,9 @@ on top of [Perception](perception.md) and
 - **On its path:** walkie-vision's torch and face nodes, walkie-database's
   people services, and in this repository phase 1, six atomics and the
   arm atomics, the gaze loop and the HRI template, all built. On
-  the robot, also the MotionSupervisor.
+  the robot, also the MotionSupervisor, from the capability layer's PR C
+  ([Robot Capabilities](capabilities.md#pr-c-the-motionsupervisor)), and
+  Nav2 started with the head tilt near goals off.
 - **The bag goes in the left hand.** The robot holds out its hand, the
   guest says when the bag is in it, and the gripper closes. The two poses
   it needs, `receive` and `carry`, come from walkie-agent-v2's hand-over.
@@ -37,15 +39,19 @@ on top of [Perception](perception.md) and
   exception to `FORBIDDEN_NAMES` so far
   ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). Slice 2's follow
   loop adds `/goal_update`
-  ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)).
+  ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)), and the
+  MotionSupervisor `/trajectory_execution_event`
+  ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)).
 - **The LLM runs the task** from a todo template. Presets come later, from
   the slice's traces.
 - **Sim first,** with `oracle_perception` publishing guests who pace and
   switch seats, then the robot.
 - **Slice 2 follows the host and drops the bag,** for 250 more points.
   Nav2's FollowPoint tree drives, the 2D lidar ranges the host and the
-  camera identifies them. It is built after the capability layer
-  ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)).
+  camera identifies them. It is built after the capability layer's PR B,
+  as `ctx.base.follow`
+  ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md),
+  [ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)).
 
 ## The task
 
@@ -913,16 +919,26 @@ flowchart LR
     v1["<b>walkie-vision</b><br/>Torch node: YOLOE with<br/>seat classes, pose, OSNet"]
     v2["<b>walkie-vision</b><br/>Face node, faces in<br/>PersonDetection"]
     d3["<b>walkie-database</b><br/>People services built"]:::proposed
-    ac["<b>walkie-agent-ros</b><br/>MotionSupervisor"]
+    cb["<b>walkie-agent-ros</b><br/>Capability layer PR A and B:<br/>ctx.base, ctx.arms, reset cancels a drive"]:::proposed
+    ac["<b>walkie-agent-ros</b><br/>Capability layer PR C:<br/>MotionSupervisor"]:::proposed
+    ht["<b>walkie-ros</b><br/>navigation submodule bump:<br/>head_tilt_near_goal switch, off"]:::proposed
+    w8["<b>walkie-ros</b><br/>W8: commander plan-only mode"]:::proposed
+    w9["<b>walkie-ros</b><br/>W9: MoveIt mock launch"]:::proposed
+    rs["<b>walkie-agent-ros</b><br/>Manipulation's robot<br/>steps R0 to R4"]:::proposed
     rp["<b>walkie-agent-ros</b><br/>receive and carry<br/>re-recorded on the robot"]:::proposed
     w2["<b>walkie-ros</b><br/>W2: arm speed scaling"]
-    r["<b>walkie-agent-ros</b><br/>Real clients,<br/>run on the robot"]
+    r["<b>walkie-agent-ros</b><br/>Real clients,<br/>run on the robot with --arms"]
 
     t --> r
     v1 --> r
     v2 --> r
     d3 --> r
-    ac --> r
+    cb --> ac
+    ac --> rs
+    w8 --> rs
+    w9 --> rs
+    rs --> r
+    ht --> r
     rp --> r
     w2 -.-> r
 
@@ -948,10 +964,21 @@ flowchart LR
   linker, the bundle runtime, the presets and the level checks are not
   needed, because the run calls reviewed atomics only.
 - **On the robot,** the arm atomics need the MotionSupervisor from
-  Manipulation's real-backends track, and the agent then runs with
-  `--arms`. W2 is drawn dotted: the run works without it, but only with
-  team members and an operator at the emergency stop
+  Manipulation's real-backends track. It is built in the capability layer's
+  PR C, on top of PR A and PR B
+  ([Robot Capabilities](capabilities.md#delivery-plan)). The agent runs
+  with `--arms` once Manipulation's robot steps R0 to R4 pass, which need
+  walkie-ros's W8 and W9 ([Arm Manipulation](manipulation.md#testing)). W2
+  is drawn dotted: the run works without it, but only with team members and
+  an operator at the emergency stop
   ([The bag hand-over](#the-bag-hand-over)).
+- **Nav2 starts with `head_tilt_near_goal:=false` on the robot.** Otherwise
+  walkie-ros's head-tilt node points the ZED 45° down as the robot nears
+  the door or the sofa, when `find_people` and `find_seats` look
+  ([Head tilt near goals](capabilities.md#head-tilt-near-goals)). The switch
+  is commit `22dc4ef` in the navigation repository, walkie-ros's
+  `navigation` submodule, on the branch `feat/hri-follow-and-head-tilt`,
+  not yet pushed. walkie-ros picks it up with a submodule bump.
 - **The order on the robot** is: the gaze loop alone, with someone pacing
   and the joystick at hand, then the seats in the arena's living room,
   then the hand-over with a team member as the guest, then the whole run.
@@ -1235,8 +1262,10 @@ ROS with a fake commander. `tests/test_projection.py` and
 
 Slice 2 adds the rest of the main goal: following the host to the bag drop
 area (200) and dropping the bag there (50). It is designed, not built. The
-follow is `ctx.base.follow`. It comes after the capability layer, which
-ADR-0052 will describe and which is not built yet
+follow is `ctx.base.follow`. It comes after the capability layer's PR B
+([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md),
+[Robot Capabilities](capabilities.md#pr-b-drive-and-speak-through-ctx)),
+which is not built yet
 ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)).
 
 Penalties slice 2 must avoid: dropping the bag while following (−50),
@@ -1326,14 +1355,24 @@ repository:
    can run before the capability layer.
 2. Robot bags of a person walking ahead of the robot, beside a wall and
    across its path, for tuning the leg clustering. In parallel with step 1.
-3. ADR-0052 and the capability layer's two changes.
+3. The capability layer's PR A and PR B
+   ([Robot Capabilities](capabilities.md#delivery-plan)). PR B's turns in
+   place are not needed for the follow.
 4. The host's script and the leg node.
 5. The tracker, as pure code tested on the leg node's scans and the robot
    bags.
 6. The follow loop on `ctx.base`, with `follow_person` and
-   `stop_following`.
+   `stop_following`. It adds its stop to `ctx.base` and `ctx.arms`, so
+   every drive, arm goal and gripper goal stops it first and waits for the
+   base to be still. The capability layer's PR C later moves that hook
+   under the MotionSupervisor
+   ([Robot Capabilities](capabilities.md#the-motionsupervisor)).
 7. The template and the new criteria, then a sim run that passes.
-8. On the robot, once walkie-vision's torch and face nodes run there.
+8. On the robot, once walkie-vision's torch and face nodes run there, the
+   capability layer's PR C is built, and Nav2 starts with
+   `head_tilt_near_goal:=false`. With the tilt on, the ZED would point at
+   the floor each time the host pulls more than 1.5 m ahead and the robot
+   catches up, until the gap is back above 1.7 m.
 
 ## What changes in other repositories
 
@@ -1345,7 +1384,9 @@ repository:
 | walkie-ros | W2, arm speed scaling, before the hand-over runs with anyone but team members ([The bag hand-over](#the-bag-hand-over)) | Planned on [Manipulation](manipulation.md#changes-needed-in-walkie-ros) |
 | walkie-ros | A collision-checked input for the gaze loop, if [question 4](#open-questions) asks for one | — |
 | walkie-ros | Person bodies in the MuJoCo world, so the lidars, the depth image and the costmaps see the scenario's people | A proposal, after slice 2 passes with legs in the scan ([Slice 2](#slice-2-following-the-host)) |
-| walkie-ros | A copy of Nav2's `follow_point.xml` whose `FollowPath` sets `goal_checker_id="general_goal_checker"`, since walkie-ros loads two goal checkers | New, before the follow loop ([question 9](#open-questions)) |
+| navigation (walkie-ros's `navigation` submodule) | A copy of Nav2's `follow_point.xml`, `follow_point_bt.xml` with the ID `WalkieFollowPoint`, whose `FollowPath` sets `goal_checker_id="general_goal_checker"`, since walkie-ros loads two goal checkers. `bt_search_directories` adds its directory | Commit `53e4ed1` on the branch `feat/hri-follow-and-head-tilt`, not yet pushed or in a pull request. Needed before the follow loop ([question 9](#open-questions)) |
+| navigation (walkie-ros's `navigation` submodule) | A `head_tilt_near_goal` launch switch in the two real Nav2 launches, default `true`. Robot runs pass `false` ([Head tilt near goals](capabilities.md#head-tilt-near-goals)) | Commit `22dc4ef` on the same branch, not yet pushed or in a pull request. Needed before the run on the robot |
+| walkie-ros | Bump the `navigation` submodule from `7f15b1c` to a commit with `53e4ed1` and `22dc4ef` | Not started. Needed before the follow loop runs in sim |
 | walkie-ros | A follow speed above the base's 0.3 m/s | Open, once the robot has followed real hosts |
 
 ## Open questions

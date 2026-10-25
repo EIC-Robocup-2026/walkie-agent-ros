@@ -66,7 +66,7 @@ Facts that shape the design:
 - **The base.** Nav2 caps the base at 0.3 m/s in x and y, in sim and on the
   robot. Its progress checker fails a goal that moves the base less than
   0.5 m in 8 s. A goal that names a different tree cannot preempt a
-  running one. Nav2 rejects it.
+  running one. Nav2 accepts it, then aborts it at once.
 - **Waiting.** `wait_for_person` always says its question out loud, marks
   the step waiting and ends the task. The answer arrives as the next
   message. Without a waiting step, the completion gate pushes the LLM to
@@ -77,10 +77,12 @@ Facts that shape the design:
   depth image nor Nav2's costmaps see them, and the oracle hides no one
   behind anything. The oracle places people from the camera's TF pose,
   which AMCL puts 0.1 to 0.2 m off the ground truth.
-- **The capability layer.** ADR-0052, planned, puts a typed `ctx.base` in
-  front of Nav2. Its first change adds the types and fakes. Its second
-  moves the navigation atomics' Nav2 goals behind `ctx.base` and makes a
-  reset cancel a drive.
+- **The capability layer.**
+  [ADR-0052](/architecture/decisions/0052-typed-robot-capabilities-on-ctx.md),
+  Proposed, puts a typed `ctx.base` in front of Nav2. Its first change adds
+  the types and fakes. Its second moves the navigation atomics' Nav2 goals
+  behind `ctx.base` and makes a reset cancel a drive. A third adds the
+  MotionSupervisor.
 
 **Decision**
 
@@ -193,7 +195,7 @@ Facts that shape the design:
       navigation atomics make
       ([ADR-0025](/architecture/decisions/0025-travel-safe-interlock.md)).
       `carry` is one.
-- **Closing in.** Nav2 rejects a goal that switches trees. A drive closer
+- **Closing in.** Nav2 aborts a goal that switches trees. A drive closer
   than the tree's 1.0 m is therefore a separate goal, sent after the
   cancel.
 - **The simulation, in this repository.**
@@ -278,7 +280,7 @@ Facts that shape the design:
   short of the last update. A `FollowPath` that reaches its end starts
   again instead of ending the tree, so the goal most likely stays active
   until it is cancelled or the planner or controller fails. While it is
-  active, Nav2 refuses every goal on another tree. `ctx.base` therefore
+  active, Nav2 aborts every goal on another tree. `ctx.base` therefore
   cancels any active `navigate_to_pose` goal at start-up and before each
   drive of its own.
 - In sim Nav2 does not see the people, so only the loop's standoff keeps

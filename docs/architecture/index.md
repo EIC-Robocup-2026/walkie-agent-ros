@@ -8,6 +8,7 @@ costs later.
 | Page                                             | What it covers                                                                  |
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |
 | [The Agent](agent.md)                            | The agent node, its topics and tools, how it reaches the robot, and what lives where |
+| [Robot Capabilities (Proposed)](capabilities.md) | The typed `ctx.base`, `ctx.speech` and other capabilities atomics use instead of ROS, and the MotionSupervisor beneath them |
 | [Arm Manipulation (Proposed)](manipulation.md)   | How the agent will move the arms and grippers, and run skills such as a VLA policy |
 | [Perception (Proposed)](perception.md)           | How the agent will use walkie-vision's models and walkie-database's memory to find objects and people |
 | [HRI Task (Proposed)](hri.md)                    | The first task the new agent runs end to end: greeting, seating and introducing guests, and the gaze loop |

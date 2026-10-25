@@ -12,8 +12,10 @@ The HRI task (RoboCup@Home 2026 rulebook, section 5.1) is the first task
 the [self-evolving agent](self-evolving-agent.md) will run end to end. It
 needs people, seats, gaze and one simple arm motion, but no object search,
 no skill server and no embedding bake-off, so it is the shortest path to a
-test on the robot. This page plans that first slice, on top of
-[Perception](perception.md) and [Arm Manipulation](manipulation.md).
+test on the robot. This page plans that first slice, and a second that
+follows the host and drops the bag ([Slice 2](#slice-2-following-the-host)),
+on top of [Perception](perception.md) and
+[Arm Manipulation](manipulation.md).
 
 ## Summary
 
@@ -32,12 +34,18 @@ test on the robot. This page plans that first slice, on top of
   it needs, `receive` and `carry`, come from walkie-agent-v2's hand-over.
 - **Gaze turns the base.** An agent-side loop publishes rotation only, on
   `/cmd_vel`, below Nav2 and the joystick in `twist_mux`. It is the one
-  exception to `FORBIDDEN_NAMES`
-  ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)).
+  exception to `FORBIDDEN_NAMES` so far
+  ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). Slice 2's follow
+  loop adds `/goal_update`
+  ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)).
 - **The LLM runs the task** from a todo template. Presets come later, from
   the slice's traces.
 - **Sim first,** with `oracle_perception` publishing guests who pace and
   switch seats, then the robot.
+- **Slice 2 follows the host and drops the bag,** for 250 more points.
+  Nav2's FollowPoint tree drives, the 2D lidar ranges the host and the
+  camera identifies them. It is built after the capability layer
+  ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)).
 
 ## The task
 
@@ -78,7 +86,7 @@ Rules that shape the design:
 | Introduce the guests: each one's name and drink | 4×30 | Yes |
 | Look at the correct guest while introducing | 2×50 | Yes, the gaze loop |
 | Take the bag from the guest's hand | 50 | Yes, with the left gripper |
-| Follow the host, drop the bag | 200, 50 | No: following is open ([Perception question 5](perception.md#open-questions)) |
+| Follow the host, drop the bag | 200, 50 | No: [slice 2](#slice-2-following-the-host) |
 | Bonus: detect the doorbell | 2×30 | No |
 | Bonus: open the door | 2×200 | No |
 | Bonus: describe the first guest to the second | 4×20, and −20 per wrong attribute | No ([Perception question 4](perception.md#open-questions)) |
@@ -125,9 +133,11 @@ flowchart TB
 - **The robot drives to fixed locations,** `door` and `living_room` in
   `config/locations.toml`, set on the setup days. In the simulation they
   are in `config/locations.chula_pat14_6.toml`
-  ([In simulation](#in-simulation)). It never drives to a person, so
-  `localize_person` and a person's depth stay off the path
-  ([Perception question 1](perception.md#open-questions)).
+  ([In simulation](#in-simulation)). In slice 1 it never drives to a
+  person, so `localize_person` and a person's depth stay off the path
+  ([Perception question 1](perception.md#open-questions)). Slice 2 follows
+  the host with the 2D lidar, still without a person's depth
+  ([Slice 2](#slice-2-following-the-host)).
 - **`wait_for_person` ends the turn,** and the guest's answer starts the
   next one. The gaze loop keeps running in between.
 
@@ -371,8 +381,9 @@ and the template repeats, and the pass check counts
 5. **Carry.** `speak("I will lift your bag to carry it.")`, then
    `move_arm_to_pose("carry", "left")`. The arm move stopped the gaze
    loop, so `look_at` the guest again with the handle from the door, then
-   guide the guest as before. The bag stays in the hand until the end of
-   the run.
+   guide the guest as before. In slice 1 the bag stays in the hand until
+   the end of the run. Slice 2 drops it where the host says
+   ([Slice 2](#slice-2-following-the-host)).
 
 Why it works this way:
 
@@ -511,8 +522,9 @@ flowchart TB
   neither, `look_at` fails with `UNAVAILABLE`. With only the handle's,
   and that more than 1 s old, it fails with `STALE` and turns nothing,
   since the loop would lose the person at once.
-- **Lost at the start.** `follow_person` checks the sighting's age before
-  it sets the target, and the newest array's before its wait for TF, of
+- **Lost at the start.** `GazeLoop.follow_person()` checks the sighting's
+  age before it sets the target, and the newest array's before its wait
+  for TF, of
   up to 0.2 s, so the sighting can be more than 1 s old once the loop
   takes the person. So at the start `look_at` reads the loop's status and
   applies the loop's own rule. For a person last seen more than 1 s ago,
@@ -615,8 +627,9 @@ flowchart TB
 - **Nothing after the zeros.** A tick that overlapped a stop or a new
   target drops its command. `look_at` reads the loop's stop generation,
   `stop_calls()`, before anything else, and passes it to
-  `follow_person()` or `hold_heading()`. Every `stop()` changes it, so a
-  `look_at` that a stop overtook anywhere in the call, as during its arm
+  `GazeLoop.follow_person()` or `hold_heading()`. Every `stop()` changes
+  it, so a `look_at` that a stop overtook anywhere in the call, as during
+  its arm
   check or its wait for TF, starts nothing and fails with `CANCELLED`,
   even when nothing was running to stop.
 - **The last reason stays.** `stop()` with nothing running changes
@@ -859,7 +872,7 @@ traces once the bundle runtime exists.
 
 ## Delivery order
 
-What blocks the slice, across the three repositories. A dashed box is new
+What blocks slice 1, across the three repositories. A dashed box is new
 work this page or [Perception](perception.md) asks for.
 
 The sim run:
@@ -1080,7 +1093,7 @@ and `seat_switch`, not of the code:
 | ------ | ------------- | ---- |
 | Swap guests 1 and 2 (the default) | `seat_switch: {mode: swap, people: [guest1, guest2]}` | The switch waits until guest 2 is seated, so it can come mid-introduction. Guest 2 gets the only free place, so their offer has one right answer |
 | A virtual armchair | add a `seats` entry; `mode: move, people: [guest1]` | Not in MuJoCo, so a camera-based run later disagrees with the oracle. There is little free space for one, and from `living_room` it is mostly out of view or confused with a sofa place by the offer rule |
-| The host stands | `seated: []`, the host out of the sofa's view; `mode: move` | No taken place when guest 1 is offered a seat, so "never a taken one" goes untested for guest 1 |
+| The host stands | `seated: []`, the host out of the sofa's view; `mode: move` | No taken place when guest 1 is offered a seat, so "never a taken one" goes untested for guest 1. With slice 2, no host is seated at the first seat offer, so the host is never enrolled and the follow cannot run |
 | A kitchen stool | the stools as seats; `mode: move` | 2.8 to 4.4 m from `living_room`, far to its right, so the introductions need a second view, and faces are small |
 | No switch | `mode: off` | No re-recognition after a change of places |
 
@@ -1180,6 +1193,110 @@ ROS with a fake commander. `tests/test_projection.py` and
 `tests/test_oracle_perception.py` cover the oracle
 ([Perception](perception.md#in-simulation)).
 
+## Slice 2: following the host
+
+Slice 2 adds the rest of the main goal: following the host to the bag drop
+area (200) and dropping the bag there (50). It is designed, not built. The
+follow is `ctx.base.follow`. It comes after the capability layer, which
+ADR-0052 will describe and which is not built yet
+([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)).
+
+Penalties slice 2 must avoid: dropping the bag while following (−50),
+rediscovering the host by natural interaction (−50), asking the host to
+wait (−50), and guiding the robot by physical contact (−150).
+
+### The flow
+
+The host is remembered at the first seat offer, while seated, under the
+name `host`. After the introductions, with the bag in the left hand in
+`carry`:
+
+1. The robot finds the host with `find_people` and `recognize_person`, and
+   turns to them with `look_at`.
+2. With `wait_for_person`, it tells the host that it has their bag, asks
+   where it goes, and asks them to stand in front of it and say when they
+   are ready.
+3. When the host says to follow, it finds them with
+   `find_people(in_front=True)` and confirms them with `recognize_person`.
+4. `follow_person(person, line)` locks onto the host, says the ready line
+   and marks the step waiting. It ends the turn, as `wait_for_person`
+   does, and the loop drives.
+5. The host leads. Nav2 drives about 1.0 m behind them, through its
+   FollowPoint tree. The robot says nothing. A line from the host that
+   neither says where the bag goes nor says to stop is answered with
+   `follow_person` again, which only keeps the step waiting.
+6. The host stops and says to put the bag down. The robot calls
+   `stop_following()`, says it is putting the bag down, and opens the left
+   gripper. The bag falls to the floor.
+
+If the host is lost, the base holds and the loop looks for them in silence
+for 20 s. Only then does the LLM hear of it
+([question 7](#open-questions)).
+
+| Atomic | Effect | Status | What it does |
+| ------ | ------ | ------ | ------------ |
+| `follow_person(person, line)` | N, S | Designed | Locks the follow loop onto a person handle, says `line` through the speak tool once locked, and marks the step waiting. On the person it already follows, it says nothing and only marks the step waiting again. Refuses with an arm out, as the drives do |
+| `stop_following()` | N | Designed | Cancels the follow goal and returns once the base is still |
+
+### Following in simulation
+
+The scenario's people have no MuJoCo bodies, so no sensor of the sim sees
+them. Slice 2 makes the host visible to the follow loop, all in this
+repository:
+
+- **The host's script.** Asked for guidance, the host stands up and walks
+  to a free spot in front of the robot, then says a line such as "I am
+  here, follow me." After the ready line they lead through the gap in the
+  divider into the kitchen, stop, and say to put the bag down. They take a
+  step only while the robot is within the set gap and the step keeps their
+  legs in the line of sight of a robot lidar. Otherwise they wait where
+  they are, still visible.
+- **Questions go to the host.** After the introductions, the scenario
+  routes the robot's questions to the host's script, not to a guest. The
+  guidance request is answered only by the host's line once they stand in
+  front.
+- **Legs in the scan.** A node reads `/front_lidar` and `/back_lidar` at
+  their native 1°. In each scan it shortens every beam, cast from the
+  lidar's ground-truth pose, that meets one of a scenario person's two leg
+  circles nearer than the beam's own return. Walls, furniture and the
+  divider stay in, and they hide the legs behind them. The node merges the
+  two scans into `/sim/scan_people` the way walkie-ros's
+  `dual_laser_merger` builds `/scan`. The loop reads it in sim. Nav2 keeps
+  reading `/scan` and does not see the people.
+- **The event log.** The 10 Hz state record gains the host's walking state
+  and map pose, and a `host_line` record logs each line the host says
+  unprompted.
+- **New criteria,** measured from the ground truth, not the TF pose. The
+  host's route is long enough that a robot that never moves fails. While
+  the host walks, the robot moves and keeps within a set gap. The base
+  never comes within 0.5 m of the host. The gripper opens only after the
+  host's line to put the bag down, with the base still and within 1.5 m of
+  where the host stopped. No line during the follow asks the host
+  anything. The question criterion also allows the one request for
+  guidance to the host, and `follow_person` joins the tools whose lines
+  `hri_check` counts.
+- **The template.** At the first seat offer, it has the LLM call
+  `find_people` and `remember_person` on the one seated person, under the
+  name `host`. It adds todo items for finding the host, the follow and the
+  drop. The bag stays in `carry` until the host says where, and the task
+  ends with the drop, not the introductions.
+
+### Delivery order for slice 2
+
+1. A smoke test of Nav2's FollowPoint tree on the sim stack, with a
+   scratch copy that names its goal checker. It needs no agent code, so it
+   can run before the capability layer.
+2. Robot bags of a person walking ahead of the robot, beside a wall and
+   across its path, for tuning the leg clustering. In parallel with step 1.
+3. ADR-0052 and the capability layer's two changes.
+4. The host's script and the leg node.
+5. The tracker, as pure code tested on the leg node's scans and the robot
+   bags.
+6. The follow loop on `ctx.base`, with `follow_person` and
+   `stop_following`.
+7. The template and the new criteria, then a sim run that passes.
+8. On the robot, once walkie-vision's torch and face nodes run there.
+
 ## What changes in other repositories
 
 | Repository | Change | Status |
@@ -1189,6 +1306,9 @@ ROS with a fake commander. `tests/test_projection.py` and
 | walkie-database | People services: remember a person with facts and several vectors, and recognize a set of faces | New ([Perception question 2](perception.md#open-questions)) |
 | walkie-ros | W2, arm speed scaling, before the hand-over runs with anyone but team members ([The bag hand-over](#the-bag-hand-over)) | Planned on [Manipulation](manipulation.md#changes-needed-in-walkie-ros) |
 | walkie-ros | A collision-checked input for the gaze loop, if [question 4](#open-questions) asks for one | — |
+| walkie-ros | Person bodies in the MuJoCo world, so the lidars, the depth image and the costmaps see the scenario's people | A proposal, after slice 2 passes with legs in the scan ([Slice 2](#slice-2-following-the-host)) |
+| walkie-ros | A copy of Nav2's `follow_point.xml` whose `FollowPath` sets `goal_checker_id="general_goal_checker"`, since walkie-ros loads two goal checkers | Recommended there ([question 9](#open-questions)) |
+| walkie-ros | A follow speed above the base's 0.3 m/s | Open, once the robot has followed real hosts |
 
 ## Open questions
 
@@ -1222,16 +1342,37 @@ ROS with a fake commander. `tests/test_projection.py` and
    ([Manipulation](manipulation.md#safety)). If thin handles read as
    empty, judge the hand-over by the gripper's effort on `/joint_states`
    instead. Blocks: the hand-over on the robot, not in sim.
-6. **The next slice.** Following the host is worth 200 points, and
-   dropping the bag where the host shows another 50. The bag is already in
-   the left hand, so the drop is mostly `set_gripper("left", "open")`.
-   Following needs a follow skill
-   ([Perception question 5](perception.md#open-questions)). The doorbell
-   is worth 60 and needs a sound detector. Describing the first guest is
-   worth up to 80, and loses 20 per wrong attribute
-   ([Perception question 4](perception.md#open-questions)). Recommended:
-   following and the drop, the largest block left. Blocks: planning
-   slice 2.
+6. **The next slice.** Settled: following the host and the drop, 250
+   points, the largest block left
+   ([Slice 2](#slice-2-following-the-host),
+   [ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)). The
+   doorbell (60, a sound detector) and describing the first guest (up to
+   80, [Perception question 4](perception.md#open-questions)) come later.
+7. **How the follow's timeout reaches the LLM.** When the loop gives up on
+   a lost host after 20 s, the LLM is idle, waiting on the follow.
+   `agent.submit` labels every message as the human's, so a status sent
+   through it would read as the host speaking. Recommended: a robot status
+   message with its own author, and a template line on how to read it.
+   Blocks: the follow's timeout, not a sim run where the host stays found.
+8. **Telling the host from a passive guest.** Settled: walkie-agent-v2's
+   rule. The one person seated at the first seat offer is the host, and the
+   follow refreshes their appearance when it locks
+   ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)). Still
+   open: a passive guest already on the couch breaks that rule, and asking
+   who the host is may count as help to identify people. Recommended: ask
+   the Technical Committee whether passive guests sit before the first
+   guest arrives. Blocks: the follow in such an arena, not in sim, where
+   only the host is seated.
+9. **Where the follow tree lives.** Nav2's stock FollowPoint tree names no
+   goal checker, so walkie-ros's controller server rejects it. The follow
+   needs a copy that names `general_goal_checker`. A goal can name a tree
+   by its ID, from walkie-ros's tree directory, or by a file path, so this
+   repository could ship the copy itself. That works only where
+   `bt_navigator` can read this repository's files, which holds in sim on
+   one machine but not if the agent runs off the robot. Recommended: the
+   copy in walkie-ros's `robot_navigation`, beside its other trees, such as
+   `object_follower_bt.xml`. The smoke test uses a scratch copy by path
+   until then. Blocks: the follow loop, not the smoke test.
 
 ## Decisions
 
@@ -1241,3 +1382,7 @@ decisions work.
 ??? note "ADR-0051: Turn the base toward a person from an agent-side gaze loop · Proposed"
 
     --8<-- "architecture/decisions/0051-agent-side-gaze-loop.md:body"
+
+??? note "ADR-0053: Follow the host through Nav2's FollowPoint tree, ranged by the 2D lidar · Proposed"
+
+    --8<-- "architecture/decisions/0053-follow-through-nav2-followpoint.md:body"

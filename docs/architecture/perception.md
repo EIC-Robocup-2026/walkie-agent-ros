@@ -408,10 +408,16 @@ flowchart TB
    fixed list, such as shirt colours, with the object embedder on the
    person's crop. The second returns enums only, but needs a person-crop
    embedding in `PersonDetection`. Blocks: `describe_person`.
-5. **Following a person.** Following is a closed loop at camera rate,
-   which an LLM turn cannot run. A robot-side skill behind `run_skill`
-   ([ADR-0027](decisions/0027-runskill-action.md)) fits, but nothing owns
-   it yet. Blocks: tasks where the robot follows someone.
+5. **Following a person.** Following is a closed loop at sensor rate,
+   which an LLM turn cannot run. Settled: a reviewed loop in the agent,
+   `ctx.base.follow`, built after the capability layer. Proposed: the loop
+   sends Nav2 a copy of its FollowPoint tree and the person's position. The
+   2D lidar gives the range and the camera the identity, so following does
+   not wait on question 1
+   ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)). A smoke
+   test on the sim stack settles the tree. It may move behind `run_skill`
+   ([ADR-0027](decisions/0027-runskill-action.md)) once a skill server
+   exists.
 6. **Memory search by description.** "The red mug I saw in the kitchen"
    needs a walkie-database service that takes an `EmbedText` vector and its
    table name. Blocks: nothing in phase 2. `find_objects` stays

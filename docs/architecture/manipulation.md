@@ -526,6 +526,7 @@ generic tool: `/navigate_to_pose`, `/set_joint_position`,
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Base velocity                | `/cmd_vel`, `/cmd_vel_nav`, `/cmd_vel_joy`, `/cmd_vel_key`, `/omni_wheel_drive_controller/cmd_vel`                                                                                                                                                             |
 | Agent                        | `/walkie/reset`                                                                                                                                                                                                                                                |
+| Follow goal                  | `/goal_update`, `/goals_update` (only the follow loop publishes on `/goal_update`, [ADR-0053](decisions/0053-follow-through-nav2-followpoint.md))                                                                                                              |
 | Stop                         | `/trajectory_execution_event` (only the MotionSupervisor publishes here)                                                                                                                                                                                       |
 | Commander, unused actions    | `/go_to_home`, `/go_to_pose`, `/go_to_pose_relative`, `/go_to_pose_quat`                                                                                                                                                                                       |
 | Commander services           | `/execute_stored_plan`, `/clear_collision_objects`, `/toggle_octomap_collision`, `/toggle_all_collision_checking`, `/toggle_gripper_collision`, `/bimanual_commander/set_parameters`                                                                            |
@@ -537,7 +538,9 @@ generic tool: `/navigate_to_pose`, `/set_joint_position`,
 These lists guard the agent's own ROS tools
 ([ADR-0009](decisions/0009-forbidden-names-guard-rail.md)). One reviewed
 component outside the tools, the gaze loop, publishes rotation only on
-`/cmd_vel` ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). Generated code
+`/cmd_vel` ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). Slice 2's
+follow loop, once built, will be the second, on `/goal_update`
+([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)). Generated code
 goes through a separate never-list in `config/access_levels.toml`, which
 uses glob patterns such as `/*_joint_trajectory_controller/*`
 ([The never-list](access-levels.md#the-never-list)).

@@ -47,9 +47,10 @@ on top of [Perception](perception.md) and
 - **Sim first,** with `oracle_perception` publishing guests who pace and
   switch seats, then the robot.
 - **Slice 2 follows the host and drops the bag,** for 250 more points.
-  Nav2's FollowPoint tree drives, the 2D lidar ranges the host and the
-  camera identifies them. It is built after the capability layer's PR B,
-  as `ctx.base.follow`
+  Nav2 drives through `WalkieFollowPoint`, walkie-ros's copy of its
+  FollowPoint tree. The 2D lidar ranges the host and the camera identifies
+  them. It is built after the capability layer's PR B, as
+  `ctx.base.follow`
   ([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md),
   [ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)).
 
@@ -1288,10 +1289,12 @@ name `host`. After the introductions, with the bag in the left hand in
 4. `follow_person(person, line)` locks onto the host, says the ready line
    and marks the step waiting. It ends the turn, as `wait_for_person`
    does, and the loop drives.
-5. The host leads. Nav2 drives about 1.0 m behind them, through its
-   FollowPoint tree. The robot says nothing. A line from the host that
-   neither says where the bag goes nor says to stop is answered with
-   `follow_person` again, which only keeps the step waiting.
+5. The host leads. Nav2 drives about 1.0 m behind them, through
+   `WalkieFollowPoint`. The robot says nothing. When the host stands
+   still, Nav2 may abort the goal with error 105, and the loop sends it
+   again. A line from the host that neither says where the bag goes nor
+   says to stop is answered with `follow_person` again, which only keeps
+   the step waiting.
 6. The host stops and says to put the bag down. The robot calls
    `stop_following()`, says it is putting the bag down, and opens the left
    gripper. The bag falls to the floor.
@@ -1350,9 +1353,13 @@ repository:
 
 ### Delivery order for slice 2
 
-1. A smoke test of Nav2's FollowPoint tree on the sim stack, with a
-   scratch copy that names its goal checker. It needs no agent code, so it
-   can run before the capability layer.
+1. A smoke test of `WalkieFollowPoint` on walkie-ros main's MuJoCo stack,
+   with stamped updates and a goal sent again after each error 105. It
+   needs walkie-ros's `navigation` checkout at commit `53e4ed1`. A scratch
+   copy named by its path also runs on the commits walkie-ros pins:
+   `7f15b1c` on main, and `359719f` on the world's branch
+   `feat/chula-pat14-6-simulation`. It needs no agent code, so it can run
+   before the capability layer.
 2. Robot bags of a person walking ahead of the robot, beside a wall and
    across its path, for tuning the leg clustering. In parallel with step 1.
 3. The capability layer's PR A and PR B
@@ -1367,7 +1374,10 @@ repository:
    base to be still. The capability layer's PR C later moves that hook
    under the MotionSupervisor
    ([Robot Capabilities](capabilities.md#the-motionsupervisor)).
-7. The template and the new criteria, then a sim run that passes.
+7. The template and the new criteria, then a sim run that passes. It runs
+   in `chula_pat14_6`, so it needs the world's branch on main's unified
+   Nav2 config, as well as the bump to `53e4ed1`
+   ([What changes in other repositories](#what-changes-in-other-repositories)).
 8. On the robot, once walkie-vision's torch and face nodes run there, the
    capability layer's PR C is built, and Nav2 starts with
    `head_tilt_near_goal:=false`. With the tilt on, the ZED would point at
@@ -1384,9 +1394,9 @@ repository:
 | walkie-ros | W2, arm speed scaling, before the hand-over runs with anyone but team members ([The bag hand-over](#the-bag-hand-over)) | Planned on [Manipulation](manipulation.md#changes-needed-in-walkie-ros) |
 | walkie-ros | A collision-checked input for the gaze loop, if [question 4](#open-questions) asks for one | — |
 | walkie-ros | Person bodies in the MuJoCo world, so the lidars, the depth image and the costmaps see the scenario's people | A proposal, after slice 2 passes with legs in the scan ([Slice 2](#slice-2-following-the-host)) |
-| navigation (walkie-ros's `navigation` submodule) | A copy of Nav2's `follow_point.xml`, `follow_point_bt.xml` with the ID `WalkieFollowPoint`, whose `FollowPath` sets `goal_checker_id="general_goal_checker"`, since walkie-ros loads two goal checkers. `bt_search_directories` adds its directory | Commit `53e4ed1` on the branch `feat/hri-follow-and-head-tilt`, not yet pushed or in a pull request. Needed before the follow loop ([question 9](#open-questions)) |
-| navigation (walkie-ros's `navigation` submodule) | A `head_tilt_near_goal` launch switch in the two real Nav2 launches, default `true`. Robot runs pass `false` ([Head tilt near goals](capabilities.md#head-tilt-near-goals)) | Commit `22dc4ef` on the same branch, not yet pushed or in a pull request. Needed before the run on the robot |
-| walkie-ros | Bump the `navigation` submodule from `7f15b1c` to a commit with `53e4ed1` and `22dc4ef` | Not started. Needed before the follow loop runs in sim |
+| navigation (walkie-ros's `navigation` submodule) | A copy of Nav2's `follow_point.xml`, `walkie-navigation/config/nav2/behavior_tree/follow_point_bt.xml` in `robot_navigation`, with the ID `WalkieFollowPoint`. Its `FollowPath` sets `goal_checker_id="general_goal_checker"`, since walkie-ros loads two goal checkers. `nav2_mppi_walkie_params.yaml` sets `bt_search_directories`, unset before, to Nav2's two tree directories and the copy's | Commit `53e4ed1` on the local branch `feat/hri-follow-and-head-tilt`, not yet pushed or in a pull request. Needed before the follow loop ([question 9](#open-questions)) |
+| navigation (walkie-ros's `navigation` submodule) | A `head_tilt_near_goal` launch switch in `localization_Nav2_real.launch.py` and `mapping_Nav2_real.launch.py`, default `true`. Robot runs pass `false` ([Head tilt near goals](capabilities.md#head-tilt-near-goals)) | Commit `22dc4ef` on the same branch, not yet pushed or in a pull request. Needed before the run on the robot |
+| walkie-ros | Bump the `navigation` submodule from `7f15b1c` to a commit with `53e4ed1` and `22dc4ef` | Not started. Needed before the follow loop runs in sim. `7f15b1c` is main's pin. The world's branch `feat/chula-pat14-6-simulation` pins `359719f`, from before the unified Nav2 config, and its MuJoCo launch loads `nav2_mppi_walkie_sim_params.yaml`, which `7f15b1c` deleted. PR #58, open and in conflict with main, has to take main's unified config (PR #60) before the bump reaches `chula_pat14_6`. walkie-ros's docs for both are on its local branches `docs/follow-point-tree` (`9f1191c`) and `docs/head-tilt-launch-arg` (`e08d0ec`), not pushed |
 | walkie-ros | A follow speed above the base's 0.3 m/s | Open, once the robot has followed real hosts |
 
 ## Open questions
@@ -1442,16 +1452,33 @@ repository:
    the Technical Committee whether passive guests sit before the first
    guest arrives. Blocks: the follow in such an arena, not in sim, where
    only the host is seated.
-9. **Where the follow tree lives.** Settled: in walkie-ros's
-   `robot_navigation`, beside its other trees, such as
-   `object_follower_bt.xml`, and named by its ID. Nav2's stock FollowPoint
-   tree names no goal checker, so walkie-ros's controller server rejects
-   it, and the follow needs a copy that names `general_goal_checker`. A
-   goal could also name a copy in this repository by its file path, but
-   only where `bt_navigator` can read this repository's files, which fails
-   if the agent runs off the robot. The smoke test uses a scratch copy by
-   path until the walkie-ros copy exists. Blocks: the follow loop, not the
-   smoke test.
+9. **Where the follow tree lives.** Settled and built:
+   `walkie-navigation/config/nav2/behavior_tree/follow_point_bt.xml` in
+   walkie-ros's `robot_navigation`, beside its other trees, such as
+   `object_follower_bt.xml`. A goal selects it with
+   `behavior_tree: "WalkieFollowPoint"`.
+    - Nav2's stock FollowPoint tree names no goal checker, so walkie-ros's
+      controller server rejects its first `FollowPath`. The copy names
+      `general_goal_checker`.
+    - The copy needs its own ID. The stock `FollowPoint` is in the first
+      search directory, so `bt_navigator` registers it first and skips a
+      second file with the same ID, with a warning. The goal would then
+      get the stock tree.
+    - `nav2_mppi_walkie_params.yaml` now sets `bt_search_directories` to
+      Nav2's `behavior_trees` and `behavior_trees/subtrees` and the copy's
+      directory. Before, it set none.
+    - A goal could also name a copy in this repository by its file path,
+      but only where `bt_navigator` can read this repository's files,
+      which fails if the agent runs off the robot.
+
+    The copy is commit `53e4ed1` on the navigation repository's local
+    branch `feat/hri-follow-and-head-tilt`, not pushed. walkie-ros main
+    still pins `navigation` at `7f15b1c`, and the world's branch
+    `feat/chula-pat14-6-simulation` at `359719f`
+    ([What changes in other repositories](#what-changes-in-other-repositories)).
+    Blocks: the follow loop, until walkie-ros bumps the submodule and the
+    world's branch takes main's unified Nav2 config. The smoke test can
+    run on main's MuJoCo stack with a local checkout of the branch.
 
 ## Decisions
 

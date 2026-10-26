@@ -80,9 +80,10 @@ An audit of the robot found four more facts:
       not yet pushed. walkie-ros picks it up with a submodule bump.
 - **Orphaned goals.** A follow goal on
   [ADR-0053](/architecture/decisions/0053-follow-through-nav2-followpoint.md)'s
-  tree stays active after its loop dies. While it is active, Nav2 accepts a
-  goal on any other tree and then aborts it at once, and the gaze loop
-  stays silent.
+  tree can stay active after its loop dies. It ends with error 105 when the
+  base stops short of its path's end, and stays active when the base
+  reaches it. While it is active, Nav2 accepts a goal on any other tree and
+  then aborts it at once, and the gaze loop stays silent.
 - **Exceptions.** The gaze loop's `/cmd_vel` publisher is the one exception
   to `FORBIDDEN_NAMES` so far. The follow loop's `/goal_update` will be the
   second (ADR-0053).

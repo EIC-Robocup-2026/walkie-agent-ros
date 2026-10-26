@@ -29,23 +29,63 @@ skill server is not built. Gaze met the same problem with a reviewed loop
 in the agent
 ([ADR-0051](/architecture/decisions/0051-agent-side-gaze-loop.md)).
 
-Nav2 ships a tree for following, `follow_point.xml`:
+Nav2 ships a tree for following, `follow_point.xml`, with the ID
+`FollowPoint`:
 
 - Once a second it takes the newest goal from `/goal_update`, plans to it,
   and cuts the last 1.0 m off the path, turning the end pose toward the
   goal. `FollowPath` runs until it fails, and there is no recovery branch.
-- The goal updater ignores a `PoseStamped` with a zero stamp, or one
-  stamped before the `navigate_to_pose` goal. It uses the last one
-  received, and keeps it into the next goal on the same tree.
-- `bt_navigator` registers every tree in its default directory. walkie-ros
-  sets no `bt_search_directories`, so a goal can name the tree by its ID.
-  A goal can also name a tree file by its path.
+- The cut never leaves fewer than two poses. Within 1.0 m of the goal, the
+  path's end is therefore one planner step ahead of the base. The tree
+  never backs the base away.
+- The tree never succeeds. A `FollowPath` that reaches the end of its path
+  starts again. The goal ends only on a cancel, a failed replan or a failed
+  `FollowPath`, and Nav2 aborts it on either failure. A newer goal on the
+  same tree also ends it: Nav2 accepts the new goal and aborts the running
+  one with error code 0.
+- The progress checker fails `FollowPath` with error 105, `Failed to make
+  progress`, when the base covers less than 0.5 m in 8 s. The 1 Hz path
+  updates do not restart the 8 s. Only a 0.5 m move restarts it, or a
+  new `FollowPath`. A new one starts only when the base reaches the end of
+  its path within the goal checker's tolerance. A host who stands within
+  about 1.5 m leaves a path under 0.5 m long, so the goal then ends with
+  error 105 unless the base reaches that end. This happens in open space
+  too.
+- The goal updater reads `geometry_msgs/msg/PoseStamped` on `/goal_update`
+  and uses the newest update received. It ignores an update with a zero
+  stamp, with a warning, and one stamped earlier than the
+  `navigate_to_pose` goal, with an info log. The last update persists into
+  the next goal on the same tree, until `bt_navigator` loads another tree.
+  A goal with a zero or older stamp therefore starts toward the previous
+  follow's last update.
+- `bt_navigator` registers every tree in its `bt_search_directories`, in
+  the directories' order, and a goal can select a registered tree by its
+  ID. A file whose ID is already registered is skipped with a warning. A
+  file that cannot be parsed is skipped with an error. A file that parses
+  but fails to register stops `bt_navigator` from activating. A goal can
+  also name a tree file by its path, and Nav2 registers that file first.
+  The params at the commits walkie-ros pins set no
+  `bt_search_directories`, so only Nav2's `behavior_trees` and
+  `behavior_trees/subtrees` directories are searched. Commit `53e4ed1`
+  sets them.
 - The tree's `FollowPath` names no goal checker. walkie-ros loads two,
   `general_goal_checker` and `precise_goal_checker`, in sim and on the
   robot. The controller server accepts an unnamed checker only when one is
   loaded, so it rejects every `FollowPath` from the stock tree, and the
   goal fails at once. walkie-ros's own trees name their checker.
-- Nothing has run the tree on walkie-ros's stack yet.
+- walkie-ros's copy of the tree (below) has run on Nav2's loopback
+  simulation: `robot_navigation`'s `nav2_loopback.launch.py` with
+  `nav2_mppi_walkie_params.yaml`, at navigation commit `53e4ed1`. The
+  follow goals had a zero stamp, so every update was newer.
+    - A goal 1.5 m away, with no updates, ended with error 105 after 8 s.
+    - A goal 1.42 m away, with no updates, reached its path end and stayed
+      active until it was cancelled. A goal within about 1.5 m therefore
+      does not always end with error 105.
+    - A goal that received two updates replanned to each. The base stopped
+      about 1.1 m short of the last, and the goal stayed active until it
+      was cancelled.
+    - The stock tree failed on its first `FollowPath`.
+    - Nothing has run the copy on the MuJoCo simulation yet.
 
 Facts that shape the design:
 
@@ -97,17 +137,27 @@ Facts that shape the design:
     - No level puts either in `ctx.tools`, so generated tools cannot start
       the loop.
 - **Nav2 drives.**
-    - The loop sends one `navigate_to_pose` goal that names a copy of the
-      FollowPoint tree. The copy's `FollowPath` sets
-      `goal_checker_id="general_goal_checker"`. It lives in walkie-ros's
-      `robot_navigation`, beside walkie's other trees, and the goal names
-      it by its ID
+    - The loop sends a `navigate_to_pose` goal with
+      `behavior_tree: "WalkieFollowPoint"`, and sends it again after the
+      aborts listed under Stops. `WalkieFollowPoint` is walkie-ros's copy
+      of the FollowPoint tree, `walkie-navigation/config/nav2/behavior_tree/follow_point_bt.xml`
+      in `robot_navigation`, beside walkie's other trees
       ([HRI question 9](/architecture/hri.md#open-questions)).
-    - It publishes the host's map position on `/goal_update` at 2 Hz,
-      twice the tree's rate.
-    - The goal and every update are stamped with the node clock, which is
-      sim time in sim. An update left from an earlier follow is then older
-      than the goal and is never used.
+    - The copy's `FollowPath` sets
+      `goal_checker_id="general_goal_checker"`.
+    - The copy has its own ID. The stock `FollowPoint` is in the first
+      search directory, so `bt_navigator` registers it first. A copy with
+      the same ID would be skipped with a warning, and the goal would get
+      the stock tree.
+    - `nav2_mppi_walkie_params.yaml` sets `bt_search_directories` to
+      Nav2's two directories and the copy's, so the goal can select the
+      copy by its ID.
+    - The loop publishes the host's position on `/goal_update` at 2 Hz,
+      twice the tree's rate, as a `PoseStamped` in the `map` frame.
+    - The goal's `header.stamp` and every update's are set to the current
+      time of the node clock, which is sim time in sim. An update left
+      from an earlier follow is then older than the goal and is never
+      used.
     - The costmap may mark that position occupied. On the robot it will,
       once the host's legs are in `/scan`. Then the goal moves to the
       nearest free cell toward the robot.
@@ -153,6 +203,8 @@ Facts that shape the design:
     - `follow_person` adds their standing appearance to the gallery.
 - **A lost host is searched for in silence.**
     - When the track is lost, the loop cancels the goal and the base holds.
+      Only the track decides that the host is lost. A goal that ends with
+      error 105 does not.
     - The tracker keeps watching the whole scan. A track that reappears
       near the prediction within 20 s resumes the goal. If the camera sees
       it, its face or appearance must match.
@@ -184,20 +236,43 @@ Facts that shape the design:
       and shutdown, through the toolbox's listeners, as the gaze loop does.
     - Every navigation and arm atomic stops it first and waits for the base
       to be still. `look_at` refuses while it follows.
+    - A stop ends the re-sends below, cancels the goal, then waits up to
+      1 s for the cancel's answer and up to 5 s for the goal to end. These
+      are the bounds of `ctx.base`'s own drives
+      ([Capabilities](/architecture/capabilities.md#the-bases-safety-order)).
     - A watchdog cancels the goal when the scan or TF is more than 0.5 s
       old, or the people feed is older than a limit set from
       walkie-vision's measured latency on the robot. The loop then holds
       as for a lost host, resumes once every feed is fresh, and counts the
       time toward the same 20 s.
-    - When Nav2 aborts the goal, the loop sends it again. Repeated aborts
-      end the loop as a timeout does, after a count the smoke test sets.
+    - The tree never succeeds, so the goal ends only on a cancel or an
+      abort.
+    - Error 105 comes whenever the base covers less than 0.5 m in 8 s
+      without reaching the end of its path. While the tracked host is
+      within about 1.5 m of the base, it is routine: the base is parked
+      behind a host who stands still. The loop sends the goal again at
+      once, stamped with the current time, and does not count it as a
+      failure.
+    - A 105 while the tracked host is farther away means the base is
+      stuck, as in the divider's gap or behind an obstacle. It counts as
+      a failure.
+    - The loop sends the goal again after any other abort, such as a
+      failed replan, too. Failures in a row end the loop as a timeout
+      does, after a count the smoke test sets.
+    - An abort with error code 0 is a goal replaced by a newer one on the
+      same tree. The loop ignores it for a goal it replaced itself.
+    - The loop sends a goal again only while it follows. It never does
+      while it holds for a lost track or stale feeds, or once a stop has
+      begun.
     - It starts only with both arms in a travel-safe pose, the check the
       navigation atomics make
       ([ADR-0025](/architecture/decisions/0025-travel-safe-interlock.md)).
       `carry` is one.
 - **Closing in.** Nav2 aborts a goal that switches trees. A drive closer
   than the tree's 1.0 m is therefore a separate goal, sent after the
-  cancel.
+  cancel. Behind the standing host, the follow goal may already have ended
+  with error 105. That is not a failure: the cancel finds no active goal,
+  and the drive goes ahead.
 - **The simulation, in this repository.**
     - The scenario scripts the host. Asked for guidance, the host stands up
       and walks to a free spot in front of the robot. There they say a line
@@ -241,18 +316,31 @@ Facts that shape the design:
       the host, and `follow_person` joins the tools whose lines
       `hri_check` counts.
 - **Order of work.**
-    - First, a smoke test of the tree on the sim stack, before any loop
-      code. It names a scratch copy of the tree by its path, so it needs no
-      walkie-ros change. It sends stamped updates, stops the target for
-      10 s, stops the updates, then cancels and sends an ordinary goal.
+    - First, a smoke test of the tree on walkie-ros main's MuJoCo stack,
+      before any loop code. It selects `WalkieFollowPoint` by its ID, so
+      walkie-ros's `navigation` checkout needs commit `53e4ed1`. A scratch
+      copy named by its path also runs on the commits walkie-ros pins:
+      `7f15b1c` on main, and `359719f` on `feat/chula-pat14-6-simulation`,
+      the branch of the `chula_pat14_6` world.
+    - The test sends a goal and stamped updates, as the loop will. After
+      each error 105 it sends the goal again, stamped with the current
+      time. It stops the target once within 1.5 m of the base and once
+      farther away, so that both ends, error 105 and a goal that stays
+      active, are seen. Then it stops the updates, cancels, and sends an
+      ordinary goal.
     - The test settles:
-        - whether the copied tree loads and its `FollowPath` is accepted;
         - how the 1 Hz update and the 1.0 m cut behave;
-        - whether the progress checker fails a goal behind a standing host,
-          with `general_goal_checker`'s 0.01 rad yaw tolerance;
-        - whether a goal whose updates stop stays active;
-        - how many aborts in a row end the loop;
+        - how often error 105 ends the goal behind a standing host, and
+          whether the base pauses when the goal is sent again;
+        - whether the base edges closer once the host is within 1.0 m;
+        - how many failures in a row end the loop;
         - whether the base faces where it drives.
+    - The loop's run in `chula_pat14_6` needs more than the bump to
+      `53e4ed1`. The world's branch is walkie-ros's PR #58, open and in
+      conflict with main. Its `359719f` is from before the unified Nav2
+      config, and its MuJoCo launch loads
+      `nav2_mppi_walkie_sim_params.yaml`, which `7f15b1c` deleted. The
+      branch has to take main's unified config, walkie-ros PR #60, first.
     - In parallel, the team records robot bags of a person walking ahead of
       the robot, beside a wall, and across its path. The leg clustering is
       tuned on those real returns.
@@ -273,16 +361,24 @@ Facts that shape the design:
   the host waits for it. On the robot the host may pull ahead and be lost
   behind the divider. A faster follow profile is a walkie-ros question for
   after the first pass.
-- A host who stops just beyond the standoff can make the progress checker
-  fail the goal, and the tree has no recovery. The loop then sends the goal
-  again. The smoke test decides whether that is enough.
+- The goal ends with error 105 whenever the base covers less than 0.5 m in
+  8 s without reaching the end of its path, as behind a host who stands
+  within about 1.5 m, and the tree has no recovery. The loop sends the goal
+  again each time. A 105 counts toward ending the loop only while the
+  tracked host is farther than about 1.5 m, so a stuck base cannot keep
+  the loop running. A more lenient progress checker for this tree alone
+  would need its own `progress_checker_id`. Every other walkie tree would
+  then have to name its progress checker too, because the controller
+  server accepts an unnamed one only when one is loaded.
 - If the agent dies, nothing cancels the goal. The base stops about 1.0 m
-  short of the last update. A `FollowPath` that reaches its end starts
-  again instead of ending the tree, so the goal most likely stays active
-  until it is cancelled or the planner or controller fails. While it is
-  active, Nav2 aborts every goal on another tree. `ctx.base` therefore
-  cancels any active `navigate_to_pose` goal at start-up and before each
-  drive of its own.
+  short of the last update. If it stops short of its path's end, the goal
+  ends with error 105 after 8 s. If it reaches that end within
+  `general_goal_checker`'s 0.1 m and 0.01 rad, each `FollowPath` that
+  reaches it starts again, and the goal stays active until it is cancelled
+  or the planner or controller fails. While it is active, Nav2 aborts every
+  goal on another tree. A new loop's follow goal replaces it instead.
+  `ctx.base` therefore cancels any active `navigate_to_pose` goal at
+  start-up and before each drive of its own.
 - In sim Nav2 does not see the people, so only the loop's standoff keeps
   the robot off the host, and the 0.5 m criterion judges the loop alone.
   On the robot the host's legs are in `/scan`, so the costmaps and

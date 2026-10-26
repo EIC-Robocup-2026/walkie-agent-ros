@@ -1027,10 +1027,10 @@ flowchart TB
     di["<b>walkie-database</b><br/>People services:<br/>interface agreed (done)"]
     a0["<b>walkie-agent-ros</b><br/>Pin walkie_vision_msgs"]
     p1["<b>walkie-agent-ros</b><br/>Phase 1: host, todos,<br/>wait_for_person"]
-    a1["<b>walkie-agent-ros</b><br/>HRI atomics, and arm<br/>atomics on the commander"]:::proposed
-    g["<b>walkie-agent-ros</b><br/>Gaze loop"]:::proposed
-    s["<b>walkie-agent-ros</b><br/>oracle_perception:<br/>guests, seats, bag"]:::proposed
-    t["<b>walkie-agent-ros</b><br/>HRI template,<br/>sim run passes"]:::proposed
+    a1["<b>walkie-agent-ros</b><br/>HRI atomics, and arm<br/>atomics on the commander"]
+    g["<b>walkie-agent-ros</b><br/>Gaze loop"]
+    s["<b>walkie-agent-ros</b><br/>oracle_perception:<br/>guests, seats, bag"]
+    t["<b>walkie-agent-ros</b><br/>HRI template,<br/>sim run passes (done)"]
 
     a0 --> a1
     di --> a1
@@ -1046,7 +1046,7 @@ The run on the robot:
 
 ```mermaid
 flowchart LR
-    t["<b>walkie-agent-ros</b><br/>Sim run passes<br/>the 2026.2 check"]:::proposed
+    t["<b>walkie-agent-ros</b><br/>Sim run passes<br/>the 2026.2 check (done)"]
     v["<b>walkie-vision</b><br/>Vision node: seat classes,<br/>pose, faces, OSNet<br/>(done)"]
     d3["<b>walkie-database</b><br/>People services built<br/>(done)"]
     lo["<b>walkie-agent-ros</b><br/>door and living_room<br/>measured on the arena map"]:::proposed
@@ -1097,16 +1097,13 @@ flowchart LR
   commit 1576d6f, the pin in `ros2_ws.repos`, but not yet measured on the
   robot's GPU, so its `check-env` runs first
   ([Run HRI on the Robot](../robot-hri-run.md#2-check-walkie-vision-on-the-robots-gpu)).
-- **The template and its pass check are built, and a new sim run is
-  due.** Two sim runs in a row passed every criterion of the check
-  ([In simulation](#in-simulation)). In both, Nav2 aborted the first
-  drive to the door after the fresh bringup, and the agent's retry
-  arrived. Both came before the pronouns criterion, and before the
-  introductions criterion checked names. A later run, logged on
-  2026-10-25 at 22:00, said "Sam, meet Ana. Her favourite drink is cola."
-  and "Ana, meet Sam. His favourite drink is milk.", which the pronouns
-  criterion now fails. That run already failed `gaze guest1`, at 84%
-  within 10° but a ratio of 1.02.
+- **The template and its pass check are built, and the sim run passes.**
+  A run on 2026-10-26, of the code merged in df8c9c9, passed every
+  criterion of the check ([In simulation](#in-simulation)), including the
+  pronouns criterion and the names the introductions criterion checks.
+  The task took 120.5 s. The gaze criterion has the least margin: guest2's
+  ratio was 0.88 against the 0.9 limit, and a run on 2026-10-25 failed
+  `gaze guest1` at 84% within 10° but a ratio of 1.02.
 - **From phase 2,** the slice takes only the toolbox core and the atomics
   above ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The arm
   atomics call the real commander through `CommanderClient`. In sim the

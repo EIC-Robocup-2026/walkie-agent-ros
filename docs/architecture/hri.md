@@ -346,7 +346,7 @@ three, each with `face seen`.
   free place with `look_at` and says which one it is, for example "the
   left side of the sofa". Whether that counts as indicating it is
   [question 13](#open-questions). A pointing pose for the right arm is
-  planned, used after `look_at` faces the seat. It needs its joint values
+  planned, used after `look_at` faces the seat, whatever the answer. It needs its joint values
   recorded in the simulation first, since `config/arm_poses.toml` cannot
   hold a pose without them. A seat handle keeps its heading from when the
   image was seen, because the handle outlives the TF buffer's 10 s.
@@ -553,7 +553,7 @@ short of them in three places:
   the bag through a parameter, and no criterion measures the distance
   ([question 11](#open-questions)).
 
-Proposed instead, pending a decision ([question 10](#open-questions)): a
+Settled instead, not yet built ([question 10](#open-questions)): a
 hand-over in which the guest does not time the close. The robot asks for
 the bag (T:47) without asking the guest to say when it is there. It opens
 the hand and holds it still in `receive`, which shows that it is ready
@@ -1657,11 +1657,13 @@ repository:
       the guest's answer still times the close.
     - **The current flow,** which plausibly loses the 25.
 
-    Recommended: the self-detected hand-over. Also open: whether a miss is
-    tried once more, opening the hand and waiting again with no spoken
-    request, or not at all. A silent retry asks for nothing, so it is no
-    second request for help (G/ContinueRules:72). Recommended: one silent
-    retry. Blocks: the full 50 for the hand-over, not a sim run.
+    Also open was whether a miss is tried once more, opening the hand and
+    waiting again with no spoken request, or not at all. A silent retry
+    asks for nothing, so it is no second request for help
+    (G/ContinueRules:72).
+
+    Settled: the self-detected hand-over, with one silent retry. Not yet
+    built. Blocks: the full 50 for the hand-over, not a sim run.
 
 11. **Reaching within 10 cm of the guest's hand.** The gripper must be
     within 10 cm of the guest's hand (T:104), but the robot should not
@@ -1679,7 +1681,7 @@ repository:
       agent never calls `/go_to_pose`, with W2's speed scaling.
 
     A `handover_distance` criterion would check it in the simulation.
-    Recommended: the approach and the recorded heights, in a later pull
+    Settled: the approach and the recorded heights, in a later pull
     request after slice 2's leg node, and asking the Technical Committee
     how T:104 squares with T:105. Blocks: the full 50 for the hand-over,
     not a sim run.
@@ -1693,9 +1695,9 @@ repository:
     - **Releasing the emergency stop,** which needs a read of its state.
     - **A start button,** which needs hardware.
 
-    Recommended: the keyword. The time criterion matches the rulebook's
-    start only once the seeding happens at the signal. Blocks: a run in
-    the arena, not in sim.
+    Settled: the keyword, after a ready line. Not yet built. The time
+    criterion matches the rulebook's start only once the seeding happens at
+    the signal. Blocks: a run in the arena, not in sim.
 
 13. **Questions for the Technical Committee.**
     - Whether a close the guest times ("tell me when it is there") counts
@@ -1706,9 +1708,9 @@ repository:
       hand", may be penalized too, although T:47 has the robot ask for
       the bag.
     - Whether facing a seat and naming it counts as indicating it (T:59),
-      now that the guest judges it ([Seats](#seats)). If it does not, the
-      robot needs the planned pointing pose, whose joint values a sim
-      session records first.
+      now that the guest judges it ([Seats](#seats)). Settled meanwhile:
+      the next sim session records the pointing pose, and the seat offer
+      uses it whatever the answer.
     - Whether saying the other guest's name identifies them clearly
       enough (T:63), now that the guest judges it. If it does not, the
       template could add the other guest's side, from the listener's

@@ -417,7 +417,8 @@ flowchart TB
    embedding in `PersonDetection`. Blocks: `describe_person`.
 5. **Following a person.** Following is a closed loop at sensor rate,
    which an LLM turn cannot run. Settled: a reviewed loop in the agent,
-   `ctx.base.follow`, built after the capability layer. Proposed: the loop
+   `ctx.base.follow`, built after the capability layer
+   ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)). Proposed: the loop
    sends Nav2 a copy of its FollowPoint tree and the person's position. The
    2D lidar gives the range and the camera the identity, so following does
    not wait on question 1

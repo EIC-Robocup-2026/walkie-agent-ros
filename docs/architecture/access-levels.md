@@ -36,7 +36,7 @@ arm's. Phases refer to the [roadmap](self-evolving-agent.md#roadmap).
 
 | Level | Where it may run | What it is for |
 | ----- | ---------------- | -------------- |
-| Unrestricted | Simulation only, on a marked sim host | Find what is missing, including new atomics and perception ideas. Raw ROS reads, service calls and actions. Raw base-command publish may come in phase 4b, only if harvest traces show tools blocked without it. |
+| Unrestricted | Simulation only, on a marked sim host | Find what is missing, including new atomics and perception ideas. Raw ROS reads, service calls and actions. No raw publishing ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)). |
 | Standard | Simulation only, on a marked sim host | Find tools that can be built from existing atomics, with code. |
 | Competition | Anywhere, including the real robot. The default. | Answer a live stranger's request safely. |
 
@@ -59,7 +59,7 @@ and running outside the sandbox.
 | atomic, human-written | yes | gated | yes | yes | as declared | as declared | yes, in-process | review, fake-backed tests |
 | atomic, promoted generated code | per manifest | gated | per manifest | per manifest | per manifest | per manifest | yes, in the sandbox | manifest review, fake-backed tests, CI provenance check |
 | `bundled_preset` | yes | gated | yes | yes, mocked until real arms | none | none | yes | review, replay tests, 2 traced runs or harvest evidence |
-| generated, Unrestricted (sim) | yes | gated | raw actions; base-command publish in phase 4b, if it ships | through atomics only, never MoveIt | base commands in phase 4b, if it ships, minus the never-list | broad, vetted; web search | no | lint, stamp, sandbox test run |
+| generated, Unrestricted (sim) | yes | gated | raw actions, and atomics | through atomics only, never MoveIt | none | broad, vetted; web search | no | lint, stamp, sandbox test run |
 | generated, Standard (sim) | yes | gated | through atomics | through atomics | none | public hosts, vetted; web search | no | lint, stamp, sandbox test run |
 | generated, Competition | R; P through atomics only | gated, capped | none | none | none | named sources; search snippets under L14 | yes, session only | lint, stamp, L14, L15, literal checks, test run against fakes, resource scope |
 
@@ -106,7 +106,7 @@ it narrows:
     effects_allow = ["R", "P", "S", "N", "M"]
     tools_allow = ["*"]
     tools_search = true
-    ros = { read_allow = ["*"], call_allow = ["*"], publish_allow = ["*"], action_allow = ["*"], graph = true, tf = true }
+    ros = { read_allow = ["*"], call_allow = ["*"], publish_allow = [], action_allow = ["*"], graph = true, tf = true }  # no publish (ADR-0052)
     http = { methods_allow = ["GET", "HEAD", "POST"], schemes_allow = ["http", "https"], sources_allow = ["*"] }
     caps = { invoke_s = 300, coder_s = 900, search_k = 10, search_per_invocation = 10 }
 
@@ -156,7 +156,7 @@ it narrows:
 | `ctx.tools` exposes | every atomic, including internal ones (`navigate_to_pose`, `run_skill`, `set_gripper`, `localize_object`, `get_transform`), plus read-only `ctx.tools.search` | same | `speak`, `play_sound`, `tell_time`, `tell_date`, `list_locations`, `get_current_pose`, `find_objects`, `detect_objects`, `search_detections`, `relate_objects`, `get_arm_state`, `wait_for_seconds` (≤ 10 s); `describe` only; perception returns labels, counts and enums |
 | ROS read | any name off the never-list; images, point clouds, occupancy grids and messages over 256 KB come back as handles | any name off the never-list; nested images, point clouds and `float32[]` fields named `*embedding` stripped | none |
 | ROS call | any service off the never-list | `*/get_parameters`, `*/list_parameters`, `*/describe_parameters`, `*/get_type_description`, `/walkie_database/find_objects` | none |
-| ROS publish | none; phase 4b, only on harvest evidence: base-command topics with a known stop message (`Twist`, `TwistStamped`), 20 Hz | none | none |
+| ROS publish | none; phase 4b's raw base commands are dropped ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)) | none | none |
 | ROS action | any action off the never-list, cancelled on exit | `/compute_path_to_pose`, `/compute_path_through_poses` | none |
 | ROS graph and TF | yes | yes | none; pose comes from `get_current_pose` |
 | Web text | marked untrusted | same | marked untrusted; taints the invocation and the turn; returns as typed fields (numbers, enums, strings ≤ 120 characters) |
@@ -299,7 +299,7 @@ guards against mistakes, not against an attacker on the graph.
   Checks 4 and 7 to 9, the periodic re-checks and the fresh checks before
   motion land in phase 4a, before the harvest relies on them in phase 5.
 - **Re-checks.** Checks 6 to 8 re-run every 5 s. Before every N or M
-  `ctx.tools` call, publish or action start at Standard or Unrestricted,
+  `ctx.tools` call or action start at Standard or Unrestricted,
   checks 3 and 8 re-run uncached: one graph query of a few ms, which closes
   the 5 s window for motion. A failed fresh check refuses that call and
   demotes the session.
@@ -396,6 +396,13 @@ backings. Human-written atomics with `META.runtime = "inprocess"` get
 enforces the tool's manifest. Sandboxed code gets `walkie_toolbox_facade.Ctx`,
 which sends each call as JSON-RPC on fd 3.
 
+The in-process backing also carries the typed robot capabilities, such as
+`ctx.base` and `ctx.speech`
+([Robot Capabilities](capabilities.md#generated-code)). The sandboxed
+backing does not. Generated code reaches M only through `ctx.tools`, and N
+through `ctx.tools` or, at Unrestricted, also through the bridge's raw Nav2
+actions, which ask the MotionSupervisor once it exists.
+
 | Member | What it does | Levels |
 | ------ | ------------ | ------ |
 | `level`, `deadline`, `now()` | the session level, a monotonic deadline, aware venue time | all |
@@ -404,7 +411,7 @@ which sends each call as JSON-RPC on fd 3.
 | `ros.graph()`, `ros.read(topic)`, `ros.tf(target, source)` | the graph, one message (stripped, or a handle), a transform | Unrestricted, Standard |
 | `ros.call(service, request)` | a service call | Unrestricted; read-only list at Standard |
 | `ros.action.start`, `poll`, `wait`, `cancel` | actions, cancelled on exit | Unrestricted; planning only at Standard |
-| `ros.publish(topic, msg)` | base commands | Unrestricted, only if phase 4b ships |
+| `ros.publish(topic, msg)` | not provided: no level publishes ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)) | none |
 | `http.get(url, params=...)` | a GET; `HttpResult` is always `untrusted=True` | all |
 | `http.post_json(url, body)` | a JSON POST | Unrestricted, Standard |
 | `http.web_search(query, lang="en")` | `SearchResult` items `{title, snippet, site, url?}`; `url` only in sim | all; under L14 at Competition |
@@ -481,8 +488,8 @@ motion.
 
 - A read creates a subscription, takes one message and destroys it. RAI's
   `receive_message` keeps subscribers forever.
-- A publish waits up to 1 s for a subscriber, else returns `NO_SUBSCRIBER`,
-  the same workaround as the `speak` tool.
+- The bridge has no publish verb
+  ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)).
 - Calls and actions use plain `rclpy` clients, because RAI 2.12's action
   `done_callback` is a TODO. Feedback is polled. Each deadline is the smaller
   of the call timeout and the invocation's time left.
@@ -492,9 +499,10 @@ motion.
 - Each call adds a line to `runs/ros/<date>.jsonl` with its verb, name,
   decision and duration.
 - On end, worker death, reset or demotion, the bridge cancels the
-  invocation's goals, publishes one zero `Twist` or `TwistStamped` on each
-  topic it published, and drops its publishers and clients. A type without a
-  known stop message cannot be published to a command topic.
+  invocation's goals and drops its clients. It publishes nothing.
+- Once the MotionSupervisor exists, the bridge asks it before it starts a
+  raw Nav2 action, so the arm check and the one-goal rule hold for raw goals
+  too ([Robot Capabilities](capabilities.md#generated-code)).
 
 ### HTTP broker, search and audio
 
@@ -606,7 +614,7 @@ control.
 | T9 | Sandbox escape | `statistics.sys.modules["os"]`, forged frames | sandbox and scope; identity per worker; L15; AST lint | low |
 | T10 | Supply chain | a drafted `pip install`, a crafted audio file | no runtime installs; `ffmpeg` only in the decode sandbox | very low |
 | T11 | Sim and real confused | Standard on the robot, or a graph bridged to it | flag only; markers; domain-23 veto; loopback Zenoh for Unrestricted; fresh driver check; demotion until restart | very low |
-| T12 | Generated motion leaking | an Unrestricted draft publishing `/cmd_vel` | stamped Unrestricted; never promoted as is; robot loads no drafts; fresh checks; stops on cleanup | very low |
+| T12 | Generated motion leaking | an Unrestricted draft driving through raw Nav2 actions | no raw velocity publish ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)); stamped Unrestricted; never promoted as is; robot loads no drafts; fresh checks; goals cancelled on cleanup | very low |
 
 Mitigations, ranked by value for cost: (1) the per-level surface in the
 parent; (2) the no-network sandbox and the vetted broker with named sources;

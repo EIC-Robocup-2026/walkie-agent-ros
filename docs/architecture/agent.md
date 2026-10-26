@@ -694,7 +694,10 @@ memory is cleared at the same moments, through `Toolbox.on_new_task`.
 
 Every `run(ctx, args)` gets the same `ToolContext`. Atomics reach ROS,
 their backends and the handles only through it, so the guard rails live in
-one place.
+one place. [Robot Capabilities](capabilities.md) proposes typed members on
+it, such as `ctx.base` and `ctx.speech`, so that new atomics need no rclpy
+and no message types
+([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)).
 
 | Member | What it does |
 | ------ | ------------ |
@@ -722,9 +725,12 @@ one place.
   `ValueError`, unless the call passes that exact name in
   `allow_forbidden`. It is a `ValueError`, not a `StepError`, because it is
   a bug in reviewed code: it must fail the tests, not reach the LLM. The
-  one exception is the gaze loop's publisher, which passes
+  one exception so far is the gaze loop's publisher, which passes
   `allow_forbidden=("/cmd_vel",)`
-  ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). Like the list
+  ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). The follow loop
+  and the MotionSupervisor will add two more
+  ([Robot Capabilities](capabilities.md#reviewed-exceptions-to-forbidden_names)).
+  Like the list
   itself, this is a guard rail, not a security boundary
   ([ADR-0009](decisions/0009-forbidden-names-guard-rail.md)).
 
@@ -734,7 +740,9 @@ one place.
   `stop()` and a stop utterance during a task set `ctx.cancel`, so an
   atomic waiting in `ctx.wait()` ends with `CANCELLED` instead of finishing
   its step. Today's tools do not see the cancel, so a navigation goal
-  still finishes first.
+  still finishes first. With the capability layer's PR B, a drive waits on
+  the cancel and cancels its goal
+  ([Robot Capabilities](capabilities.md#pr-b-drive-and-speak-through-ctx)).
 - **The cancel reaches the right run.** It is set under the agent's buffer
   lock, the same lock under which a starting run clears it. A cancel set
   after a run started cancels that run. One set before is cleared when the
@@ -803,7 +811,8 @@ one place.
   walkie-ros's `bimanual_commander`. It loads `config/arm_poses.toml` and
   raises `ArmPoseError` when the file is wrong, so the agent does not
   start. `pixi run agent-sim` passes the flag, and `pixi run agent` does
-  not, until the MotionSupervisor exists. With it, the arm rules are added
+  not, until the MotionSupervisor exists
+  ([PR C](capabilities.md#pr-c-the-motionsupervisor)). With it, the arm rules are added
   to the system prompt, and `navigate_to_location` and `move_relative`
   check the arms before they drive. Without a commander running, the arm
   atomics fail with `UNAVAILABLE`, and the robot drives with the arm state

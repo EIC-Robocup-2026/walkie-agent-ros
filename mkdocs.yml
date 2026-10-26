@@ -105,6 +105,7 @@ nav:
   - Architecture:
       - architecture/index.md
       - The Agent: architecture/agent.md
+      - Robot Capabilities (Proposed): architecture/capabilities.md
       - Arm Manipulation (Proposed): architecture/manipulation.md
       - Perception (Proposed): architecture/perception.md
       - HRI Task (Proposed): architecture/hri.md

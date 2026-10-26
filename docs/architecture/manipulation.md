@@ -35,9 +35,11 @@ names in full, for example "phase 2 of the self-evolving agent".
 - **Trust, but verify.** After every motion, the agent reads the joint
   states and checks that the arm really arrived
   ([ADR-0024](decisions/0024-verify-motion-from-joint-states.md)).
-- **Reset stops the robot.** A `MotionSupervisor` owns every motion goal.
-  `/walkie/reset` stops MoveIt and cancels every goal, Nav2 included
-  ([ADR-0023](decisions/0023-motion-supervisor.md)).
+- **Reset stops the robot.** A `MotionSupervisor` beneath `ctx.base` and
+  `ctx.arms` owns every motion goal. `/walkie/reset` stops MoveIt and cancels
+  every goal, Nav2 included
+  ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md),
+  [Robot Capabilities](capabilities.md#the-motionsupervisor)).
 - **No driving with arms out.** Navigation refuses unless the arms are in a
   pose marked safe for driving
   ([ADR-0025](decisions/0025-travel-safe-interlock.md)).
@@ -106,6 +108,9 @@ atomics and the drive check. They call the commander directly through
 call at a time. The `MotionSupervisor`, `list_skills`, `run_skill` and the
 skill server are not built
 ([Arms in the self-evolving agent](#arms-in-the-self-evolving-agent)).
+The supervisor sits beneath `ctx.arms` and `ctx.base`, and is built in the
+capability layer's PR C
+([Robot Capabilities](capabilities.md#pr-c-the-motionsupervisor)).
 
 ## How a pose move works
 
@@ -179,8 +184,9 @@ The settled read only supplements the commander's answers. It cannot see a
 motion slower than 0.01 rad in 0.3 s. That matters only for a trajectory
 that move_group still executes after the commander restarted, since the new
 commander does not know its goal and answers `unknown`. The full answer is
-the MotionSupervisor's stop ([ADR-0023](decisions/0023-motion-supervisor.md)),
-which ends every MoveIt execution. The client's state lives in the agent
+the MotionSupervisor's stop
+([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)), which ends
+every MoveIt execution. The client's state lives in the agent
 process, so an agent restart forgets it, abandoned goals included. A
 restart is not evidence that a motion ended.
 
@@ -439,8 +445,10 @@ description = "Holding an object close to the body."
 ## Safety
 
 - **One motion at a time.** RAI already runs one tool at a time. The
-  MotionSupervisor also refuses arm motion while Nav2 drives, and the other
-  way round. Until it lands, `CommanderClient` refuses a second commander
+  MotionSupervisor also refuses arm motion while any `navigate_to_pose` goal
+  is active, whoever sent it, and the other way round
+  ([Robot Capabilities](capabilities.md#the-motionsupervisor)). Until it
+  lands, `CommanderClient` refuses a second commander
   call while a goal runs, and while a goal whose call gave up has not
   ended. While the arms are unverified, it refuses every goal. The drive
   check refuses to drive in the first two cases, and in the third unless
@@ -450,7 +458,8 @@ description = "Holding an object close to the body."
   within its 3 s limit, so no arm goal can start between its steps.
 - **Reset.** `/walkie/reset` publishes `"stop"` on
   `/trajectory_execution_event`, cancels every goal, and blocks every motion
-  tool until the reset is applied. The physical emergency stop stays the real
+  tool until the next task starts. A "stop" or a "never mind" does the same.
+  The physical emergency stop stays the real
   safety boundary, because a software stop needs ROS, MoveIt and the
   controllers to be working. Until the MotionSupervisor lands, a stop or a
   reset sets the atomics' cancel event: a running arm atomic cancels its
@@ -540,7 +549,11 @@ These lists guard the agent's own ROS tools
 component outside the tools, the gaze loop, publishes rotation only on
 `/cmd_vel` ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). Slice 2's
 follow loop, once built, will be the second, on `/goal_update`
-([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)). Generated code
+([ADR-0053](decisions/0053-follow-through-nav2-followpoint.md)). The
+MotionSupervisor will be the third, publishing only `"stop"` on
+`/trajectory_execution_event`
+([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)). Each name
+joins `FORBIDDEN_NAMES` when its component lands. Generated code
 goes through a separate never-list in `config/access_levels.toml`, which
 uses glob patterns such as `/*_joint_trajectory_controller/*`
 ([The never-list](access-levels.md#the-never-list)).
@@ -680,8 +693,9 @@ contract:
   ROS-level fake of ADR-0019. ADR-0037 records that gap. The mock can drift
   from the real interface, so the bundle tests rerun against the real
   client on the real-backends track.
-- Until the MotionSupervisor ([ADR-0023](decisions/0023-motion-supervisor.md))
-  lands, a reset trips the session's cancel token. The bundle runner checks
+- Until the MotionSupervisor
+  ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)) lands, a
+  reset trips the session's cancel token. The bundle runner checks
   it between steps. A running arm atomic cancels its commander goal; any
   other running step stops only when its own wait checks the token.
 
@@ -753,12 +767,12 @@ Generated tools are meant to move the arms only by calling the atomics.
   session ([ADR-0040](decisions/0040-sim-interlock.md)).
 - **No raw controllers.** Code that drives the controllers skips MoveIt's
   planning and collision checking, so it could never be promoted as-is, and
-  cleaning up after it needs controller-aware stops. If phase 4b of the
-  self-evolving agent ships, which happens only on harvest evidence, it adds
-  raw base-command publishing at Unrestricted but no arm controllers. Raw
-  arm controllers are reconsidered only if the harvest's atomic wishlist
-  shows tools blocked without them
-  ([ADR-0044](decisions/0044-mocked-arm-atomics.md)).
+  cleaning up after it needs controller-aware stops. Phase 4b of the
+  self-evolving agent adds neither arm controllers nor raw base commands.
+  Each is reconsidered only if the harvest's atomic wishlist shows tools
+  blocked without it
+  ([ADR-0044](decisions/0044-mocked-arm-atomics.md),
+  [ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)).
 
 At Competition the task LLM also loses its M tools once untrusted web text
 enters a turn ([Turn taint](competition.md#turn-taint-and-the-history-scrub)).
@@ -833,7 +847,8 @@ from the spoken request to the hand-over.
 | Presets `find_object_in_view`, `pick_object`, `pickup_object_in_view`, `hand_over` | walkie-agent-ros | `src/walkie_agent/tools/bundled_preset/` (new) |
 | Typed results, `StepError`, the bundle runner and its runtime stow | walkie-agent-ros | `src/walkie_agent/toolbox/types.py`, `src/walkie_agent/toolbox/runner.py` (new) |
 | The navigation arm check                                         | walkie-agent-ros | `src/walkie_agent/tools/navigation.py` (changed)     |
-| MotionSupervisor                                                 | walkie-agent-ros | `src/walkie_agent/motion.py` (new)                   |
+| `ctx.arms` and the other capabilities, and their fakes           | walkie-agent-ros | `src/walkie_agent/capabilities/`, `src/walkie_agent/testing/` (new; [Robot Capabilities](capabilities.md)) |
+| MotionSupervisor                                                 | walkie-agent-ros | `src/walkie_agent/motion.py` (new; [PR C](capabilities.md#pr-c-the-motionsupervisor)) |
 | Named poses, robot-model snapshot and its generator              | walkie-agent-ros | `config/arm_poses.toml`, `config/robot_model.toml`, `scripts/snapshot_robot_model.py` |
 | The commander launch for the MuJoCo simulation                   | walkie-agent-ros | `launch/commander_sim.launch.py`                     |
 | Never-list of arm, gripper, head and lift controllers            | walkie-agent-ros | `config/access_levels.toml` (new)                    |
@@ -942,7 +957,9 @@ the `FakeSkillServer` serves in the sim harvest
 
 Built so far from phase 1: the poses and snapshot, the four arm tools, the
 navigation arm check and the `FakeCommander`. The MotionSupervisor, the
-forbidden names and `arms.md` are not.
+forbidden names and `arms.md` are not. The MotionSupervisor is now part of
+the capability layer and lands in its PR C
+([Robot Capabilities](capabilities.md#delivery-plan)).
 
 The [self-evolving agent](self-evolving-agent.md#roadmap) builds the arm
 tools in a different order: typed first, with `run_skill` mocked and the
@@ -956,9 +973,9 @@ above line up with its phases like this:
 | 2. Typed atomics, mocks, bundles | ADR-0044. The four pose and gripper atomics on `CommanderClient` (built), `run_skill` on `MockSkillServer`, the presets, `META.requires`, the navigation arm check (built), the controller patterns in `config/access_levels.toml`, `test_runner`, `test_nav_interlock`, a mocked fetch on `agent-sim` | 1, and 3 mocked |
 | 3. Index and atomic agent | `find_tools` reaches `set_gripper`, `list_arm_poses` and `run_skill`. Linker rules L07, L08 and L13 | none |
 | 4a. Sandbox and coder (sim) | The ROS bridge refuses every arm, gripper, head and lift controller at every level (`test_ros_bridge`). Fresh interlock checks before every M call | none |
-| 4b. Unrestricted extras | On harvest evidence: raw base commands, `ctx.handles.load` and `cv2`. No raw arm controllers | none |
+| 4b. Unrestricted extras | On harvest evidence: `ctx.handles.load` and `cv2`. No raw arm controllers and no raw base commands ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)) | none |
 | 5. Harvest v0 | `FakeSkillServer`, mirroring picks and places into MuJoCo | none |
-| Real backends, from phase 2 | The MotionSupervisor and the forbidden names (needs arm phase 0), and the skill-server client (W4, W5). The commander client and `FakeCommander` are built. Done when the bundle tests rerun against the real clients | 1 and 3, real |
+| Real backends, from phase 2 | The capability layer: `ctx.arms` in its PR A, `ctx.base` in PR B, and the MotionSupervisor with the `/trajectory_execution_event` forbidden name in PR C, which needs arm phase 0 ([Robot Capabilities](capabilities.md#delivery-plan)). Then the skill-server client (W4, W5). The commander client and `FakeCommander` are built. Done when the bundle tests rerun against the real clients. After PR C and steps R0 to R4, `pixi run agent` adds `--arms` | 1 and 3, real |
 
 - Phase 1 of the self-evolving agent changes nothing for the arms. Phase 6
   adds the taint filter, which hides the M tools together with the N tools
@@ -1017,7 +1034,9 @@ above line up with its phases like this:
 
 ## Decisions
 
-Click a decision to expand it. All of these are proposed. See
+Click a decision to expand it. All of these are proposed.
+[ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md), also
+proposed, would supersede ADR-0023 once accepted. See
 [Architecture](index.md) for how decisions work.
 
 ??? note "ADR-0021: Move the arms only through bimanual_commander · Proposed"

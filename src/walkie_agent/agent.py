@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
@@ -34,6 +34,9 @@ from walkie_agent.tools import build_walkie_tools
 from walkie_agent.tools.atomic import _perception
 from walkie_agent.tuning import Tuning
 from walkie_agent.whoami import build_system_prompt
+
+if TYPE_CHECKING:
+    from walkie_agent.perception.ros_people_memory import RosPeopleMemory
 
 SYSTEM_PROMPT = """\
 You are Walkie, a home service robot competing in RoboCup@Home.
@@ -530,16 +533,21 @@ def create_walkie_agent(
     stream_response: bool = True,
     whoami_dir: Path | None = None,
     templates: Mapping[str, TaskTemplate] | None = None,
-    mock_people_memory: bool = False,
+    people_memory: Literal["database", "mock"] | None = None,
+    resume_people_session: bool = False,
     arms: bool = False,
     tool_log_path: Path | None = None,
     tuning: Tuning | None = None,
 ) -> WalkieAgent:
     """Build the agent. `whoami_dir` adds the robot description and documentation
     search from `pixi run whoami-build`, when they have been built (see whoami.py).
-    `templates` are the task templates (see tasks.py). `mock_people_memory` adds
-    an in-memory people memory, so recognize_person and remember_person load;
-    for sim and tests only. `arms` adds the commander client as the `arm`
+    `templates` are the task templates (see tasks.py). `people_memory` adds the
+    `people_memory` backend, so recognize_person and remember_person load:
+    "database" is a RosPeopleMemory on walkie-database's people services, and
+    "mock" an in-memory mock, for sim and tests. Either forgets the guests at
+    each new task; `resume_people_session` makes the database client keep the
+    open session for the first task. None, the default, loads neither tool and
+    opens no client. `arms` adds the commander client as the `arm`
     backend, so the arm atomics load and the navigation tools refuse to drive
     with an arm out; it loads config/arm_poses.toml, and raises ArmPoseError
     when that file is wrong. The gaze loop is always created, as the `gaze`
@@ -560,12 +568,28 @@ def create_walkie_agent(
     # with UNAVAILABLE.
     vision = VisionFeed(connector, tuning.vision_feed)
     backends: dict[str, Any] = {"vision": vision}
-    memory = None
-    if mock_people_memory:
-        # Without a people_memory backend, recognize_person and
-        # remember_person do not load, so a robot run never stores guests in
-        # a mock that forgets them on restart.
+    memory: "InMemoryPeopleMemory | RosPeopleMemory | None" = None
+    if people_memory == "mock":
+        # The simulation's fake vision models have no vector tables in
+        # walkie-database, so a sim run keeps its guests in the mock.
         memory = InMemoryPeopleMemory()
+    elif people_memory == "database":
+        # Imported here, so a sim run on the mock still starts with a
+        # walkie_database_msgs built at an older pin, which has no people
+        # services.
+        from walkie_agent.perception import ros_people_memory
+
+        # Without the database node, the two people tools fail with
+        # UNAVAILABLE, and a new task costs no wait. A node that is found but
+        # does not answer costs each new task up to 1 s (ros_people_memory.py).
+        memory = ros_people_memory.RosPeopleMemory(
+            connector, resume_session=resume_people_session
+        )
+    elif people_memory is not None:
+        raise ValueError(
+            f"people_memory must be 'database', 'mock' or None, not {people_memory!r}."
+        )
+    if memory is not None:
         backends["people_memory"] = memory
     commander = None
     if arms:
@@ -585,8 +609,10 @@ def create_walkie_agent(
     # A stop, a reset or a new task stops the loop.
     gaze.attach(toolbox)
     if memory is not None:
-        # Each task starts with no guests, so a guest remembered in one sim
-        # run is not recognized in the next.
+        # Each task starts with no guests (walkie-database ADR-0010), so a
+        # guest remembered in one task is not recognized in the next. Only
+        # with resume_people_session does the first task after a restart
+        # keep the database's open session.
         toolbox.on_new_task(memory.clear)
     tool_log = None
     if tool_log_path is not None:

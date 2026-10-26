@@ -60,11 +60,12 @@ change after the bake-off, and walkie-database keeps one table per model
   walkie-database's migration, the new model name from the torch process,
   and the agent's tuned values. Until all three land, the old model keeps
   working.
-- On the robot, `recognize_person` and `remember_person` need
-  walkie-database services that do not exist yet. In sim and the tests
-  they run on an in-memory mock of the proposed interface, loaded only
-  with `--mock-people-memory`. A person's position needs depth, which
-  `PersonDetection` does not carry
+- On the robot, `recognize_person` and `remember_person` use
+  walkie-database's people services through `RosPeopleMemory`, at the
+  pin 64403e9. In sim and the tests they use `InMemoryPeopleMemory`,
+  loaded with `--mock-people-memory`, because the fake vision models have
+  no vector tables in walkie-database. A person's position needs depth,
+  which `PersonDetection` does not carry
   ([Perception](/architecture/perception.md#open-questions)).
 - Generated tools reach people only through these atomics. Which of them
   Competition code may call is open.

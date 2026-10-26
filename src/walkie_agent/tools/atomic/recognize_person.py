@@ -5,6 +5,13 @@ for its track, are matched by the `people_memory` backend, which always
 returns the nearest stored people. Each model is matched on its own, with
 its own distance limit (perception.md, People), and each stored person goes
 to one person in view at most (identity.assign_names).
+
+A stored person without a name is matched like any other, so they still
+block a weaker named match and the appearance fallback, but the line says
+UNKNOWN: the LLM must not guess a name. remember_person always gives a
+name, so such a person comes only from walkie-database's seed or another
+writer. If the LLM then learns the name, remember_person stores a second
+person rather than naming the first.
 """
 
 import math
@@ -129,6 +136,19 @@ def run(ctx: ToolContext, args: Args) -> Out:
     for i, handle in enumerate(handles):
         prefix = f"{handle.id} ({handle.payload.position})"
         match = by_face[i] or by_appearance[i]
+        if match is not None and not match.name.strip():
+            lines.append(f"{prefix}: UNKNOWN, stored without a name")
+            people.append(
+                Recognition(
+                    handle=handle.id,
+                    person_id=None,
+                    name=None,
+                    facts={},
+                    matched_by=None,
+                    distance=None,
+                )
+            )
+            continue
         if match is not None:
             how = "face" if by_face[i] is not None else "appearance"
             facts = dict(match.facts)
@@ -208,8 +228,9 @@ def _assign(
 ) -> list[Match | None]:
     """The stored person each person's queries name, under the limits, or None.
 
-    One call for the whole set, as walkie-database's people services take a
-    set of faces at once. Each match is scored by its distance over its
+    One call for the whole set, as walkie-database's match services take a
+    set of queries at once; RosPeopleMemory sends more than 32 in chunks.
+    Each match is scored by its distance over its
     model's limit, and a stored person found by several of a person's
     models keeps the best score. assign_names then names over the scores,
     with the limit 1 for everyone. The people in `given` are named already.

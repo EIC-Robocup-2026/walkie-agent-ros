@@ -1,11 +1,11 @@
 """The people memory: who the robot has met, with their facts, faces and appearances.
 
 PeopleMemory is the interface that recognize_person and remember_person
-call. It follows the people services that walkie-database proposes
-(perception.md, open question 2), which are not built yet. Until they are,
-InMemoryPeopleMemory stands in for them in simulation and in the tests; it is
-only loaded with main.py's --mock-people-memory flag, so a robot run never
-recognizes people from a mock.
+call. It follows walkie-database's people services (its database.md,
+"The node's interface"). On the robot, RosPeopleMemory (ros_people_memory.py) calls them.
+InMemoryPeopleMemory stands in for them in simulation and in the tests,
+loaded with main.py's --mock-people-memory flag: the simulation's fake
+vision models have no vector tables in walkie-database.
 """
 
 import itertools
@@ -44,13 +44,30 @@ class Match(NamedTuple):
     distance: float
 
 
+class Stored(NamedTuple):
+    """What remember stored: the new person's id and the vectors it kept.
+
+    A backend stores only the vectors of models it has a table for.
+    `faces` and `appearances` count the vectors stored, and
+    `unstored_models` names the models whose vectors were left out, so
+    those models can never match the person.
+    """
+
+    person_id: str
+    faces: int
+    appearances: int
+    unstored_models: tuple[str, ...] = ()
+
+
 class PeopleMemory(Protocol):
-    """walkie-database's proposed people services, as the atomics call them.
+    """walkie-database's people services, as the atomics call them.
 
     A match always returns the nearest stored people, nearest first, and
     never decides whether a query is a stranger: the agent applies a
     distance limit per model, since the limit depends on the model and the
-    cameras (database.md, "Recognize a face").
+    cameras (database.md, "Recognize a face"). The services return at most
+    100 people per query. Person ids are never reused, so an id from an
+    earlier task never names a new person.
     """
 
     def remember(
@@ -59,8 +76,8 @@ class PeopleMemory(Protocol):
         facts: Mapping[str, str],
         faces: Sequence[ModelVector],
         appearances: Sequence[ModelVector],
-    ) -> str:
-        """Store a person with their facts and samples; return the new person's id."""
+    ) -> Stored:
+        """Store a person with their facts and samples; return their id and what was kept."""
         ...
 
     def match_faces(self, queries: Sequence[ModelVector]) -> list[list[Match]]:
@@ -84,15 +101,15 @@ class _Person:
 class InMemoryPeopleMemory:
     """A PeopleMemory kept in a dict, for simulation and tests.
 
-    Like walkie-database's face query, a person's distance to a query is the
-    distance of their nearest sample, so several samples from different
-    angles help. Unlike it, every person with a sample of the query's model
-    is returned, not only those among the five nearest samples; the agent
-    reads the list nearest first either way.
+    Like walkie-database's match services, a person's distance to a query is
+    the distance of their nearest sample, so several samples from different
+    angles help. Unlike them, every person with a sample of the query's
+    model is returned, with no cap of 100, and nobody is kept across tasks;
+    the agent reads the list nearest first either way.
 
     clear() forgets everyone. The agent calls it when a new task starts, as
     walkie-database forgets a session's guests (its ADR-0010). Person ids are
-    never reused, so an id from an earlier task never names a new person.
+    never reused, as in the database.
     """
 
     def __init__(self) -> None:
@@ -106,7 +123,7 @@ class InMemoryPeopleMemory:
         facts: Mapping[str, str],
         faces: Sequence[ModelVector],
         appearances: Sequence[ModelVector],
-    ) -> str:
+    ) -> Stored:
         if not faces and not appearances:
             # Such a person could never be matched; remember_person checks
             # for vectors before it calls, so this is a bug in the caller.
@@ -117,7 +134,8 @@ class InMemoryPeopleMemory:
         with self._lock:
             person_id = f"person_{next(self._ids)}"
             self._people[person_id] = person
-        return person_id
+        # The mock takes every model.
+        return Stored(person_id, len(faces), len(appearances))
 
     def match_faces(self, queries: Sequence[ModelVector]) -> list[list[Match]]:
         return self._match(queries, faces=True)

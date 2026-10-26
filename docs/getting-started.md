@@ -58,7 +58,7 @@ downloads about 115 MB and takes about 250 MB on disk. Pixi loads the result
 automatically every time you use `pixi run` or `pixi shell`. Run it again
 only if `ros2_ws.repos` changes. The
 walkie-database pin must match the database node you run, or the agent's
-memory requests are never answered
+memory requests, for objects and for people, are never answered
 ([ADR-0035](architecture/decisions/0035-memory-through-walkie-database.md)).
 
 Every `pixi run` and `pixi shell` here uses the Zenoh middleware
@@ -232,6 +232,25 @@ pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
 The agent's log shows a `find_objects` call for `cup`, which finds the two
 cups in the sample house's kitchen.
 
+The same node keeps the people the agent meets. `recognize_person` and
+`remember_person` use its people services: `start_session`,
+`remember_person`, `match_faces` and `match_appearances`
+([Perception](architecture/perception.md#people)). Without the node, they
+answer `UNAVAILABLE`, and the agent logs one warning, at the first new
+task. On the fake robot they have no faces to work on anyway, because
+nothing publishes `/walkie_vision/people`.
+
+By default the agent forgets the people of the node's open session when it
+starts and at each new task. To keep the people met before a restart for
+the first task after it, start the agent with `--resume-people-session`:
+
+```bash
+pixi run agent --resume-people-session
+```
+
+The flag needs walkie-database, so the agent refuses to start if you also
+pass `--mock-people-memory`. `pixi run agent --help` lists every flag.
+
 ### Drive walkie-ros's simulation instead
 
 walkie-ros has a MuJoCo simulation of Walkie with Nav2 on a blank map
@@ -276,9 +295,11 @@ pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
 the robot's start pose, so all points are relative to where it started.
 
 `agent-sim` also passes `--mock-people-memory`, so `recognize_person` and
-`remember_person` load. They keep people in memory, and forget them on a
-reset or when a new task replaces the todo list. `pixi run agent` leaves
-the flag out, so those two tools do not load there. walkie-ros's
+`remember_person` keep people in an in-memory mock, because the
+simulation's fake vision models have no vector tables in walkie-database.
+They forget the people on a reset or when a new task replaces the todo
+list. `pixi run agent` leaves the flag out, so there the two tools use
+walkie-database ([Ask Walkie's memory](#ask-walkies-memory)). walkie-ros's
 simulation itself publishes no `/walkie_vision/people` or
 `/walkie_vision/objects`, so on the blank map `find_people` and
 `find_seats` answer that vision is unavailable

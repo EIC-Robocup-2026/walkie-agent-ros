@@ -372,8 +372,8 @@ todos = [
 | `search_robot_docs`               | rai_whoami | Searches Walkie's documentation (only after `pixi run whoami-build`) |
 | `find_people`                     | atomic     | Lists the people in view, left to right, as person handles with their posture and gestures |
 | `find_seats`                      | atomic     | Lists the places to sit in view, left to right, as seat handles, each free or taken |
-| `recognize_person`                | atomic     | Names people met before, by face, else by appearance. Only with `--mock-people-memory` |
-| `remember_person`                 | atomic     | Stores a person's name, facts, and face and appearance vectors. Only with `--mock-people-memory` |
+| `recognize_person`                | atomic     | Names people met before, by face, else by appearance. Uses walkie-database on the robot and a mock with `--mock-people-memory` |
+| `remember_person`                 | atomic     | Stores a person's name, facts, and face and appearance vectors. Uses walkie-database on the robot and a mock with `--mock-people-memory` |
 | `look_at`                         | atomic     | Turns the base toward a person handle and keeps following them, or toward a seat handle and holds. Refuses with an arm out |
 | `stop_looking`                    | atomic     | Stops the turning that `look_at` started. Never fails; when nothing runs, says what was looked at last and why it stopped |
 | `list_arm_poses`                  | atomic     | Lists the named arm poses, which arms each can move, and whether it is safe for driving. Only with `--arms` |
@@ -408,7 +408,8 @@ The atomic tools come from `src/walkie_agent/tools/atomic/` and are added
 after the others. A failure reaches the LLM as `CODE: message`, see
 [Typed atomic tools](#typed-atomic-tools). `find_people` and `find_seats`
 always load. `recognize_person` and `remember_person` need the
-`people_memory` backend, which only `--mock-people-memory` adds today, see
+`people_memory` backend, which `main.py` always adds: walkie-database's
+people services, or a mock with `--mock-people-memory`, see
 [Where atomics live](#where-atomics-live). The HRI task's page shows what
 each one returns ([HRI Task](hri.md#atomics)). `look_at` and
 `stop_looking` always load. The same page says how the gaze loop turns the
@@ -559,8 +560,8 @@ An atomic declares what it does to the world in `META.effects`.
 - **Nothing checks effects yet.** The linker and the access levels that use
   them are not built ([ADR-0039](decisions/0039-access-levels.md)).
 - **`W` is provisional.** `remember_person` writes to the people memory,
-  the mock today and walkie-database later, and no decided effect covers
-  that
+  walkie-database on the robot and the mock in sim, and no decided effect
+  covers that
   ([Perception question 3](perception.md#open-questions)). Until the
   question is decided, a `W` tool is a reviewed atomic that generated tools
   may never call.
@@ -750,9 +751,11 @@ and no message types
 - **Listeners.** `Toolbox.on_interrupt(callback)`,
   `on_new_task(callback)` and `on_stop_heard(callback)` let other parts
   react. The gaze loop registers all three, so a stop, a reset or a new
-  task stops the base turning. The mock people memory clears on a new
-  task. Interrupt listeners run after the lock is released, because one
-  may block. A listener that raises is logged, and the others still run.
+  task stops the base turning. The people memory forgets its guests on a
+  new task; with `--resume-people-session`, walkie-database's open session
+  is kept for the first task after a restart. Interrupt listeners run
+  after the lock is released, because one may block. A listener that
+  raises is logged, and the others still run.
 - **Stop-heard listeners.** `Toolbox.stop_heard()` runs them for every
   utterance that is just "stop" or "never mind", during a task or not.
   They run on the thread that delivered the utterance, once the agent has
@@ -799,13 +802,41 @@ and no message types
   `/walkie_vision/people` and `/walkie_vision/objects` once. With no
   publisher it only holds two idle subscriptions, and its reads fail with
   `UNAVAILABLE`.
-- **`people_memory` comes only with `--mock-people-memory`.** It is an
-  `InMemoryPeopleMemory`, a mock of walkie-database's proposed people
-  services. `Toolbox.on_new_task` clears it, so each task starts with no
-  guests. `pixi run agent-sim` passes the flag, and `pixi run agent` does
-  not. Without it, `recognize_person` and `remember_person` do not load,
-  so a robot run never stores guests in a mock that forgets them on
-  restart.
+- **`people_memory` is `RosPeopleMemory`, or the mock with
+  `--mock-people-memory`.** `RosPeopleMemory`
+  (`src/walkie_agent/perception/ros_people_memory.py`) calls
+  walkie-database's `/walkie_database/start_session`, `remember_person`,
+  `match_faces` and `match_appearances`. `InMemoryPeopleMemory` is a mock
+  of them for sim, whose fake models have no vector tables in
+  walkie-database. `pixi run agent-sim` passes the flag, and
+  `pixi run agent` does not. `Toolbox.on_new_task` clears either, so each
+  task starts with no guests. The client's module docstring has the
+  details:
+    - **The session.** By default the client forgets walkie-database's
+      open session at start-up and at each new task. With
+      `--resume-people-session`, the first task after a restart keeps it.
+    - **A new task waits at most 1 s.** Without a discovered database,
+      the clear returns at once and logs one warning, and the forget stays
+      pending: the next people call forgets first, or fails. A node that
+      is found but does not answer, such as one built from another
+      `walkie_database_msgs` under Zenoh, costs each new task up to 1 s,
+      and the forget stays pending too.
+    - **Errors.** No node within 2 s, or a database failure (a message
+      starting `The database could not`), is `UNAVAILABLE`. No answer
+      within 7 s is `TIMEOUT`, with the type-hash hint in the log, as for
+      `find_objects`; a timed-out `remember_person` may have stored the
+      person. The 7 s is above the node's 5 s SQLite busy timeout, so a
+      write that waits for a locked database is `UNAVAILABLE`. Any other
+      refusal of the node is `REFUSED`, with its message.
+    - **Unknown models.** The client sends only vectors of the models the
+      database has tables for, which `start_session` lists. A query of
+      another model matches no one. `remember_person` drops such vectors
+      and names their models in its answer, and is `REFUSED` when none
+      are left.
+    - **No cancel.** A stop during a call waits for it to end, up to 2 s
+      for discovery and 7 s for the answer, per service call. One tool
+      call may make several: a pending start, one call per 32 queries,
+      and for `recognize_person` the faces, then the appearances.
 - **`arm` comes only with `--arms`.** It is a `CommanderClient`
   (`src/walkie_agent/arm/commander.py`), the agent's one client of
   walkie-ros's `bimanual_commander`. It loads `config/arm_poses.toml` and

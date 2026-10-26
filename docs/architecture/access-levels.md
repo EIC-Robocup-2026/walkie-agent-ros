@@ -194,6 +194,7 @@ git-tier tools.
 | any | `/go_to_home`, `/toggle_gripper_collision`, `/clear_collision_objects`, `/toggle_octomap_collision`, `/toggle_all_collision_checking` | commander motion and collision settings that no atomic uses |
 | any, except in the human-written arm atomics' manifests | `/set_joint_position`, `/control_gripper`, and the `RunSkill` action once its name is pinned | the arm moves only through the arm atomics ([ADR-0021](decisions/0021-arm-control-through-commander.md), [ADR-0027](decisions/0027-runskill-action.md)) |
 | any | ZED control services (names still to be taken from walkie-ros) | camera configuration |
+| any | `/walkie_database/start_session`, `/walkie_database/end_session`, `/walkie_database/remember_person`, `/walkie_database/match_faces`, `/walkie_database/match_appearances` | people only through recognize_person and remember_person: these start and end sessions, store faces, and return names and facts (walkie-database ADR-0017) |
 | any | `/*arm_controller/*`, `/*gripper_controller/*`, `/*_forward_position_controller/*`, `/*_forward_velocity_controller/*`, `/*_joint_trajectory_controller/*`, `/lift_controller/*`, `/head_servo_controller/*`, `/lift/cmd` | arms only through atomics, head and lift with them; names from walkie-ros's `mujoco_controllers.yaml` and `real_controllers.yaml`, and the lift nodes' input |
 
 - walkie-ros's MuJoCo launch starts neither the commander nor `move_group`

@@ -8,15 +8,19 @@ repositories:
     type: git
     url: https://github.com/RobotecAI/rai_interfaces.git
     version: f03dc0f217679980447dfead177979f485eb44f6
-  # walkie_database_msgs, the messages of the memory node. The whole
-  # repository is cloned; build-ros2 builds only the message package. Pin the
-  # commit of the database node the robot runs: under rmw_zenoh_cpp, a client
-  # built from another version of the interface finds the server, but its
-  # requests are never answered (ADR-0035).
+  # walkie_database_msgs, the messages of the memory node: FindObjects and
+  # RememberedObject for find_objects, and the people services start_session,
+  # end_session, remember_person, match_faces and match_appearances.
+  # FindObjects and RememberedObject type hashes are unchanged from 7f657b0
+  # (ADR-0035). The whole repository is cloned; build-ros2 builds only the
+  # message package. Pin the commit of the database node the robot runs:
+  # under rmw_zenoh_cpp, a client built from another version of the
+  # interface finds the server, but its requests are never answered
+  # (ADR-0035).
   ros2_ws/src/walkie-database:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-database.git
-    version: 7f657b0960944c4d4399ef19f5032b3c5d726f9d
+    version: 64403e982e253db0ca00c372249eeb798d89d1f6
   # walkie_vision_msgs, the messages of the vision nodes: people, objects and
   # the text-embedding service (ADR-0034). The whole repository is cloned;
   # build-ros2 builds only the message package. Pin the commit the vision

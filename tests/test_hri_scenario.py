@@ -3111,6 +3111,7 @@ class PlayedRun:
             appearances=3,
             dropped_faces=0,
             dropped_appearances=0,
+            unstored_models=[],
         )
         args = {"person": handle, "name": name, "facts": {"drink": drink}}
         self.call("remember_person", args, out.summary, out=out)

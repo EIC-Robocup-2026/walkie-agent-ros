@@ -695,7 +695,7 @@ T12 on [Access Levels](access-levels.md#safety-model).
 | Generated tools, index, traces | each machine, never git | `$WALKIE_TOOLS_HOME` |
 | `DetectObjects`, `EmbedText`, `/walkie_vision/people` | walkie-vision | `walkie_vision_msgs`. `DetectObjects` is proposed ([Perception](perception.md)) |
 | Object memory | walkie-database | `/walkie_database/find_objects` (exists) |
-| Face and appearance matching, vector search | walkie-database | Services not designed yet ([Perception](perception.md#open-questions)) |
+| Face and appearance matching, vector search | walkie-database | People services built in 64403e9 ([Perception](perception.md#people)). Vector search by description is not designed yet ([Perception](perception.md#open-questions)) |
 | Skill server, commander, grasps | walkie-ros | robot-side. The commander and `/grasp/from_cloud` exist. The skill server is proposed ([ADR-0027](decisions/0027-runskill-action.md)) |
 | Embedding model | none, a cloud service | `qwen/qwen3-embedding-8b` through OpenRouter, set in `[walkie.toolbox.embedder]` |
 

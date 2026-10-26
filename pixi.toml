@@ -169,6 +169,27 @@ description = "Run the Walkie RAI agent (reads tasks from /from_human)"
 cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.sim.toml --mock-people-memory --arms"
 description = "Run the agent against walkie-ros's MuJoCo simulation (the shell's ROS_DOMAIN_ID)"
 
+# The HRI scenario in walkie-ros's chula_pat14_6 world: the guests, the seats
+# and their answers, with the oracle publishing the vision arrays. Start it
+# after the world's launch (world:=chula_pat14_6) and before agent-sim-hri.
+# It writes its event log to logs/ and uses the calling shell's ROS_DOMAIN_ID,
+# like agent-sim (ADR-0036). See docs/getting-started.md.
+[tasks.hri-scenario]
+cmd = "python -m walkie_agent.sim.hri_scenario config/scenarios/hri.yaml"
+description = "Play the HRI scenario in the chula_pat14_6 simulation (the shell's ROS_DOMAIN_ID)"
+
+# The same scenario, except that guest 2 answers the first hand-over request
+# before the bag hangs, so the robot's first close reads empty.
+[tasks.hri-scenario-early-bag]
+cmd = "python -m walkie_agent.sim.hri_scenario config/scenarios/hri_early_bag.yaml"
+description = "Play the HRI scenario with the early bag answer (the shell's ROS_DOMAIN_ID)"
+
+# agent-sim on the chula_pat14_6 world's named places, for the HRI scenario.
+# agent-sim stays on config/locations.sim.toml for the blank map.
+[tasks.agent-sim-hri]
+cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.chula_pat14_6.toml --mock-people-memory --arms"
+description = "Run the agent on the chula_pat14_6 world's places (the shell's ROS_DOMAIN_ID)"
+
 # The tests run on Fast DDS, which tests/conftest.py sets, so they need no
 # Zenoh router (ADR-0019).
 [tasks.test]

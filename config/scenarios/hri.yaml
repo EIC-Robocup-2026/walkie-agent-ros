@@ -1,0 +1,28 @@
+# HRI scenario for walkie-ros's MuJoCo world chula_pat14_6 (map frame, meters, radians).
+# Positions come from the world's scene.xml and map/map.pgm in walkie-ros
+# (simulation/mujoco/worlds/chula_pat14_6/); tests/test_hri_scenario.py checks the views and
+# clearances they give.
+seed: 7
+world: chula_pat14_6            # written to the log; the geometry belongs to this world
+locations: config/locations.chula_pat14_6.toml   # door and living_room are read from here
+guest_spot: {x: 0.65, y: 0.03}  # in the hallway, outside the entrance frame
+# Along the hallway (x stays 0.65), to y 0.31 and -0.25, inside its free span y -0.32 to 0.32;
+# about 9 degrees to each side as seen from the door pose.
+pacing: {amplitude: 0.28, period: 6.0, axis: [0.0, 1.0]}
+guests:
+  - {name: Sam, drink: milk, face: guest1, appearance: guest1, height: 1.70}
+  - {name: Ana, drink: cola, face: guest2, appearance: guest2, height: 1.80}
+seats:
+  - id: sofa
+    label: sofa
+    box: {center: [3.1675, -1.65, 0.4175], size: [0.575, 1.88, 0.835], yaw: 0.0}
+    facing: 3.1416                # sitters face -x, towards the TV desk
+    places: {left: [3.115, -1.10], middle: [3.115, -1.65], right: [3.115, -2.20]}
+    seat_top: 0.4575              # the cushions' top
+seated:
+  - {id: host, place: sofa.left, face: host, appearance: host, height: 1.75}
+seat_switch: {when: introduction, mode: swap, people: [guest1, guest2]}
+offer_window_deg: 25
+bystander: {appearance: passerby, path: [[-0.35, -0.6], [-0.35, 1.1]], speed: 0.6}
+answers: {delay: 1.0, mumble_once: guest1.drink}
+bag: {early_answer: false}

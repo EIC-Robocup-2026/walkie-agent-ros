@@ -1,0 +1,28 @@
+# Named places for walkie-ros's MuJoCo world chula_pat14_6 (pixi run agent-sim-hri).
+#
+# Launch the world with world:=chula_pat14_6. Its map frame is the captured
+# occupancy map of the room, not the start pose, and AMCL localizes in it,
+# 0.1 to 0.2 m off after a few goals. The map has no furniture and the base
+# drives through furniture, so each pose keeps the footprint clear of it.
+# x, y in meters; yaw in radians (0 = facing +x).
+
+[locations.door]
+# 0.120 m further into the room than (2.23, -0.18): the receive pose in
+# config/arm_poses.toml keeps the left gripper at least 0.10 m from the open door
+# leaf within Nav2's goal tolerance (tests/test_door_clearance.py).
+x = 2.35
+y = -0.17
+yaw = 3.01
+description = "Inside the room, 1.5 m from the entrance door, facing out through the doorway. Guests wait in the hallway outside."
+
+[locations.living_room]
+x = 1.85
+y = -1.71
+yaw = 0.0
+description = "In the living room, between the TV desk and the coffee table, facing the sofa. Guests sit on the sofa."
+
+[locations.kitchen]
+x = 1.32
+y = -4.01
+yaw = -1.5708
+description = "In the kitchen, past the room divider, facing the kitchen table and its stools."

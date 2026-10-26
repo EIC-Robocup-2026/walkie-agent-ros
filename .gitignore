@@ -22,3 +22,5 @@ rmw_zenoh_ws/src/
 __pycache__/
 *.egg-info/
 .pytest_cache/
+# Event logs of the simulated scenarios (pixi run hri-scenario)
+logs/

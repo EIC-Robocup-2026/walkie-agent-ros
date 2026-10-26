@@ -67,6 +67,10 @@ from vision_msgs.msg import BoundingBox2D
 from walkie_vision_msgs.msg import PersonDetection, PersonDetectionArray
 
 from walkie_agent.arm.poses import ARMS
+
+# GazeStatus lives with the capabilities, which return it (ADR-0052); it is
+# re-exported here for the imports that name this module.
+from walkie_agent.capabilities import GazeStatus
 from walkie_agent.perception.geometry import camera_transform, ray_heading
 from walkie_agent.perception.vision_feed import PeopleFrame, TrackKey, VisionFeed
 from walkie_agent.toolbox import StepError, ToolContext
@@ -516,33 +520,6 @@ class RotationPublisher:
         # A new message has every field at 0: only the yaw rate is set.
         msg.twist.angular.z = float(angular_z)
         self._publisher.publish(msg)
-
-
-@dataclass(frozen=True)
-class GazeStatus:
-    """What the loop is doing, for look_at, stop_looking and the logs."""
-
-    # The current target's name, such as per_51c0.1; once stopped, the last
-    # target's. None before the first target.
-    target: str | None
-    # PERSON or HEADING; None before the first target.
-    kind: str | None
-    running: bool
-    # The map-frame yaw it turns, or last turned, toward, in radians.
-    setpoint: float | None
-    # The stamp of the newest sighting of a person target, in seconds on the
-    # node clock; None for a fixed heading.
-    last_seen: float | None
-    # Why the last target stopped, and when, in seconds on the node clock.
-    # None while a target runs and before the first stop.
-    stop_reason: str | None
-    stopped_at: float | None
-    # True while a navigate_to_pose goal is active: the loop then refuses
-    # new targets.
-    navigation_active: bool
-    # The node clock when the status was taken, so that now - stopped_at is
-    # how long ago the loop stopped.
-    now: float
 
 
 class _Target(NamedTuple):

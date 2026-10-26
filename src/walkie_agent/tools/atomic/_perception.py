@@ -1,16 +1,19 @@
-"""Shared by the people and seat atomics: handle kinds, payloads, config and helpers.
+"""Shared by the people and seat atomics: handle kinds, payloads, config, helpers and ctx.vision.
 
 find_people and find_seats read walkie-vision's newest arrays from the
 `vision` backend, a VisionFeed, and keep what they saw as person and seat
 handles. recognize_person and remember_person take a person handle back,
 with its own vectors and those VisionFeed collected for the person's track,
-and call the `people_memory` backend, a PeopleMemory (hri.md, Atomics). The
-module's name starts with "_", so the registry does not load it as a tool.
+and call the `people_memory` backend, a PeopleMemory (hri.md, Atomics).
+RosVision is ctx.vision on the same feed: the newest arrays as records with
+handles (walkie_agent.capabilities.Vision, ADR-0052). The module's name
+starts with "_", so the registry does not load it as a tool.
 """
 
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
 from rclpy.duration import Duration
@@ -19,19 +22,33 @@ from sensor_msgs.msg import CameraInfo
 from std_msgs.msg import Header
 from tf2_ros import Buffer, TransformException
 from tf_transformations import euler_from_quaternion
+from walkie_vision_msgs.msg import PersonDetection, PersonDetectionArray
 
+from walkie_agent.capabilities import ObjectSeen, PersonSeen
 from walkie_agent.perception.front import DEFAULT_FRONT_CONFIG, FrontConfig
-from walkie_agent.perception.gestures import DEFAULT_GESTURE_CONFIG, GestureConfig
+from walkie_agent.perception.gestures import (
+    DEFAULT_GESTURE_CONFIG,
+    GestureConfig,
+    classify_gestures,
+)
 from walkie_agent.perception.geometry import camera_transform, ray_heading
 from walkie_agent.perception.identity import DEFAULT_IDENTITY_CONFIG, IdentityConfig
 from walkie_agent.perception.people_memory import ModelVector
-from walkie_agent.perception.seating import DEFAULT_SEATING_CONFIG, BBox, SeatingConfig
+from walkie_agent.perception.seating import (
+    DEFAULT_SEATING_CONFIG,
+    BBox,
+    SeatingConfig,
+    bbox_xyxy,
+)
 from walkie_agent.perception.vision_feed import (
     PUBLISHER_HINT,
     CollectedVectors,
+    PeopleFrame,
     Sample,
     TrackKey,
     VisionFeed,
+    face_trusted,
+    model_vector,
 )
 from walkie_agent.toolbox import (
     Handle,
@@ -188,8 +205,97 @@ class SeatPayload:
     heading_map: float | None
 
 
+@dataclass(frozen=True)
+class ObjectPayload:
+    """What ctx.vision.objects() keeps for one detection, behind an object handle."""
+
+    # The detector's class, such as "chair", and its score.
+    label: str
+    score: float
+    # The detector's track id; 0 when it is not tracked.
+    track_id: int
+    # The third of the image that holds the box's centre.
+    position: str
+    box: BBox
+    header: Header
+    image_width: int
+    image_height: int
+    # The map-frame yaw of the ray toward the box's centre, in radians; None
+    # when TF had no camera transform at the stamp.
+    heading_map: float | None
+
+
+class SeenPerson(NamedTuple):
+    """One person in the array, as find_people and ctx.vision read them."""
+
+    person: PersonDetection
+    # The key of the person's track collection, from the PeopleFrame.
+    track: TrackKey | None
+    position: str
+    gestures: frozenset[str]
+
+
 def vision_feed(ctx: ToolContext) -> VisionFeed:
     return ctx.backend(VISION)
+
+
+def people_left_to_right(frame: PeopleFrame, gestures: GestureConfig) -> list[SeenPerson]:
+    """Every person of `frame`, left to right by the box's centre, as the LLM reads the lines.
+
+    The index breaks ties, so the order never depends on the sort.
+    """
+    msg = frame.msg
+    order = sorted(
+        range(len(msg.people)), key=lambda i: (msg.people[i].bbox.center.position.x, i)
+    )
+    width = msg.camera_info.width
+    return [
+        SeenPerson(
+            person=msg.people[i],
+            track=frame.tracks[i],
+            position=image_position(msg.people[i].bbox.center.position.x, width),
+            gestures=frozenset(
+                classify_gestures(msg.people[i].keypoints, msg.people[i].keypoint_scores, gestures)
+            ),
+        )
+        for i in order
+    ]
+
+
+def face_box(person: PersonDetection) -> BBox | None:
+    # face_det_score is 0 when no face was found in the box (PersonDetection.msg).
+    return bbox_xyxy(person.face_bbox) if person.face_det_score > 0 else None
+
+
+def person_payload(
+    feed: VisionFeed,
+    msg: PersonDetectionArray,
+    stamp_ns: int,
+    entry: SeenPerson,
+    box: BBox | None,
+    heading: float | None,
+) -> PersonPayload:
+    """The payload of a person handle for `entry`, one person of `msg`, with its face box."""
+    person = entry.person
+    face = None
+    if face_trusted(person, msg.camera_info, feed.config):
+        face = model_vector(person.face_model, person.face_embedding)
+    return PersonPayload(
+        track=entry.track,
+        position=entry.position,
+        bbox=bbox_xyxy(person.bbox),
+        face_bbox=box,
+        keypoints=tuple(float(v) for v in person.keypoints),
+        keypoint_scores=tuple(float(v) for v in person.keypoint_scores),
+        gestures=entry.gestures,
+        face=face,
+        appearance=model_vector(person.appearance_model, person.appearance_embedding),
+        header=msg.header,
+        stamp_ns=stamp_ns,
+        image_width=int(msg.camera_info.width),
+        image_height=int(msg.camera_info.height),
+        heading_map=heading,
+    )
 
 
 def image_position(u: float, width: int) -> str:
@@ -362,3 +468,106 @@ def no_vectors(handle_id: str) -> StepError:
         f"No face or appearance seen for {handle_id}. Look at them and call find_people again.",
         {"handle": handle_id},
     )
+
+
+class RosVision:
+    """ctx.vision on the agent's VisionFeed (walkie_agent.capabilities.Vision).
+
+    Each call reads the newest array as find_people and find_seats do,
+    waiting up to CONFIG.wait_s for one as fresh as `max_age_s`, and stores
+    what it returns as one handle set, left to right, with the base's pose
+    at the image's stamp. Nothing in view returns [] and stores nothing.
+    Raises the feed's StepError UNAVAILABLE or CANCELLED, and put_handles'.
+    """
+
+    def __init__(self, ctx: ToolContext, feed: VisionFeed) -> None:
+        self._ctx = ctx
+        self._feed = feed
+
+    def people(self, *, max_age_s: float) -> list[PersonSeen]:
+        """The people in the newest people array, as person handles."""
+        ctx, feed = self._ctx, self._feed
+        config = CONFIG
+        frame = feed.latest_people(max_age_s, config.wait_s, ctx.cancel)
+        msg = frame.msg
+        if not msg.people:
+            return []
+        seen = people_left_to_right(frame, config.gestures)
+        face_boxes = [face_box(entry.person) for entry in seen]
+        # Toward the face when there is one, since the gaze loop looks at it.
+        heading_maps = headings(
+            [
+                face or bbox_xyxy(entry.person.bbox)
+                for entry, face in zip(seen, face_boxes, strict=True)
+            ],
+            msg.camera_info,
+            msg.header,
+            ctx.tf_buffer,
+        )
+        stamp_ns = Time.from_msg(msg.header.stamp).nanoseconds
+        payloads = [
+            person_payload(feed, msg, stamp_ns, entry, box, heading)
+            for entry, box, heading in zip(seen, face_boxes, heading_maps, strict=True)
+        ]
+        handle_set = put_handles(ctx, "person", payloads, msg.header)
+        return [
+            PersonSeen(
+                handle=handle_id,
+                position=payload.position,
+                heading_map=payload.heading_map,
+                face_seen=payload.face is not None,
+                gestures=payload.gestures,
+                stamp_ns=stamp_ns,
+            )
+            for handle_id, payload in zip(handle_set.member_ids, payloads, strict=True)
+        ]
+
+    def objects(self, labels: Sequence[str] = (), *, max_age_s: float) -> list[ObjectSeen]:
+        """The newest objects array's detections with a label in `labels`, as object handles.
+
+        Empty `labels` takes every detection. A label is matched as the
+        detector spells it, so one it does not know matches nothing.
+        """
+        ctx, feed = self._ctx, self._feed
+        array = feed.latest_objects(max_age_s, CONFIG.wait_s, ctx.cancel)
+        wanted = set(labels)
+        chosen = [
+            (i, detection)
+            for i, detection in enumerate(array.detections)
+            if not wanted or detection.label in wanted
+        ]
+        if not chosen:
+            return []
+        # Left to right by the box's centre; the index breaks ties.
+        chosen.sort(key=lambda item: (item[1].bbox.center.position.x, item[0]))
+        detections = [detection for _, detection in chosen]
+        boxes = [bbox_xyxy(detection.bbox) for detection in detections]
+        heading_maps = headings(boxes, array.camera_info, array.header, ctx.tf_buffer)
+        width = array.camera_info.width
+        payloads = [
+            ObjectPayload(
+                label=detection.label,
+                score=float(detection.score),
+                track_id=int(detection.track_id),
+                position=image_position(detection.bbox.center.position.x, width),
+                box=box,
+                header=array.header,
+                image_width=int(width),
+                image_height=int(array.camera_info.height),
+                heading_map=heading,
+            )
+            for detection, box, heading in zip(detections, boxes, heading_maps, strict=True)
+        ]
+        handle_set = put_handles(ctx, "object", payloads, array.header)
+        stamp_ns = Time.from_msg(array.header.stamp).nanoseconds
+        return [
+            ObjectSeen(
+                handle=handle_id,
+                label=payload.label,
+                score=payload.score,
+                position=payload.position,
+                heading_map=payload.heading_map,
+                stamp_ns=stamp_ns,
+            )
+            for handle_id, payload in zip(handle_set.member_ids, payloads, strict=True)
+        ]

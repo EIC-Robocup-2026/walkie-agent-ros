@@ -1,9 +1,13 @@
 # Robot Capabilities (Proposed)
 
-!!! note "Status: Proposed, not built"
-    Nothing on this page is built. It is the design for team review, recorded
-    in [ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md). Each of
-    the [open questions](#open-questions) says what it blocks.
+!!! note "Status: Proposed, PR A built"
+    [PR A](#pr-a-types-and-fakes) is built: the Protocols and records,
+    `ctx.pose`, `ctx.arms`, `ctx.gaze` and `ctx.vision` on ROS, and the
+    fakes. PR B and PR C are not. The rest of the page is the design for
+    team review, recorded in
+    [ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md). Where PR
+    A differs from the design, an "As built" note says so. Each of the
+    [open questions](#open-questions) says what it blocks.
 
 Atomics are the reviewed tools the LLM calls
 ([The Agent](agent.md#typed-atomic-tools)). Most teammates who write them
@@ -107,15 +111,16 @@ class Pose(Protocol):                        # ctx.pose
 
 
 class Arms(Protocol):                        # ctx.arms, effect M
-    def poses(self) -> Sequence[ArmPose]: ...
-    def state(self, *, read: bool = False) -> ArmsReport: ...  # the client's snapshot; read: read the arms first
-    def move_to(self, pose: str, arm: Arm = "both") -> ArmsReport: ...
-    def gripper(self, arm: Arm, state: Literal["open", "half", "close"]) -> GripperResult: ...
+    def poses(self) -> Mapping[str, ArmPose]: ...  # by name, in order; outside sim only those tried on the robot
+    def state(self, *, read: bool | None = None) -> ArmsReport: ...  # read: None when unknown, True always, False never
+    def move_to(self, pose: str, arm: Arm = "both") -> ArmsMoved: ...
+    def gripper(self, arm: Gripper, state: GripperState) -> GripperMoved: ...  # one gripper
 
 
 class Gaze(Protocol):                        # ctx.gaze, effect N
-    def look_at(self, handle: str) -> GazeStatus: ...
-    def stop(self) -> str | None: ...        # the target it stopped, or None
+    def look_at(self, handle: str) -> Looking: ...  # returns once the loop has the target
+    def face(self, looking: Looking, timeout_s: float) -> bool: ...  # True once the base faces it
+    def stop(self, reason: str | None = None) -> str | None: ...  # STOP_LOOKING by default; the target it stopped, or None
     def status(self) -> GazeStatus: ...
 
 
@@ -137,13 +142,58 @@ class ArmsReport:            # what CommanderClient.snapshot() holds
     unverified: str | None   # why the arms are unverified, or None
     unverified_count: int
     recovery: Recovery | None  # what the last recovery checked
+
+
+@dataclass(frozen=True)
+class ArmsMoved:             # a move the joint check confirmed
+    pose: str                # as poses() spells it, such as "hands_up"
+    arm: Arm
+    status: str              # the commander's, such as "Success" or "Plan Only"
+    max_error_rad: float
+    report: ArmsReport       # the snapshot after the joint check
+
+
+@dataclass(frozen=True)
+class GripperMoved:          # one gripper goal and what the fingers did
+    arm: Gripper
+    state: GripperState
+    outcome: str             # "moved", "not_reached", "holding", "empty", "not_closed", ...
+    result: GripperResult
+    finger_m: float | None   # the finger's travel read after a close
+    read_error: str | None   # why the finger could not be read
+
+
+@dataclass(frozen=True)
+class Looking:               # a target the gaze loop has taken
+    target: str              # the handle
+    kind: Literal["person", "seat"]
+    notes: tuple[str, ...]   # the arm check's notes
+    lost_after_s: float | None  # for a person, how long after the last sighting the loop stops
+    seat_label: str | None   # for a seat, such as "sofa"
+    seat_part: str | None    # for a place on a sofa, such as "left"
 ```
+
+`PersonSeen` and `ObjectSeen` give the handle, the third of the image, the
+map heading and the image stamp. `PersonSeen` adds whether a face was seen
+and the gestures, and `ObjectSeen` the label and the score.
 
 `ToolContext` also gains `now_ns()`, `in_simulation`, `sleep(seconds)` and
 `wait_until(ready, timeout_s, what)`. `sleep` and `wait_until` raise
 `CANCELLED` within 50 ms of a stop or a reset, as `ctx.wait()` does. It
 takes a clock, which `wait()`, `sleep()` and `wait_until()` use, so the fakes
 can pass a fake one.
+
+!!! note "As built"
+    The clock, `ctx.clock`, also times `ctx.pose`'s waits and the handle
+    ages. `ctx.gaze.face()` keeps `look_at`'s poll on the node clock, with
+    its backstop on the monotonic clock, so a fake clock does not shorten
+    it on ROS. A `ToolContext` also takes `capabilities`, a factory for
+    each capability, and `in_simulation`, which otherwise reads the node's
+    `use_sim_time` parameter. A missing capability raises
+    `UNAVAILABLE: The <name> capability is not available.` Each factory
+    runs once, on the capability's first use. A factory may read another
+    capability; one that reads its own, directly or through another,
+    raises `RuntimeError`.
 
 | Capability | Built from | What it hides | Rules inside |
 | ---------- | ---------- | ------------- | ------------ |
@@ -319,6 +369,31 @@ built. It returns once the message is published, not once it is spoken.
   handles. The perception atomics keep reading `VisionFeed` until a later
   change ports them.
 
+!!! note "As built"
+    - **`ctx.arms`:** the errors keep `CommanderClient`'s codes and `data`,
+      with the arm atomics' full messages, which end with the arm sentence.
+      `move_to()` returns `ArmsMoved`, and `gripper()` moves one gripper
+      and returns `GripperMoved`, with the grasp band's outcome and the
+      finger read. `state(read=None)` reads the arms only when their state
+      is unknown; `True` always reads them and `False` never does.
+      `poses()` is an ordered `Mapping` by name. `arms_report()` in
+      `_arm.py` builds an `ArmsReport` from the client's `snapshot()`.
+    - **`ctx.gaze`:** `look_at()` returns `Looking` once the loop has the
+      target. `face(looking, timeout_s)` holds `look_at`'s facing poll and
+      its TF read: `look_at` waits 4 s for a person, and a late turn is
+      not an error, and 10 s for a seat, after which it calls
+      `stop(TURN_TIMEOUT)` and raises `TIMEOUT`. `stop()` takes an
+      optional reason, `STOP_LOOKING` by default.
+    - **`ctx.vision`:** `people()` stores "person" handles and `objects()`
+      "object" handles, the built-in kind. Nothing in view returns `[]` and
+      stores nothing. `find_people`'s helpers moved into `_perception.py`
+      (`people_left_to_right`, `face_box`, `person_payload` and
+      `SeenPerson`), which `ctx.vision` shares; `find_people` itself still
+      reads `VisionFeed`.
+    - **`ctx.pose`:** `latest()` does not wait. `fresh()` repeats
+      `MoveRelativeTool`'s wait for a transform stamped after the call,
+      which PR B makes the one copy.
+
 ## An atomic on ctx
 
 This example is not in the repository. It drives to a configured place and
@@ -379,7 +454,7 @@ def test_drives_then_speaks():
 
 
 def test_arm_out_refuses_and_stays_quiet():
-    ctx, robot = fake_ctx(locations={"kitchen": (2.0, 1.0, 0.0)}, arms="carry_out")
+    ctx, robot = fake_ctx(locations={"kitchen": (2.0, 1.0, 0.0)}, arms="hands_up")
     with pytest.raises(StepError) as e:
         tool.run(ctx, tool.Args(location="kitchen", line="Here it is."))
     assert e.value.code == "PRECONDITION_FAILED"
@@ -393,6 +468,15 @@ def test_reset_mid_drive_cancels_the_goal():
         tool.run(ctx, tool.Args(location="kitchen", line="Here it is."))
     assert e.value.code == "CANCELLED" and robot.base.cancels == 1
 ```
+
+!!! note "As built"
+    `fake_ctx`'s `arms` takes a pose name from `arm_poses.toml`, so the
+    arm that is out is `"hands_up"`, which is not safe for driving. The
+    tests run as written on PR A's fakes, and `tests/test_capabilities.py`
+    runs the same body inline. `META.requires` still names backends,
+    which `build_atomic_tools` checks with `ctx.has_backend()`. There is
+    no `base` or `speech` backend, so the module would not load until PR
+    B lets `requires` name capabilities.
 
 ## The fakes
 
@@ -422,6 +506,61 @@ it as a backend.
 
 Tests on the fakes need no DDS traffic, but ROS must be importable and the
 suite's `rclpy.init` still runs, because `ToolContext` imports rclpy.
+
+!!! note "As built"
+    - **The step logs:** `robot.base.steps` adds `pose.fresh` for a
+      relative move or a turn, before `base.goal`. `robot.arms.steps`
+      holds `gaze.stop` and `arms.goal` for a move, and `gripper.goal` for
+      a gripper. `robot.gaze.steps` holds `arms.check` and `gaze.start`,
+      and `robot.gaze.stops` every stop reason.
+    - **The fakes share the real code** for what is not ROS: the pose
+      checks of `_arm.py`, the arm sentences, `check_arms`, the handle
+      payloads and `VisionFeed`'s staleness message. They model what the
+      ROS side does around it: the client's unverified state and its
+      recovery once a read follows a cleared fault, a gripper command
+      number counted per arm, as `CommanderClient` counts per group, and
+      Nav2's texts for a rejected, aborted, cancelled or slow goal, which
+      PR B's `RosBase` must match. `turn_by(0)` is refused as "Nothing to
+      do: the turn is zero."
+    - **`robot.base`** refuses a second verb with `PRECONDITION_FAILED`
+      while its own goal runs, after the gaze stop, as step 3 says. It
+      cancels `other_goals` at step 4, and a goal whose cancel Nav2 refused
+      or did not answer becomes one of them. An abort's `data` holds
+      `abort_error_code` and `abort_error_msg`, and a message, when set,
+      ends the error's text.
+    - **`robot.arms`** keeps a goal it gave up on outstanding, as
+      `CommanderClient` does: every call is refused with
+      `PRECONDITION_FAILED` until `never_answer` is cleared, or until
+      `ABANDON_AFTER_S` passes on the fake clock, when the arms become
+      unverified. The client's `ABSENT_ABANDON_S` is not modelled, because
+      the fake's commander never goes away. A move reads each group's
+      joint order once, so `read_failure` fails a move with `UNAVAILABLE`
+      only before that read, and a move after it with `POSTCONDITION`,
+      since its check cannot read the arms. A close is judged by where the
+      fingers settle, as `FakeCommander` and `RosArms` judge it: `empty`
+      below the grasp band, `holding` inside it and `not_closed` near the
+      open position. `unmeasured` and `not_reached` script the other
+      outcomes.
+    - **`robot.gaze`** counts its stop calls, as `GazeLoop.stop_calls()`
+      does, so a stop during `look_at`'s arm check makes it `CANCELLED`. A
+      person starts from the newer of the handle's sighting and the one in
+      `robot.vision`'s people array, which counts only when no older than
+      `lost_after_s` and showing the handle's track. An older handle of a
+      person out of view is `STALE`.
+    - **`robot.vision.seat(heading_map)`** stores one seat handle, as
+      `find_seats` would, for a test of `look_at`.
+    - **`fake_ctx`** builds the ctx on a `FakeConnector` and a `FakeNode`,
+      whose clock is the fake clock. `ctx.tf_buffer` is `None`.
+      `without=(...)` leaves capabilities out, which then raise
+      `UNAVAILABLE`.
+    - **The contract tests** cover `pose`, `arms`, `gaze` and `vision`.
+      There are no base contract tests until PR B builds `RosBase`. On the
+      ROS side, `ctx.pose` runs on a TF buffer the test writes, `ctx.arms`
+      on `CommanderClient` over `FakeCommander`, `ctx.gaze` on a
+      `GazeLoop` that turns `test_gaze`'s fake base, and `ctx.vision` on a
+      `VisionFeed` that a test node feeds. The arms' step log comes from
+      `FakeCommander`'s `joint_goals` and `gripper_goals` and from a
+      stand-in gaze backend that logs each stop.
 
 ## The MotionSupervisor
 
@@ -597,7 +736,11 @@ and fakes.
     - `get_arm_state.py` stays on `CommanderClient` in PR A. Its answer
       comes from three snapshots taken across the call and a finger read
       per gripper, which `Arms.state()` does not return. It moves once
-      `Arms` gains a method for it.
+      `Arms` gains a method for it. As built, it changes only where it
+      builds the arm sentence, which now takes an `ArmsReport`.
+    - `find_people.py` (changed, as built): the helpers that `ctx.vision`
+      shares move into `_perception.py`. It still reads `VisionFeed` and
+      `ctx.tf_buffer`.
     - `src/walkie_agent/testing/__init__.py` (new): `fake_ctx()` and the
       fakes.
     - `docs/architecture/agent.md` (changed): the ctx table.
@@ -616,6 +759,22 @@ and fakes.
   `agent-sim-hri`, since the arm and gaze atomics now run through `ctx`.
 - **Unblocks:** new atomics on `ctx.pose`, `ctx.arms`, `ctx.gaze` and
   `ctx.vision`, tested on `fake_ctx()`; PR B.
+
+!!! note "As built"
+    - **The files** are as listed, with `find_people.py` and
+      `get_arm_state.py` changed too.
+    - **The tests:** `tests/test_capabilities.py` runs the contract cases
+      on the ROS side over `FakeCommander`, a TF buffer, `GazeLoop` and
+      `VisionFeed`, not over `fake_walkie`, since PR A has no `RosBase`.
+      It also runs the guide_to example inline and the ported atomics on
+      `fake_ctx()`. The other test files are unchanged, and
+      `tests/test_toolbox.py` only gains tests.
+    - **One log line moves:** the warning that a close is judged by the
+      commander's default grasp detection band, because its band could not
+      be read, is now logged by `walkie_agent.tools.atomic._arm`, not by
+      `set_gripper`.
+    - **The sim check** is run separately, before the pull request
+      merges.
 
 ### PR B: drive and speak through ctx
 
@@ -771,7 +930,9 @@ and fakes.
   `ctx.node`, `ctx.tf_buffer` and the entity methods. The modules that use
   them today are allowed. The checker fails instead once they are ported.
 - **Porting perception:** `find_people`, `find_seats` and `look_at` move off
-  `ctx.tf_buffer` onto `ctx.pose` and `ctx.vision`.
+  `ctx.tf_buffer` onto `ctx.pose` and `ctx.vision`. As built in PR A,
+  `look_at`'s facing wait and its TF read are already behind `ctx.gaze`,
+  so only `find_people` and `find_seats` remain.
 
 ## What changes in other repositories
 

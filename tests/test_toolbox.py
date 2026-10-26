@@ -31,6 +31,7 @@ from std_srvs.srv import Trigger
 from tf2_ros import StaticTransformBroadcaster
 from tf_transformations import quaternion_from_euler
 
+from walkie_agent.testing import FakeClock, FakeObject, FakePerson, fake_ctx
 from walkie_agent.toolbox import (
     ERROR_CODES,
     AtomicLoadError,
@@ -943,6 +944,198 @@ def test_robot_pose_reads_tf_and_feeds_the_handle_store(connector):
     mugs = ctx.handles.put_set("object", ["mug"])
     assert ctx.handles.get(mugs.member_ids[0], kind="object").pose == pose
     assert isinstance(ctx.now(), Time)
+
+
+def unavailable(name: str) -> tuple[str, str]:
+    return ("UNAVAILABLE", f"The {name} capability is not available.")
+
+
+def test_base_and_speech_have_no_default_whatever_the_backends():
+    # Their ROS implementations come in PR B (capabilities.md).
+    ctx = ToolContext(None, backends={"arm": object(), "gaze": object(), "vision": object()})
+
+    for name in ("base", "speech"):
+        err = error_of(getattr, ctx, name)
+        assert (err.code, err.message) == unavailable(name)
+
+
+def test_a_capability_without_its_backend_or_from_a_none_factory_is_unavailable():
+    bare = ToolContext(None)
+    for name in ("arms", "gaze", "vision"):
+        err = error_of(getattr, bare, name)
+        assert (err.code, err.message) == unavailable(name)
+
+    ctx = ToolContext(None, capabilities={"pose": lambda _ctx: None})
+    err = error_of(getattr, ctx, "pose")
+    assert (err.code, err.message) == unavailable("pose")
+
+    ctx, robot = fake_ctx(without=("gaze", "speech"))
+    for name in ("gaze", "speech"):
+        err = error_of(getattr, ctx, name)
+        assert (err.code, err.message) == unavailable(name)
+    assert (ctx.base, ctx.arms) == (robot.base, robot.arms)
+
+
+def test_a_capability_factory_runs_once_with_the_ctx():
+    built: list[tuple[str, ToolContext]] = []
+    pose = object()
+
+    def factory(name: str, capability: object):
+        def build(ctx: ToolContext) -> object:
+            built.append((name, ctx))
+            return capability
+
+        return build
+
+    ctx = ToolContext(
+        None, capabilities={"pose": factory("pose", pose), "base": factory("base", None)}
+    )
+
+    assert ctx.pose is pose
+    assert ctx.pose is pose
+    # None is kept too: the factory is not asked again.
+    assert error_of(getattr, ctx, "base").code == "UNAVAILABLE"
+    assert error_of(getattr, ctx, "base").code == "UNAVAILABLE"
+    assert built == [("pose", ctx), ("base", ctx)]
+
+
+def test_a_capability_factory_may_read_another_but_not_its_own():
+    pose = object()
+    ctx = ToolContext(None, capabilities={"pose": lambda _ctx: pose, "base": lambda c: c.pose})
+
+    # The base factory reads ctx.pose while the ctx builds ctx.base.
+    assert ctx.base is pose
+
+    looped = ToolContext(
+        None, capabilities={"base": lambda c: c.speech, "speech": lambda c: c.base}
+    )
+    with pytest.raises(
+        RuntimeError, match=re.escape("The base capability's factory reads ctx.base.")
+    ):
+        _ = looped.base
+    # The failed build is not kept, so the next read raises the same way.
+    with pytest.raises(RuntimeError, match="reads ctx.base"):
+        _ = looped.base
+
+
+def test_an_unknown_capability_name_is_an_error():
+    with pytest.raises(
+        ValueError,
+        match=re.escape(
+            "Unknown capabilities ['legs']; a ctx has base, speech, pose, arms, gaze, vision."
+        ),
+    ):
+        ToolContext(None, capabilities={"legs": lambda _ctx: None})
+
+
+def test_every_verb_of_fake_ctx_is_cancelled_before_it_sends_anything():
+    ctx, robot = fake_ctx(locations={"kitchen": (2.0, 1.0, 0.0)})
+    robot.vision.show(people=[FakePerson()], objects=[FakeObject("cup")])
+    seat = robot.vision.seat(0.5)
+    ctx.cancel.set()
+    verbs = {
+        "base.go_to": lambda: ctx.base.go_to("kitchen"),
+        "base.move_relative": lambda: ctx.base.move_relative(forward_m=1.0),
+        "base.turn_by": lambda: ctx.base.turn_by(90.0),
+        "base.turn_to": lambda: ctx.base.turn_to(1.0),
+        "speech.say": lambda: ctx.speech.say("Hello."),
+        "pose.fresh": lambda: ctx.pose.fresh(),
+        "arms.move_to": lambda: ctx.arms.move_to("hands_up"),
+        "arms.gripper": lambda: ctx.arms.gripper("left", "close"),
+        "gaze.look_at": lambda: ctx.gaze.look_at(seat),
+        "vision.people": lambda: ctx.vision.people(max_age_s=1.0),
+        "vision.objects": lambda: ctx.vision.objects(max_age_s=1.0),
+    }
+
+    for name, verb in verbs.items():
+        assert (name, error_of(verb).code) == (name, "CANCELLED")
+
+    assert robot.calls == list(verbs)
+    assert robot.base.goals == [] and robot.speech.said == []
+    assert robot.arms.goals == [] and robot.arms.gripper_goals == []
+    steps = robot.base.steps + robot.arms.steps + robot.gaze.steps
+    assert not {"base.goal", "arms.goal", "gripper.goal", "gaze.start"} & set(steps)
+    assert ctx.gaze.status().target is None
+
+
+def test_the_fake_clock_runs_each_wait_to_its_end_at_once():
+    clock = FakeClock()
+    ctx = ToolContext(None, clock=clock)
+
+    started = time.monotonic()
+    err = error_of(ctx.wait, Future(), 30.0)
+    assert (err.code, err.message) == ("TIMEOUT", "The call did not finish within 30 s.")
+    assert clock.monotonic() == pytest.approx(1030.0)
+    assert time.monotonic() - started < 1.0
+
+    started = time.monotonic()
+    ctx.sleep(60.0)
+    assert clock.monotonic() == pytest.approx(1090.0)
+    assert time.monotonic() - started < 1.0
+
+    started = time.monotonic()
+    err = error_of(ctx.wait_until, lambda: False, 10.0, "The turn")
+    assert (err.code, err.message) == ("TIMEOUT", "The turn did not finish within 10 s.")
+    assert clock.monotonic() == pytest.approx(1100.0)
+    assert time.monotonic() - started < 1.0
+
+
+def test_a_stop_ends_sleep_and_wait_until_on_the_real_clock():
+    ctx = ToolContext(None)
+    waits = {
+        "sleep": lambda: ctx.sleep(5.0),
+        "wait_until": lambda: ctx.wait_until(lambda: False, 5.0),
+    }
+
+    for name, wait in waits.items():
+        ctx.cancel.clear()
+        timer = threading.Timer(0.1, ctx.cancel.set)
+        timer.start()
+        started = time.monotonic()
+        err = error_of(wait)
+        assert (name, err.code, err.message) == (
+            name,
+            "CANCELLED",
+            "A stop or a reset interrupted the call.",
+        )
+        assert time.monotonic() - started < 1.0
+        timer.join()
+
+
+@pytest.mark.parametrize("timeout_s", [math.nan, -1.0, math.inf])
+def test_a_wait_refuses_a_timeout_that_is_not_a_finite_duration(timeout_s):
+    ctx = ToolContext(None)
+    # Each error names the argument it refuses.
+    waits = (
+        ("timeout_s", lambda: ctx.wait(Future(), timeout_s)),
+        ("seconds", lambda: ctx.sleep(timeout_s)),
+        ("timeout_s", lambda: ctx.wait_until(lambda: True, timeout_s)),
+    )
+
+    for name, wait in waits:
+        with pytest.raises(ValueError, match=f"^{name} must be a finite number of seconds"):
+            wait()
+
+
+def test_now_ns_follows_the_clock_and_in_simulation_can_be_injected():
+    ctx, robot = fake_ctx(in_simulation=True)
+
+    assert ctx.now_ns() == robot.clock.now_ns() == 1_000_000_000_000
+    robot.clock.advance(1.5)
+    assert ctx.now_ns() == ctx.now().nanoseconds == 1_001_500_000_000
+    assert ctx.in_simulation is True
+    assert ToolContext(None, in_simulation=False).in_simulation is False
+
+
+def test_now_ns_and_in_simulation_read_the_node(connector):
+    ctx = ToolContext(connector)
+    clock = connector.node.get_clock()
+
+    before = clock.now().nanoseconds
+    assert before <= ctx.now_ns() <= clock.now().nanoseconds
+    # The node's use_sim_time parameter, False in the tests.
+    assert ctx.in_simulation is False
+    assert ToolContext(connector, in_simulation=True).in_simulation is True
 
 
 # -- Toolbox ---------------------------------------------------------------------

@@ -78,6 +78,11 @@ from walkie_agent.arm.poses import (
     load_arm_poses,
 )
 from walkie_agent.arm.state import ArmsState, ArmState
+
+# GripperResult and Recovery live with the capabilities, which return them
+# (ADR-0052); they are re-exported here for the imports that name this
+# module.
+from walkie_agent.capabilities import GripperResult, Recovery
 from walkie_agent.toolbox.types import StepError
 from walkie_agent.tools.waiters import wait_for_future
 
@@ -230,29 +235,6 @@ _RESOLUTIONS = {
 
 
 @dataclass(frozen=True)
-class GripperResult:
-    """The commander's answer to one gripper goal."""
-
-    # True when the controller reached the commanded position. A real grasp
-    # usually ends false, since the fingers stall on the object; on a close,
-    # `grasped` and the gap are the answer.
-    success: bool
-    status: str
-    # Only for a close, a position at or below GRASP_CLOSE_THRESHOLD. On an
-    # open or "half" the commander reports false and 0.0 whatever the
-    # fingers did, so they are None here and cannot be misread. A close the
-    # commander did not measure, with grasp_detect_enable off, superseded,
-    # or with no finger reading, reports false and 0.0 too, which looks like
-    # a measured empty close.
-    grasped: bool | None
-    # The settled travel of one finger, in metres.
-    gripper_gap: float | None
-    # The number of this command among the client's commands for its group,
-    # for joint_states_since().
-    command: int
-
-
-@dataclass(frozen=True)
 class DriveCheck:
     """What check_for_driving() found: both arms, or why they were not read."""
 
@@ -260,24 +242,6 @@ class DriveCheck:
     state: ArmsState | None
     # NOT_FOUND, NO_ANSWER or NO_READING when `state` is None, else None.
     unread: str | None = None
-
-
-@dataclass(frozen=True)
-class Recovery:
-    """What the recovery that last cleared the unverified state checked (last_recovery)."""
-
-    # unverified_count when it cleared the state, which is also the count
-    # when it began: a change in between keeps the state.
-    count: int
-    # (what, how) for each goal resolved since the arms became unverified,
-    # such as ("the move of left_arm", "unknown"). `how` is "result" (its
-    # result came), "rejected", "ended" (it answered a cancel that the goal
-    # had already ended) or "unknown" (it does not know the goal, as after
-    # a restart).
-    goals: tuple[tuple[str, str], ...]
-    # The gripper groups whose finger the settled read checked, besides
-    # both arms.
-    grippers: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -871,7 +835,7 @@ class CommanderClient:
         if sends:
             cause = self.unverified
             if cause is not None:
-                raise _unverified_refusal(action, cause)
+                raise unverified_refusal(action, cause)
 
     @staticmethod
     def _wait_ready(
@@ -1288,7 +1252,7 @@ class CommanderClient:
                     record.command = self._gripper_commands[group]
                 self._goal = record
         if cause is not None:
-            raise _unverified_refusal(f"move {group}", cause)
+            raise unverified_refusal(f"move {group}", cause)
         try:
             return record, self._wait_goal(record, name, deadline, timeout_s, cancel)
         finally:
@@ -1849,7 +1813,11 @@ def _accepted_late(goal: _Goal) -> str:
     )
 
 
-def _unverified_refusal(action: str, cause: str) -> StepError:
+def unverified_refusal(action: str, cause: str) -> StepError:
+    """The refusal of `action` while the arms are unverified by `cause`.
+
+    Public so the fake arms in walkie_agent.testing refuse in the same words.
+    """
     return StepError(
         "PRECONDITION_FAILED",
         f"Cannot {action}: an arm or a gripper may still be moving, as {cause}. Call "

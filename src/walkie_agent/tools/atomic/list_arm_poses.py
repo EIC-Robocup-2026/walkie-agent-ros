@@ -40,8 +40,7 @@ class Out(ToolOutput):
 
 
 def run(ctx: ToolContext, args: Args) -> Out:
-    client = shared.commander(ctx)
-    offered = shared.offered_poses(ctx, client)
+    offered = ctx.arms.poses()
     lines = [
         f"{name}: {shared.arms_text(pose)}; "
         f"{'safe' if pose.travel_safe else 'not safe'} for driving. {pose.description}"
@@ -49,5 +48,5 @@ def run(ctx: ToolContext, args: Args) -> Out:
     ]
     if not lines:
         lines = ["No arm poses are offered."]
-    lines.append(shared.arm_sentence(client, ctx.cancel))
+    lines.append(shared.state_sentence(ctx.arms.state()))
     return Out(summary="\n".join(lines), poses=list(offered))

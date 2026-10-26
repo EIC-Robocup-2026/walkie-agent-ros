@@ -19,16 +19,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+# Pose2D lives with the capabilities, which return it (ADR-0052); it is
+# re-exported here for the imports that name this module.
+from walkie_agent.capabilities import Pose2D
 from walkie_agent.toolbox.types import StepError
-
-
-@dataclass(frozen=True)
-class Pose2D:
-    """The base's pose in the map frame: metres, and yaw in radians."""
-
-    x: float
-    y: float
-    yaw: float
 
 
 @dataclass(frozen=True)

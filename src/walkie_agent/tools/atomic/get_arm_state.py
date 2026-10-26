@@ -111,7 +111,9 @@ def run(ctx: ToolContext, args: Args) -> Out:
             if cause is not None and e.code != "CANCELLED" and "unverified" not in e.data
             else ""
         )
-        raise shared.with_sentence(e, checked, shared.state_sentence(client, now)) from None
+        raise shared.with_sentence(
+            e, checked, shared.state_sentence(shared.arms_report(now))
+        ) from None
 
     grippers: dict[str, str | None] = {}
     gaps: dict[str, float | None] = {}
@@ -121,7 +123,9 @@ def run(ctx: ToolContext, args: Args) -> Out:
             gap = shared.read_finger(client, arm, ctx.cancel)
         except StepError as e:
             if e.code == "CANCELLED" and ctx.cancel.is_set():
-                raise shared.with_sentence(e, "", shared.state_sentence(client)) from None
+                raise shared.with_sentence(
+                    e, "", shared.state_sentence(shared.arms_report(client.snapshot()))
+                ) from None
             last = _last_command(client, arm)
             grippers[arm], gaps[arm] = last, None
             gripper_lines.append(

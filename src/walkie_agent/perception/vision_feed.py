@@ -502,7 +502,7 @@ class VisionFeed:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise StepError(
-                        "UNAVAILABLE", _stale_message(topic, age_s, max_age_s, wait_s)
+                        "UNAVAILABLE", stale_message(topic, age_s, max_age_s, wait_s)
                     )
                 self._arrived.wait(min(_POLL_S, remaining))
 
@@ -555,7 +555,11 @@ def _check_cancel(cancel: threading.Event) -> None:
         raise StepError("CANCELLED", "A stop or a reset interrupted the call.")
 
 
-def _stale_message(topic: str, age_s: float | None, max_age_s: float, wait_s: float) -> str:
+def stale_message(topic: str, age_s: float | None, max_age_s: float, wait_s: float) -> str:
+    """Why no array on `topic` was fresh enough: none within `wait_s`, or the newest's age.
+
+    Public so the fake vision in walkie_agent.testing fails in the same words.
+    """
     if age_s is None:
         return f"No message on {topic} within {wait_s:g} s. {PUBLISHER_HINT}"
     if age_s < 0:

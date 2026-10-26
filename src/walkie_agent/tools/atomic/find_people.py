@@ -10,21 +10,13 @@ the guest.
 """
 
 from collections.abc import Mapping, Sequence
-from typing import NamedTuple
 
 from pydantic import BaseModel, Field
 from rclpy.time import Time
-from walkie_vision_msgs.msg import PersonDetection, PersonDetectionArray
 
 from walkie_agent.perception.front import REASONS, face_size_rad, front_reason
-from walkie_agent.perception.gestures import GESTURES, POSTURES, classify_gestures
-from walkie_agent.perception.seating import BBox, bbox_xyxy
-from walkie_agent.perception.vision_feed import (
-    TrackKey,
-    VisionFeed,
-    face_trusted,
-    model_vector,
-)
+from walkie_agent.perception.gestures import GESTURES, POSTURES
+from walkie_agent.perception.seating import bbox_xyxy
 from walkie_agent.toolbox import Effect, StepError, ToolContext, ToolMeta, ToolOutput
 from walkie_agent.tools.atomic import _perception as shared
 from walkie_agent.tools.navigation import MAP_FRAME
@@ -91,16 +83,6 @@ class Out(ToolOutput):
     handles: list[str]
 
 
-class _Seen(NamedTuple):
-    """One person in the array, as find_people reads them."""
-
-    person: PersonDetection
-    # The key of the person's track collection, from the PeopleFrame.
-    track: TrackKey | None
-    position: str
-    gestures: frozenset[str]
-
-
 def run(ctx: ToolContext, args: Args) -> Out:
     config = shared.CONFIG
     # Checked first, so a misspelt gesture fails at once and not after a wait.
@@ -111,25 +93,8 @@ def run(ctx: ToolContext, args: Args) -> Out:
     if not msg.people:
         raise StepError("NOT_FOUND", "Nobody is in view.")
 
-    # Left to right by the box's centre, as the LLM reads the lines. The
-    # index breaks ties, so the order never depends on the sort.
-    order = sorted(
-        range(len(msg.people)), key=lambda i: (msg.people[i].bbox.center.position.x, i)
-    )
-    width = msg.camera_info.width
-    seen = [
-        _Seen(
-            person=msg.people[i],
-            track=frame.tracks[i],
-            position=shared.image_position(msg.people[i].bbox.center.position.x, width),
-            gestures=frozenset(
-                classify_gestures(
-                    msg.people[i].keypoints, msg.people[i].keypoint_scores, config.gestures
-                )
-            ),
-        )
-        for i in order
-    ]
+    # Left to right, as the LLM reads the lines.
+    seen = shared.people_left_to_right(frame, config.gestures)
     chosen = [entry for entry in seen if gesture is None or gesture in entry.gestures]
     if not chosen:
         in_view = "; ".join(_describe(entry.position, entry.gestures) for entry in seen)
@@ -139,7 +104,7 @@ def run(ctx: ToolContext, args: Args) -> Out:
             {"gesture": gesture, "people": len(seen)},
         )
 
-    face_boxes = [_face_box(entry.person) for entry in chosen]
+    face_boxes = [shared.face_box(entry.person) for entry in chosen]
     # Toward the face when there is one, since the gaze loop looks at it.
     heading_maps = shared.headings(
         [
@@ -152,7 +117,7 @@ def run(ctx: ToolContext, args: Args) -> Out:
     )
     stamp_ns = Time.from_msg(msg.header.stamp).nanoseconds
     payloads = [
-        _payload(feed, msg, stamp_ns, entry, face_box, heading)
+        shared.person_payload(feed, msg, stamp_ns, entry, face_box, heading)
         for entry, face_box, heading in zip(chosen, face_boxes, heading_maps, strict=True)
     ]
     image_height = msg.camera_info.height
@@ -256,11 +221,6 @@ def _describe(position: str, gestures: frozenset[str], share: float | None = Non
     return ", ".join(parts)
 
 
-def _face_box(person: PersonDetection) -> BBox | None:
-    # face_det_score is 0 when no face was found in the box (PersonDetection.msg).
-    return bbox_xyxy(person.face_bbox) if person.face_det_score > 0 else None
-
-
 def _face_text(payload: shared.PersonPayload) -> str:
     """FACE_SEEN, FACE_UNCLEAR or NO_FACE, by what the handle can be recognized by."""
     if payload.face_bbox is None:
@@ -269,36 +229,6 @@ def _face_text(payload: shared.PersonPayload) -> str:
     # the gate of the track's collection too, and came with a vector: a face
     # without one cannot be recognized however clear it is.
     return FACE_SEEN if payload.face is not None else FACE_UNCLEAR
-
-
-def _payload(
-    feed: VisionFeed,
-    msg: PersonDetectionArray,
-    stamp_ns: int,
-    entry: _Seen,
-    face_box: BBox | None,
-    heading: float | None,
-) -> shared.PersonPayload:
-    person = entry.person
-    face = None
-    if face_trusted(person, msg.camera_info, feed.config):
-        face = model_vector(person.face_model, person.face_embedding)
-    return shared.PersonPayload(
-        track=entry.track,
-        position=entry.position,
-        bbox=bbox_xyxy(person.bbox),
-        face_bbox=face_box,
-        keypoints=tuple(float(v) for v in person.keypoints),
-        keypoint_scores=tuple(float(v) for v in person.keypoint_scores),
-        gestures=entry.gestures,
-        face=face,
-        appearance=model_vector(person.appearance_model, person.appearance_embedding),
-        header=msg.header,
-        stamp_ns=stamp_ns,
-        image_width=int(msg.camera_info.width),
-        image_height=int(msg.camera_info.height),
-        heading_map=heading,
-    )
 
 
 def _count(n: int) -> str:
@@ -337,8 +267,8 @@ def _counts_text(left_out: Mapping[str, int]) -> str:
 
 def _nobody_in_front(
     gesture: str | None,
-    seen: Sequence[_Seen],
-    chosen: Sequence[_Seen],
+    seen: Sequence[shared.SeenPerson],
+    chosen: Sequence[shared.SeenPerson],
     reasons: Sequence[str | None],
     left_out: dict[str, int],
     image_height: int,

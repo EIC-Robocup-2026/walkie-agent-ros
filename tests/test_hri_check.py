@@ -303,6 +303,7 @@ def test_a_run_that_keeps_every_rule_passes_every_criterion_in_hri_md_order():
         "gaze guest2",
         "offers",
         "introductions",
+        "pronouns",
         "questions",
         "arm_motion",
         "bag",
@@ -313,7 +314,7 @@ def test_a_run_that_keeps_every_rule_passes_every_criterion_in_hri_md_order():
         "people",
     ]
     assert [r for r in found if not r.ok] == []
-    assert len(CRITERIA) == 12
+    assert len(CRITERIA) == 13
 
 
 # -- memory -------------------------------------------------------------------------------
@@ -553,6 +554,72 @@ def test_a_line_that_names_both_drinks_is_not_an_introduction():
     events[at(events, "robot_line", t=70.0)]["text"] = "Sam likes milk and Ana likes cola."
 
     assert not result_of("introductions", events, tools).ok
+
+
+def test_an_introduction_that_names_the_drink_but_not_the_guest_does_not_count():
+    events, tools = passing_run()
+    # The listener's name and the drink, but not whose drink it is.
+    events[at(events, "robot_line", t=70.0)]["text"] = "Sam, this is our guest, who likes cola."
+
+    result = result_of("introductions", events, tools)
+
+    assert (result.ok, result.reason) == (
+        False,
+        "no introduction to guest1: the line at t=70 s names cola but not Ana",
+    )
+
+
+def test_an_introduction_matches_the_name_as_a_whole_word_in_any_case():
+    events, tools = passing_run()
+    events[at(events, "robot_line", t=70.0)]["text"] = "SAM, this is ANA. ANA's favourite is cola."
+
+    assert result_of("introductions", events, tools).ok
+
+
+def test_a_name_inside_another_word_does_not_name_the_guest():
+    events, tools = passing_run()
+    events[at(events, "robot_line", t=70.0)]["text"] = "Sam, this is Anabel, who likes cola."
+
+    assert not result_of("introductions", events, tools).ok
+
+
+# -- pronouns -----------------------------------------------------------------------------
+
+
+def test_pronouns_fail_a_line_that_says_her():
+    events, tools = passing_run()
+    events[at(events, "robot_line", t=70.0)]["text"] = "Sam, meet Ana. Her favourite drink is cola."
+
+    result = result_of("pronouns", events, tools)
+
+    assert (result.ok, result.reason) == (
+        False,
+        "'her' at t=70 s in 'Sam, meet Ana. Her favourite drink is cola.'",
+    )
+    # The line still names Ana and her drink, so only the pronoun fails it.
+    assert result_of("introductions", events, tools).ok
+
+
+@pytest.mark.parametrize("pronoun", ["he", "she", "him", "his", "hers", "himself", "herself"])
+def test_pronouns_fail_each_pronoun_in_any_case(pronoun):
+    events, tools = passing_run()
+    events.append(line(76.0, f"Thank you. {pronoun.upper()} is seated.", None))
+
+    result = result_of("pronouns", events, tools)
+
+    assert not result.ok
+    assert result.reason.startswith(f"{pronoun!r} at t=76 s")
+
+
+def test_pronouns_match_whole_words_only():
+    events, tools = passing_run()
+    # "this", "here", "other", "their", "there" and "shed" hold a pronoun's letters.
+    text = "Sam, this is Ana, here with the other guest. Their coats are there, by the shed."
+    events.append(line(76.0, text, None))
+
+    result = result_of("pronouns", events, tools)
+
+    assert (result.ok, result.reason) == (True, "none in 11 lines")
 
 
 # -- questions ----------------------------------------------------------------------------
@@ -951,7 +1018,7 @@ def test_the_cli_prints_a_line_per_criterion_and_passes_with_exit_code_0(tmp_pat
 
     lines = capsys.readouterr().out.splitlines()
     assert code == 0
-    assert len(lines) == 14 and lines[-1] == "PASS"
+    assert len(lines) == 15 and lines[-1] == "PASS"
     assert lines[0] == "PASS memory: guest1 Sam milk, guest2 Ana cola"
     assert all(line.startswith("PASS ") for line in lines[:-1])
 

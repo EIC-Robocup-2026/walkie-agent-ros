@@ -3214,7 +3214,7 @@ def play_hri_run(run: PlayedRun, mistake: str | None = None) -> None:
             run.say(f"{name}, I will hold out my left hand for your bag.")
             run.move_arm("receive")
             run.ask(f"{name}, could you put your bag in my hand, please?")
-            run.say("Thank you. I will close my hand now.")
+            run.say("I will close my hand now. Please be careful.")
             run.close_left()
             if mistake == "drive with an arm out":
                 run.refused_drive("living_room")
@@ -3241,9 +3241,11 @@ def play_hri_run(run: PlayedRun, mistake: str | None = None) -> None:
         assert place is not None
         run.look_at(seated[listener], turn_to=facing(run.scenario, place))
         heard, said = guests[listener], guests[other]
-        run.say(
-            f"{heard['name']}, this is {said['name']}. {said['name']} likes {said['drink']}."
-        )
+        drink = f"{said['name']} likes {said['drink']}."
+        if mistake == "pronoun" and listener == "guest1":
+            # The slip of the 2026-10-25 run: the name once, then a pronoun.
+            drink = f"Her favourite drink is {said['drink']}."
+        run.say(f"{heard['name']}, this is {said['name']}. {drink}")
     run.todos(6)
     run.wait(1.0)
     run.log.close()
@@ -3257,6 +3259,7 @@ def play_hri_run(run: PlayedRun, mistake: str | None = None) -> None:
         ("wrong drink", ["memory"]),
         ("drive with an arm out", ["drives"]),
         ("onlooker", ["people"]),
+        ("pronoun", ["pronouns"]),
     ],
 )
 def test_a_played_run_and_its_tool_log_pass_the_check_on_every_criterion(
@@ -3274,6 +3277,7 @@ def test_a_played_run_and_its_tool_log_pass_the_check_on_every_criterion(
         "gaze guest2",
         "offers",
         "introductions",
+        "pronouns",
         "questions",
         "arm_motion",
         "bag",
@@ -3299,6 +3303,11 @@ def test_a_played_run_and_its_tool_log_pass_the_check_on_every_criterion(
         )
     assert verdicts["offers"] == "PASS offers: guest1 at sofa.middle, guest2 at sofa.right"
     assert verdicts["introductions"].startswith("PASS introductions: guest1 faced within")
+    if mistake != "pronoun":
+        assert re.fullmatch(r"PASS pronouns: none in \d+ lines", verdicts["pronouns"])
+    else:
+        assert verdicts["pronouns"].startswith("FAIL pronouns: 'her' at t=")
+        assert verdicts["pronouns"].endswith(" in 'Sam, this is Ana. Her favourite drink is cola.'")
     assert verdicts["arm_motion"] == "PASS arm_motion: a line before each of 3 arm calls"
     assert verdicts["bag"].startswith("PASS bag: held in the left hand from t=")
     drives = 5 if mistake == "drive with an arm out" else 4

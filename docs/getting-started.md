@@ -38,18 +38,20 @@ pixi install
 
 ## 3. Build the ROS packages
 
-RAI's message types (`rai_interfaces`) and the messages of Walkie's memory
+RAI's message types (`rai_interfaces`), the messages of Walkie's memory
 (`walkie_database_msgs`, from
-[walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)) are
-not published as packages, so we build them from source once:
+[walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)) and
+the messages of its vision nodes (`walkie_vision_msgs`, from
+[walkie-vision](https://github.com/EIC-Robocup-2026/walkie-vision)) are not
+published as packages, so we build them from source once:
 
 ```bash
 pixi run build-ros2
 ```
 
-This clones `rai_interfaces` and walkie-database into `ros2_ws/src/`, at the
-commits pinned in `ros2_ws.repos`, and builds the two message packages with
-colcon. Pixi loads the result automatically every time you use `pixi run`
+This clones `rai_interfaces`, walkie-database and walkie-vision into
+`ros2_ws/src/`, at the commits pinned in `ros2_ws.repos`, and builds the
+three message packages with colcon. Pixi loads the result automatically every time you use `pixi run`
 or `pixi shell`. Run it again only if `ros2_ws.repos` changes. The
 walkie-database pin must match the database node you run, or the agent's
 memory requests are never answered

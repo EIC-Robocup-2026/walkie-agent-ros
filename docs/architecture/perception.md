@@ -236,7 +236,7 @@ flowchart TB
     d1["<b>walkie-database</b><br/>Object ingest"]
     d2["<b>walkie-database</b><br/>Migration after<br/>the bake-off"]
     d3["<b>walkie-database</b><br/>People services"]:::proposed
-    a0["<b>walkie-agent-ros</b><br/>Pin walkie_vision_msgs<br/>(unblocked)"]
+    a0["<b>walkie-agent-ros</b><br/>Pin walkie_vision_msgs<br/>(done)"]
     a1["<b>walkie-agent-ros</b><br/>Phase 2: atomics<br/>on mocks"]
     a2["<b>walkie-agent-ros</b><br/>Real vision clients"]
     a3["<b>walkie-agent-ros</b><br/>Values tuned for<br/>the new model"]
@@ -265,10 +265,10 @@ flowchart TB
 - **The HRI task goes first.** It needs only the people half of this graph,
   plus seats from the streaming detector, and skips `DetectObjects`, the
   bake-off and person depth ([HRI Task](hri.md#delivery-order)).
-- **Unblocked now.** walkie-vision is on GitHub, so `walkie_vision_msgs` can
-  be pinned in `ros2_ws.repos`, which
-  [ADR-0034](decisions/0034-vision-models-in-walkie-vision.md) was waiting
-  for.
+- **Pinned.** `walkie_vision_msgs` is pinned in `ros2_ws.repos` and built
+  by `pixi run build-ros2`, as
+  [ADR-0034](decisions/0034-vision-models-in-walkie-vision.md) planned.
+  After a message change in walkie-vision, move the pin and build again.
 - **Phase 2 of the self-evolving agent** adds `find_people` and
   `refind_person` next to the object atomics, on mocks. `recognize_person`
   and `remember_person` wait for walkie-database's services.

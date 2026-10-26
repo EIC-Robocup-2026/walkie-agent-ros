@@ -416,7 +416,7 @@ robot PC does not touch the live robot
 | `my_robot_interfaces` and future skill interfaces            | walkie-ros, pinned here    |
 | `walkie_perception`: grasp pipeline, classic 3D positions    | walkie-ros                 |
 | Vision: detection, embeddings, pose, faces, re-ID, captions  | walkie-vision              |
-| `walkie_vision_msgs`                                         | walkie-vision, to be pinned here |
+| `walkie_vision_msgs`                                         | walkie-vision, pinned here |
 | Long-term memory: maps, rooms, objects, people, conversations | walkie-database           |
 | `walkie_database_msgs`                                       | walkie-database, pinned here |
 | Skill server, policy inference                               | walkie-ros (or another robot-side repository) |

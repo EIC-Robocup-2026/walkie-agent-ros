@@ -24,13 +24,16 @@ several seconds, so walkie_agent.voice imports it only when an agent is built.
 
 from threading import Event, Thread
 from time import monotonic
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import sounddevice
 from rai_s2s.asr import SpeechRecognitionAgent
 from rai_s2s.tts import TextToSpeechAgent
 from std_msgs.msg import Bool
+
+if TYPE_CHECKING:
+    from walkie_agent.voice import AsrOptions
 
 SPEAKING_TOPIC = "/walkie/speaking"
 # Seconds between repeated True messages while audio is playing.
@@ -146,10 +149,14 @@ class HalfDuplexSpeechRecognitionAgent(SpeechRecognitionAgent):
 
     Ignored samples skip voice detection, so they neither start a recording nor
     send "pause" or "stop" to the text-to-speech agent.
+
+    `options` is the voice-asr command line (walkie_agent.voice.AsrOptions).
+    The other arguments are SpeechRecognitionAgent's.
     """
 
-    def __init__(self, *args: Any, **kwargs: Any):
+    def __init__(self, *args: Any, options: "AsrOptions", **kwargs: Any):
         super().__init__(*args, **kwargs)
+        self.options = options
         self.ignore_until = 0.0
         self.ignoring = False
         self.ros2_connector.node.create_subscription(

@@ -31,6 +31,7 @@ from walkie_agent.half_duplex import (
     HalfDuplexSpeechRecognitionAgent,
     HalfDuplexTextToSpeechAgent,
 )
+from walkie_agent.voice import AsrOptions
 
 CONFIG = Path(__file__).resolve().parent.parent / "config.toml"
 # One microphone block, as voice.py configures it.
@@ -96,7 +97,11 @@ def clock(monkeypatch):
 def asr(monkeypatch):
     monkeypatch.setattr(asr_module, "SoundDeviceConnector", lambda **kwargs: None)
     agent = HalfDuplexSpeechRecognitionAgent(
-        None, f"test_asr_{random.randint(0, 1_000_000)}", None, FakeVAD()
+        None,
+        f"test_asr_{random.randint(0, 1_000_000)}",
+        None,
+        FakeVAD(),
+        options=AsrOptions(config_path=CONFIG),
     )
     # The /voice_commands messages it would send to the text-to-speech agent.
     agent.sent = []
@@ -162,6 +167,10 @@ def command(agent, data):
 def to_human(agent, text):
     """Deliver a /to_human message, as the speak tool sends it."""
     agent._on_to_human_message(SimpleNamespace(text=text, communication_id="test"))
+
+
+def test_asr_keeps_the_voice_asr_options(asr):
+    assert asr.options == AsrOptions(config_path=CONFIG)
 
 
 def test_asr_hears_the_microphone_while_walkie_is_quiet(asr):

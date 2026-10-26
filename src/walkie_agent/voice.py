@@ -16,12 +16,17 @@ directory. The two agents coordinate over two topics:
 
 import argparse
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from dotenv import load_dotenv
-from rai.agents import AgentRunner
-from rai.agents.base import BaseAgent
-from rai.communication.ros2 import ROS2Context
+
+if TYPE_CHECKING:
+    # Only for the annotations. rai.communication.ros2 loads rclpy, so every
+    # rai import waits until an agent is built or run, and this module, with
+    # AsrOptions, imports without ROS.
+    from rai.agents.base import BaseAgent
 
 # Silero VAD accepts 8 or 16 kHz, and Whisper expects 16 kHz.
 SAMPLE_RATE = 16000
@@ -29,6 +34,23 @@ SAMPLE_RATE = 16000
 BLOCK_SIZE = 1280
 # Devices that exist only through the system's PipeWire or PulseAudio ALSA plugin.
 SOUND_SERVER_DEVICES = ("default", "pipewire", "pulse")
+
+
+@dataclass(frozen=True)
+class AsrOptions:
+    """The command line of `python -m walkie_agent.voice asr`, as the agent takes it.
+
+    build_asr_agent passes it whole to the speech recognition agent. Every
+    voice-side loader reads its settings from config_path, never from a
+    literal path.
+    """
+
+    config_path: Path  # the TOML file with the [asr] section, from --config
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace) -> "AsrOptions":
+        """The options from the parsed command line."""
+        return cls(config_path=args.config)
 
 
 def check_audio_device(name: str, direction: str) -> None:
@@ -78,8 +100,8 @@ def check_audio_device(name: str, direction: str) -> None:
     raise SystemExit("\n".join(lines))
 
 
-def build_asr_agent(config_path: Path) -> BaseAgent:
-    """Build the speech recognition agent from the [asr] section of config.toml.
+def build_asr_agent(options: AsrOptions) -> "BaseAgent":
+    """Build the speech recognition agent from the [asr] section of options.config_path.
 
     SpeechRecognitionAgent.from_config() is not used because in rai_s2s 1.0.x
     it expects model names such as "LocalWhisper (Free)", which its own config
@@ -97,7 +119,7 @@ def build_asr_agent(config_path: Path) -> BaseAgent:
 
     from walkie_agent.half_duplex import HalfDuplexSpeechRecognitionAgent
 
-    cfg = load_config(str(config_path))
+    cfg = load_config(str(options.config_path))
     check_audio_device(cfg.microphone.device_name, "input")
     microphone = SoundDeviceConfig(
         stream=True,
@@ -133,6 +155,7 @@ def build_asr_agent(config_path: Path) -> BaseAgent:
         model,
         vad,
         grace_period=cfg.voice_activity_detection.silence_grace_period,
+        options=options,
     )
     if cfg.wakeword.is_used:
         agent.add_detection_model(
@@ -141,7 +164,7 @@ def build_asr_agent(config_path: Path) -> BaseAgent:
     return agent
 
 
-def build_tts_agent(config_path: Path) -> BaseAgent:
+def build_tts_agent(config_path: Path) -> "BaseAgent":
     """Build the text-to-speech agent from the [tts] section of config.toml."""
     from rai_s2s.tts.agents.initialization import load_config
 
@@ -151,18 +174,32 @@ def build_tts_agent(config_path: Path) -> BaseAgent:
     return HalfDuplexTextToSpeechAgent.from_config(str(config_path))
 
 
+def _add_asr_arguments(parser: argparse.ArgumentParser) -> None:
+    """Add the flags that only the asr agent reads. AsrOptions holds their values.
+
+    There are none yet.
+    """
+
+
 def main() -> None:
+    from rai.agents import AgentRunner
+    from rai.communication.ros2 import ROS2Context
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("agent", choices=["asr", "tts"])
     parser.add_argument("--config", type=Path, default=Path("config.toml"))
+    _add_asr_arguments(parser)
     args = parser.parse_args()
 
     # ElevenLabs and OpenAI Whisper read their API keys from the environment.
     load_dotenv()
 
-    build = build_asr_agent if args.agent == "asr" else build_tts_agent
     with ROS2Context():
-        AgentRunner([build(args.config)]).run_and_wait_for_shutdown()
+        if args.agent == "asr":
+            agent = build_asr_agent(AsrOptions.from_args(args))
+        else:
+            agent = build_tts_agent(args.config)
+        AgentRunner([agent]).run_and_wait_for_shutdown()
 
 
 if __name__ == "__main__":

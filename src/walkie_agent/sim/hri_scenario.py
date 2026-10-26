@@ -44,6 +44,12 @@ Rules
   robot. A guest starts talking at the first question, and guest k+1
   arrives once guest k is seated. The bystander walks its path once,
   bystander.delay seconds after the run's first question.
+- Onlookers. People at the door who are not the guest, such as one far
+  behind them in the hallway and one beside the robot, for
+  find_people(in_front=True) to leave out. They arrive with each guest,
+  each on a new track after the guest's, stand at their place facing the
+  robot, and leave when the guest starts to follow. They never sit,
+  follow, answer, take a seat offer or join the seat switch.
 - Seat offers. A line that mentions sitting or a seat, while a guest
   follows, is an offer. It seats the guest at the place with the smallest
   bearing from the robot's base, by TF, if that bearing is within
@@ -81,9 +87,10 @@ message have t = 0. Poses are {"x", "y", "yaw"} in the map frame, in meters
 and radians, or null when unknown. Fields ending in _deg are degrees. A
 bearing is the direction of a point from the robot's base against the
 robot's heading, positive to the left, in (-180, 180]. People are named by
-id: guest1, guest2, ... in file order, the seated people's own ids, and
-"bystander". A place is "<seat>.<part>" on a sofa, such as "sofa.left", and
-the seat's id on any other seat. A number that is not finite is null.
+id: guest1, guest2, ... and onlooker1, onlooker2, ... in file order, the
+seated people's own ids, and "bystander". A place is "<seat>.<part>" on a
+sofa, such as "sofa.left", and the seat's id on any other seat. A number
+that is not finite is null.
 
   start          Always the first line. world, file, seed; door and
                  living_room (poses from the locations file); locations
@@ -152,6 +159,9 @@ the seat's id on any other seat. A number that is not finite is null.
   todos          A message on /walkie/todos. items, the list as published.
   reset          A message on /walkie/reset. dropped: the answers not sent.
   bystander      state (walking or gone), track_id, x, y.
+  onlooker       An onlooker arrived or left. onlooker; state (standing or
+                 gone); track_id (the track that ended when gone); x, y
+                 (its place).
   state          At 10 Hz. pose (TF map -> base_footprint); ground_truth
                  (/mujoco_ground_truth/odom, null when none arrived in the
                  last 1 s, or since the clock went back); talking ({guest,
@@ -337,13 +347,17 @@ DRINK = "drink"
 BAG = "bag"
 OTHER = "other"
 
-# A person's states. ABSENT is a guest who has not arrived yet.
+# A person's states. ABSENT is a guest who has not arrived yet, or an
+# onlooker while no guest is at the door.
 ABSENT = "absent"
 AT_DOOR = "at_door"
 TALKING = "talking"
 FOLLOWING = "following"
 SEATED = "seated"
+STANDING = "standing"
 BYSTANDER_ID = "bystander"
+# The onlooker record's state when an onlooker leaves.
+GONE = "gone"
 
 # Why an offer seated nobody.
 TAKEN = "taken"
@@ -531,6 +545,20 @@ class BystanderSpec(_Spec):
         return sum(math.dist(a, b) for a, b in zip(self.path, self.path[1:]))
 
 
+class OnlookerSpec(_Spec):
+    """A person at the door who is not the guest, onlooker1, onlooker2, ... in file order.
+
+    An onlooker stands at (x, y) while a guest is at the door, facing the robot.
+    """
+
+    x: float
+    y: float
+    # Required, since find_people(in_front=True) judges people by their face.
+    face: str = Field(min_length=1)
+    appearance: str | None = None
+    height: float = Field(default=STANDARD_HEIGHT_M, gt=0)
+
+
 class AnswersSpec(_Spec):
     """How the guests answer."""
 
@@ -601,6 +629,7 @@ class ScenarioSpec(_Spec):
     # A seat offer seats the guest only at a place this close to the robot's heading.
     offer_window_deg: float = Field(default=25.0, gt=0, le=180)
     bystander: BystanderSpec | None = None
+    onlookers: tuple[OnlookerSpec, ...] = ()
     answers: AnswersSpec = AnswersSpec()
     bag: BagSpec = BagSpec()
     oracle: OracleSpec = OracleSpec()
@@ -608,6 +637,10 @@ class ScenarioSpec(_Spec):
     @property
     def guest_ids(self) -> tuple[str, ...]:
         return tuple(f"guest{i}" for i in range(1, len(self.guests) + 1))
+
+    @property
+    def onlooker_ids(self) -> tuple[str, ...]:
+        return tuple(f"onlooker{i}" for i in range(1, len(self.onlookers) + 1))
 
     def bag_owner(self) -> str | None:
         """The guest who brings the bag: bag.owner, else guest2 when there is one."""
@@ -641,15 +674,17 @@ class ScenarioSpec(_Spec):
         for seat_id in sorted({s for s in seat_ids if seat_ids.count(s) > 1}):
             errors.append(f"seats: the id {seat_id!r} is used twice; each seat needs its own.")
 
+        onlookers = self.onlooker_ids
         seated_ids = [person.id for person in self.seated]
         sitters: dict[str, str] = {}
         for i, person in enumerate(self.seated):
             if seated_ids.count(person.id) > 1 and seated_ids.index(person.id) == i:
                 errors.append(f"seated: the id {person.id!r} is used twice.")
-            if person.id in guests or person.id == BYSTANDER_ID:
+            if person.id in guests or person.id in onlookers or person.id == BYSTANDER_ID:
+                listed = f" and onlookers {', '.join(onlookers)}" if onlookers else ""
                 errors.append(
-                    f"seated.{i}.id: {person.id!r} is taken: guests are {', '.join(guests)} in "
-                    f"file order, and {BYSTANDER_ID!r} is the bystander."
+                    f"seated.{i}.id: {person.id!r} is taken: guests are {', '.join(guests)}"
+                    f"{listed} in file order, and {BYSTANDER_ID!r} is the bystander."
                 )
             if person.place not in places:
                 errors.append(
@@ -663,6 +698,32 @@ class ScenarioSpec(_Spec):
                 )
             else:
                 sitters[person.place] = person.id
+
+        # An onlooker's vectors must be its own, or recognize_person could
+        # name it as someone else. Faces and appearances hash apart (scene.py),
+        # so each kind is checked against its own kind only.
+        owners: dict[str, dict[str, str]] = {"face": {}, "appearance": {}}
+        others: list[tuple[str, str | None, str | None]] = [
+            *((gid, g.face, g.appearance) for gid, g in zip(guests, self.guests)),
+            *((p.id, p.face, p.appearance) for p in self.seated),
+        ]
+        if self.bystander is not None:
+            others.append((BYSTANDER_ID, None, self.bystander.appearance))
+        for person_id, face, appearance in others:
+            for kind, key in (("face", face), ("appearance", appearance)):
+                if key is not None:
+                    owners[kind].setdefault(key, person_id)
+        for i, (onlooker_id, onlooker) in enumerate(zip(onlookers, self.onlookers)):
+            for kind, key in (("face", onlooker.face), ("appearance", onlooker.appearance)):
+                if key is None:
+                    continue
+                owner = owners[kind].setdefault(key, onlooker_id)
+                if owner != onlooker_id:
+                    errors.append(
+                        f"onlookers.{i}.{kind}: {key!r} is {owner}'s {kind} key too; an "
+                        f"onlooker's keys must be its own, or recognize_person could name it "
+                        f"{owner}."
+                    )
 
         switch = self.seat_switch
         people = set(guests) | set(seated_ids)
@@ -866,6 +927,8 @@ class _Person:
     place: str | None = None
     # When the guest started talking, for the pacing's phase.
     talk_start: float | None = None
+    # Where an onlooker stands; None for everyone else.
+    spot: tuple[float, float] | None = None
 
 
 class _Entry(NamedTuple):
@@ -965,8 +1028,8 @@ class HriScenario:
     log, and a bag action. scene() gives the Scene for the oracle, or None
     for a time it does not know. Times
     are seconds on `clock`, which each method reads unless given `t`. The
-    events that happen at construction, the seated people and guest 1 at
-    the door, come with the first Step. Not thread-safe: the node calls it
+    events that happen at construction, the seated people, and guest 1 and
+    the onlookers at the door, come with the first Step. Not thread-safe: the node calls it
     under a lock.
     """
 
@@ -1050,6 +1113,18 @@ class HriScenario:
                 guest=True,
             )
             self._remember(self._people[guest_id], t)
+        for onlooker_id, onlooker in zip(spec.onlooker_ids, spec.onlookers):
+            self._people[onlooker_id] = _Person(
+                id=onlooker_id,
+                name=None,
+                drink=None,
+                face=onlooker.face,
+                appearance=onlooker.appearance,
+                height=onlooker.height,
+                guest=False,
+                spot=(onlooker.x, onlooker.y),
+            )
+            self._remember(self._people[onlooker_id], t)
         self._arrive_next(t)
 
     # -- Read-only views --
@@ -1162,6 +1237,10 @@ class HriScenario:
             guest.track_id = 0
             guest.talk_start = None
             self._emit_person(guest, t)
+            for onlooker in self._onlookers():
+                if onlooker.state == STANDING:
+                    ended, onlooker.state, onlooker.track_id = onlooker.track_id, ABSENT, 0
+                    self._emit_onlooker(onlooker, GONE, ended, t)
         return self._step()
 
     def todos_changed(self, items: Sequence[Any], t: float | None = None) -> Step:
@@ -1274,7 +1353,8 @@ class HriScenario:
         scene is known for at least the last HISTORY_S. A `t` older than the
         states kept, or before the scenario's start, is unknown, so that an
         old image is never drawn with a later scene. A following guest is in
-        no view. The guests at the door face the robot's last pose.
+        no view. The guests at the door and the onlookers face the robot's
+        last pose.
         """
         t = self._now(t)
         drawn: dict[str, ScenePerson] = {}
@@ -1282,8 +1362,11 @@ class HriScenario:
             entry = self._entry_at(person.id, t)
             if entry is None:
                 return None
-            if entry.state in (AT_DOOR, TALKING):
-                x, y = self._guest_xy(entry.state, entry.talk_start, t)
+            if entry.state in (AT_DOOR, TALKING, STANDING):
+                if person.spot is not None:
+                    x, y = person.spot
+                else:
+                    x, y = self._guest_xy(entry.state, entry.talk_start, t)
                 # Turned to the robot, or to where it will stand before a pose comes.
                 target = self._pose if self._pose is not None else self._door
                 drawn[person.id] = ScenePerson(
@@ -1349,12 +1432,20 @@ class HriScenario:
             None,
         )
 
+    def _onlookers(self) -> list[_Person]:
+        return [p for p in self._people.values() if p.spot is not None]
+
     def _arrive_next(self, t: float) -> None:
+        """Bring the next guest to the door, and the onlookers with them, each on a new track."""
         guest = next((p for p in self._people.values() if p.guest and p.state == ABSENT), None)
         if guest is not None:
             guest.state = AT_DOOR
             guest.track_id = self._new_track()
             self._emit_person(guest, t)
+            for onlooker in self._onlookers():
+                onlooker.state = STANDING
+                onlooker.track_id = self._new_track()
+                self._emit_onlooker(onlooker, STANDING, onlooker.track_id, t)
 
     def _seat(self, person: _Person, place: str, t: float) -> None:
         # A new track: the person was out of view, or changed places at once.
@@ -1384,6 +1475,13 @@ class HriScenario:
             y=y,
         )
         self._remember(person, t)
+
+    def _emit_onlooker(self, onlooker: _Person, state: str, track_id: int, t: float) -> None:
+        # GONE carries the track that ended, as the bystander's record does.
+        assert onlooker.spot is not None
+        x, y = onlooker.spot
+        self._emit("onlooker", t, onlooker=onlooker.id, state=state, track_id=track_id, x=x, y=y)
+        self._remember(onlooker, t)
 
     def _remember(self, person: _Person, t: float) -> None:
         """Add the person's state from `t` to their timeline, and drop what is too old."""

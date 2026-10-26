@@ -93,7 +93,7 @@ recognizing people (2×−200), an alternative input such as a keyboard
 ```mermaid
 flowchart TB
     start(["Start pose in the living room"]) --> door["navigate_to_location('door')"]
-    door --> find["find_people()<br/>pick the largest person"]
+    door --> find["find_people(in_front=True)<br/>the guest close in front"]
     find --> look["look_at(guest)<br/>the gaze loop starts"]
     look --> ask["wait_for_person: name<br/>wait_for_person: drink"]
     ask --> mem["remember_person(<br/>guest, name, {drink})"]
@@ -107,6 +107,17 @@ flowchart TB
     more -->|"no"| intro["find_people()<br/>recognize_person(all)<br/>per guest: look_at(guest),<br/>say the other's name, drink"]
 ```
 
+- **At the door, only the person close in front is the guest.** People
+  may walk past behind the guest or stand beside the robot, and either
+  could be taken for the guest. So the run calls
+  `find_people(in_front=True)` once on arrival, before `look_at` starts
+  the gaze loop. It keeps a person only with a clear face of at least
+  0.10 rad, within 25° of the base's heading. A passer-by in the hallway
+  shows a smaller face, and someone beside the robot is further off the
+  heading. The angle is the face's heading less the base's yaw, both from
+  TF at the image's stamp, so AMCL's error cancels out of it. The seated
+  places sit about 30° off the heading from `living_room`, so the
+  introductions call `find_people()` without it.
 - **Every navigation atomic stops the gaze loop** before it sends a goal,
   so the robot faces where it drives. walkie-ros's MPPI parameters already
   run `PathAngleCritic` in forward-preference mode. Nothing more is built
@@ -124,7 +135,7 @@ flowchart TB
 
 | Atomic | Effect | Status | What it does |
 | ------ | ------ | ------ | ------------ |
-| `find_people(gesture=None)` | P | Built (sim) | Person handles, left to right. Each line gives where the person is in the image (left, centre or right), their box height as a share of the image height, their posture and gestures, and whether the face is seen well enough to recognize them: `face seen`, `face too small or unclear to recognize`, or `no face seen`. The height lets the LLM pick the nearest. The first line names the set. With `gesture`, only the people who show it |
+| `find_people(gesture=None, in_front=False)` | P | Built (sim) | Person handles, left to right. Each line gives where the person is in the image (left, centre or right), their box height as a share of the image height, their posture and gestures, and whether the face is seen well enough to recognize them: `face seen`, `face too small or unclear to recognize`, or `no face seen`. The height lets the LLM pick the nearest. The first line names the set. With `gesture`, only the people who show it. With `in_front`, only the people close in front of the robot ([One run](#one-run)), and a last line counts those left out by reason: `with no clear face`, `too far` or `to the side`. With two or more kept, the first line names the one with the largest face. When nobody is close in front, `NOT_FOUND` says why for each person and stores nothing. For the door, not the seats |
 | `recognize_person(person)` | R | Built (sim) | Takes one handle or the whole set from one `find_people` call. Matches the face first, else the appearance, else `UNKNOWN`. Each model among the person's vectors is matched on its own, within that model's distance limit. Over a set, names go to people closest match first, so no name is given twice |
 | `remember_person(person, name, facts={})` | W | Built (sim) | Stores the name, `facts` such as `{"drink": "milk"}`, the handle's own face and appearance vectors, and those collected for its track, minus outliers. On the robot, walkie-database will keep the facts in `person.attributes`. Takes one handle, not a set. Declares the code's provisional `W` effect until [Perception question 3](perception.md#open-questions) is decided |
 | `find_seats()` | P | Built (sim) | Seat handles, one per place to sit, left to right by the place's centre. A sofa gives a left, a middle and a right place. Each is `free` or `taken`, and the last line counts the free places |
@@ -149,7 +160,9 @@ atomics:
   `src/walkie_agent/tools/atomic/`, with what they share in
   `_perception.py`. The rules they use, ported from walkie-agent-v2 with
   its defaults, are plain functions in `src/walkie_agent/perception/`:
-  `gestures.py`, `seating.py`, `identity.py` and `geometry.py`.
+  `gestures.py`, `seating.py`, `identity.py` and `geometry.py`. `front.py`,
+  the rule of `find_people(in_front=True)`, is new, not from
+  walkie-agent-v2, and its `FrontConfig` was tuned in simulation only.
 - **Two backends.** `vision` is a `VisionFeed`, which subscribes to
   `/walkie_vision/people` and `/walkie_vision/objects`.
   `create_walkie_agent` always adds it. `people_memory` is an
@@ -211,6 +224,19 @@ Free places: 2 of 4.
 ```
 
 Ana's face is too small or unclear to match, so her appearance names her.
+
+At the door in the simulation, with one person far behind the guest in the
+hallway and one beside the robot:
+
+```text
+find_people(in_front=True)
+per_7d6c: 1 of 3 people in view is close in front, left to right.
+per_7d6c.0: centre, height 0.74, standing, face seen
+Left out: 1 too far, 1 to the side.
+```
+
+Only the guest gets a handle. `find_people()` in the same place lists all
+three, each with `face seen`.
 
 ### Seats
 
@@ -856,7 +882,13 @@ flowchart LR
   and the joystick at hand, then the seats in the arena's living room,
   then the hand-over with a team member as the guest, then the whole run.
   The face distance limit is tuned there, with team members
-  ([Perception question 2](perception.md#open-questions)).
+  ([Perception question 2](perception.md#open-questions)). So is
+  `FrontConfig`, at the arena's door with team members walking past and
+  standing beside the robot. Its `min_face_rad` of 0.10 and
+  `half_angle_deg` of 25 were tuned in simulation only. 0.10 rad is about
+  107 px at the ZED 2i's nominal fx of 1066 px, but no repository holds the
+  robot's real fx, and SCRFD's face box is tighter than the oracle's, so
+  both move the right `min_face_rad`.
 
 ## In simulation
 
@@ -893,6 +925,20 @@ agent-sim-hri` gives the agent, so both use one pose each.
   which would push the guest off the hallway's line. A bystander walks
   once across the doorway's view, 1 m behind the guest, 3 s after the
   first question. It faces along its path, so it shows no face.
+- **Onlookers.** Two people who are not the guest stand at the door with
+  each guest, facing the robot. `onlooker1`, 1.70 m tall, stands far
+  behind the guest in the hallway, inside the view in front. `onlooker2`,
+  1.30 m tall, stands beside the robot by the TV desk, short enough that
+  the image's edge does not cut off its face. They arrive with each guest
+  on new track ids and leave when the guest starts to follow. They never
+  answer, follow, sit or join the seat switch, and their face and
+  appearance keys are their own, so `recognize_person` cannot name them as
+  anyone else. Both faces are trusted, so `find_people()` lists them with
+  `face seen`. `find_people(in_front=True)` leaves out `onlooker1` as too
+  far and `onlooker2` as to the side, and the faceless bystander, when in
+  view, as with no clear face. A test checks this through the sim's
+  camera for both guests, over the pacing and at the edges of Nav2's goal
+  tolerance. From `living_room`, neither onlooker is in view.
 - **Following.** Once the base is more than 0.5 m from `door`, the guest
   who talked follows the robot and is in no view.
 - **Seats.** The seats are the world's sofa, with its three cushions as
@@ -956,9 +1002,10 @@ agent-sim-hri` gives the agent, so both use one pose each.
 - **The event log.** One JSON object per line, with the sim time, in
   `logs/hri_scenario_<time>.jsonl` or the file given with `--log`. The
   first line has the world, the file, the seed and the resolved `door` and
-  `living_room`. Then come robot lines, answers, guest states, seats taken
-  and bad offers (each with the heading and every place's bearing), seat
-  switches, bag events, the todo list on each change, and every `/cmd_vel`
+  `living_room`. Then come robot lines, answers, guest states, onlookers
+  standing and gone with their track ids, seats taken and bad offers
+  (each with the heading and every place's bearing), seat switches, bag
+  events, the todo list on each change, and every `/cmd_vel`
   message. At 10 Hz it adds the robot pose from TF, the ground-truth pose
   from `/mujoco_ground_truth/odom`, the talking guest's bearing, whether a
   conversation is on, whether a Nav2 goal is active, and whether both arms

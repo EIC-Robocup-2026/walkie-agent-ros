@@ -367,6 +367,11 @@ pixi run agent-sim-hri
   `clock_jump`: that run is not valid, so start the scenario again too.
   `pixi run hri-scenario-early-bag` plays the variant in which guest 2
   answers the first hand-over request before the bag hangs.
+- **Onlookers stand at the door.** With each guest, two other people stand
+  in view of `door`: one far behind the guest in the hallway, and one
+  beside the robot by the TV desk. They never answer or follow, and they
+  leave when the guest follows the robot. `find_people(in_front=True)`
+  leaves both out, so the agent finds only the guest.
 - **Faces count.** The faces the scenario draws clear the agent's angular
   face gate on the simulation's camera, so recognition in the simulation
   uses faces and appearance, as on the robot.

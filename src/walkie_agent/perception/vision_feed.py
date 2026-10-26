@@ -35,6 +35,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from sensor_msgs.msg import CameraInfo
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetection, PersonDetectionArray
 
+from walkie_agent.perception.front import face_size_rad
 from walkie_agent.perception.people_memory import ModelVector
 from walkie_agent.toolbox.types import StepError
 
@@ -128,16 +129,14 @@ def face_trusted(
     """
     if person.face_det_score < config.min_face_det_score:
         return False
-    # rclpy holds k as a numpy array; floats keep the result a plain bool.
-    fx, fy = float(camera_info.k[0]), float(camera_info.k[4])
-    # An all-zero k means a camera_info that was never filled in. The
-    # face's size is then unknown, and an unknown face names nobody.
-    if not (fx > 0 and fy > 0):
-        return False
-    # The width over fx and the height over fy, so an image scaled more in
-    # one direction than the other measures the same face.
-    area_rad2 = (person.face_bbox.size_x / fx) * (person.face_bbox.size_y / fy)
-    return math.sqrt(max(area_rad2, 0.0)) >= config.min_face_size_rad
+    # The box from its own size, not its corners: centre minus and plus
+    # half a size is not exactly the size again in floats, and a face on
+    # the limit would then fall just below it.
+    box = (0.0, 0.0, person.face_bbox.size_x, person.face_bbox.size_y)
+    size = face_size_rad(box, camera_info)
+    # None for a camera_info that was never filled in: the face's size is
+    # then unknown, and an unknown face names nobody.
+    return size is not None and size >= config.min_face_size_rad
 
 
 class TrackKey(NamedTuple):

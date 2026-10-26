@@ -10,7 +10,8 @@ conversation so far.
 The operator can also send a task with its todo list seeded on /walkie/task
 (std_msgs/msg/String holding JSON). The current todo list is published as
 JSON on /walkie/todos (std_msgs/msg/String, latched). Task templates are read
-from config/task_templates.toml when it exists.
+from config/task_templates.toml when it exists. With --tool-log, every tool
+call also goes to a JSON lines record, which the HRI pass check reads.
 
 The LLM is selected by config.toml (see RAI's get_llm_model), which is read
 from the current working directory. API keys are read from the environment, or
@@ -18,6 +19,7 @@ from a .env file in the working directory (see .env.example).
 """
 
 import argparse
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -30,7 +32,7 @@ from walkie_agent.locations import load_locations
 from walkie_agent.tasks import load_task_templates
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--locations", default="config/locations.toml")
     parser.add_argument(
@@ -66,7 +68,32 @@ def main() -> None:
             "--use-sim-time, poses not yet tried on the robot are offered too."
         ),
     )
-    args = parser.parse_args()
+    parser.add_argument(
+        "--tool-log",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Record every tool call as JSON lines, for the HRI pass check. Without a path, "
+            "logs/agent_tools_<time>.jsonl."
+        ),
+    )
+    return parser
+
+
+def tool_log_path(value: str | None, now: datetime | None = None) -> Path | None:
+    """The --tool-log path: None without the flag, the default name for the bare flag."""
+    if value is None:
+        return None
+    if value:
+        return Path(value)
+    # The scenario's event log is named the same way, so a run's two logs sort together.
+    return Path("logs") / f"agent_tools_{now or datetime.now():%Y%m%d-%H%M%S}.jsonl"
+
+
+def main() -> None:
+    args = build_parser().parse_args()
 
     # Variables already set in the shell take precedence over .env.
     load_dotenv()
@@ -87,6 +114,7 @@ def main() -> None:
             templates=templates,
             mock_people_memory=args.mock_people_memory,
             arms=args.arms,
+            tool_log_path=tool_log_path(args.tool_log),
         )
         agent.subscribe_source(args.input_topic, hri_connector)
         agent.subscribe_reset(connector, args.reset_topic)

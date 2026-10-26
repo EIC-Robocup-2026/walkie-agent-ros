@@ -53,7 +53,10 @@ joint, the finger whose travel the commander's grasp detection reads.
   it says that it cannot tell. Within 4 mm of fully open, the gripper did
   not close. Otherwise it reports "holding" from `grasped` when the
   commander's gap is within 2 mm of the read, and from the commander's
-  default detection band applied to the read when it is not. When the
+  detection band applied to the read when it is not: the band it holds
+  now, read from `/bimanual_commander/get_parameters`, or its default band
+  when that read fails. A close that meets nothing can be measured before
+  the fingers settle, several millimetres from where they stop. When the
   finger cannot be read, it says that it cannot tell. The detection band is
   calibrated on the competition objects.
 - `get_arm_state` reads both fingers, and names each gripper closed, half
@@ -63,7 +66,8 @@ joint, the finger whose travel the commander's grasp detection reads.
 **Consequences**
 
 - The LLM gets what the robot actually did, not what the commander reported.
-- Each motion costs one extra service call, and each close at most one,
+- Each motion costs one extra service call, and each close at most two,
+  the second only when the commander's gap and the read disagree, each
   bounded at 3 s, and `get_arm_state` makes three, or four while the arms
   are unverified, and two more for each gripper whose abandoned command
   made them so.

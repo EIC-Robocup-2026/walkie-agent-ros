@@ -1606,6 +1606,58 @@ def test_open_and_half_ignore_the_commanders_gap(client, fake_commander):
         assert client.last_gripper_position("left_gripper") == position
 
 
+def test_the_grasp_band_is_the_one_the_commander_holds_now(client, fake_commander):
+    assert client.grasp_band(NO_CANCEL) == pytest.approx((0.005, 0.044))
+
+    # As the HRI scenario hangs a bag.
+    fake_commander.set_parameters([Parameter("grasp_detect_min", value=-1.0)])
+
+    assert client.grasp_band(NO_CANCEL) == pytest.approx((-1.0, 0.044))
+
+
+def redeclare(fake_commander, value) -> None:
+    fake_commander.undeclare_parameter("grasp_detect_max")
+    if value is not None:
+        fake_commander.declare_parameter("grasp_detect_max", value)
+
+
+NOT_A_NUMBER = "The commander's grasp_detect_max is not a finite number (parameter type {})."
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        # A parameter service answers no values when it lacks any of the names.
+        (None, "The commander answered 0 values for grasp_detect_min, grasp_detect_max."),
+        ("wide", NOT_A_NUMBER.format(4)),
+        (math.nan, NOT_A_NUMBER.format(3)),
+    ],
+    ids=["missing", "text", "nan"],
+)
+def test_a_grasp_band_that_is_not_two_numbers_is_unavailable(
+    client, fake_commander, value, message
+):
+    redeclare(fake_commander, value)
+
+    with pytest.raises(StepError) as error:
+        client.grasp_band(NO_CANCEL)
+
+    assert (error.value.code, error.value.message) == ("UNAVAILABLE", message)
+
+
+def test_a_set_cancel_ends_the_grasp_band_read(client):
+    cancel = threading.Event()
+    cancel.set()
+
+    with pytest.raises(StepError) as error:
+        client.grasp_band(cancel)
+
+    assert (error.value.code, error.value.message) == (
+        "CANCELLED",
+        "A stop or a reset interrupted the read of the commander's grasp detection band.",
+    )
+
+
 def test_a_gripper_goal_never_answered_times_out(client, fake_commander):
     client.control_gripper("left_gripper", 0.044, NO_CANCEL)
     fake_commander.never_answer = True
@@ -1798,6 +1850,7 @@ def test_without_a_commander_available_is_false_at_once_and_calls_fail(commander
          "/set_joint_position action"),
         (lambda: commander.control_gripper("left_gripper", 0.0, NO_CANCEL),
          "/control_gripper action"),
+        (lambda: commander.grasp_band(NO_CANCEL), "/bimanual_commander/get_parameters service"),
     ):
         with pytest.raises(StepError) as error:
             call()

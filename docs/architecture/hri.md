@@ -25,7 +25,7 @@ test on the robot. This page plans that first slice, on top of
   and the skill server.
 - **On its path:** walkie-vision's torch and face nodes, walkie-database's
   people services, and in this repository phase 1, six atomics and the
-  arm atomics (all built), the gaze loop (built) and an HRI template. On
+  arm atomics, the gaze loop and the HRI template, all built. On
   the robot, also the MotionSupervisor.
 - **The bag goes in the left hand.** The robot holds out its hand, the
   guest says when the bag is in it, and the gripper closes. The two poses
@@ -98,7 +98,7 @@ flowchart TB
     look --> ask["wait_for_person: name<br/>wait_for_person: drink"]
     ask --> mem["remember_person(<br/>guest, name, {drink})"]
     mem --> second{"Is this the<br/>second guest?"}
-    second -->|"yes"| bag["Take the bag:<br/>receive pose, wait_for_person,<br/>close, carry pose"]
+    second -->|"yes"| bag["Take the bag, a line before each move:<br/>open, receive pose, wait_for_person,<br/>close, carry pose, look_at(guest)"]
     second -->|"no"| guide
     bag --> guide["speak('Please follow me')<br/>navigate_to_location(<br/>'living_room')"]
     guide --> seats["find_seats()<br/>look_at(free seat), speak"]
@@ -139,7 +139,7 @@ flowchart TB
 | `recognize_person(person)` | R | Built (sim) | Takes one handle or the whole set from one `find_people` call. Matches the face first, else the appearance, else `UNKNOWN`. Each model among the person's vectors is matched on its own, within that model's distance limit. Over a set, names go to people closest match first, so no name is given twice |
 | `remember_person(person, name, facts={})` | W | Built (sim) | Stores the name, `facts` such as `{"drink": "milk"}`, the handle's own face and appearance vectors, and those collected for its track, minus outliers. On the robot, walkie-database will keep the facts in `person.attributes`. Takes one handle, not a set. Declares the code's provisional `W` effect until [Perception question 3](perception.md#open-questions) is decided |
 | `find_seats()` | P | Built (sim) | Seat handles, one per place to sit, left to right by the place's centre. A sofa gives a left, a middle and a right place. Each is `free` or `taken`, and the last line counts the free places |
-| `look_at(target)` | N | Built (sim) ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)) | Starts the gaze loop on a person handle, or turns to a seat handle and holds. For a person it returns at once, and the loop follows them. For a seat it returns once the base faces it, within 10 s. Refuses with an arm out, as the drives do ([Gaze](#gaze)) |
+| `look_at(target)` | N | Built (sim) ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)) | Starts the gaze loop on a person handle, or turns to a seat handle and holds. For a person it returns once the base faces them, or after 4 s with the loop still following them, and then says the base is still turning. For a seat it returns once the base faces it, within 10 s. Both limits are on the node clock. Refuses with an arm out, as the drives do ([Gaze](#gaze)) |
 | `stop_looking()` | N | Built (sim) | Stops the gaze loop. When nothing runs, says which target ran last, why it stopped and how long ago. Never fails |
 | `wait_for_person(question)` | — | Phase 1, a core tool | Speaks, marks the todo item waiting and ends the turn |
 | `move_arm_to_pose(pose, arm)` | M | Built (sim), as on [Manipulation](manipulation.md#tools), with two new poses | Moves the left arm to `receive` or `carry`, and checks the joints |
@@ -355,17 +355,24 @@ The second guest's bag is taken at the door, right after
 the robot there, and the arm is back in a travel-safe pose before the robot
 drives.
 
-1. **Warn.** `speak("I will hold out my hand for your bag.")`. The system
-   prompt already says to tell people before moving the arms.
-2. **Hold out the hand.** `set_gripper("left", "open")`, then
+A line comes before each arm or gripper move, as the system prompt says
+and the template repeats, and the pass check counts
+([In simulation](#in-simulation)).
+
+1. **Open the hand.** `speak("I will open my hand for your bag.")`, then
+   `set_gripper("left", "open")`.
+2. **Hold out the hand.** `speak("Now I will hold out my hand.")`, then
    `move_arm_to_pose("receive", "left")`.
 3. **Wait for the guest.** `wait_for_person("Please hang your bag on my
    hand, and tell me when it is there.")` ends the turn.
 4. **Close.** In the next turn, `speak("Thank you. I will close my hand
    now.")`, then `set_gripper("left", "close")`, which says whether the
    gripper holds something.
-5. **Carry.** `move_arm_to_pose("carry", "left")`, then guide the guest as
-   before. The bag stays in the hand until the end of the run.
+5. **Carry.** `speak("I will lift your bag to carry it.")`, then
+   `move_arm_to_pose("carry", "left")`. The arm move stopped the gaze
+   loop, so `look_at` the guest again with the handle from the door, then
+   guide the guest as before. The bag stays in the hand until the end of
+   the run.
 
 Why it works this way:
 
@@ -507,13 +514,16 @@ flowchart TB
 - **Lost at the start.** `follow_person` checks the sighting's age before
   it sets the target, and the newest array's before its wait for TF, of
   up to 0.2 s, so the sighting can be more than 1 s old once the loop
-  takes the person. Before it answers, `look_at` reads
-  the loop's status and applies the loop's own rule once. For a person
-  last seen more than 1 s ago, it stops the loop for `lost` and fails with
-  `STALE`, saying how long ago they were last seen and to call
-  `find_people`. A person the loop has already stopped for another
-  reason, such as a navigation goal that became active, fails as a seat's
-  ended turn does. Only a person the loop still follows gets "Looking at".
+  takes the person. So at the start `look_at` reads the loop's status and
+  applies the loop's own rule. For a person last seen more than 1 s ago,
+  it stops the loop for `lost` and fails with `STALE`, saying how long ago
+  they were last seen and to call `find_people`. While it then waits for
+  the base to face them, it leaves the rule to the loop, whose tick first
+  sights the arrays that came since the last one, and fails the same way
+  once the loop has lost them. A person the loop has already stopped for
+  another reason, such as a navigation goal that became active, fails as a
+  seat's ended turn does. Only a person the loop still follows gets
+  "Looking at".
 - **Each sighting.** The gaze thread looks up the camera's transform at
   the array's stamp without waiting. An array whose stamp TF has not
   reached yet is tried again on the next ticks, for up to 0.2 s after it
@@ -697,8 +707,20 @@ stop_looking()
 Not looking at anyone. The last target, per_51c0.1, was lost 12 s ago.
 ```
 
-- **A person returns at once.** The loop keeps following them while
-  `wait_for_person` waits for their answer.
+- **A person returns once the base faces them,** within the 6° deadband,
+  so a `speak` that follows is said to them, not on the way to them. When
+  it returned at once, a simulation run spoke an introduction 0.7 s after
+  `look_at`, still turning, 12.6° off the listener. After 4 s, as for
+  someone who keeps walking, it returns anyway, and the answer adds "The
+  base does not face them yet and is still turning." Either way the loop
+  keeps following them while `wait_for_person` waits for their answer. A
+  person lost before the base faces them is `STALE`, as one lost at the
+  start is.
+- **Both waits are on the node clock,** which follows `/clock` in
+  simulation. A simulation run at 0.4 to 0.5 of real time took 4.4 s of
+  real time for a 30° turn, so a limit on the computer's clock would run
+  out mid-turn. A wait also ends at three times its limit on the
+  computer's clock, for a `/clock` that stalls or moves back.
 - **A seat returns once the base faces it,** within the 6° deadband, so a
   `speak` or a `find_people` that follows sees the right place. After
   10 s the loop stops and `look_at` fails with `TIMEOUT`.
@@ -709,8 +731,13 @@ Not looking at anyone. The last target, per_51c0.1, was lost 12 s ago.
   "when a drive was asked for" or 'because someone said "stop" or "never
   mind"'.
 - **The prompt.** The system prompt tells the LLM to look at the person
-  it is talking to with `look_at`, and to stop with `stop_looking` before
-  it does something else. With `--arms`, the arm rules add: never call
+  it is talking to with `look_at` while it talks to them, that a drive or
+  an arm move stops it by itself, and to call `stop_looking` only when
+  someone asks it to stop turning, or when it stays where it is after its
+  last line to them. `look_at`'s and `stop_looking`'s descriptions say the
+  same. An earlier rule, stop with `stop_looking` before doing something
+  else, made the LLM stop before its last line at the door, while the
+  guest still talked. With `--arms`, the arm rules add: never call
   `look_at` with an arm out.
 
 How `look_at` fails:
@@ -723,7 +750,7 @@ How `look_at` fails:
 | An untracked person | `REFUSED: per_51c0.1 is not tracked, cannot follow. Call find_people again for a handle the robot can follow.` |
 | A person with no stored heading, and not in view now | `UNAVAILABLE: No heading toward per_51c0.1: none was stored when they were seen, and they are not in view now. Call find_people again.` |
 | A person seen more than 1 s ago, and not in the newest array | `STALE: Not turning toward per_51c0.1: the handle saw them 5.2 s ago, and the newest people array does not show them. The robot stops following a person 1 s after the last sighting. Call find_people for a current handle.` The reason may instead be that no people array came in the last 1 s, or that the newest array gives no heading toward them |
-| A person last seen more than 1 s ago once the loop takes them, as after a slow wait for TF | `STALE: Not turning toward per_51c0.1: they were last seen 1.3 s ago. The robot stops following a person 1 s after the last sighting. Call find_people for a current handle.` The loop is stopped for `lost`. After a clock that moved back, the reason is instead that their last sighting is stamped ahead of the robot's clock |
+| A person last seen more than 1 s ago once the loop takes them, as after a slow wait for TF, or before the base faces them | `STALE: Not turning toward per_51c0.1: they were last seen 1.3 s ago. The robot stops following a person 1 s after the last sighting. Call find_people for a current handle.` The loop is stopped for `lost`. After a clock that moved back, the reason is instead that their last sighting is stamped ahead of the robot's clock |
 | A seat with no stored heading | `UNAVAILABLE: No heading toward seat_7a1e.2: TF had no camera position when it was seen. Call find_seats again.` |
 | One arm out | `PRECONDITION_FAILED: Not starting a turn toward per_51c0.1: the left arm is not in a pose that is safe for driving. Move it with move_arm_to_pose first, for example 'carry' or 'home'.` |
 | Both arms out | `PRECONDITION_FAILED: Not starting a turn toward per_51c0.1: the arms are not in a pose that is safe for driving. Move them with move_arm_to_pose first, for example 'home'.` |
@@ -775,9 +802,12 @@ confirmed:
 
 A template in `config/task_templates.toml` seeds the todo list
 ([ADR-0041](decisions/0041-todo-list-and-seeding.md)). The format is on
-[The Agent](agent.md#task-templates). The template is not in the file yet.
-The atomics it needs and the simulated scenario are built, and it comes
-with the sim run and its pass check ([Delivery order](#delivery-order)):
+[The Agent](agent.md#task-templates). The template is in the file, beside
+its pass check ([In simulation](#in-simulation)). The door line
+keeps the robot off the onlookers: it looks for people in front once, on
+arrival, and faces the guest it finds. Each step needs a tool to succeed
+before it can be completed, so a step cannot be marked done on words
+alone:
 
 ```toml title="config/task_templates.toml"
 [templates.hri]
@@ -786,23 +816,41 @@ task = """
 Receive two guests, one at a time, at the door. Learn each guest's name and
 favourite drink, guide them to the living room and offer a free seat. Then
 introduce them to each other.
-Keep looking at the person you talk to. Ask for the name, then the drink.
+At the door, call find_people with in_front once on arrival, then look_at
+the guest it finds. Other people near the door are not guests.
+Keep looking at the person you talk to until you drive or move an arm,
+which stop look_at by themselves. Ask for the name, then the drink.
 Never ask a guest to confirm or correct an answer. Ask again only if you
 heard nothing. Never ask who is who. Call guests by name, never "he" or "she".
-Take the second guest's bag in your left hand before guiding them. Say
-before you move the arm. Close the hand only after the guest says the bag is
-in it. If you hold nothing, ask once more, then go on without the bag. Keep
-the bag in the carry pose until the end.
+To offer a seat, call find_seats, look_at the free seat you will offer, and
+only then say the offer.
+Take the second guest's bag in your left hand before guiding them. Say a
+line before each arm or gripper move, the move to the carry pose too. Once
+the left arm is in the receive pose, ask for the bag in one wait_for_person
+call, such as "Please hang your bag on my hand, and tell me when it is
+there." Never ask for the bag, or whether it is in your hand, with speak.
+Close the hand only after the answer to that call. If you hold nothing, ask
+once more the same way, then go on without the bag. Keep the bag in the
+carry pose until the end. An arm move stops look_at, so once the bag is in
+the carry pose, look_at the guest again with the same handle.
+Introduce the guests one at a time: look_at one guest, then in one speak
+call tell them the other guest's name and favourite drink. Then do the
+same for the other guest. The introductions end the task: ask nothing
+after them.
 """
 todos = [
-  "Meet the first guest at the door and learn their name and drink",
-  "Guide the first guest to the living room and offer a free seat",
-  "Meet the second guest at the door and learn their name and drink",
-  "Take the second guest's bag",
-  "Guide the second guest to the living room and offer a free seat",
-  "Introduce the guests to each other",
+  { content = "Meet the first guest at the door and learn their name and drink", requires_tool = "remember_person" },
+  { content = "Guide the first guest to the living room and offer a free seat", requires_tool = "find_seats" },
+  { content = "Meet the second guest at the door and learn their name and drink", requires_tool = "remember_person" },
+  { content = "Take the second guest's bag", requires_tool = "set_gripper" },
+  { content = "Guide the second guest to the living room and offer a free seat", requires_tool = "find_seats" },
+  { content = "Introduce the guests to each other", requires_tool = "recognize_person" },
 ]
 ```
+
+The operator starts a run with the template on `/walkie/task`, as
+[Getting Started](../getting-started.md#run-the-hri-scenario) shows. An utterance with one of
+its keywords picks it too, while no todo item is open.
 
 The run uses no preset. Each step is two to four atomic calls, the
 hand-over about six over two turns, and the first goal is to see how the new agent loop handles a real task. Presets
@@ -865,6 +913,11 @@ flowchart LR
   on walkie-ros's branch `feat/chula-pat14-6-simulation` until its PR #58
   merges. walkie-vision and walkie-database are needed only for the
   robot.
+- **The template, its pass check and the sim run are done.** Two sim runs
+  in a row passed every criterion of the check
+  ([In simulation](#in-simulation)). In both, Nav2 aborted the first
+  drive to the door after the fresh bringup, and the agent's retry
+  arrived.
 - **From phase 2,** the slice takes only the toolbox core and the atomics
   above ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The arm
   atomics call the real commander through `CommanderClient`. In sim the
@@ -944,15 +997,18 @@ agent-sim-hri` gives the agent, so both use one pose each.
 - **Seats.** The seats are the world's sofa, with its three cushions as
   the left, middle and right places. The host sits on the left place from
   the start. One view from `living_room` sees the whole sofa.
-- **Seat offers.** A robot line that mentions sitting or a seat, while a
-  guest follows, is an offer. It seats the guest at the place with the
-  smallest bearing from the base, by TF, if that bearing is within 25° and
-  the place is free. Otherwise the scenario logs a bad offer, and the
-  guest keeps following. The rule works in the map, not on image thirds:
-  after a turn to a side third, the image's centre column no longer falls
-  inside that third. A turn to `box_heading` of a third leaves its place
-  up to 17.5° off the heading, because perspective biases the ray through
-  a third's centre outward, so 25° leaves room for the turn's own error.
+- **Seat offers.** A robot line that mentions sitting, a seat or
+  something to sit on (a sofa, couch, chair, armchair, stool or bench),
+  while a guest follows, is an offer. "Please take the middle place on
+  the sofa." is one; a place or a spot alone is not. It seats the guest
+  at the place with the smallest bearing from the base, by TF, if that
+  bearing is within 25° and the place is free. Otherwise the scenario logs
+  a bad offer, and the guest keeps following. The rule works in the map,
+  not on image thirds: after a turn to a side third, the image's centre
+  column no longer falls inside that third. A turn to `box_heading` of a
+  third leaves its place up to 17.5° off the heading, because perspective
+  biases the ray through a third's centre outward, so 25° leaves room for
+  the turn's own error.
 - **The seat switch.** Two guests and the host need four places for a
   switch, and the sofa has three. By default the two guests swap places
   before the introductions, which the rulebook allows
@@ -976,9 +1032,13 @@ agent-sim-hri` gives the agent, so both use one pose each.
   hand.", the scenario sets the real commander's `grasp_detect_min`
   parameter to -1 through `/bimanual_commander/set_parameters`. Then it
   answers "It is on your hand.", and the next close reads as holding the
-  bag. The answer waits until the commander has taken the value, for at
-  most 2 s. After that it goes out first, the log has `bag_unconfirmed`,
-  and the hang still lands when the commander takes it. The commander
+  bag. That holds after an open too: a close from open can be measured
+  before the fingers settle, a few millimetres from `set_gripper`'s own
+  read, and `set_gripper` then judges the read by the band the commander
+  holds, which it reads back ([Safety](manipulation.md#safety)). The
+  answer waits until the commander has taken the value, for at most 2 s.
+  After that it goes out first, the log has `bag_unconfirmed`, and the
+  hang still lands when the commander takes it. The commander
   runs in the simulation, started with `launch/commander_sim.launch.py`.
   `config/scenarios/hri_early_bag.yaml` (`pixi run
   hri-scenario-early-bag`) answers the first request without hanging the
@@ -1028,17 +1088,29 @@ and `seat_switch`, not of the code:
 the first free place in file order. When the todo item finishes or leaves
 the list before the switch fires, the log has `seat_switch_skipped`.
 
-The pass check comes with the template. It reads the event log. Two
+The pass check comes with the template. It reads the event log. Some
 criteria need what the scenario cannot see: what the people memory holds,
-and whether a drive was refused because an arm was out. For those, the
-check reads the agent's record of its tool calls, which the template
-records (next PR). A run passes when:
+whether a drive was refused because an arm was out, and what the robot
+said before each arm motion. For those, the check reads the agent's record
+of its tool calls. `pixi run agent-sim-hri` passes `--tool-log`, so the
+agent writes one JSON line per call to `logs/agent_tools_<time>.jsonl`:
+the tool, its arguments, its outcome, the text the LLM read, the atomic's
+full result, the people and seats it named with the track behind each,
+and what the gaze loop was doing when the robot spoke. The format is in
+`walkie_agent.tool_log`'s docstring. Both logs stamp `t` on the
+simulation's clock, so their times compare directly. A run passes when:
 
 - the people memory, the mock in sim, holds each guest's name and drink
-  as in the scenario, judged from the agent's record of its tool calls;
+  as in the scenario, judged from the agent's record of its tool calls.
+  The call must name the guest's own track and come after the last new
+  task, since a new task clears the memory;
 - the heading follows the talking guest in each conversation. A
   conversation is one guest's time talking at the door. Its samples are
-  the 10 Hz `state` records in it with a known pose. A sample's error is
+  the 10 Hz `state` records in it with a known pose. Samples while Nav2
+  drives, or while an arm is out or its pose unknown, are left out. The
+  gaze loop stops by design then
+  ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)), so counting them
+  would fail a run for following the rules. A sample's error is
   the absolute value of the guest's bearing from the base, wrapped into
   (-180°, 180°]. The error is at most 10° in at least 80% of the samples.
   The gaze value is the mean error over the samples. The baseline is the
@@ -1053,12 +1125,16 @@ records (next PR). A run passes when:
   perception delay and 0.87 with 0.3 s. The hallway is too narrow for a
   wider swing;
 - each seat offer faces a free place, never a taken one;
-- each introduction faces the listener;
+- each guest is introduced to while the robot faces them within 10°, the
+  gaze criterion's limit. An introduction is a robot line after both
+  guests are seated that names exactly one guest's drink;
 - the only questions are the four essential ones and the hand-over
   request, plus one repeat after the mumble, and one more hand-over
   request in the early-answer variant;
-- the robot speaks before every arm motion, and closes the gripper only
-  after the guest's answer;
+- the robot speaks before every arm motion, with a `speak` or
+  `wait_for_person` call since the previous arm or gripper call, a failed
+  one included since it may have moved, and
+  closes the gripper only after the guest's answer;
 - the left gripper holds the bag before the second guest is guided;
 - no drive is refused because an arm is out, judged from the agent's
   record of its tool calls;
@@ -1067,7 +1143,29 @@ records (next PR). A run passes when:
   of a travel-safe pose;
 - its log has no `clock_jump`: a run whose simulation restarted is not
   valid;
-- it finishes within 6 minutes of sim time.
+- it finishes within 6 minutes of sim time, from the template's seeding to
+  the last item completed. `/walkie/todos` is latched, so a list left
+  finished by an earlier task does not count as the seeding;
+- no `look_at` or `remember_person` call names an onlooker's or the
+  bystander's track, and the robot never speaks while the gaze loop
+  follows one of them.
+
+Run the check on a finished run's two logs. It needs no ROS:
+
+```bash
+pixi run hri-check logs/hri_scenario_<time>.jsonl logs/agent_tools_<time>.jsonl
+```
+
+It prints one `PASS` or `FAIL` line per criterion with its reason, such
+as `PASS gaze guest1: 87% within 10 deg, ratio 0.81 (412 samples)`, and a
+last line of `PASS`, `FAIL` or `INVALID`. The exit code is 0 for a pass, 1
+for a fail and 2 for a run that is not valid: its event log has a
+`clock_jump` or no `start` record, its tool log is empty, or a record in
+either log has no time.
+`tests/test_hri_check.py` covers each criterion on hand-written logs.
+`tests/test_hri_scenario.py` also plays a whole run on the scenario node,
+with a real tool log, and checks that it passes, and that a wrong drink, a
+drive with an arm out and a call on an onlooker each fail their criterion.
 
 The 10° and 80% are first targets, to be tuned. Unit tests in
 `tests/test_perception.py` cover the seating and gesture rules ported from

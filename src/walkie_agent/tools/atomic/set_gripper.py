@@ -18,20 +18,24 @@ Otherwise the fingers are read from /get_joint_states:
   - fingers still near the open position mean the gripper did not close;
   - otherwise the commander's `grasped` is the answer when its gap agrees
     with the read;
-  - a close that reached its position without being measured, as before
-    the commander's first finger reading, reports `grasped` false and a gap
-    of 0.0 too; when that does not agree with the read, the read is judged
-    by the commander's default detection band.
+  - when it does not, the read is judged by the commander's detection band,
+    read from its parameters, or by its default band when they cannot be
+    read. A close that reached its position without being measured, as
+    before the commander's first finger reading, reports `grasped` false and
+    a gap of 0.0 too, and a close that meets nothing can be measured before
+    the fingers settle, a few millimetres from where they stop.
 The commander reports `grasped` and the gap only on a close; on an open or
 "half" it reports false and 0.0 whatever the fingers did, so those are never
 read (CommanderClient returns None for them).
 """
 
+import logging
+import threading
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from walkie_agent.arm.commander import GripperResult
+from walkie_agent.arm.commander import CommanderClient, GripperResult
 from walkie_agent.arm.poses import (
     ARMS,
     BOTH,
@@ -42,6 +46,8 @@ from walkie_agent.arm.poses import (
 )
 from walkie_agent.toolbox import Effect, StepError, ToolContext, ToolMeta, ToolOutput
 from walkie_agent.tools.atomic import _arm as shared
+
+logger = logging.getLogger(__name__)
 
 META = ToolMeta(
     name="set_gripper",
@@ -141,6 +147,8 @@ def run(ctx: ToolContext, args: Args) -> Out:
             continue
         try:
             finger = shared.read_finger(client, arm, ctx.cancel, result.command)
+            # Raises CANCELLED only, when it reads the commander's band.
+            held = _holding(result, finger, grippers, client, ctx.cancel)
         except StepError as e:
             if e.code == "CANCELLED" and ctx.cancel.is_set():
                 stopped = (
@@ -164,7 +172,6 @@ def run(ctx: ToolContext, args: Args) -> Out:
                 "get_arm_state to see how far it closed."
             )
             continue
-        held = _holding(result, finger, grippers)
         holding[arm] = held
         if held is None:
             # The fingers barely moved, whatever `grasped` says. The other
@@ -200,7 +207,13 @@ def _unmeasured_failure(result: GripperResult) -> bool:
     return not result.success and result.gripper_gap == 0.0 and result.grasped is False
 
 
-def _holding(result: GripperResult, finger: float, grippers: GripperPositions) -> bool | None:
+def _holding(
+    result: GripperResult,
+    finger: float,
+    grippers: GripperPositions,
+    client: CommanderClient,
+    cancel: threading.Event,
+) -> bool | None:
     """Whether a close holds something, by `finger`, the travel read after it.
 
     Only for a close that _unmeasured_failure() does not exclude, read while
@@ -210,16 +223,37 @@ def _holding(result: GripperResult, finger: float, grippers: GripperPositions) -
     inside the detection band. Otherwise the commander's `grasped` is the
     answer, by its own detection parameters, when its gap agrees with the
     read. A gap that does not agree is one the commander did not measure on
-    a close that reached its position, or the fingers moved since, as
-    another node can make them, so the read is judged by the commander's
-    default band.
+    a close that reached its position, one it measured before the fingers
+    settled, as on a close that meets nothing, or the fingers moved since,
+    as another node can make them. The read is then judged by the same
+    detection parameters, read from the commander (_band). Raises StepError
+    CANCELLED only.
     """
     if finger >= grippers.open_position - shared.CONFIG.holding_margin_m:
         return None
     gap = result.gripper_gap
     if gap is not None and abs(gap - finger) <= shared.CONFIG.gap_agreement_m:
         return bool(result.grasped)
-    return GRASP_DETECT_MIN <= finger <= GRASP_DETECT_MAX
+    low, high = _band(client, cancel)
+    return low <= finger <= high
+
+
+def _band(client: CommanderClient, cancel: threading.Event) -> tuple[float, float]:
+    """The commander's grasp detection band now, or its default when that cannot be read.
+
+    The default is the one the commander starts with, so a read that fails
+    judges as the commander would unless its band was changed. Raises
+    StepError CANCELLED only.
+    """
+    try:
+        return client.grasp_band(cancel, shared.CONFIG.read_timeout_s)
+    except StepError as e:
+        if e.code == "CANCELLED":
+            raise
+        logger.warning(
+            f"Judging a close by the commander's default grasp detection band: {e.message}"
+        )
+        return GRASP_DETECT_MIN, GRASP_DETECT_MAX
 
 
 def _moved(state: str, which: str) -> str:

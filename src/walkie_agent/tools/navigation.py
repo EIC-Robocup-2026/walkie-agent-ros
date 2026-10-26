@@ -21,6 +21,7 @@ from rclpy.time import Time
 from tf2_ros import TransformException
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
 
+from walkie_agent.arm.state import ARMS_OUT
 from walkie_agent.locations import Location
 from walkie_agent.tools.waiters import wait_for_future
 
@@ -450,11 +451,11 @@ def _arms_not_safe(arms: tuple[str, ...], action: str, example: str) -> str:
     """The refusal for `arms`, the arms out of every travel-safe pose, left first."""
     if len(arms) == 1:
         return (
-            f"Not {action}: the {arms[0]} arm is not in a pose that is safe for driving. "
+            f"Not {action}: the {arms[0]} arm is {ARMS_OUT}. "
             f"Move it with move_arm_to_pose first, for example {example}."
         )
     return (
-        f"Not {action}: the arms are not in a pose that is safe for driving. Move them with "
+        f"Not {action}: the arms are {ARMS_OUT}. Move them with "
         "move_arm_to_pose first, for example 'home'."
     )
 

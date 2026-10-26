@@ -4,10 +4,15 @@ The head only tilts, so the robot looks at someone by turning its base, and
 the gaze loop (walkie_agent.gaze) does the turning on a thread of its own.
 A person handle starts the loop on the person's track: it turns toward each
 new sighting until stop_looking, a stop or a reset, a new task, a drive, an
-arm motion, or 1 s after the last sighting. The answer comes at once, since
-the loop follows the person for as long as the conversation lasts. A person
-already lost when the loop takes them, last seen more than 1 s before, is
-refused with STALE rather than answered with "Looking at".
+arm motion, or 1 s after the last sighting. The answer comes once the base
+first faces them, so a speak that follows is said to them, not on the way to
+them, or after PERSON_TURN_S if it does not, as for someone who keeps
+walking, and then says that the base is still turning; either way the loop
+goes on following them for as long as the conversation lasts. Both waits
+are on the node clock, so they scale with a slow simulation. A person
+already lost when the loop takes them, or lost before the base faces them,
+last seen more than 1 s before, is refused with STALE rather than answered
+with "Looking at".
 
 A seat handle turns the base to the seat's heading, fixed in the map when
 find_seats saw it, so it is never looked up again after the TF buffer has
@@ -49,6 +54,24 @@ from walkie_agent.tools.atomic._arm import ARM
 from walkie_agent.tools.atomic._perception import VISION, SeatPayload
 from walkie_agent.tools.navigation import MAP_FRAME, ROBOT_FRAME, check_arms
 
+# How long a turn to a seat may take. A half turn at the loop's 0.6 rad/s,
+# with the ramp up and the slow approach to the deadband, takes about 6 s.
+# Read on every call, so a test can shorten it.
+TURN_TIMEOUT_S = 10.0
+# How long look_at waits for the base to first face a person before it
+# answers anyway, with the loop still following them. Someone at the edge of
+# the image is about 55 degrees off, a turn of about 2.2 s at the loop's
+# settings. Read on every call, so a test can change it.
+PERSON_TURN_S = 4.0
+# Both limits are on the node clock, which follows /clock under sim time, so
+# they scale with a simulation that runs slower than real time. A wait also
+# ends this many times its limit after it began on the monotonic clock, for
+# a clock that stalls or moves back, as at a simulation restart.
+_BACKSTOP_FACTOR = 3.0
+# How often the wait for the base to face a seat or a person reads TF and
+# the loop's status.
+_POLL_S = 0.05
+
 META = ToolMeta(
     name="look_at",
     description=(
@@ -56,10 +79,12 @@ META = ToolMeta(
         "such as per_51c0.1, or one seat handle from find_seats. For a person, the robot "
         "keeps turning to follow them until you call stop_looking, someone says "
         '"stop" or "never mind", they are out of view for '
-        f"{DEFAULT_CONFIG.lost_after_s:g} s, or you drive or move an arm; the answer comes at "
-        "once. For a seat, the robot turns to it and stays facing it; the answer comes once "
-        "it faces the seat. Look at the person you are talking to, and stop with "
-        "stop_looking before you do something else."
+        f"{DEFAULT_CONFIG.lost_after_s:g} s, or you drive or move an arm; the answer comes once "
+        f"it faces them, or after {PERSON_TURN_S:g} s while it still turns, and then says so. "
+        "For a seat, the robot turns to it and stays facing it; the answer comes once it "
+        "faces the seat. Look at the person you are talking to while you talk to them. A "
+        "drive or an arm move stops it by itself. Call stop_looking only when someone asks "
+        "you to stop turning, or when you stay where you are after your last line to them."
     ),
     effects=frozenset({Effect.N}),
     questions=(
@@ -75,17 +100,11 @@ META = ToolMeta(
     requires=(shared.GAZE, VISION),
 )
 
-# How long a turn to a seat may take. A half turn at the loop's 0.6 rad/s,
-# with the ramp up and the slow approach to the deadband, takes about 6 s.
-# Read on every call, so a test can shorten it.
-TURN_TIMEOUT_S = 10.0
-# How often the wait for a seat turn reads TF and the loop's status.
-_POLL_S = 0.05
-
 # The error for a target that the loop stopped before look_at answered, a
-# seat before the base faced it or a person at the start, by its stop
-# reason. Any other reason, such as an interrupt or a newer target, is
-# CANCELLED. A person lost at the start is STALE (_lost_at_start).
+# seat before the base faced it or a person before the base first faced
+# them, by its stop reason. Any other reason, such as an interrupt or a
+# newer target, is CANCELLED. A person lost before look_at answers is STALE
+# (_lost_at_start).
 _ENDED_CODES = {
     NAVIGATION_ACTIVE: "REFUSED",
     ARM_OUT: "PRECONDITION_FAILED",
@@ -110,6 +129,10 @@ class Out(ToolOutput):
     kind: str
     # The map-frame yaw the base turns toward now, in radians.
     heading: float | None
+    # True when the base faced the target, within the loop's deadband,
+    # before the answer; False for a person still turned toward after
+    # PERSON_TURN_S.
+    facing: bool
     # True when the arm backend is present but the arms were not checked:
     # the commander was not found, did not answer or gave no reading. The
     # base turns with the arms unchecked.
@@ -163,21 +186,36 @@ def run(ctx: ToolContext, args: Args) -> Out:
             stop_calls=stop_calls,
         )
         _check_following(gaze, handle.id)
+        # Past the limit the loop goes on turning toward them, as the answer says.
+        facing = _face(ctx, gaze, handle.id, PERSON_TURN_S, person=True)
+        late = "" if facing else " The base does not face them yet and is still turning."
         summary = (
-            f"Looking at {handle.id}. The robot turns to keep them in view, and stops once it "
-            f"has not seen them for {gaze.config.lost_after_s:g} s.{note}"
+            f"Looking at {handle.id}.{late} The robot turns to keep them in view, and stops "
+            f"once it has not seen them for {gaze.config.lost_after_s:g} s.{note}"
         )
     else:
         gaze.hold_heading(
             handle.id, payload.heading_map, cancel=ctx.cancel, stop_calls=stop_calls
         )
-        _face(ctx, gaze, handle.id)
+        timeout_s = TURN_TIMEOUT_S
+        if not _face(ctx, gaze, handle.id, timeout_s, person=False):
+            # A base that cannot turn, or a TF that stopped, must not keep
+            # the loop commanding.
+            gaze.stop(shared.TURN_TIMEOUT)
+            raise StepError(
+                "TIMEOUT",
+                f"The robot did not face {handle.id} within {timeout_s:g} s, so it stopped "
+                "turning.",
+                {"handle": handle.id},
+            )
+        facing = True
         summary = f"Turned toward {handle.id} ({_seat_words(payload)}).{note}"
     return Out(
         summary=summary,
         target=handle.id,
         kind=handle.kind,
         heading=gaze.status().setpoint,
+        facing=facing,
         arms_unknown=bool(note),
     )
 
@@ -211,27 +249,46 @@ def _seat_words(seat: SeatPayload) -> str:
     return seat.label if seat.part is None else f"{seat.label}, {seat.part}"
 
 
-def _check_following(gaze: GazeLoop, name: str) -> None:
-    """Raise unless the loop follows `name` from a sighting it has not already lost.
+def _check_following(gaze: GazeLoop, name: str) -> GazeStatus:
+    """The loop's status; raise unless it follows `name` from a sighting it has not already lost.
 
     follow_person checks the age of the sighting it starts from before it
     sets the target, and the newest array's before its wait for TF, so by
     the time the target is set, that sighting may be more than
-    lost_after_s old, and the loop's first tick would lose the person. This applies the loop's rule (GazeControl._lost) once, now: a
-    target lost at the start is stopped for LOST, as that tick would stop
-    it, and refused with STALE. A target that the loop already stopped for
-    another reason, or that another target replaced, gets the error
+    lost_after_s old, and the loop's first tick would lose the person. This
+    applies the loop's rule (GazeControl._lost) once, at the start, when
+    follow_person has just cleared the arrays the loop has not sighted yet:
+    a target lost then is stopped for LOST, as the loop's first tick would
+    stop it, and refused with STALE. A target that the loop already stopped
+    for another reason, or that another target replaced, gets the error
     _turn_ended gives.
     """
     status = gaze.status()
     lost_after_s = gaze.config.lost_after_s
     if status.running and status.target == name and status.last_seen is not None:
         if abs(status.now - status.last_seen) <= lost_after_s:
-            return
+            return status
         gaze.stop(LOST)
     elif status.target != name or status.stop_reason != LOST or status.last_seen is None:
         raise _turn_ended(name, status)
     raise _lost_at_start(name, status.now - status.last_seen, lost_after_s)
+
+
+def _still_following(gaze: GazeLoop, name: str) -> GazeStatus:
+    """The loop's status while _face waits; raise once the loop no longer follows `name`.
+
+    The loss rule is left to the loop's own tick, which sights the arrays
+    that came since its last tick before it applies the rule, so a poll
+    between two ticks does not lose a person the next tick still sees. A
+    person the loop lost is STALE, as at the start (_check_following); any
+    other end gets the error _turn_ended gives.
+    """
+    status = gaze.status()
+    if status.running and status.target == name:
+        return status
+    if status.target == name and status.stop_reason == LOST and status.last_seen is not None:
+        raise _lost_at_start(name, status.now - status.last_seen, gaze.config.lost_after_s)
+    raise _turn_ended(name, status)
 
 
 def _lost_at_start(name: str, age: float, lost_after_s: float) -> StepError:
@@ -254,39 +311,43 @@ def _lost_at_start(name: str, age: float, lost_after_s: float) -> StepError:
     )
 
 
-def _face(ctx: ToolContext, gaze: GazeLoop, name: str) -> None:
+def _face(ctx: ToolContext, gaze: GazeLoop, name: str, timeout_s: float, *, person: bool) -> bool:
     """Wait until the base faces the loop's setpoint for `name`, within the loop's deadband.
 
-    Raises CANCELLED on a stop or a reset, the loop's own reason when it
-    ended the turn, and TIMEOUT, after stopping the loop, when the base does
-    not get there in TURN_TIMEOUT_S: a base that cannot turn, or a TF that
-    stopped, must not keep the loop commanding.
+    True once it does, False when it does not within `timeout_s` on the
+    node clock, or within _BACKSTOP_FACTOR times that on the monotonic
+    clock; the loop goes on either way, and the caller decides what a late
+    turn means. For a person the setpoint moves with each sighting, and a
+    person the loop loses during the wait is STALE (_still_following).
+    Raises CANCELLED on a stop or a reset, and the loop's own reason when
+    it ended the turn.
     """
-    timeout_s = TURN_TIMEOUT_S
-    deadline = time.monotonic() + timeout_s
+    start = ctx.now().nanoseconds
+    backstop = time.monotonic() + _BACKSTOP_FACTOR * timeout_s
     while True:
         if ctx.cancel.is_set():
             # The interrupt listener stops the loop too; whichever comes
             # first, the base stops.
             gaze.stop(INTERRUPT)
             ctx.check_cancelled()
-        status = gaze.status()
-        if not status.running or status.target != name:
-            raise _turn_ended(name, status)
+        if person:
+            status = _still_following(gaze, name)
+        else:
+            status = gaze.status()
+            if not status.running or status.target != name:
+                raise _turn_ended(name, status)
         yaw = _base_yaw(ctx, gaze.config.yaw_max_age_s)
         if (
             yaw is not None
             and status.setpoint is not None
             and abs(wrap_angle(status.setpoint - yaw)) <= gaze.config.deadband_rad
         ):
-            return
-        if time.monotonic() >= deadline:
-            gaze.stop(shared.TURN_TIMEOUT)
-            raise StepError(
-                "TIMEOUT",
-                f"The robot did not face {name} within {timeout_s:g} s, so it stopped turning.",
-                {"handle": name},
-            )
+            return True
+        # A clock that moved back gives a negative time, which leaves the
+        # end to the backstop.
+        waited_s = (ctx.now().nanoseconds - start) / 1e9
+        if waited_s >= timeout_s or time.monotonic() >= backstop:
+            return False
         ctx.cancel.wait(_POLL_S)
 
 

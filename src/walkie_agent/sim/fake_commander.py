@@ -1,10 +1,13 @@
 """A stand-in for walkie-ros's bimanual_commander, for testing the arm client without MoveIt.
 
-Provides the three commander interfaces the agent uses (ADR-0021), under the
-same names and types:
+Provides the commander interfaces the agent uses (ADR-0021), under the same
+names and types:
   - /set_joint_position  my_robot_interfaces/action/SetJointPosition
   - /control_gripper     my_robot_interfaces/action/ControlGripper
   - /get_joint_states    my_robot_interfaces/srv/GetJointStates
+  - /bimanual_commander/get_parameters, rclpy's parameter service of a node
+    named bimanual_commander, with grasp_detect_min and grasp_detect_max
+    declared as the commander declares them
 
 The groups and their joints come from config/robot_model.toml, the snapshot
 of the pinned walkie-ros commit, so the fake and the real commander agree on

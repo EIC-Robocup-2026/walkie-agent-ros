@@ -43,7 +43,9 @@ class SpeakTool(BaseROS2Tool):
     name: str = "speak"
     description: str = (
         "Say something out loud to the people near Walkie. "
-        "Use this for every sentence meant for a person in the room."
+        "Use this for every sentence meant for a person in the room, except a question "
+        "or request whose answer you wait for: ask that only with wait_for_person, "
+        "never with speak as well."
     )
     args_schema: Type[SpeakToolInput] = SpeakToolInput
     topic: str = "/to_human"

@@ -377,10 +377,31 @@ pixi run agent-sim-hri
   uses faces and appearance, as on the robot.
 - **The agent** is `agent-sim` on `config/locations.chula_pat14_6.toml`,
   with `door`, `living_room` and `kitchen`. The map frame there is the
-  captured map, not the start pose.
-- **The task.** Send it on `/from_human` as in the blank map's terminal 4.
-  The HRI template is not in `config/task_templates.toml` yet, so use the
-  task text from [The template](architecture/hri.md#the-template).
+  captured map, not the start pose. It runs with `--tool-log`, so it
+  writes every tool call to `logs/agent_tools_<time>.jsonl` for the pass
+  check.
+- **The task.** Start it on `/walkie/task` with the `hri` template from
+  `config/task_templates.toml`
+  ([The template](architecture/hri.md#the-template)), in a fifth terminal:
+
+    ```bash title="Terminal 5: start the run"
+    pixi run ros2 topic pub --once /walkie/task std_msgs/msg/String \
+      "{data: '{\"task\": \"Please receive the guests.\", \"template\": \"hri\"}'}"
+    ```
+
+- **The check.** When the todo list is all done, judge the run from its
+  two logs. Both are flushed line by line, so the scenario and the agent
+  may still run. The check needs no ROS:
+
+    ```bash
+    pixi run hri-check logs/hri_scenario_<time>.jsonl logs/agent_tools_<time>.jsonl
+    ```
+
+    It prints one `PASS` or `FAIL` line per criterion and a last line of
+    `PASS`, `FAIL` or `INVALID`. The exit code is 0 for a pass, 1 for a
+    fail and 2 for a run that is not valid, such as one whose simulation
+    restarted. The criteria are on
+    [HRI Task](architecture/hri.md#in-simulation).
 
 !!! warning "One simulation per machine, unless you separate them"
     Every launch rewrites the generated world files under

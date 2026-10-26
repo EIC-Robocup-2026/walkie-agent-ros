@@ -17,6 +17,7 @@ from std_msgs.msg import Empty, String
 from scripted_llm import ScriptedChatModel, tool_call
 from walkie_agent.agent import SYSTEM_PROMPT, WalkieAgent, create_walkie_agent
 from walkie_agent.tasks import TaskTemplate
+from walkie_agent.toolbox import AtomicTool, Toolbox
 
 # The agent's plain-text replies; speech goes to /to_human instead.
 CONSOLE = "/walkie/console"
@@ -108,6 +109,18 @@ def test_agent_sees_tool_failure(connector, locations):
 
     last_tool = [m for m in llm.received[-1] if isinstance(m, ToolMessage)][-1]
     assert "Navigation is unavailable" in last_tool.content
+
+
+def test_the_agent_gets_a_toolbox_that_adds_no_tools_yet(connector, locations):
+    """create_walkie_agent builds one Toolbox; with no atomic shipped, the LLM sees no new tool."""
+    agent = create_walkie_agent(
+        ScriptedChatModel(responses=[]), connector, locations, target_connectors={}
+    )
+
+    assert isinstance(agent.toolbox, Toolbox)
+    assert agent.toolbox.ctx.connector is connector
+    assert agent.toolbox.tools() == []
+    assert not any(isinstance(t, AtomicTool) for t in agent.tools.visible())
 
 
 def test_todo_tools_and_the_graph_share_one_list(connector, locations):

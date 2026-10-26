@@ -9,7 +9,8 @@ it over ROS 2.
 !!! info "Redesign in progress"
     The agent is being redesigned into a self-evolving agent: see
     [Self-Evolving Agent (Proposed)](self-evolving-agent.md). Phase 1's host
-    graph and todo list are built. The rest of the redesign is proposed.
+    graph and todo list are built, and so is the toolbox core of phase 2.
+    The rest of the redesign is proposed.
     This page describes the agent as it is today. For a guided tour with
     runnable examples, start at [Learn the Agent](../learn/index.md).
 
@@ -39,6 +40,10 @@ it over ROS 2.
   tools away from motion topics
   ([ADR-0009](decisions/0009-forbidden-names-guard-rail.md),
   [ADR-0010](decisions/0010-bounded-navigation-tool.md)).
+- **Typed atomic tools, none shipped yet.** An atomic declares its
+  arguments, output and effects, and fails with one of 13 error codes. It
+  runs with a shared `ctx` and passes handles, short ids for what it saw
+  ([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)).
 - **Knows what it is.** rai_whoami adds a description of Walkie to the system
   prompt and a search tool over its documents
   ([ADR-0011](decisions/0011-whoami-identity.md)).
@@ -311,14 +316,16 @@ todos = [
   steps and say so. While the agent is idle, "stop" is an ordinary message.
 - **Reset.** A message on `/walkie/reset` drops the queued messages and
   their seeds, and stops the running task. Before the next task, the agent
-  clears the history and the todo list, publishes `[]` on `/walkie/todos`
-  and starts a new Langfuse session
+  clears the history, the todo list and the handles, publishes `[]` on
+  `/walkie/todos` and starts a new Langfuse session
   ([ADR-0008](decisions/0008-reset-topic.md)).
 - **Both act between steps.** All tool calls from one LLM answer run inside
   one step of the graph, and a stop or a reset is noticed only between
-  steps. A tool that is already running finishes first. If the stop lands
-  after the LLM asked for tools, those tools never run, and the history
-  repair answers them.
+  steps. A tool that is already running finishes first, unless it is an
+  atomic waiting in `ctx.wait()`, which ends at once
+  ([Stop, reset and the cancel](#stop-reset-and-the-cancel)). If the stop
+  lands after the LLM asked for tools, those tools never run, and the
+  history repair answers them.
 - **Errors.** An error from the LLM or the graph is logged, and the agent
   goes on to the next message. In RAI's own loop, such an error ends the
   agent thread. If the error left tool calls without results, the history
@@ -364,8 +371,322 @@ speech node is listening, it fails and the task goes on.
 The [arm manipulation design](manipulation.md) proposes four arm tools and,
 later, two skill tools.
 
+Typed atomic tools from `src/walkie_agent/tools/atomic/` are added after
+the tools above. None ships yet, see
+[Typed atomic tools](#typed-atomic-tools).
+
 For the full list of topics, see
 [Getting Started](../getting-started.md).
+
+## Typed atomic tools
+
+The toolbox core of phase 2 is built in `src/walkie_agent/toolbox/`: typed
+atomic tools, the `ctx` they run with, and handles
+([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). No atomic ships
+yet, so the LLM sees the same tools as before. The first atomics will be
+the HRI task's, such as `find_people` and `find_seats`
+([HRI Task](hri.md#atomics)). Bundles, the linker, access levels and tool
+search are not built
+([Self-Evolving Agent](self-evolving-agent.md#tiers-and-folders)).
+
+### An atomic
+
+An atomic is one module in `src/walkie_agent/tools/atomic/`. It defines
+four names:
+
+| Name | What it is |
+| ---- | ---------- |
+| `META` | A `ToolMeta`: the tool's name, description, effects, questions and examples |
+| `Args` | A pydantic model of the arguments. It is the schema the LLM sees, field descriptions included |
+| `Out` | A subclass of `ToolOutput`. Its `summary` is all the LLM sees on success. Other fields are for Python callers |
+| `run(ctx, args)` | Does the work and returns an `Out`, or raises `StepError` |
+
+This example is not in the repository. It reads the robot's heading from
+TF:
+
+```python title="src/walkie_agent/tools/atomic/get_heading.py (example)"
+"""Say which way the robot faces on the map."""
+
+import math
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+from walkie_agent.toolbox import Effect, ToolContext, ToolMeta, ToolOutput
+
+META = ToolMeta(
+    name="get_heading",
+    description="Says which way the robot faces, as an angle from the map's x axis.",
+    effects=frozenset({Effect.R}),
+    questions=(
+        "Which way are you facing?",
+        "What is your heading?",
+        "How far have you turned from the map's x axis?",
+    ),
+    examples=({}, {"unit": "radians"}),
+)
+
+
+class Args(BaseModel):
+    unit: Literal["degrees", "radians"] = Field("degrees", description="The unit of the answer.")
+
+
+class Out(ToolOutput):
+    yaw_rad: float
+
+
+def run(ctx: ToolContext, args: Args) -> Out:
+    # Raises StepError UNAVAILABLE when TF has no map -> base_footprint.
+    pose = ctx.robot_pose()
+    if args.unit == "radians":
+        summary = f"I face {pose.yaw:.2f} rad from the map's x axis."
+    else:
+        summary = f"I face {math.degrees(pose.yaw):.0f} degrees from the map's x axis."
+    return Out(summary=summary, yaw_rad=pose.yaw)
+```
+
+The LLM calls `get_heading` with `{}` and reads "I face 90 degrees from the
+map's x axis." Python code calls `AtomicTool.call(unit="radians")` and gets
+the `Out` itself, `yaw_rad` included.
+
+`ToolMeta` is frozen and rejects unknown fields, so a misspelt field fails
+when the agent starts instead of being ignored.
+
+| Field | Rule |
+| ----- | ---- |
+| `name` | 3 to 48 characters: a lowercase letter, then lowercase letters, digits or `_`. It must equal the module's name |
+| `description` | Not blank. The LLM reads it as the tool's description |
+| `effects` | A set of [effects](#effects). It may be empty |
+| `questions` | 3 to 5 spoken-style requests the tool answers, for the future tool search |
+| `examples` | At least one arguments dict. Each must fit `Args` |
+| `status` | `"verified"`, the default, or `"draft"` |
+| `created_by` | `"human"` by default |
+| `runtime` | Only `"inprocess"`. Sandbox workers come later |
+| `requires` | The backend names the tool needs, none by default. See [Where atomics live](#where-atomics-live) |
+
+[ADR-0037](decisions/0037-tool-tiers-bundles-effects.md) also gives an
+atomic `META.ros` and `META.net`, the ROS names and hosts it uses, for the
+ctx to enforce. They are not built yet, so `ToolMeta` rejects them. Until
+then the ctx enforces only the forbidden names.
+
+### Effects
+
+An atomic declares what it does to the world in `META.effects`.
+
+| Effect | Meaning |
+| ------ | ------- |
+| `R` | reads stored or robot state |
+| `P` | perceives or computes |
+| `S` | speaks or plays a sound |
+| `N` | moves the base |
+| `M` | moves an arm or gripper |
+| `W` | writes to the robot's memory. Provisional, see below |
+
+- **`META.idempotent`** is true when the effects are only `R` and `P`, or
+  none, so a retry is safe.
+- **Nothing checks effects yet.** The linker and the access levels that use
+  them are not built ([ADR-0039](decisions/0039-access-levels.md)).
+- **`W` is provisional.** The planned `remember_person` writes to
+  walkie-database, and no decided effect covers that
+  ([Perception question 3](perception.md#open-questions)). Until the
+  question is decided, a `W` tool is a reviewed atomic that generated tools
+  may never call.
+
+### Error codes
+
+An atomic fails by raising `StepError(code, message, data)`. `message` is
+a plain sentence for the LLM. `data` is an optional dict for code, such as
+the candidates of an `AMBIGUOUS` match. `str(err)` is `"CODE: message"`,
+and an unknown code raises `ValueError`. The codes and their meanings are
+`ERROR_CODES` in `src/walkie_agent/toolbox/types.py`:
+
+| Code | Meaning |
+| ---- | ------- |
+| `UNAVAILABLE` | a backend, server or topic is missing or not answering |
+| `TIMEOUT` | the operation started but did not finish in time |
+| `NOT_FOUND` | nothing matches: no one in view, an unknown handle or pose name |
+| `AMBIGUOUS` | several things match and the tool will not guess |
+| `OUT_OF_REACH` | the target is beyond what the arm or base may reach |
+| `STALE` | a handle is too old, or the robot has moved since it was captured |
+| `REFUSED` | a rule forbids the request as asked, such as a value out of range |
+| `PRECONDITION_FAILED` | the robot is not in the state the call needs, such as an arm out before driving ([ADR-0025](decisions/0025-travel-safe-interlock.md)) |
+| `SKILL_FAILED` | the robot-side motion or skill ran and failed, such as no MoveIt plan |
+| `POSTCONDITION` | the backend reported success but the check after it failed, such as a joint off its target or an empty gripper |
+| `SAFETY_STOP` | an emergency stop or safety controller ended the motion |
+| `CANCELLED` | a reset, a stop or a newer command interrupted it |
+| `INTERNAL` | a bug in the tool |
+
+### How a failure reaches the LLM
+
+`AtomicTool` wraps one atomic as a LangChain tool, with
+`handle_tool_error` on.
+
+| What happens | What the LLM reads | Status |
+| ------------ | ------------------ | ------ |
+| `run` returns its `Out` | the `summary` | `success` |
+| `run` raises `StepError` | `CODE: message`, such as `NOT_FOUND: per_51c0.7 is not a known handle.` | `error` |
+| `run` raises any other exception | `INTERNAL: <type>: <message>`. The traceback goes to the log | `error` |
+| `run` returns something else | `INTERNAL: get_heading returned str instead of Out.` | `error` |
+| The arguments do not fit `Args` | RAI's usual "Validation error in tool get_heading" message. `run` is not called | `error` |
+
+- **Every error counts as a failed call** in the todo list's error ledger,
+  as it does for today's tools. A step whose tool failed cannot be
+  completed until the tool succeeds, unless a note explains why
+  ([ADR-0041](decisions/0041-todo-list-and-seeding.md)).
+- **No artifact.** The ToolMessage holds only text, because RAI pickles
+  every artifact to disk. The full `Out` stays with Python callers.
+- **`AtomicTool.call(**kwargs)`** runs the same path for Python code. It
+  returns the `Out`, and raises `StepError`, `INTERNAL` included, or
+  pydantic's `ValidationError`.
+
+### Handles
+
+A handle is a short id that stands for something a tool saw, such as a
+person or a seat. A perception atomic stores what it found as a set, and
+the LLM passes a member's id to a later call, in the same turn or after a
+spoken question. `ctx.handles` is the `HandleStore` that keeps them.
+
+- **`put_set(kind, payloads, pose=None)`** stores the payloads as one
+  set, with the time and the robot's pose, from TF unless `pose` is
+  given. It returns a `HandleSet`: the set's id, such
+  as `per_51c0`, and one member id per payload, in order: `per_51c0.0`,
+  `per_51c0.1`. An id is the kind's prefix, `_`, 4 hex digits that no
+  other live set uses, `.` and the member's index.
+- **`get(handle_id, kind=...)`** returns one `Handle`, with its `id`,
+  `kind`, `payload`, `pose` and `captured_at`. **`get_set(set_id,
+  kind=...)`** returns every member, in order. Both run the checks below.
+- **At most 64 sets** are kept. The oldest is dropped first.
+
+Each kind has a `KindPolicy`: its id prefix, three limits and, optionally,
+the tool its handles come from. A limit of `None` is not checked. Only
+`object` is registered: prefix `obj`,
+5 cm or 3 degrees of base motion, and 600 s, which leaves time for a spoken
+question. Later PRs register `person` and `seat` with
+`register_kind(kind, policy)` when their atomics load. How long a person
+handle stays valid is
+[Perception question 8](perception.md#open-questions).
+
+A lookup checks, in this order:
+
+| Check | Error |
+| ----- | ----- |
+| The id is malformed or unknown, or the set has no such member | `NOT_FOUND: per_ffff.0 is not a known person handle.` |
+| The handle is of another kind than the caller asked for | `NOT_FOUND: seat_09ab.1 is a seat, not a person.` |
+| It is older than the kind's age limit | `STALE: obj_3f2a is stale: it was captured 700 s ago, and an object handle lasts 600 s.` |
+| The base has moved farther than the limit since capture | `STALE: obj_3f2a.0 is stale: the robot has moved 0.12 m since it was captured, more than the 0.05 m allowed.` |
+| The base has turned more than the limit, compared with wrap-around | `STALE: obj_3f2a.0 is stale: the robot has turned 10 degrees since it was captured, ...` |
+| The kind has a motion limit, but the pose at capture or now is unknown | `UNAVAILABLE: The robot's position is unknown, so the handle cannot be checked.` |
+
+- **A hint for a new handle.** When a kind names its source, its
+  `NOT_FOUND` and `STALE` messages end with a hint, such as "Person handles
+  come from find_people."
+- **The pose comes from TF,** through `ctx.robot_pose()`. When TF has no
+  pose, the set is stored without one, and the motion checks report
+  `UNAVAILABLE`.
+- **Age is measured in real time,** on the agent's monotonic clock, not
+  the node clock. Under sim time, a handle ages with the computer's clock.
+
+Handles belong to a task. The store is cleared whenever a new task
+replaces the todo list:
+
+| When | Handles |
+| ---- | ------- |
+| A reset is applied, before the next task | Cleared |
+| A seed from `submit()` or `/walkie/task` replaces the list | Cleared |
+| A template seeds the list | Cleared |
+| A finished list is cleared as the next task starts | Cleared |
+| The answer to a `wait_for_person` question, or any message while steps are open | Kept |
+| A message with no seed and no template while the list is empty | Kept, and still bounded by their limits |
+
+The answer keeps them because the question may be about one of them: the
+HRI task calls `find_people`, asks the guest's name, and calls
+`remember_person` on the same handle in the next turn.
+
+### The ctx
+
+Every `run(ctx, args)` gets the same `ToolContext`. Atomics reach ROS,
+their backends and the handles only through it, so the guard rails live in
+one place.
+
+| Member | What it does |
+| ------ | ------------ |
+| `connector`, `node`, `logger` | RAI's `ROS2Connector`, its rclpy node, and a logger |
+| `backend(name)`, `has_backend(name)` | The clients passed to `Toolbox` by name, such as `"arm"`. A missing one raises `UNAVAILABLE`. Tests pass fakes |
+| `handles` | The `HandleStore` above |
+| `cancel`, `check_cancelled()` | A `threading.Event` that a stop or a reset sets. `check_cancelled()` then raises `CANCELLED` |
+| `wait(future, timeout_s, what="The call")` | Waits for a future that the connector's executor completes, and returns its result. Raises `TIMEOUT: <what> did not finish within <timeout_s> s.`, or `CANCELLED` within 50 ms of a stop or a reset |
+| `now()` | The node clock's time, which follows `/clock` under sim time |
+| `robot_pose(timeout_s=1.0)` | A `Pose2D` (`x`, `y`, `yaw`) from the latest TF `map` -> `base_footprint`. Raises `UNAVAILABLE`, with `move_relative`'s hint when no node publishes `/tf` |
+| `subscription(msg_type, topic, callback, qos)`, `publisher(msg_type, topic, qos)`, `service_client(srv_type, name)`, `action_client(action_type, name)` | The node's entity for that name, created on the first call |
+
+- **`wait()` leaves the future alone.** After a `TIMEOUT` or `CANCELLED`,
+  the atomic cancels its goal or drops its request itself.
+- **`robot_pose()` takes the latest transform, however old.**
+  `move_relative` waits for one stamped after the call instead.
+- **One entity per name.** rclpy entities must not be created per call, so
+  each is kept by kind and name. Asking again with another type, callback
+  or QoS raises `ValueError`.
+- **Names as the node resolves them.** The check below and the cache use
+  the resolved name, so a relative name such as `cmd_vel`, or a remap onto
+  a forbidden name, is caught, and `cmd_vel` and `/cmd_vel` are one entity.
+- **Forbidden names.** An entity on a name in `FORBIDDEN_NAMES` raises
+  `ValueError`, unless the call passes that exact name in
+  `allow_forbidden`. It is a `ValueError`, not a `StepError`, because it is
+  a bug in reviewed code: it must fail the tests, not reach the LLM. The
+  one planned exception is the gaze loop, which passes
+  `allow_forbidden=("/cmd_vel",)`
+  ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)). Like the list
+  itself, this is a guard rail, not a security boundary
+  ([ADR-0009](decisions/0009-forbidden-names-guard-rail.md)).
+
+### Stop, reset and the cancel
+
+- **A stop or a reset cancels a running atomic at once.** `reset()`,
+  `stop()` and a stop utterance during a task set `ctx.cancel`, so an
+  atomic waiting in `ctx.wait()` ends with `CANCELLED` instead of finishing
+  its step. Today's tools do not see the cancel, so a navigation goal
+  still finishes first.
+- **The cancel reaches the right run.** It is set under the agent's buffer
+  lock, the same lock under which a starting run clears it. A cancel set
+  after a run started cancels that run. One set before is cleared when the
+  next run starts, so a new task never inherits an old cancel.
+- **Listeners.** `Toolbox.on_interrupt(callback)` and
+  `on_new_task(callback)` let later parts react, such as the gaze loop
+  stopping on an interrupt. Interrupt listeners run after the lock is
+  released, because one may block. A listener that raises is logged, and
+  the others still run.
+- **No run starts during the listeners.** The interrupt counts as
+  pending from the cancel until its last listener returns. Until then
+  `Toolbox.begin_task()` refuses, and the agent leaves the next message
+  queued. Otherwise a slow listener could act on the new run, such as
+  stopping a `look_at` the new task just started. The check and the clear
+  of the cancel are one step under the toolbox's lock, so this holds for
+  `Toolbox.interrupt()` from any thread too. The cost: a listener that
+  never returns holds back every later task, so listeners must return
+  promptly.
+
+### Where atomics live
+
+- **One module per atomic** in `src/walkie_agent/tools/atomic/`, named
+  like its `META.name`. Modules whose names start with `_` are helpers and
+  are not loaded as tools.
+- **Checked at startup.** `create_walkie_agent` builds one
+  `Toolbox(connector)`, which imports every module and checks it: `META`
+  is a `ToolMeta` named like the module, `Args` is a pydantic model, `Out`
+  is a `ToolOutput` subclass, `run` is a plain function that can be called
+  as `run(ctx, args)`, every example fits `Args`, and no two atomics share
+  a name. All problems
+  are collected into one `AtomicLoadError`, and the agent does not start.
+  Atomics are reviewed code, so a broken one must stop the agent at
+  startup, not at its first call in the middle of a task.
+- **Backends.** An atomic whose `META.requires` names a backend the ctx
+  lacks is skipped, with one info line in the log. `create_walkie_agent`
+  passes no backends yet.
+- **After the other tools.** `build_walkie_tools` appends the atomic
+  tools. An atomic named like an existing tool stops the agent with a
+  `ValueError`, because the agent keeps one tool per name and would
+  silently replace the older one.
+- **None ships yet.** The package holds only its docstring.
 
 ## Running on the robot
 

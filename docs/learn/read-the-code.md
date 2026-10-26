@@ -11,15 +11,15 @@ a rai-core upgrade, what phase 1 left for later, and five exercises.
 | [`src/walkie_agent/todo.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/todo.py) | `TodoItem`, `TodoOp`, `TodoList` with its rules, ledger and listeners, and `console_line`. No ROS | ~680 |
 | [`src/walkie_agent/tools/todos.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/tools/todos.py) | `UpdateTodosTool` and `WaitForPersonTool` | ~100 |
 | [`src/walkie_agent/graph.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/graph.py) | `ToolSet`, `repair_history`, `WalkieToolRunner` and `build_walkie_graph` | ~420 |
-| [`src/walkie_agent/agent.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/agent.py) | `WalkieAgent`: queue, stop, reset, seeds, `/walkie/task`, `/walkie/todos` and console lines. Also `create_walkie_agent` | ~530 |
+| [`src/walkie_agent/agent.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/agent.py) | `WalkieAgent`: queue, stop, reset, seeds, `/walkie/task`, `/walkie/todos` and console lines. Also `create_walkie_agent` | ~570 |
 | [`src/walkie_agent/tasks.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/tasks.py) | `TaskTemplate`, `load_task_templates`, `match_template` and `parse_task_message` | ~150 |
 | [`src/walkie_agent/main.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/main.py) | The ROS entry point and its flags, such as `--task-templates` and `--todos-topic` | ~100 |
 | [`config/task_templates.toml`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/config/task_templates.toml) | The task templates. It ships with one commented example | ~30 |
-| [`src/walkie_agent/tools/`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/tree/main/src/walkie_agent/tools) | The ROS tools in `navigation.py`, `speech.py` and `memory.py`. A failure raises `ToolException`, so its result has status `error` | ~600 |
+| [`src/walkie_agent/tools/`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/tree/main/src/walkie_agent/tools) | The ROS tools in `navigation.py`, `speech.py` and `memory.py`. A failure raises `ToolException`, so its result has status `error` | ~660 |
 | [`tests/test_todo.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_todo.py) | One test per list rule, on a plain `TodoList` | ~880 |
-| [`tests/test_graph.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_graph.py) | Routes, gate, repair, queue, stop, reset and seeding, with no ROS | ~1170 |
+| [`tests/test_graph.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_graph.py) | Routes, gate, repair, queue, stop, reset and seeding, with no ROS | ~1650 |
 | [`tests/test_tasks.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_tasks.py) | Template loading, keyword matching and `/walkie/task` parsing | ~170 |
-| [`tests/test_agent.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_agent.py) | The agent over ROS topics, against the fake robot | ~540 |
+| [`tests/test_agent.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_agent.py) | The agent over ROS topics, against the fake robot | ~620 |
 | [`tests/scripted_llm.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/scripted_llm.py) | `ScriptedChatModel`, the fake LLM that replays scripted replies and records what it was sent | ~70 |
 
 ## A reading order
@@ -117,8 +117,9 @@ These parts are proposed but not built yet.
 - **The rest of the [roadmap](../architecture/self-evolving-agent.md#roadmap)'s
   phase 1 row:** `models.py` and per-role keys, the `--access-level` flag,
   and Ollama with an eval of the local model. None is in the code yet.
-- **The HRI template.** It is not in `config/task_templates.toml`, because it
-  needs atomics that are not built yet, such as `look_at` ([HRI Task](../architecture/hri.md#the-template)).
+- **The HRI template.** It is not in `config/task_templates.toml` yet. Its
+  atomics are built, and it comes with the sim run, which needs
+  `oracle_perception` ([HRI Task](../architecture/hri.md#the-template)).
 
 ## Exercises
 

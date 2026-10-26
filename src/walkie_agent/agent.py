@@ -21,6 +21,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Empty, String
 
 from walkie_agent.arm.commander import CommanderClient
+from walkie_agent.gaze import GazeLoop
 from walkie_agent.graph import ToolSet, build_walkie_graph
 from walkie_agent.locations import Location
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory
@@ -47,6 +48,8 @@ Rules:
   know it by where they are, such as "the person on the left".
 - A person or seat handle, such as per_51c0.0 or seat_51c0.1, comes only from
   `find_people` or `find_seats`. Never make one up.
+- Look at the person you are talking to with `look_at`, and stop with
+  `stop_looking` before you do something else.
 - If a tool reports a failure, tell the person what went wrong with `speak`
   and do not pretend the action succeeded.
 - For a task with more than one step, write the steps with `update_todos`
@@ -73,6 +76,8 @@ ARM_RULES = """\
 - Before you move an arm or a gripper, tell the people near you with `speak`.
 - Before you drive, move both arms to a pose that is safe for driving, such as
   `home`. Every arm tool ends by saying whether the arms are safe for driving.
+- Never call `look_at` with an arm out: looking turns the base, as driving
+  does.
 - If an arm or gripper tool fails, call `get_arm_state`, then try again at most
   once.
 - Never pick up an object by combining poses and gripper commands yourself.
@@ -129,7 +134,12 @@ class WalkieAgent(LangChainAgent):
       the agent.
     - With a `toolbox`, a stop or a reset also cancels the running atomic
       tool at once, and a new task that replaces the todo list forgets the
-      handles of the old one.
+      handles of the old one. Every "stop" or "never mind", during a task
+      or not, also goes to the toolbox's stop-heard listeners once it is
+      queued, and before the interrupt listeners, so the gaze loop stops
+      turning the base even while the agent is idle.
+    - With a `gaze` loop, stop() also shuts it down, so the base stops
+      turning and its thread ends with the agent.
     - An error from the LLM or the graph is logged, and the agent keeps
       serving the next message.
 
@@ -154,11 +164,13 @@ class WalkieAgent(LangChainAgent):
         todos: TodoList | None = None,
         templates: Mapping[str, TaskTemplate] | None = None,
         toolbox: Toolbox | None = None,
+        gaze: GazeLoop | None = None,
     ):
         self.todos = todos if todos is not None else TodoList()
         self.tools = ToolSet(tools or [])
         self.templates = dict(templates or {})
         self.toolbox = toolbox
+        self.gaze = gaze
         self._target_connectors = dict(target_connectors)
         graph = build_walkie_graph(llm, self.tools, self.todos, system_prompt)
         super().__init__(
@@ -230,6 +242,11 @@ class WalkieAgent(LangChainAgent):
             self._cancel_atomics()
         # Before RAI's stop(), which waits for the running task to end.
         self._notify_toolbox_interrupt()
+        if self.gaze is not None:
+            # Also before RAI's stop(): the interrupt listener has already
+            # stopped the base, and the loop's thread ends now, not after
+            # the task's last step.
+            self.gaze.shutdown()
         super().stop()
 
     def subscribe_reset(self, connector: ROS2Connector, topic: str) -> None:
@@ -274,7 +291,8 @@ class WalkieAgent(LangChainAgent):
     def _enqueue(self, msg: HRIMessage, seed: _Seed | None) -> None:
         # Replaces RAI's __call__. The seed is stored under the same lock as
         # the message, so a reset can never separate the two.
-        stop_heard = False
+        stop = is_stop_utterance(msg.text)
+        interrupted = False
         with self._buffer_lock:
             if self.max_size is not None and len(self._received_messages) >= self.max_size:
                 self.logger.warning("Buffer overflow. Dropping the oldest message.")
@@ -289,7 +307,7 @@ class WalkieAgent(LangChainAgent):
             # lock, so this check cannot race with the start of a run: a stop
             # either interrupts the run or waits as an ordinary message.
             running = self._thread is not None and not self._agent_ready_event.is_set()
-            if running and is_stop_utterance(msg.text):
+            if running and stop:
                 for queued in list(self._received_messages)[:-1]:
                     self._seeds.pop(id(queued), None)
                 self._received_messages.clear()
@@ -298,9 +316,11 @@ class WalkieAgent(LangChainAgent):
                 self._received_messages.append(msg)
                 self._interrupt_event.set()
                 self._cancel_atomics()
-                stop_heard = True
+                interrupted = True
                 self.logger.info("Stop heard: interrupting the task, dropping older messages.")
-        if stop_heard:
+        if stop:
+            self._notify_toolbox_stop_heard()
+        if interrupted:
             self._notify_toolbox_interrupt()
 
     def _cancel_atomics(self) -> None:
@@ -317,6 +337,24 @@ class WalkieAgent(LangChainAgent):
         # may block, and must not hold up the agent thread or a ROS callback.
         if self.toolbox is not None:
             self.toolbox.notify_interrupt()
+
+    def _notify_toolbox_stop_heard(self) -> None:
+        # For every stop utterance, during a task or not: while idle, a stop
+        # interrupts nothing and stays an ordinary message, but the gaze
+        # loop, which turns the base between tasks too, must still stop.
+        # Outside _buffer_lock, as for an interrupt, and after _enqueue has
+        # decided under it whether a run is going. Called before that
+        # decision, it could stop the loop during a look_at of a run that
+        # then ended, and the stop would count as idle, with no interrupt
+        # and no cancel. After it, a running task already has its cancel
+        # set, and no new run starts until the interrupt listeners are done
+        # (begin_task); idle means no tool was in flight. A look_at that
+        # started before this stop, as in the stop's own run while idle,
+        # raises CANCELLED or has its target stopped (GazeLoop.stop_calls).
+        # Before the interrupt listeners, so the loop's stop reason is
+        # "stop heard".
+        if self.toolbox is not None:
+            self.toolbox.stop_heard()
 
     def _toolbox_new_task(self) -> None:
         if self.toolbox is not None:
@@ -485,13 +523,15 @@ def create_walkie_agent(
     for sim and tests only. `arms` adds the commander client as the `arm`
     backend, so the arm atomics load and the navigation tools refuse to drive
     with an arm out; it loads config/arm_poses.toml, and raises ArmPoseError
-    when that file is wrong."""
+    when that file is wrong. The gaze loop is always created, as the `gaze`
+    backend, so look_at and stop_looking load in every run."""
     # One list, shared by the todo tools and the graph.
     todos = TodoList()
     # VisionFeed is always created: without a walkie-vision publisher it only
     # holds two idle subscriptions, and find_people and find_seats then fail
     # with UNAVAILABLE.
-    backends: dict[str, Any] = {"vision": VisionFeed(connector)}
+    vision = VisionFeed(connector)
+    backends: dict[str, Any] = {"vision": vision}
     memory = None
     if mock_people_memory:
         # Without a people_memory backend, recognize_person and
@@ -507,7 +547,15 @@ def create_walkie_agent(
         # harm: the arm atomics fail with UNAVAILABLE, and the check drives.
         commander = CommanderClient(connector)
         backends["arm"] = commander
+    # Always created, as the vision feed is: until look_at gives it a
+    # target it publishes nothing on /cmd_vel. With the commander, it stops
+    # when an arm leaves the travel-safe poses; without, as without --arms,
+    # it turns with no arm check, as the drives do (ADR-0051).
+    gaze = GazeLoop(connector, vision=vision, arm=commander)
+    backends["gaze"] = gaze
     toolbox = Toolbox(connector, backends)
+    # A stop, a reset or a new task stops the loop.
+    gaze.attach(toolbox)
     if memory is not None:
         # Each task starts with no guests, so a guest remembered in one sim
         # run is not recognized in the next.
@@ -517,11 +565,18 @@ def create_walkie_agent(
         target_connectors=target_connectors,
         llm=llm,
         tools=build_walkie_tools(
-            connector, locations, whoami_dir, todos=todos, toolbox=toolbox, arm=commander
+            connector,
+            locations,
+            whoami_dir,
+            todos=todos,
+            toolbox=toolbox,
+            arm=commander,
+            gaze=gaze,
         ),
         system_prompt=build_system_prompt(prompt, whoami_dir),
         stream_response=stream_response,
         todos=todos,
         templates=templates,
         toolbox=toolbox,
+        gaze=gaze,
     )

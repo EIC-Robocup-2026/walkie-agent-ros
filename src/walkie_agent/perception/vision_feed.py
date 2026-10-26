@@ -13,15 +13,18 @@ walkie_agent.perception.identity's, applied when a person is remembered or
 recognized.
 
 The callbacks run on the connector's executor thread and the atomics on the
-agent's thread, so all state is behind one lock.
+agent's thread, so all state is behind one lock. The gaze loop needs every
+people array as it comes rather than the newest one when it asks, so the
+feed also hands each one to its people listeners (on_people).
 """
 
 import bisect
+import logging
 import math
 import threading
 import time
 from collections import OrderedDict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Generic, NamedTuple, TypeVar
 
@@ -34,6 +37,8 @@ from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetection, Person
 
 from walkie_agent.perception.people_memory import ModelVector
 from walkie_agent.toolbox.types import StepError
+
+logger = logging.getLogger(__name__)
 
 PEOPLE_TOPIC = "/walkie_vision/people"
 OBJECTS_TOPIC = "/walkie_vision/objects"
@@ -161,6 +166,9 @@ class PeopleFrame(NamedTuple):
     tracks: tuple[TrackKey | None, ...]
 
 
+PeopleListener = Callable[[PeopleFrame], None]
+
+
 class Sample(NamedTuple):
     """One collected vector, with the header.stamp of the people array it came from."""
 
@@ -244,9 +252,9 @@ class VisionFeed:
     """The `vision` backend: walkie-vision's newest arrays and the vectors of every track.
 
     Created once per agent. Without a publisher it does no harm: a read then
-    fails with UNAVAILABLE. The arrays it returns, alone or in a
-    PeopleFrame, are the received messages themselves, shared with other
-    callers, so they must not be modified.
+    fails with UNAVAILABLE. The arrays it returns or hands to a listener,
+    alone or in a PeopleFrame, are the received messages themselves, shared
+    with other callers, so they must not be modified.
     """
 
     def __init__(self, connector: ROS2Connector, config: VisionFeedConfig = DEFAULT_CONFIG) -> None:
@@ -267,6 +275,10 @@ class VisionFeed:
         # The newest TrackKey generation given out. Never reset, so a key
         # names one collection only.
         self._generation = 0
+        # Replaced rather than changed in place, under the lock, so a
+        # callback can call the listeners it read after releasing the lock
+        # while another thread adds or removes one.
+        self._people_listeners: tuple[PeopleListener, ...] = ()
         # Created here, once: rclpy entities must not be created per call.
         self._subscriptions = (
             self._node.create_subscription(
@@ -342,6 +354,33 @@ class VisionFeed:
                 return _NONE_COLLECTED
             return CollectedVectors(tuple(track.faces), tuple(track.appearances))
 
+    # -- People listeners ------------------------------------------------------------
+
+    def on_people(self, callback: PeopleListener) -> None:
+        """Call `callback(frame)` with the PeopleFrame of every people array that arrives.
+
+        In the order they arrive, a late array included: a callback that
+        wants only newer arrays compares the stamps itself. It runs on the
+        connector's executor thread, after the feed's lock is released, so
+        it may read the feed. It must return promptly and must not wait for
+        TF or for anything else the executor delivers, since nothing else on
+        the node runs while it waits. A callback that raises is logged; the
+        array is kept and the other callbacks still run.
+        """
+        with self._lock:
+            self._people_listeners = (*self._people_listeners, callback)
+
+    def remove_people_listener(self, callback: PeopleListener) -> None:
+        """Stop calling `callback`. Does nothing when it is not a listener.
+
+        An array already being handed out may still reach it once.
+        """
+        with self._lock:
+            listeners = list(self._people_listeners)
+            if callback in listeners:
+                listeners.remove(callback)
+                self._people_listeners = tuple(listeners)
+
     # -- Callbacks, on the executor thread ---------------------------------------
 
     def _on_people(self, msg: PersonDetectionArray) -> None:
@@ -376,6 +415,16 @@ class VisionFeed:
             frame = PeopleFrame(msg, tuple(keys.get(track_id) for track_id in track_ids))
             self._people.add(stamp_ns, frame)
             self._arrived.notify_all()
+            listeners = self._people_listeners
+        # After the lock is released, so a listener that reads the feed does
+        # not deadlock and no reader waits for a listener.
+        for listener in listeners:
+            try:
+                listener(frame)
+            except Exception:
+                # Never raised into the executor, where it would end the
+                # executor's thread and with it every subscription of the node.
+                logger.exception("A VisionFeed people listener failed.")
 
     def _on_objects(self, msg: ObjectDetectionArray) -> None:
         stamp_ns = _stamp_ns(msg.header.stamp)

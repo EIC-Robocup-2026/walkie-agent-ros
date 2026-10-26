@@ -697,14 +697,23 @@ def test_atomics_load_only_with_their_backends(make_package, caplog):
     assert tools[1].invoke(call({}, name="lift_box")).content == "3 chairs."
 
 
-def test_the_shipped_package_has_the_people_seat_and_arm_atomics():
-    """vision alone loads find_people and find_seats; people_memory adds two; arm adds four."""
+def test_the_shipped_package_has_the_people_seat_arm_and_gaze_atomics():
+    """vision alone loads find_people and find_seats; people_memory adds two; arm adds four;
+    gaze adds stop_looking, and look_at with vision."""
     atomics = discover()
     vision_only = ToolContext(None, backends={"vision": object()})
     both = ToolContext(None, backends={"vision": object(), "people_memory": object()})
     arm_only = ToolContext(None, backends={"arm": object()})
+    gaze_only = ToolContext(None, backends={"gaze": object()})
+    vision_and_gaze = ToolContext(None, backends={"vision": object(), "gaze": object()})
     everything = ToolContext(
-        None, backends={"vision": object(), "people_memory": object(), "arm": object()}
+        None,
+        backends={
+            "vision": object(),
+            "people_memory": object(),
+            "arm": object(),
+            "gaze": object(),
+        },
     )
 
     assert [atomic.META.name for atomic in atomics] == [
@@ -712,10 +721,12 @@ def test_the_shipped_package_has_the_people_seat_and_arm_atomics():
         "find_seats",
         "get_arm_state",
         "list_arm_poses",
+        "look_at",
         "move_arm_to_pose",
         "recognize_person",
         "remember_person",
         "set_gripper",
+        "stop_looking",
     ]
     assert [tool.name for tool in build_atomic_tools(vision_only, atomics)] == [
         "find_people",
@@ -732,6 +743,14 @@ def test_the_shipped_package_has_the_people_seat_and_arm_atomics():
         "list_arm_poses",
         "move_arm_to_pose",
         "set_gripper",
+    ]
+    # look_at also needs vision: every handle it takes comes from a vision atomic.
+    assert [tool.name for tool in build_atomic_tools(gaze_only, atomics)] == ["stop_looking"]
+    assert [tool.name for tool in build_atomic_tools(vision_and_gaze, atomics)] == [
+        "find_people",
+        "find_seats",
+        "look_at",
+        "stop_looking",
     ]
     assert len(build_atomic_tools(everything, atomics)) == len(atomics)
 
@@ -972,6 +991,31 @@ def test_new_task_clears_the_handles_and_tells_the_listeners():
     assert told == [1]
     # A new task does not end a cancel; only begin_task does.
     assert toolbox.ctx.cancel.is_set()
+
+
+def test_stop_heard_tells_its_listeners_and_cancels_nothing(caplog):
+    toolbox = Toolbox(None)
+    heard: list[str] = []
+
+    def failing() -> None:
+        heard.append("failing")
+        raise RuntimeError("listener broke")
+
+    toolbox.on_stop_heard(lambda: heard.append("first"))
+    toolbox.on_stop_heard(failing)
+    toolbox.on_stop_heard(lambda: heard.append("last"))
+    toolbox.on_interrupt(lambda: heard.append("interrupt"))
+    toolbox.on_new_task(lambda: heard.append("new task"))
+
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.toolbox"):
+        toolbox.stop_heard()
+
+    assert heard == ["first", "failing", "last"]
+    assert "A toolbox stop-heard listener failed." in caplog.messages
+    # Only an interrupt cancels the run and holds the next one back.
+    assert not toolbox.ctx.cancel.is_set()
+    assert not toolbox.interrupt_pending()
+    assert toolbox.begin_task() is True
 
 
 def test_toolbox_builds_its_tools_once(make_package):

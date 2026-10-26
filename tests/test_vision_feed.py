@@ -8,6 +8,7 @@ feed's callbacks instead, as its executor would, so that the order in which
 they arrive is exact.
 """
 
+import logging
 import random
 import sys
 import threading
@@ -700,6 +701,80 @@ def test_a_reused_track_id_is_a_new_generation(feed, vision, moved_clock):
     assert np.array_equal(bob_face.vector.vector, hash_vector("face bob", DIM))
     # Sam's frame still names Sam's collection.
     assert feed.people_at(sam_frame.msg.header.stamp, 0.0, NO_CANCEL).tracks == (sam,)
+
+
+# -- People listeners ---------------------------------------------------------------------
+
+
+def test_a_people_listener_gets_each_frame_after_the_lock_is_released(feed, vision):
+    heard = []
+
+    def listener(frame):
+        free = feed._lock.acquire(blocking=False)
+        if free:
+            feed._lock.release()
+        # With the lock free, a listener may read the feed.
+        heard.append((frame, free, feed.latest_people(60.0, 0.0, NO_CANCEL).msg))
+
+    feed.on_people(listener)
+    msg = people_array([tracked(1)], vision.stamp())
+    feed._on_people(msg)
+    # A late array reaches the listener too; it compares the stamps itself.
+    late = people_array([tracked(2)], vision.stamp(offset_s=-0.5))
+    feed._on_people(late)
+
+    [(frame, free, newest), (late_frame, late_free, still_newest)] = heard
+    assert free and late_free
+    assert frame.msg is msg and newest is msg
+    assert frame.tracks == feed.people_at(msg.header.stamp, 0.0, NO_CANCEL).tracks
+    assert late_frame.msg is late and still_newest is msg
+
+
+def test_a_failing_people_listener_is_logged_and_the_others_still_run(feed, vision, caplog):
+    heard = []
+
+    def broken(frame):
+        raise RuntimeError("listener bug")
+
+    feed.on_people(broken)
+    feed.on_people(heard.append)
+    msg = people_array([tracked(1)], vision.stamp())
+
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.perception.vision_feed"):
+        feed._on_people(msg)
+
+    assert [frame.msg for frame in heard] == [msg]
+    assert "people listener failed" in caplog.text
+    assert "listener bug" in caplog.text
+    assert feed.latest_people(60.0, 0.0, NO_CANCEL).msg is msg
+
+
+def test_a_removed_people_listener_is_not_called(feed, vision):
+    heard, other = [], []
+    feed.on_people(heard.append)
+    feed.on_people(other.append)
+    feed._on_people(people_array([tracked(1)], vision.stamp()))
+
+    feed.remove_people_listener(heard.append)
+    # Removing a callback that is not a listener does nothing.
+    feed.remove_people_listener(heard.append)
+    feed.remove_people_listener(print)
+    feed._on_people(people_array([tracked(1)], vision.stamp()))
+
+    assert (len(heard), len(other)) == (1, 2)
+
+
+def test_a_published_array_reaches_the_listener_on_the_executor_thread(feed, vision):
+    heard = []
+    feed.on_people(lambda frame: heard.append((frame, threading.current_thread())))
+
+    sent = vision.publish_people([tracked(1)])
+
+    assert wait_until(lambda: heard)
+    [(frame, thread)] = heard
+    assert frame.msg.header.stamp == sent.header.stamp
+    assert [key.track_id for key in frame.tracks] == [1]
+    assert thread is not threading.current_thread()
 
 
 # -- Stamp order and clock epochs, through the callbacks --------------------------------

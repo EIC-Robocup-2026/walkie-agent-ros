@@ -59,6 +59,10 @@ LEFT_ARMS = ("left", "both")
 COUNTED_ASKS = ("name", "drink", "bag")
 # A call that ran: "invalid" and "not_run" never reached the robot.
 RAN = ("ok", "error")
+# The pronouns a robot line may not say, as whole words in any case: the
+# robot cannot know a guest's pronouns, so it calls them by name. "They" is
+# not checked.
+PRONOUNS = re.compile(r"\b(he|she|him|her|his|hers|himself|herself)\b")
 
 
 @dataclass(frozen=True)
@@ -189,24 +193,34 @@ def check_offers(run: Run) -> list[Result]:
 
 
 def check_introductions(run: Run) -> list[Result]:
-    """Each guest is introduced to, with the robot facing them."""
+    """Each guest is introduced to, by the other's name and drink, with the robot facing them."""
     seated = [run.person_index(guest, "seated") for guest in run.guests]
     if not run.guests or None in seated:
         missing = [g for g, i in zip(run.guests, seated) if i is None]
         return [Result("introductions", False, f"{', '.join(missing) or 'nobody'} never seated")]
     after = max(i for i in seated if i is not None)
-    drinks = {
-        guest: re.compile(rf"\b{re.escape(want['drink'].strip().casefold())}\b")
-        for guest, want in run.guests.items()
-    }
+    drinks = {guest: _whole_word(want["drink"]) for guest, want in run.guests.items()}
+    names = {guest: _whole_word(want["name"]) for guest, want in run.guests.items()}
     # The smallest bearing each guest was faced at as a listener.
     faced: dict[str, float | None] = {guest: None for guest in run.guests}
+    # The first line that named another guest's drink but not their name, by listener.
+    nameless: dict[str, str] = {}
     for line in run.events[after + 1 :]:
         if line.get("type") != "robot_line" or line.get("guest") is not None:
             continue
         text = str(line.get("text", "")).casefold()
         named = [guest for guest, drink in drinks.items() if drink.search(text)]
         if len(named) != 1:
+            continue
+        if not names[named[0]].search(text):
+            want = run.guests[named[0]]
+            for listener in run.guests:
+                if listener != named[0]:
+                    nameless.setdefault(
+                        listener,
+                        f"the line at t={line['t']:g} s names {want['drink']} "
+                        f"but not {want['name']}",
+                    )
             continue
         bearings = line.get("bearings_deg") or {}
         for listener in run.guests:
@@ -218,7 +232,8 @@ def check_introductions(run: Run) -> list[Result]:
     problems = []
     for guest, best in faced.items():
         if best is None:
-            problems.append(f"no introduction to {guest}")
+            hint = f": {nameless[guest]}" if guest in nameless else ""
+            problems.append(f"no introduction to {guest}{hint}")
         elif best > INTRODUCTION_LIMIT_DEG:
             problems.append(
                 f"no introduction faced {guest}: the nearest was {best:.1f} deg off, "
@@ -233,6 +248,20 @@ def check_introductions(run: Run) -> list[Result]:
             ", ".join(f"{g} faced within {b:.1f} deg" for g, b in faced.items()),
         )
     ]
+
+
+def check_pronouns(run: Run) -> list[Result]:
+    """No robot line says "he", "she" or their other forms."""
+    lines = run.of_type("robot_line")
+    problems = []
+    for line in lines:
+        text = str(line.get("text", ""))
+        found = PRONOUNS.search(text.casefold())
+        if found is not None:
+            problems.append(f"{found.group(0)!r} at t={line['t']:g} s in {text!r}")
+    if problems:
+        return [Result("pronouns", False, "; ".join(problems))]
+    return [Result("pronouns", True, f"none in {len(lines)} lines")]
 
 
 def check_questions(run: Run) -> list[Result]:
@@ -436,6 +465,7 @@ CRITERIA: tuple[Callable[[Run], list[Result]], ...] = (
     check_gaze,
     check_offers,
     check_introductions,
+    check_pronouns,
     check_questions,
     check_arm_motion,
     check_bag,
@@ -461,6 +491,11 @@ def _people(call: dict[str, Any], where: str) -> list[dict[str, Any]]:
 
 def _norm(value: Any) -> str:
     return str(value).strip().casefold()
+
+
+def _whole_word(value: Any) -> re.Pattern[str]:
+    """A pattern for `value` as whole words in casefolded text."""
+    return re.compile(rf"\b{re.escape(_norm(value))}\b")
 
 
 def _remembers(args: dict[str, Any], want: dict[str, str]) -> bool:

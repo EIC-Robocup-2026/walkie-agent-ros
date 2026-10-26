@@ -8,7 +8,7 @@
     this page is the design for team review. Each of the
     [open questions](#open-questions) says what it blocks.
 
-The HRI task (RoboCup@Home 2026 rulebook, section 5.1) is the first task
+The HRI task (RoboCup@Home rulebook 2026.2, section 5.1) is the first task
 the [self-evolving agent](self-evolving-agent.md) will run end to end. It
 needs people, seats, gaze and one simple arm motion, but no object search,
 no skill server and no embedding bake-off, so it is the shortest path to a
@@ -19,9 +19,9 @@ on top of [Perception](perception.md) and
 
 ## Summary
 
-- **Slice 1 scores the main goal up to the bag hand-over:** up to 600 of
-  the task's 1,450 points, plus 60 bonus points for asking no confirmation
-  questions.
+- **Slice 1 scores the main goal up to the bag hand-over:** up to 660 of
+  the task's 1,450 points, including the 60 for asking no confirmation
+  questions, an additional goal (T:16).
 - **Off its path:** `DetectObjects`, `EmbedText`, the embedding bake-off,
   walkie-database's migration after it, person depth, the bundle runtime
   and the skill server.
@@ -35,6 +35,9 @@ on top of [Perception](perception.md) and
 - **The bag goes in the left hand.** The robot holds out its hand, the
   guest says when the bag is in it, and the gripper closes. The two poses
   it needs, `receive` and `carry`, come from walkie-agent-v2's hand-over.
+  Rulebook 2026.2 likely takes 25 points for asking the guest to say when,
+  and wants the gripper within 10 cm of the guest's hand
+  ([Against rulebook 2026.2](#against-rulebook-20262)).
 - **Gaze turns the base.** An agent-side loop publishes rotation only, on
   `/cmd_vel`, below Nav2 and the joystick in `twist_mux`. It is the one
   exception to `FORBIDDEN_NAMES` so far
@@ -65,44 +68,93 @@ each other: it looks at one guest and says the other's name and drink, for
 both guests. The second guest brings a bag for the host, who then leads
 the robot to a drop spot. The test lasts 7 minutes.
 
+The rules are those of rulebook 2026.2. A reference names a file of its
+source, [RoboCupAtHome/RuleBook](https://github.com/RoboCupAtHome/RuleBook)
+at the tag `2026.2`, and a line in it. T is the task,
+`tasks/HumanRobotInteractionChallenge.tex`, and S its score sheet,
+`scoresheets/HumanRobotInteractionChallenge.tex`. G/x is the general
+rules' `pages/general_rules/x.tex`.
+
 Rules that shape the design:
 
 - **Gaze is scored only when continuous.** Guests pace slightly left and
   right while they talk, and other people may appear behind them.
 - **The robot approaches.** It may not ask a guest to step in front of it.
-- **No confirmation questions.** "Did you say James?" loses the bonus.
-  Asking again after not hearing an answer is allowed. Continuing with a
-  wrong name or drink costs 40 points each.
+- **No confirmation questions.** "Did you say James?" loses 15 points
+  (S:11). Asking again after not hearing an answer is allowed. Continuing
+  with a wrong name or drink costs 40 points each.
+- **Modifiers stay within their item.** The modifiers and penalties listed
+  under a score item apply only to that item, and cannot take it below
+  zero (G/Organization:144).
 - **Seats change.** Passive guests may sit on the couch, referees may add
   chairs, and seated guests may switch seats before the introductions.
-- **No help with identities.** Asking who is who costs 200 points per
-  guest.
-- **The bag comes from the guest's hand.** Telling the guest to put it on
-  the robot scores nothing for the hand-over and costs 50 points. Asking
-  the guest for help during the hand-over reduces the score.
+- **No help with identities.** Asking for help to identify people reduces
+  the score (T:91), by an amount the rulebook does not give. The likely
+  reading is zero for that element, the general rule for a task element
+  completed through human assistance (G/ContinueRules:62).
+- **Acknowledge people.** The 2×−200 penalty is for not acknowledging
+  people: looking away from, or not turning toward, a person who tries to
+  interact (T:75). The pass check's gaze criterion covers the door
+  conversations, and the introductions criterion the introductions
+  ([In simulation](#in-simulation)). Neither covers the hand-over. With an
+  arm out the base cannot turn
+  ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)), so a guest who
+  moves then is not followed. The simulation's onlookers never speak, so a
+  person other than a guest who tries to talk to the robot goes untested.
+- **The bag comes from the guest's hand.** Asking the guest for help with
+  the hand-over costs 25 of the item's 50. A bag placed on the robot's
+  structure scores the item zero. For the full 50, the hand must be within
+  10 cm of the guest's hand, and the robot should not reach toward them
+  (T:101-107, [Against rulebook 2026.2](#against-rulebook-20262)).
+- **Help is a last resort.** The robot should first skip or defer what it
+  cannot do (G/ContinueRules:6). From the second request for help on, the
+  referee may stop the task (G/ContinueRules:72).
+- **The guests judge the interaction.** An interaction with a volunteer
+  scores only if the volunteer confirms that it worked. The referee may
+  ask them, for example, whether the robot held eye contact
+  (G/ScoringInteraction:1-11,
+  [Competition](competition.md#rulebook-20262-constraints)). That covers
+  the gaze items, the seat offer and the introductions.
+- **The referee gives the start signal.** The robot starts inside the
+  arena, so the referee gives a manual start signal, approved at the robot
+  inspection. When the robot is ready, it must tell the referee so, and
+  what to do to start it. The signal may not use a mouse or a keyboard
+  (G/Procedure:91-108). Today the operator starts the run on
+  `/walkie/task`, or an utterance with a keyword does, and the robot tells
+  the referee nothing first ([question 12](#open-questions)).
 - **Names and drinks are open.** Names are any popular English name, and
   drinks any popular drink, not only those in the object list.
 - **Only the two guests are introduced.** walkie-agent-v2 also introduced
-  the host, from environment variables. The 2026 score sheet does not ask
-  for it.
+  the host, from environment variables. The 2026.2 score sheet does not
+  ask for it.
+
+The score sheet, in its order:
 
 | Score item | Points | Slice 1 |
 | ---------- | ------ | ------- |
+| **Greeting** | | |
+| Detect the doorbell | 2×30 | No |
+| Open the door for a guest | 2×200 | No |
+| Look at the person talking, when receiving a guest | 2×50 | Yes, the gaze loop |
 | Offer a free seat | 2×100 | Yes |
 | Look in the direction of navigation | 2×15 | Yes, from Nav2 |
-| Look at the person talking, when receiving a guest | 2×50 | Yes, the gaze loop |
-| Introduce the guests: each one's name and drink | 4×30 | Yes |
+| Tell the second guest a visual attribute of the first | Up to 4×20: +20 per correct and −20 per incorrect attribute, never below zero | No ([Perception question 4](perception.md#open-questions)) |
+| Ask no questions to confirm or correct information | 4×15 | Yes |
+| **Introduction** | | |
+| Say each guest's name and favourite drink | 4×30 | Yes |
 | Look at the correct guest while introducing | 2×50 | Yes, the gaze loop |
-| Take the bag from the guest's hand | 50 | Yes, with the left gripper |
-| Follow the host, drop the bag | 200, 50 | No: [slice 2](#slice-2-following-the-host) |
-| Bonus: detect the doorbell | 2×30 | No |
-| Bonus: open the door | 2×200 | No |
-| Bonus: describe the first guest to the second | 4×20, and −20 per wrong attribute | No ([Perception question 4](perception.md#open-questions)) |
-| Bonus: no confirmation questions | 4×15 | Yes |
+| **Guiding** | | |
+| Receive the bag from the guest by hand-over | 50, −25 for requesting hand-over assistance and −50 for a bag placed on the robot, never below zero | Yes, with the left gripper ([Against rulebook 2026.2](#against-rulebook-20262)) |
+| Follow the host to the bag drop area | 200, with four penalties, never below zero | No: [slice 2](#slice-2-following-the-host) |
+| Drop the bag in the correct area | 50 | No: [slice 2](#slice-2-following-the-host) |
+| **Penalties** | | |
+| Wrong guest information memorized | 4×−40 | To avoid |
+| Alternative HRI | 6×−20 | To avoid |
+| Not acknowledging people | 2×−200 | To avoid |
 
-Penalties the slice must avoid: wrong information memorized (4×−40), not
-recognizing people (2×−200), an alternative input such as a keyboard
-(6×−20), and telling the guest to put the bag on the robot (−50).
+The last three penalties stand on their own, under no score item. An
+alternative HRI is an input other than speech, used to understand a
+guest's name or drink (T:90). Not acknowledging people is the rule above.
 
 ## One run
 
@@ -288,11 +340,16 @@ three, each with `face seen`.
 - **One view.** The robot looks from one living-room pose that sees every
   seat. walkie-agent-v2 turned to several headings and merged what it saw.
   Whether slice 1 needs that is [question 2](#open-questions).
-- **Showing the seat.** The robot turns to the free place with `look_at`
-  and says which one it is, for example "the left side of the sofa". A
-  pointing arm pose comes with the real arms. A seat handle keeps its
-  heading from when the image was seen, because the handle outlives the
-  TF buffer's 10 s.
+- **Showing the seat.** The robot must clearly indicate or point to a
+  seat for each guest (T:59). Rulebook 2026.1 said the same, but in 2026.2
+  the guest judges it (G/ScoringInteraction:3-4). The robot turns to the
+  free place with `look_at` and says which one it is, for example "the
+  left side of the sofa". Whether that counts as indicating it is
+  [question 13](#open-questions). A pointing pose for the right arm is
+  planned, used after `look_at` faces the seat. It needs its joint values
+  recorded in the simulation first, since `config/arm_poses.toml` cannot
+  hold a pose without them. A seat handle keeps its heading from when the
+  image was seen, because the handle outlives the TF buffer's 10 s.
 
 ### Faces collected while talking
 
@@ -364,12 +421,19 @@ space its samples out.
 - **Never ask who is who.** If a guest is not found, the LLM may turn to
   other seats with `look_at` and call `find_people` again.
 - **Look at the listener.** For each guest, `look_at` them, then say the
-  other guest's name, drink and side. Sides are from the listener's view,
-  the mirror of the camera's left to right.
+  other guest's name and drink, such as "Alex, this is Robin. Robin's
+  favourite drink is tea." The template's example uses names that are not
+  the scenario's, so the LLM cannot copy the simulation's answers from it.
+  The robot must also clearly identify the guest it introduces (T:63),
+  and the guest judges whether it did. A name alone may not show the
+  listener which person that is ([question 13](#open-questions)).
 - **Names, not pronouns.** The robot calls guests by name and never says
   "he" or "she", since it cannot know their pronouns. The system prompt
   has this rule, and another: a person or seat handle comes only from
-  `find_people` or `find_seats`.
+  `find_people` or `find_seats`. The template repeats it for the
+  introductions, where a pronoun would come most naturally, and the pass
+  check fails a run whose robot says one
+  ([In simulation](#in-simulation)).
 
 ## The bag hand-over
 
@@ -388,9 +452,11 @@ and the template repeats, and the pass check counts
    `move_arm_to_pose("receive", "left")`.
 3. **Wait for the guest.** `wait_for_person("Please hang your bag on my
    hand, and tell me when it is there.")` ends the turn.
-4. **Close.** In the next turn, `speak("Thank you. I will close my hand
-   now.")`, then `set_gripper("left", "close")`, which says whether the
-   gripper holds something.
+4. **Close.** In the next turn, `speak("I will close my hand now. Please
+   be careful.")`, then `set_gripper("left", "close")`, which says whether
+   the gripper holds something. The line is a courtesy warning. It
+   becomes the safety cue rulebook 2026.2 allows (T:107) only once the
+   robot detects the bag itself ([question 10](#open-questions)).
 5. **Carry.** `speak("I will lift your bag to carry it.")`, then
    `move_arm_to_pose("carry", "left")`. The arm move stopped the gaze
    loop, so `look_at` the guest again with the handle from the door, then
@@ -405,14 +471,15 @@ Why it works this way:
   walkie-agent-v2 waited instead for joint 4's effort to change by 0.4,
   after asking the guest to press down on the hand. That needs efforts
   from `/joint_states`, which no atomic reads. v2 also went on as if it
-  held the bag when that wait timed out.
+  held the bag when that wait timed out. Rulebook 2026.2 likely penalizes
+  the guest's answer ([Against rulebook 2026.2](#against-rulebook-20262)).
 - **One retry.** If the gripper holds nothing, the robot opens it and asks
   once more. After a second miss it moves to `carry` empty, says it will
   go on without the bag, and guides the guest. The template says so, so
-  the LLM does not keep asking. The rulebook lowers the score when the
-  robot asks the guest for help during the hand-over, without saying by
-  how much. Whether the first request already counts is unclear. v2's
-  request to press on the hand was the same kind of request.
+  the LLM does not keep asking. Rulebook 2026.2 takes 25 points for
+  requesting hand-over assistance (S:19), once, since the penalty has no
+  multiplier. The first request plausibly counts already. v2's request to
+  press on the hand was the same kind of request.
 - **No new atomics.** The two arm atomics from
   [Manipulation](manipulation.md#tools) do it. `move_arm_to_pose` checks
   the joints after the move, and `set_gripper` reads the fingers after a
@@ -447,6 +514,57 @@ Why it works this way:
   works again in `carry`, which is travel-safe.
 - **Thin handles.** Whether `grasped` sees a bag's handles is
   [question 5](#open-questions).
+
+### Against rulebook 2026.2
+
+The flow above was written for rulebook 2026.1, which already reduced the
+score when the robot asks the guest for help during the hand-over (T:101's
+first two sentences). Rulebook 2026.2 adds the conditions for the full 50
+(T:101-107) and sets the reduction at 25 points (S:19). The flow falls
+short of them in three places:
+
+- **The guest's answer plausibly costs 25 points.** The robot should ask
+  for the bag to be handed over (T:47), so the request itself is the
+  procedure. The risk is "tell me when it is there", which has the guest
+  time the close. That reads as asking the guest for help (T:101), so the
+  referee may take the 25 points for requesting hand-over assistance
+  (S:19). T:106 penalizes explicit verbal guidance from the operator, but
+  its example, "Place the item in my gripper, I'll close it in 3…2…1", is
+  in the robot's voice. Read that way, the robot's own placement
+  instruction, "Please hang your bag on my hand", may be penalized too
+  ([question 13](#open-questions)). The safety cue the rulebook allows
+  starts from the robot's own detection of the bag and gives an interval,
+  "I will close my gripper in 3 seconds" (T:107). The template's close
+  line follows the guest's answer instead, and gives no interval:
+  `speak` returns once the line is published, not once it is spoken, so
+  the close can start while the line still plays. The pass check enforces
+  the risky flow today: `arm_motion` fails a close that comes before the
+  answer to the bag request.
+- **The retry risks the task.** It adds no second 25, but from the second
+  request for help on, the referee may stop the task
+  (G/ContinueRules:72).
+- **The hand stays far from the guest's hand.** For the full 50, the
+  gripper must be within 10 cm of the guest's hand (T:104). In the
+  simulation the guest waits 1.71 m from `door`. With the left arm in
+  `receive`, the gripper is about 1.27 m from the guest's centre, and
+  about 0.85 m from a hand held out. A fixed pose at a fixed stop meets
+  10 cm only by chance, since the hand's height and side vary, and the
+  robot should not reach toward the guest (T:105). The simulation hangs
+  the bag through a parameter, and no criterion measures the distance
+  ([question 11](#open-questions)).
+
+Proposed instead, pending a decision ([question 10](#open-questions)): a
+hand-over in which the guest does not time the close. The robot asks for
+the bag (T:47) without asking the guest to say when it is there. It opens
+the hand and holds it still in `receive`, which shows that it is ready
+(T:103). After a wait it gives a safety cue and closes, and
+`set_gripper`'s read decides whether the bag is in the hand. Grasp
+detection cannot start the close, since the commander measures it only on
+a close. It is the verdict. A close on a timer alone gives up what the
+guest's answer gives today, a close that does not come on a hand still
+placing the bag, and it may read as a dangerous movement toward the guest
+(T:105). Ending the wait on a change of the wrist's effort would make it a
+close on detection, as T:107's cue has it.
 
 ## Gaze
 
@@ -859,14 +977,16 @@ line before each arm or gripper move, the move to the carry pose too. Once
 the left arm is in the receive pose, ask for the bag in one wait_for_person
 call, such as "Please hang your bag on my hand, and tell me when it is
 there." Never ask for the bag, or whether it is in your hand, with speak.
-Close the hand only after the answer to that call. If you hold nothing, ask
-once more the same way, then go on without the bag. Keep the bag in the
-carry pose until the end. An arm move stops look_at, so once the bag is in
-the carry pose, look_at the guest again with the same handle.
+After the answer to that call, say "I will close my hand now. Please be
+careful." and close the hand. If you hold nothing, ask once more the same
+way, then go on without the bag. Keep the bag in the carry pose until the
+end. An arm move stops look_at, so once the bag is in the carry pose,
+look_at the guest again with the same handle.
 Introduce the guests one at a time: look_at one guest, then in one speak
-call tell them the other guest's name and favourite drink. Then do the
-same for the other guest. The introductions end the task: ask nothing
-after them.
+call tell them the other guest's name and favourite drink, saying the name
+again rather than "he", "she", "his" or "her", such as "Alex, this is
+Robin. Robin's favourite drink is tea." Then do the same for the other
+guest. The introductions end the task: ask nothing after them.
 """
 todos = [
   { content = "Meet the first guest at the door and learn their name and drink", requires_tool = "remember_person" },
@@ -966,11 +1086,16 @@ flowchart LR
       migration 0002.
 - **What still blocks the people atomics on the robot** is walkie-vision's
   torch and face nodes, which publish vectors of those two models.
-- **The template, its pass check and the sim run are done.** Two sim runs
-  in a row passed every criterion of the check
+- **The template and its pass check are built, and a new sim run is
+  due.** Two sim runs in a row passed every criterion of the check
   ([In simulation](#in-simulation)). In both, Nav2 aborted the first
   drive to the door after the fresh bringup, and the agent's retry
-  arrived.
+  arrived. Both came before the pronouns criterion, and before the
+  introductions criterion checked names. A later run, logged on
+  2026-10-25 at 22:00, said "Sam, meet Ana. Her favourite drink is cola."
+  and "Ana, meet Sam. His favourite drink is milk.", which the pronouns
+  criterion now fails. That run already failed `gaze guest1`, at 84%
+  within 10° but a ratio of 1.02.
 - **From phase 2,** the slice takes only the toolbox core and the atomics
   above ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The arm
   atomics call the real commander through `CommanderClient`. In sim the
@@ -1221,7 +1346,12 @@ simulation's clock, so their times compare directly. A run passes when:
 - each seat offer faces a free place, never a taken one;
 - each guest is introduced to while the robot faces them within 10°, the
   gaze criterion's limit. An introduction is a robot line after both
-  guests are seated that names exactly one guest's drink;
+  guests are seated that names exactly one guest's drink, and that guest's
+  name too, each as whole words in any case, as in "Sam, this is Ana. Ana
+  likes cola.";
+- no robot line says "he", "she", "him", "her", "his", "hers", "himself"
+  or "herself", as whole words in any case, since the robot cannot know a
+  guest's pronouns. "They" is not checked;
 - the only questions are the four essential ones and the hand-over
   request, plus one repeat after the mumble, and one more hand-over
   request in the early-answer variant;
@@ -1239,7 +1369,9 @@ simulation's clock, so their times compare directly. A run passes when:
   valid;
 - it finishes within 7 minutes of sim time, from the template's seeding to
   the last item completed. `/walkie/todos` is latched, so a list left
-  finished by an earlier task does not count as the seeding;
+  finished by an earlier task does not count as the seeding. The seeding
+  is the rulebook's start only if it happens at the referee's start
+  signal ([question 12](#open-questions));
 - no `look_at` or `remember_person` call names an onlooker's or the
   bystander's track, and the robot never speaks while the gaze loop
   follows one of them.
@@ -1259,7 +1391,8 @@ either log has no time.
 `tests/test_hri_check.py` covers each criterion on hand-written logs.
 `tests/test_hri_scenario.py` also plays a whole run on the scenario node,
 with a real tool log, and checks that it passes, and that a wrong drink, a
-drive with an arm out and a call on an onlooker each fail their criterion.
+drive with an arm out, a call on an onlooker and a pronoun each fail their
+criterion.
 
 The 10° and 80% are first targets, to be tuned. Unit tests in
 `tests/test_perception.py` cover the seating and gesture rules ported from
@@ -1445,7 +1578,9 @@ repository:
    with thin and thick handles while the band is calibrated
    ([Manipulation](manipulation.md#safety)). If thin handles read as
    empty, judge the hand-over by the gripper's effort on `/joint_states`
-   instead. Blocks: the hand-over on the robot, not in sim.
+   instead. The self-detected hand-over of [question 10](#open-questions)
+   would also read efforts on `/joint_states`, but the wrist's, to end its
+   wait. Blocks: the hand-over on the robot, not in sim.
 6. **The next slice.** Settled: following the host and the drop, 250
    points, the largest block left
    ([Slice 2](#slice-2-following-the-host),
@@ -1494,6 +1629,95 @@ repository:
     Blocks: the follow loop, until walkie-ros bumps the submodule and the
     world's branch takes main's unified Nav2 config. The smoke test can
     run on main's MuJoCo stack with a local checkout of the branch.
+
+10. **What starts the close in the hand-over.** The robot should ask for
+    the bag to be handed over (T:47). Today the guest also says when the
+    bag is in the hand, which rulebook 2026.2 plausibly penalizes by 25
+    points (T:101, T:106,
+    [Against rulebook 2026.2](#against-rulebook-20262)). The options:
+    - **A hand-over the robot detects itself.** The robot asks for the
+      bag without asking the guest to say when it is there, opens the
+      left hand and moves it to `receive`. A new atomic,
+      `wait_for_handover`, holds the hand still for a set time, and
+      refuses unless that arm is in `receive` with its gripper open. Then
+      the robot gives a safety cue, closes, and `set_gripper`'s read
+      decides. A close on that timer alone gives up the guarantee the
+      guest's answer gives today, that the gripper does not close on a
+      hand still placing the bag, and it may read as a dangerous movement
+      toward the guest (T:105). A later robot change could end the wait
+      early on a change of the wrist's effort on `/joint_states`, which
+      `/get_joint_states` and MuJoCo do not give. That early end is what
+      would make the cue T:107's, a cue given once the robot detects the
+      bag. It needs the atomic, a scenario guest who hangs the bag
+      without answering, and a changed `arm_motion` criterion, and it may
+      conflict with the capability layer's `ctx.arms`. It plausibly avoids
+      the 25, pending [question 13](#open-questions).
+    - **An offer in one `wait_for_person` call,** such as "May I carry
+      your bag for you?", and the close after the answer. It is cheap, but
+      the guest's answer still times the close.
+    - **The current flow,** which plausibly loses the 25.
+
+    Recommended: the self-detected hand-over. Also open: whether a miss is
+    tried once more, opening the hand and waiting again with no spoken
+    request, or not at all. A silent retry asks for nothing, so it is no
+    second request for help (G/ContinueRules:72). Recommended: one silent
+    retry. Blocks: the full 50 for the hand-over, not a sim run.
+
+11. **Reaching within 10 cm of the guest's hand.** The gripper must be
+    within 10 cm of the guest's hand (T:104), but the robot should not
+    reach toward them (T:105). A fixed `receive` at the fixed `door` stays
+    about 0.85 m short in the simulation
+    ([Against rulebook 2026.2](#against-rulebook-20262)). Closing the gap
+    needs the guest's range: slice 2's legs in the lidar scans, or depth
+    at the wrist keypoints that `PersonDetection` carries in pixels. Then
+    the robot approaches to a standoff with `move_relative` before the arm
+    goes out, clear of the open door leaf on its left at `door`, and
+    reaches in one of two ways:
+    - a choice among a few receive poses recorded at different heights,
+      picked by the wrist's height, with no Cartesian goals;
+    - a Cartesian receive through a skill on the robot's side, since the
+      agent never calls `/go_to_pose`, with W2's speed scaling.
+
+    A `handover_distance` criterion would check it in the simulation.
+    Recommended: the approach and the recorded heights, in a later pull
+    request after slice 2's leg node, and asking the Technical Committee
+    how T:104 squares with T:105. Blocks: the full 50 for the hand-over,
+    not a sim run.
+
+12. **The start signal.** The referee must start the run with a manual
+    signal approved at the robot inspection, after the robot says that it
+    is ready and how to start it (G/Procedure:91-108). The options:
+    - **The referee says a keyword,** after a ready line such as "I am
+      ready. Say 'start' to begin.", and the template is seeded at that
+      moment. It reuses the keyword seeding.
+    - **Releasing the emergency stop,** which needs a read of its state.
+    - **A start button,** which needs hardware.
+
+    Recommended: the keyword. The time criterion matches the rulebook's
+    start only once the seeding happens at the signal. Blocks: a run in
+    the arena, not in sim.
+
+13. **Questions for the Technical Committee.**
+    - Whether a close the guest times ("tell me when it is there") counts
+      as requesting hand-over assistance (S:19, T:101).
+    - Whether T:106's example, "Place the item in my gripper, I'll close
+      it in 3…2…1", is the robot speaking. If it is, a placement
+      instruction from the robot, such as "Please hang your bag on my
+      hand", may be penalized too, although T:47 has the robot ask for
+      the bag.
+    - Whether facing a seat and naming it counts as indicating it (T:59),
+      now that the guest judges it ([Seats](#seats)). If it does not, the
+      robot needs the planned pointing pose, whose joint values a sim
+      session records first.
+    - Whether saying the other guest's name identifies them clearly
+      enough (T:63), now that the guest judges it. If it does not, the
+      template could add the other guest's side, from the listener's
+      view, the mirror of the camera's left to right. Or the robot could
+      glance at the other guest while saying their name, which T:63
+      allows.
+
+    Recommended: ask all four before the setup days. Blocks: nothing in
+    sim.
 
 ## Decisions
 

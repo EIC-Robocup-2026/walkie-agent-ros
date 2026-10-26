@@ -1,0 +1,29 @@
+# Named places for the HRI task on the real robot (pixi run agent-robot-hri).
+#
+# These are the places the HRI template drives to. They have no x and y yet,
+# so the agent refuses to start on this file until each place is measured on
+# the arena map that AMCL localizes in. On the setup days, drive the robot to
+# each place, read its pose with
+# `ROS_DOMAIN_ID=23 pixi run ros2 run tf2_ros tf2_echo map base_footprint`,
+# and fill in x, y and yaw without the "# " in front. Then rewrite each
+# description for the arena, since the LLM reads it, and commit the measured
+# file. The steps are in docs/robot-hri-run.md.
+#
+# x, y in meters, in the map frame; yaw in radians (0 = facing +x). Without
+# yaw the robot faces +x, so fill it in too. Add more places in the same way
+# when a task needs them.
+
+[locations.door]
+# Stand far enough into the room that the left arm's receive pose clears the
+# open door leaf, as in config/locations.chula_pat14_6.toml.
+# x =
+# y =
+# yaw =
+description = "Inside the arena, near the entrance door, facing out through the doorway. Guests wait outside the door."
+
+[locations.living_room]
+# One pose that sees every seat: the robot looks for seats from one view.
+# x =
+# y =
+# yaw =
+description = "In the living room, facing the sofa and chairs where guests sit."

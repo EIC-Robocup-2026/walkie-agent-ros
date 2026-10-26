@@ -975,7 +975,7 @@ above line up with its phases like this:
 | 4a. Sandbox and coder (sim) | The ROS bridge refuses every arm, gripper, head and lift controller at every level (`test_ros_bridge`). Fresh interlock checks before every M call | none |
 | 4b. Unrestricted extras | On harvest evidence: `ctx.handles.load` and `cv2`. No raw arm controllers and no raw base commands ([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)) | none |
 | 5. Harvest v0 | `FakeSkillServer`, mirroring picks and places into MuJoCo | none |
-| Real backends, from phase 2 | The capability layer: `ctx.arms` in its PR A, `ctx.base` in PR B, and the MotionSupervisor with the `/trajectory_execution_event` forbidden name in PR C, which needs arm phase 0 ([Robot Capabilities](capabilities.md#delivery-plan)). Then the skill-server client (W4, W5). The commander client and `FakeCommander` are built. Done when the bundle tests rerun against the real clients. After PR C and steps R0 to R4, `pixi run agent` adds `--arms` | 1 and 3, real |
+| Real backends, from phase 2 | The capability layer: `ctx.arms` in its PR A, `ctx.base` in PR B, and the MotionSupervisor with the `/trajectory_execution_event` forbidden name in PR C, which needs arm phase 0 ([Robot Capabilities](capabilities.md#delivery-plan)). Then the skill-server client (W4, W5). The commander client and `FakeCommander` are built. Done when the bundle tests rerun against the real clients. After PR C and steps R0 to R4, `pixi run agent` and `pixi run agent-robot-hri` add `--arms` | 1 and 3, real |
 
 - Phase 1 of the self-evolving agent changes nothing for the arms. Phase 6
   adds the taint filter, which hides the M tools together with the N tools

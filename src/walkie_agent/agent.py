@@ -27,11 +27,12 @@ from walkie_agent.locations import Location
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory
 from walkie_agent.perception.vision_feed import VisionFeed
 from walkie_agent.tasks import TaskTemplate, match_template, parse_task_message
-from walkie_agent.todo import TodoItem, TodoList, console_line
+from walkie_agent.todo import TodoItem, TodoList, TodoRejected, console_line
 from walkie_agent.tool_log import ToolLog
 from walkie_agent.toolbox import Toolbox
 from walkie_agent.tools import build_walkie_tools
 from walkie_agent.tools.atomic import _perception
+from walkie_agent.tools.atomic._arm import ARM
 from walkie_agent.tuning import Tuning
 from walkie_agent.whoami import build_system_prompt
 
@@ -103,6 +104,11 @@ ARM_RULES = """\
 # tool rounds per run: room for a seeded task, and an end to a loop.
 RECURSION_LIMIT = 100
 
+# The flag of walkie_agent.main that adds a backend an atomic tool needs, for
+# the error that names a seeded step's missing tool. main() always adds the
+# other backends: the vision feed, the gaze loop and a people memory.
+BACKEND_FLAGS = {ARM: "--arms"}
+
 _STOP_UTTERANCES = frozenset({"stop", "never mind", "nevermind"})
 
 
@@ -140,6 +146,11 @@ class WalkieAgent(LangChainAgent):
     - submit() sends a task with a seeded todo list (ADR-0041). A message
       without a seed that starts while no todo item is open, and contains a
       template's keyword, starts with the template's task and todos.
+    - A seed whose requires_tool names a tool that this run did not load is
+      refused: submit() raises TodoRejected, and a template picked by a
+      keyword does not start, with the reason on the target connectors. The
+      reason names the step, the tool and the flag that loads it, such as
+      --arms. Each template that cannot start is also logged at startup.
     - subscribe_task() takes seeded tasks from the operator's task topic,
       and publish_todos() publishes the list on a latched topic. Every status
       change also goes to the target connectors as one console line.
@@ -205,6 +216,15 @@ class WalkieAgent(LangChainAgent):
         self.session_id = ""
         self._start_session()
         self.todos.add_listener(self._send_status_lines)
+        for template in self.templates.values():
+            problems = self._unloaded_seed_tools(template.todos, "seed")
+            if problems:
+                # A warning and not an error: the run still serves every
+                # other task, and the template is refused when it is picked.
+                self.logger.warning(
+                    f"Task template '{template.name}' cannot start in this run: "
+                    f"{'; '.join(problems)}."
+                )
 
     def __call__(self, msg: HRIMessage) -> None:
         """Queues a message. RAI calls this for every message on a subscribed source."""
@@ -221,12 +241,12 @@ class WalkieAgent(LangChainAgent):
         When the task starts, `todos` replaces the current list; [] starts it
         with an empty list, and None keeps the list as any other message does.
         The seed is checked here, so a bad seed raises TodoRejected in the
-        caller rather than on the agent thread.
+        caller rather than on the agent thread. So does a seed with a step
+        whose requires_tool is not loaded in this run.
         """
         seed = None
         if todos is not None:
-            # A scratch list runs the same checks that the real seed will.
-            TodoList().seed(todos, source)
+            self._check_seed(todos, source, "The task")
             seed = _Seed(items=copy.deepcopy(list(todos)), source=source)
         self._enqueue(HRIMessage(text=text, message_author="human"), seed)
 
@@ -425,7 +445,15 @@ class WalkieAgent(LangChainAgent):
 
         try:
             self.logger.info("Running agent...")
-            text = self._prepare_todos(msg.text, seed)
+            try:
+                text = self._prepare_todos(msg.text, seed)
+            except TodoRejected as e:
+                # A template picked by a keyword whose steps need a tool this
+                # run did not load, such as an arm tool without --arms. The
+                # task does not run, and the operator console says why.
+                self.logger.error(str(e))
+                self._send_to_targets(str(e))
+                return
             # The trailing newline keeps the format of RAI's _reduce_messages.
             message = HRIMessage(
                 text=f"{text}\n",
@@ -463,21 +491,73 @@ class WalkieAgent(LangChainAgent):
         # A message without a seed may be the answer to a wait_for_person
         # question.
         self.todos.resume_waiting()
-        # A finished list does not carry into the next task.
-        replaced = not self.todos.is_empty and not self.todos.open_ids()
-        if replaced:
-            self.todos.clear()
         # With items open, the message belongs to the current task. The check
         # runs here, when the message starts, and not when it arrives: a task
         # queued before it may still open or finish items.
         template = None if self.todos.open_ids() else match_template(text, self.templates)
         if template is not None:
             self.logger.info(f"The message matches task template '{template.name}'.")
+            # Before the list changes, so a refused template leaves it as it was.
+            self._check_seed(template.todos, "seed", f"Task template '{template.name}'")
+        # A finished list does not carry into the next task.
+        replaced = not self.todos.is_empty and not self.todos.open_ids()
+        if replaced:
+            self.todos.clear()
+        if template is not None:
             self.todos.seed(template.todos, "seed")
             replaced = True
         if replaced:
             self._toolbox_new_task()
         return text if template is None else template.prompt(text)
+
+    def _check_seed(
+        self, todos: list[str | dict[str, Any]], source: Literal["seed", "operator"], what: str
+    ) -> None:
+        """Raise TodoRejected for a seed that cannot start in this run.
+
+        `what` names the seed in the message, such as "Task template 'hri'".
+        """
+        problems = self._unloaded_seed_tools(todos, source)
+        if problems:
+            raise TodoRejected(f"{what} cannot start in this run: {'; '.join(problems)}.")
+
+    def _unloaded_seed_tools(
+        self, todos: list[str | dict[str, Any]], source: Literal["seed", "operator"]
+    ) -> list[str]:
+        """One reason per seeded step whose requires_tool is not loaded.
+
+        A scratch list runs the same checks that the real seed will, so a
+        malformed seed raises TodoRejected here. A step whose tool is not
+        loaded could never be completed (docs/learn/todo-rules.md), and the
+        run would find out only when it reached that step.
+        """
+        scratch = TodoList()
+        scratch.seed(todos, source)
+        loaded = set(self.tools.names())
+        return [
+            f"{item.id} ({item.content}) needs {item.requires_tool}, "
+            f"{self._why_unloaded(item.requires_tool)}"
+            for item in scratch.snapshot()
+            if item.requires_tool and item.requires_tool not in loaded
+        ]
+
+    def _why_unloaded(self, tool: str) -> str:
+        """Why `tool` is not loaded, with the flag that loads it when there is one."""
+        toolbox = self.toolbox
+        atomic = None
+        if toolbox is not None:
+            atomic = next((a for a in toolbox.atomics if a.META.name == tool), None)
+        if toolbox is None or atomic is None:
+            return "which is not a tool of this agent"
+        missing = [
+            name for name in atomic.META.requires if not toolbox.ctx.has_backend(name)
+        ]
+        flags = [BACKEND_FLAGS[name] for name in missing if name in BACKEND_FLAGS]
+        if flags:
+            return f"which loads only with {' and '.join(flags)}"
+        if missing:
+            return f"which needs the {', '.join(missing)} backend"
+        return "which is not loaded"
 
     def _submit_task_message(self, data: str, topic: str) -> None:
         # Runs in the connector's executor, where an exception would end the

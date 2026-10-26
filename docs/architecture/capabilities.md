@@ -757,8 +757,9 @@ and fakes.
 - **Robot check:** Manipulation's step R4, a reset mid-move with both arms
   ([Testing](manipulation.md#testing)).
 - **Unblocks:** `--arms` on the robot, the gate on Manipulation's
-  real-backends track. `pixi run agent` adds the flag once Manipulation's
-  robot steps R0 to R4 pass, which need walkie-ros's W8 and W9
+  real-backends track. `pixi run agent` and `pixi run agent-robot-hri` add
+  the flag once Manipulation's robot steps R0 to R4 pass, which need
+  walkie-ros's W8 and W9
   ([Testing](manipulation.md#testing)). With it, HRI slice 1 and slice 2
   can run on the robot.
 

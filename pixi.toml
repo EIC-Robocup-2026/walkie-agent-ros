@@ -157,6 +157,25 @@ description = "Run a fake robot (Nav2 action, TF, speech topic) for testing with
 cmd = "python -m walkie_agent.main"
 description = "Run the Walkie RAI agent (reads tasks from /from_human)"
 
+# The HRI task on the real robot; the steps are in docs/robot-hri-run.md. It
+# runs on walkie-ros's domain 23 (ADR-0017) and uses the robot's Zenoh router
+# on localhost:7447. config/locations.robot.toml lists door and living_room
+# without coordinates, so the agent refuses to start until they are measured
+# on the arena map. Without --mock-people-memory, the people tools use
+# walkie-database's people services, on the same domain and router.
+# --tool-log writes logs/agent_tools_<time>.jsonl, the record of the run.
+# --arms is left out. It waits for the robot track's MotionSupervisor
+# (capability layer PR C, docs/architecture/manipulation.md), which stops
+# MoveIt on a reset and refuses arm motion during any drive, and for robot
+# steps R0 to R4. Without it, the hri template is refused at start, because
+# its bag step needs set_gripper. Once PR C has landed and the runbook's arm
+# steps are done, run `pixi run agent-robot-hri --arms`, then add --arms to
+# cmd here.
+[tasks.agent-robot-hri]
+cmd = "python -m walkie_agent.main --locations config/locations.robot.toml --tool-log"
+env = { ROS_DOMAIN_ID = "23" }
+description = "Run the agent for the HRI task on the real robot (domain 23)"
+
 # The agent against walkie-ros's MuJoCo simulation (blank map). It uses the
 # Zenoh router on localhost:7447, from either repository, and the calling
 # shell's ROS_DOMAIN_ID, which must match the simulation's (ADR-0036). See
@@ -164,10 +183,11 @@ description = "Run the Walkie RAI agent (reads tasks from /from_human)"
 # recognize_person and remember_person store in an in-memory mock, cleared at
 # every new task: the simulation's fake vision models have no vector tables
 # in walkie-database. --arms loads the arm tools on walkie-ros's
-# bimanual_commander and the arm check before every drive. The robot task
-# `agent` leaves both out: --arms waits for the robot track's
-# MotionSupervisor (manipulation.md), and without --mock-people-memory the
-# two people tools use walkie-database's people services.
+# bimanual_commander and the arm check before every drive. The robot tasks
+# `agent` and `agent-robot-hri` leave both out: --arms waits for the robot
+# track's MotionSupervisor (manipulation.md), and without
+# --mock-people-memory the two people tools use walkie-database's people
+# services.
 [tasks.agent-sim]
 cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.sim.toml --mock-people-memory --arms"
 description = "Run the agent against walkie-ros's MuJoCo simulation (the shell's ROS_DOMAIN_ID)"

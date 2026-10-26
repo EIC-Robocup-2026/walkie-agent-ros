@@ -196,8 +196,9 @@ flowchart TD
   its outcome, the text the LLM read, an atomic's full result, the people
   and seats it named with the track behind each, and what the gaze loop
   was doing when the robot spoke. The HRI pass check reads it beside the
-  scenario's event log ([HRI Task](hri.md#in-simulation)), and
-  `pixi run agent-sim-hri` turns it on. The format is in
+  scenario's event log ([HRI Task](hri.md#in-simulation)).
+  `pixi run agent-sim-hri` and `pixi run agent-robot-hri` turn it on. The
+  format is in
   `walkie_agent.tool_log`'s docstring. A failure to write is logged once
   and never stops a call.
 - **Completion gate.** The LLM may answer without a tool call while todo
@@ -241,7 +242,10 @@ example while the agent waits for an answer.
 `WalkieAgent.submit(text, todos)` queues a task with its steps already
 written. The seed replaces the list when that task starts, before the first
 LLM call. Seeded steps cannot be reworded or removed. A bad seed raises
-`TodoRejected` from `submit()` at once, not later on the agent thread.
+`TodoRejected` from `submit()` at once, not later on the agent thread. So
+does a seed with a step whose `requires_tool` this run did not load, such
+as an arm tool without `--arms`, since that step could never be completed
+([Seeding a Task](../learn/seeding.md#steps-whose-tool-is-not-loaded)).
 The operator can seed a task over ROS on `/walkie/task`, and an utterance
 can start a template
 ([ADR-0041](decisions/0041-todo-list-and-seeding.md)).
@@ -272,7 +276,8 @@ one of two forms:
   joins the same queue as an utterance.
 - **A malformed message is logged as a warning and ignored.** Examples are
   text that is not JSON, an unknown key, both or neither of `todos` and
-  `template`, an unknown template or a bad step. The topic keeps working.
+  `template`, an unknown template, a bad step, or a step whose tool is not
+  loaded. The topic keeps working.
 
 ### Task templates
 
@@ -311,6 +316,11 @@ todos = [
 - **The file is checked at startup.** A missing file means no templates. A
   bad template, such as an unknown key, no task text or a bad step, stops
   the agent with an error that names the file and the template.
+- **A template whose tools are not loaded does not start.** The agent
+  logs a warning for it at startup. When a keyword picks it, the task is
+  refused with the step, the tool and the flag that loads it, and the list
+  stays as it was. Without `--arms`, the `hri` template is refused, since
+  its bag step needs `set_gripper`.
 
 ### Following the list
 
@@ -809,7 +819,8 @@ and no message types
   `match_faces` and `match_appearances`. `InMemoryPeopleMemory` is a mock
   of them for sim, whose fake models have no vector tables in
   walkie-database. `pixi run agent-sim` passes the flag, and
-  `pixi run agent` does not. `Toolbox.on_new_task` clears either, so each
+  `pixi run agent` and `pixi run agent-robot-hri` do not.
+  `Toolbox.on_new_task` clears either, so each
   task starts with no guests. The client's module docstring has the
   details:
     - **The session.** By default the client forgets walkie-database's
@@ -841,9 +852,12 @@ and no message types
   (`src/walkie_agent/arm/commander.py`), the agent's one client of
   walkie-ros's `bimanual_commander`. It loads `config/arm_poses.toml` and
   raises `ArmPoseError` when the file is wrong, so the agent does not
-  start. `pixi run agent-sim` passes the flag, and `pixi run agent` does
-  not, until the MotionSupervisor exists
-  ([PR C](capabilities.md#pr-c-the-motionsupervisor)). With it, the arm rules are added
+  start. `pixi run agent-sim` passes the flag, and `pixi run agent` and
+  `pixi run agent-robot-hri` do not, until the MotionSupervisor exists
+  ([PR C](capabilities.md#pr-c-the-motionsupervisor)). Without it, a seed
+  with an arm step is refused
+  ([Seeding a Task](../learn/seeding.md#steps-whose-tool-is-not-loaded)).
+  With it, the arm rules are added
   to the system prompt, and `navigate_to_location` and `move_relative`
   check the arms before they drive. Without a commander running, the arm
   atomics fail with `UNAVAILABLE`, and the robot drives with the arm state

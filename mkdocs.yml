@@ -80,6 +80,7 @@ markdown_extensions:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Run HRI on the Robot: robot-hri-run.md
   - Setup Log:
       - setup/index.md
       - 1. Create the Pixi Workspace: setup/01-pixi-workspace.md

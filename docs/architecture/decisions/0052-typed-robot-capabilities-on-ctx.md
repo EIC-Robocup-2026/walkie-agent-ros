@@ -110,14 +110,27 @@ same default tree, `nav_to_pose_real_recovery_bt.xml`.
     - `ctx.speech`, effect S: `say(text)`.
     - `ctx.pose`: `latest(max_age_s)`, `fresh(timeout_s)` and
       `at(stamp_ns, timeout_s)`. Each method names its staleness rule.
-    - `ctx.arms`, effect M: `poses()`, `state()`, `move_to(pose, arm)` and
-      `gripper(arm, state)`, with `open`, `half` or `close`.
-    - `ctx.gaze`, effect N: `look_at(handle)`, `stop()` and `status()`.
+    - `ctx.arms`, effect M: `poses()`, an ordered mapping by name,
+      `state(read)`, `move_to(pose, arm)`, which returns `ArmsMoved`, and
+      `gripper(arm, state)`, which moves one gripper to `open`, `half` or
+      `close` and returns `GripperMoved`. `state()` returns an
+      `ArmsReport` built from the client's snapshot. `read` None reads the
+      arms only when their state is unknown, True always, False never.
+      The errors keep the commander's codes and `data`, with the arm
+      atomics' full messages.
+    - `ctx.gaze`, effect N: `look_at(handle)`, which returns `Looking`,
+      `face(looking, timeout_s)`, which holds `look_at`'s facing poll and
+      its TF read, `stop(reason)`, with `STOP_LOOKING` by default, and
+      `status()`.
     - `ctx.vision`, effect P: `people(max_age_s)` and
       `objects(labels, max_age_s)`. They return typed records with handles,
-      never `walkie_vision_msgs`.
+      never `walkie_vision_msgs`. Detections are "object" handles, and
+      nothing in view returns an empty list.
     - Plain members: `now_ns()`, `in_simulation`, `sleep(seconds)` and
-      `wait_until(ready, timeout_s, what)`.
+      `wait_until(ready, timeout_s, what)`, and `clock`, which times
+      `wait()`, `sleep()`, `wait_until()`, `ctx.pose`'s waits and the
+      handle ages. `ctx.gaze.face()` keeps the node clock. A
+      `ToolContext` takes a factory per capability, and `in_simulation`.
 - **Where they live.** The Protocols and records go in
   `src/walkie_agent/capabilities/`, which imports no rclpy. The records it
   reuses today live in modules that load rclpy, so `Pose2D`, `GazeStatus`,
@@ -185,12 +198,17 @@ same default tree, `nav_to_pose_real_recovery_bt.xml`.
   the node is on the graph.
 - **Fakes.** `walkie_agent.testing` provides `fake_ctx()`: in-memory fakes of
   the six Protocols, a log of the capability calls, scripted faults and a
-  fake clock, passed to `ToolContext` as its clock. Contract tests run the
-  same cases on the fakes and on the ROS implementations over `FakeWalkie`
-  and `FakeCommander`
-  ([ADR-0019](/architecture/decisions/0019-test-fakes-fast-dds.md)). They
-  check the safety order on both sides. Atomic tests check only the calls
-  the atomic makes. The fakes are test code, never registered as backends.
+  fake clock, passed to `ToolContext` as its clock. The ctx runs on a fake
+  connector and node, with no TF buffer. The fakes share the real code that
+  needs no ROS, such as the pose checks, the arm sentences and the arm
+  check. Contract tests run the same cases on the fakes and on the ROS
+  implementations
+  ([ADR-0019](/architecture/decisions/0019-test-fakes-fast-dds.md)): for
+  `pose`, `arms`, `gaze` and `vision` with PR A, over a TF buffer,
+  `FakeCommander`, the `GazeLoop` and `VisionFeed`, and for `base` over
+  `FakeWalkie` once `ctx.base` is built. They check the safety steps on
+  both sides. Atomic tests check only the calls the atomic makes. The
+  fakes are test code, never registered as backends.
 - **The MotionSupervisor sits beneath `ctx.base` and `ctx.arms`.** It is a
   separate change, after `ctx.base` drives. It owns every base, arm, gripper
   and, later, skill goal.

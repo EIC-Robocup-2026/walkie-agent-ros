@@ -705,23 +705,37 @@ memory is cleared at the same moments, through `Toolbox.on_new_task`.
 
 Every `run(ctx, args)` gets the same `ToolContext`. Atomics reach ROS,
 their backends and the handles only through it, so the guard rails live in
-one place. [Robot Capabilities](capabilities.md) proposes typed members on
-it, such as `ctx.base` and `ctx.speech`, so that new atomics need no rclpy
-and no message types
-([ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)).
+one place. Its typed members, `ctx.pose`, `ctx.arms`, `ctx.gaze` and
+`ctx.vision`, are built, so a new atomic needs no rclpy and no message
+types ([Robot Capabilities](capabilities.md),
+[ADR-0052](decisions/0052-typed-robot-capabilities-on-ctx.md)).
+`ctx.base` and `ctx.speech` are Protocols with fakes only, until PR B
+builds them on ROS.
 
 | Member | What it does |
 | ------ | ------------ |
 | `connector`, `node`, `logger` | RAI's `ROS2Connector`, its rclpy node, and a logger |
 | `backend(name)`, `has_backend(name)` | The clients passed to `Toolbox` by name, such as `"arm"`. A missing one raises `UNAVAILABLE`. Tests pass fakes |
+| `base`, `speech` | Driving and speaking, as the `Base` and `Speech` Protocols of `walkie_agent.capabilities`. No ROS implementation yet, so they raise `UNAVAILABLE` outside the fakes |
+| `pose` | The base's pose from TF: `latest(max_age_s=...)`, `fresh(timeout_s=1.0)` and `at(stamp_ns, timeout_s=...)` |
+| `arms` | The named arm poses on the `"arm"` backend: `poses()`, `state(read=None)`, `move_to(pose, arm="both")` and `gripper(arm, state)`, with the arm atomics' errors and safety steps |
+| `gaze` | The gaze loop on the `"gaze"` backend: `look_at(handle)`, `face(looking, timeout_s)`, `stop(reason=None)` and `status()` |
+| `vision` | The people and objects on the `"vision"` backend: `people(max_age_s=...)` and `objects(labels=(), max_age_s=...)`, each stored as one handle set |
 | `handles` | The `HandleStore` above |
 | `cancel`, `check_cancelled()` | A `threading.Event` that a stop or a reset sets. `check_cancelled()` then raises `CANCELLED` |
 | `wait(future, timeout_s, what="The call")` | Waits for a future that the connector's executor completes, and returns its result. Raises `TIMEOUT: <what> did not finish within <timeout_s> s.`, or `CANCELLED` within 50 ms of a stop or a reset |
-| `now()` | The node clock's time, which follows `/clock` under sim time |
+| `sleep(seconds)`, `wait_until(ready, timeout_s, what="The call")` | Wait on the ctx's clock. `sleep` returns after `seconds`, or raises `CANCELLED` within 50 ms of a stop or a reset. `wait_until` returns once `ready()` is true, or raises `wait()`'s `TIMEOUT` and `CANCELLED`. It calls `ready` first, so a condition that already holds costs no wait |
+| `clock` | The clock the waits and the handle ages use: the system clock, or `walkie_agent.testing`'s `FakeClock` in tests |
+| `now()`, `now_ns()` | The node clock's time, which follows `/clock` under sim time, and the same in nanoseconds |
+| `in_simulation` | True on sim time, read from the node's `use_sim_time` parameter, unless the ctx was built with `in_simulation` |
 | `robot_pose(timeout_s=1.0)` | A `Pose2D` (`x`, `y`, `yaw`) from the latest TF `map` -> `base_footprint`. Raises `UNAVAILABLE`, with `move_relative`'s hint when no node publishes `/tf` |
 | `tf_buffer` | The node's TF buffer, for a transform at an image's stamp: the camera's, as `camera_transform` needs, and the base's, for a handle's pose at capture. It is RAI's private `connector._tf_buffer`, reused so that each node keeps one buffer and one listener. Recheck it on every rai-core upgrade |
 | `subscription(msg_type, topic, callback, qos)`, `publisher(msg_type, topic, qos)`, `service_client(srv_type, name)`, `action_client(action_type, name)` | The node's entity for that name, created on the first call |
 
+- **A missing capability is `UNAVAILABLE`.** Each capability is built on
+  its first use and kept. Without its backend, or without a ROS
+  implementation, it raises `UNAVAILABLE: The <name> capability is not
+  available.`
 - **`wait()` leaves the future alone.** After a `TIMEOUT` or `CANCELLED`,
   the atomic cancels its goal or drops its request itself.
 - **`robot_pose()` takes the latest transform, however old.**

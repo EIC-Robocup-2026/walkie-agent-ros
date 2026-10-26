@@ -47,8 +47,8 @@ class Out(ToolOutput):
 
 
 def run(ctx: ToolContext, args: Args) -> Out:
-    gaze = shared.gaze_loop(ctx)
-    stopped = gaze.stop(STOP_LOOKING)
+    # The reason is STOP_LOOKING, ctx.gaze.stop()'s default.
+    stopped = ctx.gaze.stop()
     if stopped is not None:
         return Out(
             summary=f"Stopped looking at {stopped}.",
@@ -56,7 +56,7 @@ def run(ctx: ToolContext, args: Args) -> Out:
             last_target=stopped,
             reason=STOP_LOOKING,
         )
-    status = gaze.status()
+    status = ctx.gaze.status()
     if status.target is None or status.stop_reason is None or status.stopped_at is None:
         return Out(summary="Not looking at anyone.", stopped=None, last_target=None, reason=None)
     # max(): a clock that jumped back, as at a simulation restart, gives no

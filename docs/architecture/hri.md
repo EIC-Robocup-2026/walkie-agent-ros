@@ -25,8 +25,9 @@ on top of [Perception](perception.md) and
 - **Off its path:** `DetectObjects`, `EmbedText`, the embedding bake-off,
   walkie-database's migration after it, person depth, the bundle runtime
   and the skill server.
-- **On its path:** walkie-vision's torch and face nodes, walkie-database's
-  people services, built in its commit 64403e9, and in this repository
+- **On its path:** walkie-vision's vision node, built in its commit
+  1576d6f, walkie-database's people services, built in its commit 64403e9,
+  and in this repository
   phase 1, six atomics and the arm atomics, the gaze loop and the HRI
   template, all built. On the robot, also the MotionSupervisor, from the
   capability layer's PR C
@@ -191,7 +192,10 @@ flowchart TB
   run `PathAngleCritic` in forward-preference mode. Nothing more is built
   for "look in the direction of navigation", but the sim checks it.
 - **The robot drives to fixed locations,** `door` and `living_room` in
-  `config/locations.toml`, set on the setup days. In the simulation they
+  `config/locations.robot.toml`, measured on the arena map on the setup
+  days. Until both have coordinates, the agent refuses to start on the
+  file ([Run HRI on the Robot](../robot-hri-run.md#6-measure-the-places)).
+  In the simulation they
   are in `config/locations.chula_pat14_6.toml`
   ([In simulation](#in-simulation)). In slice 1 it never drives to a
   person, so `localize_person` and a person's depth stay off the path
@@ -313,10 +317,12 @@ three, each with `face seen`.
 
 ### Seats
 
-- **Seat classes.** The torch node's streaming class list includes
-  `chair`, `sofa`, `armchair` and `stool`, the classes walkie-agent-v2
-  used (`HRI_SEAT_CLASSES`). How a task sets that list is
-  [question 1](#open-questions). `find_seats` reads the seat classes from
+- **Seat classes.** The vision node's streaming class list for the HRI
+  task is `chair`, `sofa`, `armchair` and `stool`, the classes
+  walkie-agent-v2 used (`HRI_SEAT_CLASSES`). walkie-vision keeps one list
+  per task, in `config/tasks/<task>.yaml`, chosen by the launch's `task`
+  argument, whose default is `hri` ([question 1](#open-questions)).
+  `find_seats` reads the seat classes from
   `SeatingConfig` in `perception/seating.py`. When the objects message's
   class list holds none of them, its `NOT_FOUND` says the detector is not
   looking for seats.
@@ -408,9 +414,9 @@ The vectors of a person handle, for `recognize_person` and
 their model, as walkie-agent-v2's enrollment did.
 
 Faces from several angles help at the introductions, when the guest is
-seated and seen from elsewhere. At the camera's 15 Hz, though, 20 vectors
-are only the last 1.3 s or so before the call, so they show the angles of
-that moment. Faces from the whole conversation would need `VisionFeed` to
+seated and seen from elsewhere. The vision node publishes 5 to 10 people
+arrays a second, though, so 20 vectors are only the last 2 to 4 s or so
+before the call, and they show the angles of that moment. Faces from the whole conversation would need `VisionFeed` to
 space its samples out.
 
 ### Introductions
@@ -1000,7 +1006,9 @@ todos = [
 
 The operator starts a run with the template on `/walkie/task`, as
 [Getting Started](../getting-started.md#run-the-hri-scenario) shows. An utterance with one of
-its keywords picks it too, while no todo item is open.
+its keywords picks it too, while no todo item is open. The bag step needs
+`set_gripper`, so a run without `--arms` refuses the template at start
+([Seeding a Task](../learn/seeding.md#steps-whose-tool-is-not-loaded)).
 
 The run uses no preset. Each step is two to four atomic calls, the
 hand-over about six over two turns, and the first goal is to see how the new agent loop handles a real task. Presets
@@ -1038,10 +1046,10 @@ The run on the robot:
 
 ```mermaid
 flowchart LR
-    t["<b>walkie-agent-ros</b><br/>Sim run passes"]:::proposed
-    v1["<b>walkie-vision</b><br/>Torch node: YOLOE with<br/>seat classes, pose, OSNet"]
-    v2["<b>walkie-vision</b><br/>Face node, faces in<br/>PersonDetection"]
+    t["<b>walkie-agent-ros</b><br/>Sim run passes<br/>the 2026.2 check"]:::proposed
+    v["<b>walkie-vision</b><br/>Vision node: seat classes,<br/>pose, faces, OSNet<br/>(done)"]
     d3["<b>walkie-database</b><br/>People services built<br/>(done)"]
+    lo["<b>walkie-agent-ros</b><br/>door and living_room<br/>measured on the arena map"]:::proposed
     cb["<b>walkie-agent-ros</b><br/>Capability layer PR A and B:<br/>ctx.base, ctx.arms, reset cancels a drive"]:::proposed
     ac["<b>walkie-agent-ros</b><br/>Capability layer PR C:<br/>MotionSupervisor"]:::proposed
     ht["<b>walkie-ros</b><br/>navigation submodule bump:<br/>head_tilt_near_goal switch, off"]:::proposed
@@ -1050,12 +1058,12 @@ flowchart LR
     rs["<b>walkie-agent-ros</b><br/>Manipulation's robot<br/>steps R0 to R4"]:::proposed
     rp["<b>walkie-agent-ros</b><br/>receive and carry<br/>re-recorded on the robot"]:::proposed
     w2["<b>walkie-ros</b><br/>W2: arm speed scaling"]
-    r["<b>walkie-agent-ros</b><br/>Real clients,<br/>run on the robot with --arms"]
+    r["<b>walkie-agent-ros</b><br/>Real clients, run on the robot:<br/>agent-robot-hri --arms"]
 
     t --> r
-    v1 --> r
-    v2 --> r
+    v --> r
     d3 --> r
+    lo --> r
     cb --> ac
     ac --> rs
     w8 --> rs
@@ -1084,8 +1092,11 @@ flowchart LR
     - the vector tables `face_arcface_w600k_r50` and
       `appearance_osnet_x1_0_msmt17`, 512 values each, from its
       migration 0002.
-- **What still blocks the people atomics on the robot** is walkie-vision's
-  torch and face nodes, which publish vectors of those two models.
+- **walkie-vision's vision node** publishes vectors of those two models,
+  from one process for every model. It is built, in walkie-vision's
+  commit 1576d6f, the pin in `ros2_ws.repos`, but not yet measured on the
+  robot's GPU, so its `check-env` runs first
+  ([Run HRI on the Robot](../robot-hri-run.md#2-check-walkie-vision-on-the-robots-gpu)).
 - **The template and its pass check are built, and a new sim run is
   due.** Two sim runs in a row passed every criterion of the check
   ([In simulation](#in-simulation)). In both, Nav2 aborted the first
@@ -1109,7 +1120,9 @@ flowchart LR
   PR C, on top of PR A and PR B
   ([Robot Capabilities](capabilities.md#delivery-plan)). The agent runs
   with `--arms` once Manipulation's robot steps R0 to R4 pass, which need
-  walkie-ros's W8 and W9 ([Arm Manipulation](manipulation.md#testing)). W2
+  walkie-ros's W8 and W9 ([Arm Manipulation](manipulation.md#testing)).
+  Until then, `pixi run agent-robot-hri` runs without `--arms` and refuses
+  the template at start. W2
   is drawn dotted: the run works without it, but only with team members and
   an operator at the emergency stop
   ([The bag hand-over](#the-bag-hand-over)).
@@ -1117,9 +1130,10 @@ flowchart LR
   walkie-ros's head-tilt node points the ZED 45° down as the robot nears
   the door or the sofa, when `find_people` and `find_seats` look
   ([Head tilt near goals](capabilities.md#head-tilt-near-goals)). The switch
-  is commit `22dc4ef` in the navigation repository, walkie-ros's
-  `navigation` submodule, on the branch `feat/hri-follow-and-head-tilt`,
-  not yet pushed. walkie-ros picks it up with a submodule bump.
+  is a change to walkie-ros's `navigation` submodule, not yet pushed, and
+  walkie-ros picks it up with a submodule bump. Until then, the node's
+  `/head_tilt_near_goal/enable` service turns the tilt off after each Nav2
+  start.
 - **The order on the robot** is: the gaze loop alone, with someone pacing
   and the joystick at hand, then the seats in the arena's living room,
   then the hand-over with a team member as the guest, then the whole run.
@@ -1130,7 +1144,9 @@ flowchart LR
   `half_angle_deg` of 25 were tuned in simulation only. 0.10 rad is about
   107 px at the ZED 2i's nominal fx of 1066 px, but no repository holds the
   robot's real fx, and SCRFD's face box is tighter than the oracle's, so
-  both move the right `min_face_rad`.
+  both move the right `min_face_rad`. The steps, from the repositories to
+  the logs, the reading of fx included, are on
+  [Run HRI on the Robot](../robot-hri-run.md).
 - **Tuning is a config edit.** The values above, and the others that
   depend on the robot's camera or TF, are set in `config.toml`'s
   `[walkie.perception]` and `[walkie.gaze]` tables. The file shows each key
@@ -1526,7 +1542,7 @@ repository:
    in `chula_pat14_6`, so it needs the world's branch on main's unified
    Nav2 config, as well as the bump to `53e4ed1`
    ([What changes in other repositories](#what-changes-in-other-repositories)).
-8. On the robot, once walkie-vision's torch and face nodes run there, the
+8. On the robot, once walkie-vision's vision node runs there, the
    capability layer's PR C is built, and Nav2 starts with
    `head_tilt_near_goal:=false`. With the tilt on, the ZED would point at
    the floor each time the host pulls more than 1.5 m ahead and the robot
@@ -1536,10 +1552,9 @@ repository:
 
 | Repository | Change | Status |
 | ---------- | ------ | ------ |
-| walkie-vision | The torch node, with the seat classes in its streaming list | Planned there. How a task sets the list is new here ([question 1](#open-questions)) |
-| walkie-vision | The face node, and which process puts faces into `PersonDetection` | Open there |
+| walkie-vision | The vision node, one process for every model, with faces in `PersonDetection` and the seat classes in the `hri` task's streaming list | Built, in commit `1576d6f`. Not yet measured on the robot's GPU |
 | walkie-database | People services: remember a person with facts and several vectors, and recognize a set of faces | Built in 64403e9 ([Perception question 2](perception.md#open-questions), done) |
-| walkie-ros | W2, arm speed scaling, before the hand-over runs with anyone but team members ([The bag hand-over](#the-bag-hand-over)) | Planned on [Manipulation](manipulation.md#changes-needed-in-walkie-ros) |
+| walkie-ros | W2, arm speed scaling, before the hand-over runs with anyone but team members ([The bag hand-over](#the-bag-hand-over)) | Written, not yet pushed or in a pull request ([Manipulation](manipulation.md#changes-needed-in-walkie-ros)) |
 | walkie-ros | A collision-checked input for the gaze loop, if [question 4](#open-questions) asks for one | — |
 | walkie-ros | Person bodies in the MuJoCo world, so the lidars, the depth image and the costmaps see the scenario's people | A proposal, after slice 2 passes with legs in the scan ([Slice 2](#slice-2-following-the-host)) |
 | navigation (walkie-ros's `navigation` submodule) | A copy of Nav2's `follow_point.xml`, `walkie-navigation/config/nav2/behavior_tree/follow_point_bt.xml` in `robot_navigation`, with the ID `WalkieFollowPoint`. Its `FollowPath` sets `goal_checker_id="general_goal_checker"`, since walkie-ros loads two goal checkers. `nav2_mppi_walkie_params.yaml` sets `bt_search_directories`, unset before, to Nav2's two tree directories and the copy's | Commit `53e4ed1` on the local branch `feat/hri-follow-and-head-tilt`, not yet pushed or in a pull request. Needed before the follow loop ([question 9](#open-questions)) |
@@ -1549,11 +1564,11 @@ repository:
 
 ## Open questions
 
-1. **How a task sets the streaming class list.** walkie-vision's torch node
-   has no interface for it, and a new list costs about 1.5 s and may reset
-   track ids (walkie-vision's `vision.md`). Recommended: a launch
-   parameter per task for now, so the list never changes during a run.
-   Blocks: `find_seats` on the robot.
+1. **How a task sets the streaming class list.** Settled in walkie-vision:
+   a new list costs about 1.5 s and may reset track ids, so the list is
+   fixed for a whole run. Each task has a file in `config/tasks/`, chosen
+   by the launch's `task` argument, and `hri` is the default. Blocks:
+   nothing.
 2. **Whether one view sees every seat.** If the arena's living room is
    wider than the camera's view, `find_seats` needs walkie-agent-v2's
    sweep: turn with `look_at`, look again, and merge places by heading.

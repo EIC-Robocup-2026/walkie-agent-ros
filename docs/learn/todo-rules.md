@@ -119,7 +119,9 @@ because an answer continues the same attempt.
 
 An item with `requires_tool` needs a success of that tool inside its window.
 A note cannot stand in for it, so "Hand over the cup" needs a real
-`hand_over`, not the LLM saying "here you go".
+`hand_over`, not the LLM saying "here you go". A seed with such a step is
+refused when the run did not load its tool
+([Seeding a Task](seeding.md#steps-whose-tool-is-not-loaded)).
 
 ```pycon
 >>> attempt([{"op": "update", "id": "t3", "status": "in_progress"}])

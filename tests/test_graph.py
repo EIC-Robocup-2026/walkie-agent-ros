@@ -1036,7 +1036,9 @@ def test_submit_seeds_the_list_before_the_first_call(start, source):
     todos = TodoList()
     todos.apply([add("An old step")])
     # The steps stay open, so the gate sends the LLM back twice.
-    agent, llm = make_agent([AIMessage(f"On it {n}.") for n in range(3)], todos=todos)
+    agent, llm = make_agent(
+        [AIMessage(f"On it {n}.") for n in range(3)], [make_tool("hand_over")], todos=todos
+    )
     start(agent)
 
     agent.submit(
@@ -1081,6 +1083,78 @@ def test_submit_rejects_a_bad_seed(start):
 
     # The rejected tasks were never queued.
     assert len(llm.received) == 1
+    assert contents(llm.received[0]) == ["Say hello.\n"]
+
+
+def test_submit_rejects_a_seed_whose_tool_is_not_loaded(start):
+    # The toolbox has the arm atomics but no arm backend, as without --arms.
+    agent, llm = make_agent(
+        [AIMessage("Hello.")], [make_tool("speak")], toolbox=toolbox_without_ros()
+    )
+    start(agent)
+
+    with pytest.raises(TodoRejected) as e:
+        agent.submit(
+            "Take the bag.",
+            todos=[
+                {"content": "Say hello", "requires_tool": "speak"},
+                {"content": "Take the bag", "requires_tool": "set_gripper"},
+                {"content": "Hand it over", "requires_tool": "hand_over"},
+            ],
+        )
+    assert str(e.value) == (
+        "The task cannot start in this run: t2 (Take the bag) needs set_gripper, which "
+        "loads only with --arms; t3 (Hand it over) needs hand_over, which is not a tool "
+        "of this agent."
+    )
+    agent.submit("Say hello.")
+    assert settle(agent, llm, 1)
+
+    # The rejected task was never queued.
+    assert contents(llm.received[0]) == ["Say hello.\n"]
+
+
+@pytest.mark.parametrize("before", ["empty list", "finished list"])
+def test_a_template_whose_tool_is_not_loaded_does_not_start(start, caplog, before):
+    bag = TaskTemplate(
+        name="bag",
+        keywords=("bag",),
+        task="Take the bag.",
+        todos=[{"content": "Take the bag", "requires_tool": "set_gripper"}],
+    )
+    todos = TodoList()
+    if before == "finished list":
+        todos = seeded(["Say hello"])
+        todos.apply([update("t1", status="completed")])
+    reason = (
+        "Task template 'bag' cannot start in this run: t1 (Take the bag) needs set_gripper, "
+        "which loads only with --arms."
+    )
+    # The toolbox has the arm atomics but no arm backend, as without --arms.
+    toolbox = toolbox_without_ros()
+    with caplog.at_level(logging.WARNING):
+        agent, llm = make_agent(
+            [AIMessage("Hello.")], todos=todos, templates={"bag": bag}, toolbox=toolbox
+        )
+    # Said once at startup, before any task.
+    assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == [reason]
+    lines: list[str] = []
+    agent._send_to_targets = lines.append  # type: ignore[method-assign]
+    start(agent)
+
+    with caplog.at_level(logging.ERROR):
+        agent(human("Please take my bag."))
+        assert wait_until(lambda: lines == [reason] and agent.ready())
+    assert reason in [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    # The task never ran, and the list is as it was.
+    assert llm.received == []
+    assert [i.status for i in todos.snapshot()] == (
+        ["completed"] if before == "finished list" else []
+    )
+
+    # The agent keeps serving.
+    agent(human("Say hello."))
+    assert settle(agent, llm, 1)
     assert contents(llm.received[0]) == ["Say hello.\n"]
 
 

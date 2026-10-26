@@ -41,7 +41,7 @@ pixi install
 RAI's message types (`rai_interfaces`), the messages of Walkie's memory
 (`walkie_database_msgs`, from
 [walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)), the
-messages of its vision nodes (`walkie_vision_msgs`, from
+messages of its vision node (`walkie_vision_msgs`, from
 [walkie-vision](https://github.com/EIC-Robocup-2026/walkie-vision)) and the
 interfaces of its arm commander (`my_robot_interfaces`, from
 [walkie-ros](https://github.com/EIC-Robocup-2026/walkie-ros)) are not
@@ -424,6 +424,9 @@ pixi run agent-sim-hri
     restarted. The criteria are on
     [HRI Task](architecture/hri.md#in-simulation).
 
+On the real robot the task runs with `pixi run agent-robot-hri` instead,
+by the steps on [Run HRI on the Robot](robot-hri-run.md).
+
 !!! warning "One simulation per machine, unless you separate them"
     Every launch rewrites the generated world files under
     `$ROS_HOME/mujoco_worlds/chula_pat14_6/<variant>/`
@@ -446,6 +449,8 @@ you edit a file in `docs/`. Press ++ctrl+c++ to stop.
   a web UI.
 - [Voice](setup/07-voice.md): talk to the agent with a microphone and hear
   it through a speaker.
+- [Run HRI on the Robot](robot-hri-run.md): the steps for the HRI task on
+  the real robot.
 - [Setup Log](setup/index.md): how this repository was built, one step at a
   time.
 - [Writing Docs](setup/02-documentation.md#writing-a-new-page): how to add

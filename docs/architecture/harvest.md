@@ -113,8 +113,8 @@ poses in sim today, so object ground truth comes from the spec and the `FakeSkil
 record. The arms and grippers collide with object bodies, so an object that
 an arm knocks goes unrecorded until walkie-ros configures its installed
 `FreeJointStatePublisherPlugin`, a config-only request
-([ADR-0015](decisions/0015-repository-boundary.md)). Until the walkie-vision
-nodes exist, `OraclePerception` in `src/walkie_agent/sim/oracle_perception.py`
+([ADR-0015](decisions/0015-repository-boundary.md)). In simulation,
+`OraclePerception` in `src/walkie_agent/sim/oracle_perception.py`
 publishes detections from a scene, with configurable noise and dropout
 ([Perception](perception.md#in-simulation)). It is built and knows
 nothing of a task: it projects map-frame people and object boxes into each
@@ -491,7 +491,7 @@ Each of these is a request, not a change made here
 | walkie-ros | Configure `FreeJointStatePublisherPlugin` in the sim plugin config | publishes object poses, needed once real detectors run on rendered frames | no |
 | walkie-worlds | Nothing while the world's assets stay in walkie-ros. If they move back, push it to a remote and pin its commit too. | it has no remote and keeps only local history | only if the assets move back |
 | walkie-database | No change to the node. The planned `pixi run db-seed-sim` builds the sim seed from the new `config/locations.chula_pat14_6.toml` and the world's `world.toml`. Details are on its Sim Harvest Support page. | every episode restores a seeded instance, so no episode's memories leak into the next | yes, for the per-episode restore |
-| walkie-vision | None for harvest v0 | `oracle_perception` stands in for its nodes. Real detectors on rendered frames come later, once those nodes exist. | no |
+| walkie-vision | None for harvest v0 | `oracle_perception` stands in for its vision node. The node exists, and with `sim:=true` it runs on rendered frames and publishes on its own `sim` topics, which the agent does not read ([Run the vision node](https://eic-robocup-2026.github.io/walkie-vision/guides/vision-node/#run-it)). Harvest v0 still uses `oracle_perception`. | no |
 
 ## What lives where
 

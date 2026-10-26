@@ -284,7 +284,7 @@ repositories:
   ros2_ws/src/walkie-vision:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-vision.git
-    version: ...  # the commit of the vision nodes the robot runs
+    version: ...  # the commit of the vision node the robot runs
   ros2_ws/src/walkie-ros:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-ros.git
@@ -327,7 +327,7 @@ depends-on = ["clone-ros2-ws"]
     was added for the messages of Walkie's memory, `walkie_database_msgs`
     ([ADR-0035](../architecture/decisions/0035-memory-through-walkie-database.md)),
     [walkie-vision](https://github.com/EIC-Robocup-2026/walkie-vision)
-    for the messages of its vision nodes, `walkie_vision_msgs`
+    for the messages of its vision node, `walkie_vision_msgs`
     ([ADR-0034](../architecture/decisions/0034-vision-models-in-walkie-vision.md)),
     and [walkie-ros](https://github.com/EIC-Robocup-2026/walkie-ros) for the
     interfaces of the arm commander, `my_robot_interfaces`

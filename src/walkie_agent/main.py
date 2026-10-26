@@ -126,6 +126,7 @@ def main() -> None:
     llm = get_llm_model("complex_model", streaming=True)
     templates = load_task_templates(args.task_templates)
     tuning = load_tuning()
+    locations = load_locations(args.locations)
 
     with ROS2Context():
         connector = ROS2Connector(node_name="walkie_agent", use_sim_time=args.use_sim_time)
@@ -133,7 +134,7 @@ def main() -> None:
         agent = create_walkie_agent(
             llm=llm,
             connector=connector,
-            locations=load_locations(args.locations),
+            locations=locations,
             target_connectors={args.output_topic: hri_connector},
             whoami_dir=args.whoami_dir,
             templates=templates,

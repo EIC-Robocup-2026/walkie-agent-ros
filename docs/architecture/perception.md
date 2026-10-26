@@ -31,7 +31,7 @@ proposed).
   did. walkie-database matches faces and appearance.
 - **One embedding model at a time.** Every vector comes with its model's
   name, and the agent never compares across models. After the bake-off,
-  walkie-database migrates, the torch process switches, and the agent's
+  walkie-database migrates, the vision node switches, and the agent's
   thresholds are tuned again, together.
 - **Gaps in other repositories.** A person's position needs depth, a
   search by description needs a walkie-database service, and captions have
@@ -48,13 +48,10 @@ flowchart TB
     zed["ZED 2i driver (walkie-ros)"]
 
     subgraph vision["walkie-vision"]
-        subgraph torch["Torch process"]
-            stream["Streaming: YOLOE-26 + ByteTrack,<br/>object embedder, YOLO26 pose, OSNet"]
+        subgraph visionnode["Vision node, one process"]
+            stream["Streaming: YOLOE-26 + ByteTrack,<br/>YOLO26 pose, SCRFD + ArcFace, OSNet,<br/>object embedder after the bake-off"]
             ondemand["On demand: YOLOE-26<br/>on the newest image"]:::proposed
             embedtext["EmbedText server"]
-        end
-        subgraph facep["Face process"]
-            face["SCRFD + ArcFace"]
         end
     end
 
@@ -75,8 +72,6 @@ flowchart TB
     zed -- "RGB, depth, camera_info" --> stream
     zed ~~~ ondemand
     zed ~~~ embedtext
-    stream -. "person images (open)" .-> face
-    face -. "faces (open)" .-> stream
     stream -- "/walkie_vision/objects" --> ingest
     ingest --> tables
     tables --> findsrv
@@ -96,8 +91,8 @@ flowchart TB
 
 | Interface | Owner | Status | Used by |
 | --------- | ----- | ------ | ------- |
-| `/walkie_vision/objects` (`ObjectDetectionArray`) | walkie-vision | Message built, node not yet | walkie-database's object memory, which `find_objects` reads. `find_seats`, through the agent's `VisionFeed` |
-| `/walkie_vision/people` (`PersonDetectionArray`) | walkie-vision | Message built, node not yet | `find_people`, `find_seats`, and the vectors of `recognize_person` and `remember_person`, through the agent's `VisionFeed`. Later `refind_person` |
+| `/walkie_vision/objects` (`ObjectDetectionArray`) | walkie-vision | Built in 1576d6f, by the vision node | walkie-database's object memory, which `find_objects` reads. `find_seats`, through the agent's `VisionFeed` |
+| `/walkie_vision/people` (`PersonDetectionArray`) | walkie-vision | Built in 1576d6f, by the vision node | `find_people`, `find_seats`, and the vectors of `recognize_person` and `remember_person`, through the agent's `VisionFeed`. Later `refind_person` |
 | `/walkie_vision/embed_text` (`EmbedText`) | walkie-vision | Service type built, server not yet | `search_detections` |
 | `/walkie_vision/detect_objects` (`DetectObjects`) | walkie-vision | Proposed (its ADR-0009) | `detect_objects` |
 | `/walkie_database/find_objects` | walkie-database | Exists | `find_objects` |
@@ -110,12 +105,12 @@ Each model in walkie-vision's ADR-0008, and where the agent meets it:
 
 | Model | Runs in | What the agent gets | Agent tools | Waits on |
 | ----- | ------- | ------------------- | ----------- | -------- |
-| YOLOE-26 s or m, streaming, with ByteTrack | torch process | Remembered objects, through walkie-database | `find_objects` | The torch node, walkie-database's ingest |
-| YOLOE-26, on-demand instance | torch process | Boxes, embeddings, `points` and crops of the newest image | `detect_objects`, then `localize_object` | walkie-vision ADR-0009 |
-| Object embedder: SigLIP 2 B/16 proposed, CLIP ViT-B/16 the baseline, EmbeddingGemma 2 the challenger | torch process | `ObjectDetection.embedding` and `EmbedText` vectors, with `embedding_model` | `search_detections` | The bake-off |
-| YOLO26s-pose (or m) | torch process | 17 keypoints, box and track id per person | `find_people`, `refind_person` | The torch node |
-| SCRFD + ArcFace (`buffalo_l`) | face process | `face_embedding`, `face_model` | `recognize_person`, `remember_person` | The face process interface |
-| OSNet x1.0, MSMT17 weights | torch process | `appearance_embedding`, `appearance_model` | `refind_person` when a track breaks, `remember_person` | The torch node |
+| YOLOE-26 s or m, streaming, with ByteTrack | vision node | Remembered objects, through walkie-database | `find_objects` | walkie-database's ingest |
+| YOLOE-26, on-demand instance | vision node | Boxes, embeddings, `points` and crops of the newest image | `detect_objects`, then `localize_object` | walkie-vision ADR-0009 |
+| Object embedder: SigLIP 2 B/16 proposed, CLIP ViT-B/16 the baseline, EmbeddingGemma 2 the challenger | vision node | `ObjectDetection.embedding` and `EmbedText` vectors, with `embedding_model` | `search_detections` | The bake-off |
+| YOLO26s-pose (or m) | vision node | 17 keypoints, box and track id per person | `find_people`, `refind_person` | Nothing: built |
+| SCRFD + ArcFace (`buffalo_l`) | vision node | `face_embedding`, `face_model` | `recognize_person`, `remember_person` | Nothing: built |
+| OSNet x1.0, MSMT17 weights | vision node | `appearance_embedding`, `appearance_model` | `refind_person` when a track breaks, `remember_person` | Nothing: built |
 | Florence-2 base | not placed yet | Nothing yet | `describe_person`, if it is built | An interface ([question 4](#open-questions)) |
 
 The cascade for objects is on
@@ -149,7 +144,7 @@ flowchart LR
 - **The switch after the bake-off.** walkie-database adds the winner's
   tables in one migration, renames the CLIP tables to name their weights,
   and computes new vectors for everything it remembers (bake-off guide,
-  "Follow-up: the walkie-database migration"). The torch process emits the
+  "Follow-up: the walkie-database migration"). The vision node emits the
   new model name only after that migration is on the robot, or the
   ingest finds no table. The agent's values for the new model are tuned on
   the bake-off data before the switch.
@@ -285,8 +280,9 @@ caption text at Competition. Whether reviewed atomics do is
 
 ## In simulation
 
-Until the walkie-vision nodes exist, `OraclePerception` in
-`src/walkie_agent/sim/oracle_perception.py` stands in for them. It
+In simulation, `OraclePerception` in
+`src/walkie_agent/sim/oracle_perception.py` stands in for walkie-vision's
+vision node. It
 publishes both arrays in `walkie_vision_msgs` types, one of each per image
 of the robot's camera, also when empty. People come only from it, because
 walkie-ros's MuJoCo worlds have no person bodies. It knows nothing of a
@@ -361,7 +357,7 @@ this page asks for.
 ```mermaid
 flowchart TB
     v0["<b>walkie-vision</b><br/>Messages and model<br/>interfaces (done)"]
-    v1["<b>walkie-vision</b><br/>Torch and face nodes"]
+    v1["<b>walkie-vision</b><br/>Vision node<br/>(done)"]
     v2["<b>walkie-vision</b><br/>Bake-off verdict"]
     v3["<b>walkie-vision</b><br/>DetectObjects built"]
     v4["<b>walkie-vision</b><br/>Depth per person"]:::proposed
@@ -413,7 +409,7 @@ flowchart TB
 
 | Repository | Change | Status |
 | ---------- | ------ | ------ |
-| walkie-vision | The torch and face nodes | Planned there |
+| walkie-vision | The vision node, one process for every model | Built, in commit `1576d6f`. Not yet measured on the robot's GPU |
 | walkie-vision | `DetectObjects` with its own YOLOE instance | Proposed (its ADR-0009) |
 | walkie-vision | Depth for each person, for example `points` as in `ObjectDetection` | New here ([question 1](#open-questions)) |
 | walkie-vision | A captions interface, if `describe_person` is built | New here ([question 4](#open-questions)) |
@@ -435,8 +431,9 @@ flowchart TB
    ADR-0017. `RosPeopleMemory` calls them behind `PeopleMemory`
    ([People](#people)). The face distance limit is still tuned on the
    robot, with team members, as a `config.toml` edit
-   ([HRI Task](hri.md#delivery-order)). Blocks: nothing. The robot run of
-   the HRI task now waits on walkie-vision's nodes.
+   ([HRI Task](hri.md#delivery-order)). Blocks: nothing. walkie-vision's
+   vision node is built too, and the robot run of the HRI task follows
+   [Run HRI on the Robot](../robot-hri-run.md).
 3. **No effect covers a memory write.** R, P, S, N and M cover reading,
    perceiving, speaking and moving. Proposed: `remember_person` stays a
    reviewed atomic that generated tools cannot call at any level, until a

@@ -21,14 +21,16 @@ repositories:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-database.git
     version: 64403e982e253db0ca00c372249eeb798d89d1f6
-  # walkie_vision_msgs, the messages of the vision nodes: people, objects and
-  # the text-embedding service (ADR-0034). The whole repository is cloned;
-  # build-ros2 builds only the message package. Pin the commit the vision
-  # nodes on the robot are built from, for the same reason as walkie-database.
+  # walkie_vision_msgs, the messages of the vision node: people, objects and
+  # the text-embedding service (ADR-0034). walkie-vision runs every model in
+  # one process, its vision node. The whole repository is cloned; build-ros2
+  # builds only the message package. Pin the commit the vision node on the
+  # robot is built from, for the same reason as walkie-database. The messages
+  # are unchanged from b050ea1.
   ros2_ws/src/walkie-vision:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-vision.git
-    version: b050ea107ef5f22ba8cc3bcfb83212d70cb8bb96
+    version: 1576d6f979e9513c9d2e9b752232341f01a5bc0a
   # my_robot_interfaces, the interfaces of the arm commander:
   # SetJointPosition, ControlGripper and GetJointStates (ADR-0018, ADR-0021).
   # The type names must match walkie-ros exactly, so the package is built from

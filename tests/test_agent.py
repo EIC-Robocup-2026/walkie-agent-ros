@@ -25,7 +25,8 @@ from walkie_agent.perception.people_memory import InMemoryPeopleMemory, ModelVec
 from walkie_agent.perception.ros_people_memory import RosPeopleMemory
 from walkie_agent.perception.vision_feed import VisionFeed
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, hash_vector
-from walkie_agent.tasks import TaskTemplate
+from walkie_agent.tasks import TaskTemplate, load_task_templates
+from walkie_agent.todo import TodoRejected
 from walkie_agent.toolbox import AtomicTool, StepError, Toolbox
 
 # The agent's plain-text replies; speech goes to /to_human instead.
@@ -522,6 +523,10 @@ def test_malformed_task_messages_are_ignored(connector, operator, locations, cap
         json.dumps({"todos": ["Say hello"]}),  # no task
         json.dumps({"task": "Show me around.", "template": "garage"}),  # unknown template
         json.dumps({"task": "Say hello.", "todos": [{"content": ""}]}),  # a seed the list rejects
+        # A step whose tool is not loaded: set_gripper needs --arms.
+        json.dumps(
+            {"task": "Take it.", "todos": [{"content": "Take", "requires_tool": "set_gripper"}]}
+        ),
     ]
 
     agent.run()
@@ -541,6 +546,42 @@ def test_malformed_task_messages_are_ignored(connector, operator, locations, cap
         r for r in caplog.records if r.levelno == logging.WARNING and TASK in r.getMessage()
     ]
     assert len(warnings) == len(malformed)
+
+
+@pytest.mark.parametrize("arms", [False, True], ids=["without arms", "with arms"])
+def test_the_hri_template_starts_only_with_the_arms(
+    connector, locations, caplog, monkeypatch, arms
+):
+    """The shipped HRI template's bag step needs set_gripper, which loads only with --arms."""
+    # CommanderClient reads config/arm_poses.toml from the working directory.
+    monkeypatch.chdir(PROJECT_ROOT)
+    templates = load_task_templates(PROJECT_ROOT / "config" / "task_templates.toml")
+    llm = ScriptedChatModel(responses=[])
+    with caplog.at_level(logging.WARNING):
+        agent = create_walkie_agent(
+            llm,
+            connector,
+            locations,
+            target_connectors={},
+            templates=templates,
+            people_memory="mock",
+            arms=arms,
+        )
+    try:
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        reason = "t4 (Take the second guest's bag) needs set_gripper, which loads only with --arms."
+        seed = templates["hri"].todos
+        if arms:
+            assert not [w for w in warnings if "cannot start" in w]
+            agent.submit("Receive the guests.", seed, source="operator")
+        else:
+            assert f"Task template 'hri' cannot start in this run: {reason}" in warnings
+            with pytest.raises(TodoRejected) as e:
+                agent.submit("Receive the guests.", seed, source="operator")
+            assert str(e.value) == f"The task cannot start in this run: {reason}"
+    finally:
+        if arms:
+            agent.toolbox.ctx.backend("arm").destroy()
 
 
 def test_todos_topic_is_latched_and_cleared_on_reset(connector, operator, locations):

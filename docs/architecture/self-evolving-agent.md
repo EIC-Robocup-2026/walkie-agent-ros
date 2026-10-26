@@ -37,7 +37,7 @@ and the vision models on [Perception](perception.md).
   for a sandboxed tool ([ADR-0047](decisions/0047-sandbox-and-bridges.md)).
 - **A model and key per role** ([ADR-0042](decisions/0042-per-role-models.md)),
   **no coordinates from the LLM** ([ADR-0043](decisions/0043-navigate-to-pose-provenance.md)),
-  **mocked arm atomics first** ([ADR-0044](decisions/0044-mocked-arm-atomics.md)),
+  **mocked `run_skill` first** ([ADR-0044](decisions/0044-mocked-arm-atomics.md)),
   and **human promotion** into git ([ADR-0048](decisions/0048-sim-harvest-promotion.md)).
 
 ## What changes from today's agent
@@ -50,7 +50,7 @@ and the vision models on [Perception](perception.md).
 | Tool choice | Every tool is bound | At most 20 bound. The rest are found with `find_tools` |
 | New tools | None at runtime | `request_tool`: reuse, compose or write code, as the access level allows |
 | Models | One agent model in `config.toml` | A model, fallbacks, a timeout and an API key per role |
-| Perception and arms | Memory only, through `find_objects` | Detection, matching, 3D position and arm skills as typed atomics, on mocks first |
+| Perception and arms | Memory only, through `find_objects` | Detection, matching, 3D position and arm skills as typed atomics, `run_skill` on a mock first |
 | Sounds | Speech only | `play_sound` through `/to_human` ([ADR-0045](decisions/0045-play-sound-through-to-human.md)) |
 
 ## The loop
@@ -622,12 +622,12 @@ BM25-only, dense-only and hybrid search, per level.
 | 4b. Unrestricted extras | Raw base commands with a stop on cleanup, `ctx.handles.load`, `cv2` in the lint, only on harvest evidence. Arm controllers stay on the never-list | — | A raw-publish tool is cleaned up on worker death in a test |
 | 5. Harvest v0 | See [Sim Harvest](harvest.md). Needs the walkie-ros world change merged to main and pinned | Harvest v1, start poses away from the origin, keepout in sim Nav2, an object-pose publisher | One 100-episode run with a report a human has read, failures split into agent, navigation and localization. At least one candidate promoted by pull request |
 | 6. Competition level | See [Competition Mode](competition.md), ending with the Competition coder | — | Red-team set: 0 escapes. A booth dry run with no audible test failures. Offline, creation is refused within 2 s. `Say <slur>` is refused. 20 long-tail questions answered with site-name attribution. `look_up_online` returns `UNAVAILABLE` within 1 s when search is blocked. A red-team snippet does not change the next tool call |
-| Real backends, from phase 2 | walkie-vision `DetectObjects` and `EmbedText` clients, the skill server ([ADR-0027](decisions/0027-runskill-action.md)), the commander ([ADR-0021](decisions/0021-arm-control-through-commander.md), [ADR-0023](decisions/0023-motion-supervisor.md)), ROS-level fakes | — | Bundle tests rerun on real clients |
+| Real backends, from phase 2 | walkie-vision `DetectObjects` and `EmbedText` clients, the skill server ([ADR-0027](decisions/0027-runskill-action.md)), the MotionSupervisor ([ADR-0023](decisions/0023-motion-supervisor.md)), ROS-level fakes. The commander client ([ADR-0021](decisions/0021-arm-control-through-commander.md)) and `FakeCommander` are built, and the pose and gripper atomics use them | — | Bundle tests rerun on real clients |
 
 The HRI task is the first end-to-end test. It needs phase 1, and the
 people, seat and arm atomics from phase 2, but not the bundle runtime, the
-linker or the level checks. On the robot it also needs the commander
-client from the real backends ([HRI Task](hri.md#delivery-order)).
+linker or the level checks. On the robot it also needs the MotionSupervisor
+from the real backends ([HRI Task](hri.md#delivery-order)).
 
 Deferred until something needs them: a runs table, the rest of the toolbox
 CLI (`deprecate`, `gc`, evidence export), a circuit breaker that switches
@@ -687,9 +687,9 @@ T12 on [Access Levels](access-levels.md#safety-model).
 | Linker, runner, registry, index, sandbox | walkie-agent-ros | `src/walkie_agent/toolbox/` (new) |
 | Tool creator, coder and harvest | walkie-agent-ros | `src/walkie_agent/toolsmith/` (new) |
 | Atomic tools and presets | walkie-agent-ros | `src/walkie_agent/tools/atomic/`, `tools/bundled_preset/` (new) |
-| Protocol mocks and ROS-level fakes | walkie-agent-ros | `src/walkie_agent/sim/`: `fake_scene.py`, `mock_vision.py`, `mock_skill.py`, `mock_arm.py`, `fake_skill_server.py`, `oracle_perception.py` (new files beside today's `fake_walkie.py`) |
+| Protocol mocks and ROS-level fakes | walkie-agent-ros | `src/walkie_agent/sim/`: `fake_scene.py`, `mock_vision.py`, `mock_skill.py`, `fake_skill_server.py`, `oracle_perception.py` (new files beside today's `fake_walkie.py` and `fake_commander.py`) |
 | Client package for sandboxed code | walkie-agent-ros | `src/walkie_toolbox_facade/` (new) |
-| Templates, level policy, arm poses | walkie-agent-ros | `config/task_templates.toml`, `config/access_levels.toml`, `config/arm_poses.toml` (new) |
+| Templates, level policy, arm poses | walkie-agent-ros | `config/task_templates.toml`, `config/access_levels.toml` (new), `config/arm_poses.toml` |
 | Generated tools, index, traces | each machine, never git | `$WALKIE_TOOLS_HOME` |
 | `DetectObjects`, `EmbedText`, `/walkie_vision/people` | walkie-vision | `walkie_vision_msgs`. `DetectObjects` is proposed ([Perception](perception.md)) |
 | Object memory | walkie-database | `/walkie_database/find_objects` (exists) |

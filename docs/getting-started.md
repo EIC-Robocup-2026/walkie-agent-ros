@@ -40,19 +40,23 @@ pixi install
 
 RAI's message types (`rai_interfaces`), the messages of Walkie's memory
 (`walkie_database_msgs`, from
-[walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)) and
-the messages of its vision nodes (`walkie_vision_msgs`, from
-[walkie-vision](https://github.com/EIC-Robocup-2026/walkie-vision)) are not
+[walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)), the
+messages of its vision nodes (`walkie_vision_msgs`, from
+[walkie-vision](https://github.com/EIC-Robocup-2026/walkie-vision)) and the
+interfaces of its arm commander (`my_robot_interfaces`, from
+[walkie-ros](https://github.com/EIC-Robocup-2026/walkie-ros)) are not
 published as packages, so we build them from source once:
 
 ```bash
 pixi run build-ros2
 ```
 
-This clones `rai_interfaces`, walkie-database and walkie-vision into
-`ros2_ws/src/`, at the commits pinned in `ros2_ws.repos`, and builds the
-three message packages with colcon. Pixi loads the result automatically every time you use `pixi run`
-or `pixi shell`. Run it again only if `ros2_ws.repos` changes. The
+This clones `rai_interfaces`, walkie-database, walkie-vision and walkie-ros
+into `ros2_ws/src/`, at the commits pinned in `ros2_ws.repos`, and builds the
+four message packages with colcon. The walkie-ros clone is the largest: it
+downloads about 115 MB and takes about 250 MB on disk. Pixi loads the result
+automatically every time you use `pixi run` or `pixi shell`. Run it again
+only if `ros2_ws.repos` changes. The
 walkie-database pin must match the database node you run, or the agent's
 memory requests are never answered
 ([ADR-0035](architecture/decisions/0035-memory-through-walkie-database.md)).
@@ -279,6 +283,37 @@ simulation publishes
 `/walkie_vision/people` or `/walkie_vision/objects` yet, so `find_people`
 and `find_seats` answer that vision is unavailable
 ([HRI Task](architecture/hri.md#atomics)).
+
+### Arms in the simulation
+
+`agent-sim` also passes `--arms`, so the four arm tools load and the robot
+checks its arms before it drives
+([Arm Manipulation](architecture/manipulation.md#tools)). They need MoveIt
+and walkie-ros's arm commander, `bimanual_commander`. Start both in two more
+walkie-ros terminals, on the simulation's domain: leave `ROS_DOMAIN_ID`
+unset, as above.
+
+```bash title="walkie-ros, terminal 5: MoveIt"
+pixi run ros2 launch openarm_bimanual_moveit_config moveit_only.launch.py hardware_type:=mujoco use_rviz:=false
+```
+
+```bash title="walkie-ros, terminal 6: the commander"
+pixi run ros2 launch /path/to/walkie-agent-ros/launch/commander_sim.launch.py
+```
+
+Replace `/path/to/walkie-agent-ros` with the path of this project. The
+launch file runs walkie-ros's `commander.launch.py` on the simulation's
+clock, which that file does not set. It runs in walkie-ros's environment,
+where the commander is built.
+
+- **Without the commander,** the arm tools answer `UNAVAILABLE`, and every
+  drive ends with "Arm state unknown: the commander was not found."
+- **Untried poses.** On sim time the agent also offers the poses not yet
+  tried on the robot: `tray`, `receive` and `carry`
+  ([Pose configuration](architecture/manipulation.md#pose-configuration)).
+- **Lift height.** The simulation's lift starts at 0.507 m, and the agent
+  never moves it, so the hands sit lower than on the robot. The poses are
+  joint poses, so they work at any lift height.
 
 ## 7. Open the docs locally
 

@@ -72,9 +72,11 @@ and live outside the repository under `$WALKIE_TOOLS_HOME` (default
   ([ADR-0048](/architecture/decisions/0048-sim-harvest-promotion.md)).
   Promoted generated code keeps `META.runtime = "sandbox"` until a human
   rewrites or audits it and names a reviewer.
-- **Mocks behind protocols.** Unit tests run the new atomics against
-  in-process mocks (`FakeScene`, `MockVision`, `MockSkillServer`,
-  `MockArmBackend`). Each atomic lists its backends in `META.requires`. The
+- **Mocks behind protocols.** Unit tests run the new atomics against mocks:
+  in-process ones (`FakeScene`, `MockSkillServer`), or fake ROS nodes that
+  serve the real interfaces (`FakeCommander` behind the `arm` backend, a
+  fake walkie-vision publisher behind `vision`). Each atomic lists its
+  backends in `META.requires`. The
   registry hides mock-backed tools unless the run is a simulation, and a
   real run refuses to start if a required backend is a mock.
 

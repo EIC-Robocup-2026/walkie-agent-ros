@@ -57,6 +57,15 @@ def main() -> None:
             "and remember_person load. For sim and tests; without it they do not load."
         ),
     )
+    parser.add_argument(
+        "--arms",
+        action="store_true",
+        help=(
+            "Drive the arms through walkie-ros's bimanual_commander: loads the arm tools, "
+            "and the navigation tools then refuse to drive with an arm out. With "
+            "--use-sim-time, poses not yet tried on the robot are offered too."
+        ),
+    )
     args = parser.parse_args()
 
     # Variables already set in the shell take precedence over .env.
@@ -77,6 +86,7 @@ def main() -> None:
             whoami_dir=args.whoami_dir,
             templates=templates,
             mock_people_memory=args.mock_people_memory,
+            arms=args.arms,
         )
         agent.subscribe_source(args.input_topic, hri_connector)
         agent.subscribe_reset(connector, args.reset_topic)

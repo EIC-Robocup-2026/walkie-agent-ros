@@ -22,11 +22,18 @@ Named poses live agent-side in `config/arm_poses.toml`:
 
 - Each pose has a joint table for the left arm, the right arm or both,
   keyed by joint name, a description shown to the LLM, and a `travel_safe`
-  flag. It may also name the SRDF state it copies, set its own timeout, and
-  set `offered = false` to keep it from the LLM and the presets.
+  flag. It may also name the SRDF state it copies and set its own timeout.
+  Three more keys decide where it is offered:
+    - `offered = false` keeps it from the LLM everywhere.
+    - `tried_on_robot = false`, the default, marks a pose not yet run on
+      the robot with collision checking on. The LLM gets it only on sim
+      time (`--use-sim-time`), where a bad pose costs nothing.
+    - `both_arms = false` marks two tables that must not move together, as
+      in `carry`, where both hands would meet in front of the body.
 - `move_arm_to_pose(pose, arm)` takes `arm` as left, right or both, default
   both, like `set_gripper`. Both sends the two tables as one `both_arms`
-  goal. A pose without a table for the requested arm is refused.
+  goal, and only for a pose with both tables and `both_arms = true`. A pose
+  without a table for the requested arm is refused.
 - The first draft copies the SRDF presets' `left_arm` and `right_arm`
   states, without lift heights, and splits `tray`, which exists only for
   both arms, into a left and a right table. `basket` and `basket_hold` are
@@ -37,8 +44,11 @@ Named poses live agent-side in `config/arm_poses.toml`:
 - At startup, the loader checks every pose against
   `config/robot_model.toml`: a committed snapshot of the SRDF groups and
   states and of `joint_limits.yaml`, generated from the pinned walkie-ros
-  commit. A test fails when the snapshot drifts from the pin, and another
-  fails when a table that names an SRDF state no longer matches it.
+  commit by `scripts/snapshot_robot_model.py`. A test regenerates it from
+  the pinned clone and fails when it drifts, and another fails when a table
+  that names an SRDF state no longer matches it. Without the clone the
+  first test is skipped, except in CI, where it fails. The script stops on
+  a group or a group state inside a xacro element it does not resolve.
 - At run time, the joint order comes from `/get_joint_states`, which returns
   the group's joint names in the order the commander expects. If it lists
   no `openarm_right_joint2` (`right_joint2_fixed`), the tool drops that
@@ -59,8 +69,11 @@ Named poses live agent-side in `config/arm_poses.toml`:
 - Both-arm `basket` and `pre-place` in the SRDF keep the right arm in
   `standby`. The agent reaches them in two moves, and moving both arms to
   `basket` is a new pairing that must be tried first.
-- Every pose must be tried on the robot before the LLM gets it. walkie-agent-v2
-  sent some poses with collision checking turned off.
+- Every pose must be tried on the robot before the LLM gets it there.
+  walkie-agent-v2 sent some poses with collision checking turned off. A
+  pose recorded in the simulation, such as `receive` or `carry`, is offered
+  on sim time until someone tries it on the robot and sets
+  `tried_on_robot = true`.
 - Gripper values are the travel of one finger, 0 to 0.044 m; the jaw opens
   about twice that. "Closed" must be at most 0.03 m, the commander's
   `grasp_close_threshold`, so that grasp detection runs. "Half" must be above

@@ -47,8 +47,9 @@ Everything lives in the `whoami/` folder at the project root:
 
 `whoami/documentation/walkie.md` describes Walkie: the team, the hardware,
 **what the agent can do today**, and how it should behave. Keep the "can do
-today" list honest. If it mentions the arm, the agent will offer to pick
-things up even though it has no tool for that.
+today" list honest. A capability listed without a tool behind it makes the
+agent offer it. The arm tools load only with `--arms`, so `walkie.md` says
+what Walkie must not offer without them.
 
 !!! info "Why there is no URDF"
     RAI's tutorial also suggests a `urdf/` folder. In rai_whoami 2.12 the

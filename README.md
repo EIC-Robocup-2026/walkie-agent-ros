@@ -80,6 +80,6 @@ explains each step and lists the topics.
 | `config.toml`           | RAI settings: LLM vendor and models, voice, tracing               |
 | `config/locations.toml` | The places Walkie can drive to                                    |
 | `whoami/`               | Walkie's identity sources for RAI's whoami                        |
-| `ros2_ws/`              | Message packages built from source (`rai_interfaces`, `walkie_database_msgs`, `walkie_vision_msgs`) |
+| `ros2_ws/`              | Message packages built from source (`rai_interfaces`, `walkie_database_msgs`, `walkie_vision_msgs`, `my_robot_interfaces`) |
 | `docker/langfuse/`      | The local Langfuse server                                         |
 | `docs/`                 | The documentation site (MkDocs)                                   |

@@ -9,9 +9,9 @@ it over ROS 2.
 !!! info "Redesign in progress"
     The agent is being redesigned into a self-evolving agent: see
     [Self-Evolving Agent (Proposed)](self-evolving-agent.md). Phase 1's host
-    graph and todo list are built, and so are the toolbox core of phase 2
-    and the HRI task's four people and seat atomics. The rest of the
-    redesign is proposed.
+    graph and todo list are built, and so are the toolbox core of phase 2,
+    the HRI task's four people and seat atomics, and four arm atomics. The
+    rest of the redesign is proposed.
     This page describes the agent as it is today. For a guided tour with
     runnable examples, start at [Learn the Agent](../learn/index.md).
 
@@ -44,9 +44,11 @@ it over ROS 2.
 - **Typed atomic tools.** An atomic declares its arguments, output and
   effects, and fails with one of 13 error codes. It runs with a shared
   `ctx` and passes handles, short ids for what it saw
-  ([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). The first
-  four find people and seats, and recognize and remember people
-  ([HRI Task](hri.md#atomics)).
+  ([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). Four find
+  people and seats, and recognize and remember people
+  ([HRI Task](hri.md#atomics)). With `--arms`, four more move the arms and
+  grippers to named poses through walkie-ros's commander
+  ([Arm Manipulation](manipulation.md#tools)).
 - **Knows what it is.** rai_whoami adds a description of Walkie to the system
   prompt and a search tool over its documents
   ([ADR-0011](decisions/0011-whoami-identity.md)).
@@ -355,6 +357,10 @@ todos = [
 | `find_seats`                      | atomic     | Lists the places to sit in view, left to right, as seat handles, each free or taken |
 | `recognize_person`                | atomic     | Names people met before, by face, else by appearance. Only with `--mock-people-memory` |
 | `remember_person`                 | atomic     | Stores a person's name, facts, and face and appearance vectors. Only with `--mock-people-memory` |
+| `list_arm_poses`                  | atomic     | Lists the named arm poses, which arms each can move, and whether it is safe for driving. Only with `--arms` |
+| `move_arm_to_pose`                | atomic     | Moves one arm or both to a named pose, then checks the joints. Only with `--arms` |
+| `set_gripper`                     | atomic     | Opens, half-opens or closes one gripper or both; after a close, says whether it holds something. Only with `--arms` |
+| `get_arm_state`                   | atomic     | Reports the named pose each arm is in, whether it is safe for driving, and how far each gripper is open. Only with `--arms` |
 
 `find_objects` calls `/walkie_database/find_objects` with a label and asks
 for at most 5 objects. It returns each object's room and position on the
@@ -377,16 +383,31 @@ completing a step whose tool failed, comes back to the LLM as an error that
 says why. `wait_for_person` speaks through the same `speak` tool. When no
 speech node is listening, it fails and the task goes on.
 
-The [arm manipulation design](manipulation.md) proposes four arm tools and,
-later, two skill tools.
+The [arm manipulation design](manipulation.md) adds two skill tools later.
 
-The four atomic tools come from `src/walkie_agent/tools/atomic/` and are
-added after the others. A failure reaches the LLM as `CODE: message`, see
+The atomic tools come from `src/walkie_agent/tools/atomic/` and are added
+after the others. A failure reaches the LLM as `CODE: message`, see
 [Typed atomic tools](#typed-atomic-tools). `find_people` and `find_seats`
 always load. `recognize_person` and `remember_person` need the
 `people_memory` backend, which only `--mock-people-memory` adds today, see
 [Where atomics live](#where-atomics-live). The HRI task's page shows what
-each one returns ([HRI Task](hri.md#atomics)).
+each one returns ([HRI Task](hri.md#atomics)). The four arm atomics need
+the `arm` backend, which only `--arms` adds. Every arm tool ends its answer
+with "Arms: safe for driving.", "Arms: not safe for driving." or "Arms:
+state unknown." ([Arm Manipulation](manipulation.md#tools)).
+
+With `--arms`, `navigate_to_location` and `move_relative` also check the
+arms before they drive
+([ADR-0025](decisions/0025-travel-safe-interlock.md)). They refuse while an
+arm is out of every pose that is safe for driving, while an arm or a
+gripper may still be moving, and when the commander's reading does not show
+where both arms are. When the commander is not found, does not answer, or
+gives no reading, they drive, and add a note that says which to the result,
+such as "Arm state unknown: the commander did not answer." They refuse in
+those cases too while the arms are unverified, after the arm client gave up
+on a goal before its end was known. They then drive only when the commander
+shows that every such goal is no longer active, and two reads of both arms
+0.3 s apart agree, all within the check's 3 s.
 
 For the full list of topics, see
 [Getting Started](../getting-started.md).
@@ -395,11 +416,13 @@ For the full list of topics, see
 
 The toolbox core of phase 2 is built in `src/walkie_agent/toolbox/`: typed
 atomic tools, the `ctx` they run with, and handles
-([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). Four atomics
-ship, the HRI task's people and seat tools: `find_people`, `find_seats`,
-`recognize_person` and `remember_person`
-([HRI Task](hri.md#atomics)). Bundles, the linker, access levels and tool
-search are not built
+([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). Eight atomics
+ship. Four are the HRI task's people and seat tools: `find_people`,
+`find_seats`, `recognize_person` and `remember_person`
+([HRI Task](hri.md#atomics)). Four are arm tools: `list_arm_poses`,
+`move_arm_to_pose`, `set_gripper` and `get_arm_state`
+([Arm Manipulation](manipulation.md#tools)). Bundles, the linker, access
+levels and tool search are not built
 ([Self-Evolving Agent](self-evolving-agent.md#tiers-and-folders)).
 
 ### An atomic
@@ -724,14 +747,27 @@ one place.
   not. Without it, `recognize_person` and `remember_person` do not load,
   so a robot run never stores guests in a mock that forgets them on
   restart.
+- **`arm` comes only with `--arms`.** It is a `CommanderClient`
+  (`src/walkie_agent/arm/commander.py`), the agent's one client of
+  walkie-ros's `bimanual_commander`. It loads `config/arm_poses.toml` and
+  raises `ArmPoseError` when the file is wrong, so the agent does not
+  start. `pixi run agent-sim` passes the flag, and `pixi run agent` does
+  not, until the MotionSupervisor exists. With it, the arm rules are added
+  to the system prompt, and `navigate_to_location` and `move_relative`
+  check the arms before they drive. Without a commander running, the arm
+  atomics fail with `UNAVAILABLE`, and the robot drives with the arm state
+  unknown.
 - **After the other tools.** `build_walkie_tools` appends the atomic
   tools. An atomic named like an existing tool stops the agent with a
   `ValueError`, because the agent keeps one tool per name and would
   silently replace the older one.
-- **Four ship.** `find_people`, `find_seats`, `recognize_person` and
+- **Eight ship.** `find_people`, `find_seats`, `recognize_person` and
   `remember_person`, with what they share in `_perception.py`. The rules
   they use, ported from walkie-agent-v2, are plain functions in
   `src/walkie_agent/perception/`, which tests run without LangChain.
+  `list_arm_poses`, `move_arm_to_pose`, `set_gripper` and `get_arm_state`,
+  with what they share in `_arm.py`. The pose loader and the pose matching
+  are in `src/walkie_agent/arm/`.
 
 ## Running on the robot
 

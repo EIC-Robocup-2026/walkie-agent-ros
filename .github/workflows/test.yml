@@ -36,10 +36,10 @@ jobs:
           cache: true
           cache-write: ${{ github.event_name == 'push' && github.ref_name == 'main' }}
 
-      # Every test needs rai_interfaces, walkie_database_msgs and
-      # walkie_vision_msgs (tests/conftest.py stops without them). None is
-      # packaged, so build-ros2 builds them from source here, from
-      # ros2_ws.repos.
+      # Every test needs rai_interfaces, walkie_database_msgs,
+      # walkie_vision_msgs and my_robot_interfaces (tests/conftest.py stops
+      # without them). None is packaged, so build-ros2 builds them from
+      # source here, from ros2_ws.repos.
       - name: Build ROS 2 workspace
         run: pixi run build-ros2
 

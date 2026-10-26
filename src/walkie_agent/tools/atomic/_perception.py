@@ -8,6 +8,7 @@ and call the `people_memory` backend, a PeopleMemory (hri.md, Atomics). The
 module's name starts with "_", so the registry does not load it as a tool.
 """
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
@@ -57,7 +58,8 @@ class PerceptionConfig:
     face and appearance distance limits in IdentityConfig, and the seat and
     sofa classes in SeatingConfig. The exception is FrontConfig, who counts
     as close in front for find_people(in_front=True), which is new and was
-    tuned in simulation only. The timings are ADR-0050's.
+    tuned in simulation only. The timings are ADR-0050's. The values still
+    to tune on the robot can be set in config.toml (walkie_agent.tuning).
     """
 
     # The newest array may be this old on the node clock. An image a second
@@ -71,16 +73,27 @@ class PerceptionConfig:
     # How long a lookup at the image's stamp waits for TF: the camera's
     # transform for the headings, and the base's for the handles' capture
     # pose. TF can lag the image a little on the robot; no longer, since a
-    # call makes both lookups.
+    # call makes both lookups. Chosen in simulation: how far TF lags the
+    # image on the robot is not measured yet, so config.toml can set it, as
+    # [walkie.perception] tf_timeout_s.
     tf_timeout_s: float = 0.2
     gestures: GestureConfig = DEFAULT_GESTURE_CONFIG
     identity: IdentityConfig = DEFAULT_IDENTITY_CONFIG
     seating: SeatingConfig = DEFAULT_SEATING_CONFIG
     front: FrontConfig = DEFAULT_FRONT_CONFIG
 
+    def __post_init__(self) -> None:
+        for name in ("max_age_s", "wait_s", "pair_wait_s", "tf_timeout_s"):
+            value = getattr(self, name)
+            if not (math.isfinite(value) and value > 0):
+                raise ValueError(
+                    f"PerceptionConfig.{name} must be a positive number, not {value}."
+                )
+
 
 # Read by the atomics on every call, as `_perception.CONFIG`, so a test can
-# replace it.
+# replace it. create_walkie_agent replaces it when it is given the tuning
+# that config.toml sets (walkie_agent.tuning).
 CONFIG = PerceptionConfig()
 
 # A person handle goes stale after 5 cm of base translation or 10 minutes.

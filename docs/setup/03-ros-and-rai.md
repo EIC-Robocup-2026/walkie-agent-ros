@@ -224,6 +224,18 @@ We kept these sections from the default file, unchanged, for later:
 We deleted `[aws]` and `[google]`, because we do not use those vendors. RAI
 uses defaults for missing vendor sections.
 
+We added tables of our own under `[walkie]`, which RAI ignores:
+
+| Section               | What it is for                                                             |
+| --------------------- | -------------------------------------------------------------------------- |
+| `[walkie.perception]` | Perception values to tune on the robot, such as the face distance limits. |
+| `[walkie.gaze]`       | How long the gaze loop waits for TF, to tune on the robot.                 |
+
+Both are commented out and show the defaults from the code. The agent checks
+them at start-up and stops on an unknown key or a bad value. See
+[HRI Task](../architecture/hri.md#delivery-order) for each key and why it is
+tuned on the robot.
+
 ### API keys go in `.env`
 
 RAI reads API keys from environment variables, never from `config.toml`.

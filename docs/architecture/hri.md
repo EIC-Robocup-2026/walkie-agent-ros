@@ -173,6 +173,8 @@ atomics:
   `gestures.py`, `seating.py`, `identity.py` and `geometry.py`. `front.py`,
   the rule of `find_people(in_front=True)`, is new, not from
   walkie-agent-v2, and its `FrontConfig` was tuned in simulation only.
+  `config.toml` sets the values still to tune on the robot
+  ([Delivery order](#delivery-order)).
 - **Two backends.** `vision` is a `VisionFeed`, which subscribes to
   `/walkie_vision/people` and `/walkie_vision/objects`.
   `create_walkie_agent` always adds it. `people_memory` is an
@@ -295,8 +297,10 @@ vector's model name and the stamp of its image:
   least 0.0469 rad, √((width / fx) × (height / fy)) with the camera's
   focal lengths. That is v2's 2,500 px² (50 × 50 px) on the robot's ZED 2i
   at Stereolabs' nominal fx of 1,066 px, to check against the robot's own
-  calibration. An angle holds on any camera: the simulation's 640 × 360
-  head camera has fx 224 px, where the same face needs only 10.5 px;
+  calibration and set in `config.toml` as `min_face_size_rad`
+  ([Delivery order](#delivery-order)). An angle holds on any camera: the
+  simulation's 640 × 360 head camera has fx 224 px, where the same face
+  needs only 10.5 px;
 - **20 appearance vectors,** the newest by stamp;
 - **for at most 32 tracks,** dropping a track unseen for 60 s. Track id 0
   means untracked and is never collected.
@@ -463,7 +467,11 @@ flowchart TB
 - **Control.** walkie-agent-v2's loop at 15 Hz: gain 1.2, 0.15 to
   0.6 rad/s, no command inside 6°, acceleration capped at 3.2 rad/s².
   0.6 rad/s and 3.2 rad/s² are hard ceilings in `gaze.py`: the config
-  may set lower values, never higher ones.
+  may set lower values, never higher ones. The rate, gain, speeds and
+  deadband are v2's, tuned on the robot, and stay in the code.
+  `config.toml`'s `[walkie.gaze]` sets
+  only `tf_wait_s`, how long a people array waits for TF to reach its
+  stamp ([Delivery order](#delivery-order)).
 - **Stops.** 1 s after the person's last sighting, on `stop_looking`,
   before any drive or arm motion, when any `navigate_to_pose` goal
   becomes active, on reset, on "stop" or "never mind" during a task or
@@ -955,6 +963,36 @@ flowchart LR
   107 px at the ZED 2i's nominal fx of 1066 px, but no repository holds the
   robot's real fx, and SCRFD's face box is tighter than the oracle's, so
   both move the right `min_face_rad`.
+- **Tuning is a config edit.** The values above, and the others that
+  depend on the robot's camera or TF, are set in `config.toml`'s
+  `[walkie.perception]` and `[walkie.gaze]` tables. The file shows each key
+  with its default, commented out, and `src/walkie_agent/tuning.py` reads
+  them at start-up:
+
+    | Table | Keys | Why on the robot |
+    | ----- | ---- | ---------------- |
+    | `[walkie.perception.front]` | `min_face_rad`, `half_angle_deg` | Tuned in simulation only |
+    | `[walkie.perception.identity.face_distance_limits]` | `arcface_w600k_r50` | Tuned with team members |
+    | `[walkie.perception.identity.appearance_distance_limits]` | `osnet_x1_0_msmt17` | Not yet tuned for appearance alone |
+    | `[walkie.perception.vision_feed]` | `min_face_size_rad` | The robot's own fx, not yet read |
+    | `[walkie.perception]` | `tf_timeout_s` | TF's lag behind the image, not yet measured |
+    | `[walkie.gaze]` | `tf_wait_s` | TF's lag behind the image, not yet measured |
+
+    A missing key keeps its default, so a file without these tables runs
+    as before. An unknown table, key or model stops the agent at start-up,
+    and so does a value that is not a number or that its config refuses.
+    So does a top-level table that looks meant for `[walkie]`, such as
+    `[gaze]` or `[walky.gaze]`, and a `min_face_rad` below
+    `min_face_size_rad`, since a person kept in front must have a face
+    that can be recognized. The error lists every problem. The gaze loop
+    keeps as many people arrays as `tf_wait_s` covers at the camera's
+    15 Hz, so a longer `tf_wait_s` takes effect. The gaze loop's
+    gain, speeds and deadband stay in the code: they are v2's, tuned on
+    the robot, as are its 1 s loss limit and 15 Hz rate. So do the
+    ceilings of 0.6 rad/s and 3.2 rad/s², and the seat and sofa classes,
+    which must change with walkie-vision's class list
+    ([question 1](#open-questions)). The same `config.toml` runs the
+    simulation, so values tuned for the robot change sim runs too.
 
 ## In simulation
 

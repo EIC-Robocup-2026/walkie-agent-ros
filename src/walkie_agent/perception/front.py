@@ -34,7 +34,8 @@ class FrontConfig:
     """Who counts as close in front of the robot. New, not from walkie-agent-v2.
 
     Both values were tuned in simulation only, in chula_pat14_6 at the door
-    pose, and are to tune on the robot.
+    pose, and are to tune on the robot. config.toml can set both, in
+    [walkie.perception.front] (walkie_agent.tuning).
     """
 
     # The smallest face, as face_size_rad() measures it. Within Nav2's stop

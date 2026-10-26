@@ -26,9 +26,10 @@ on top of [Perception](perception.md) and
   walkie-database's migration after it, person depth, the bundle runtime
   and the skill server.
 - **On its path:** walkie-vision's torch and face nodes, walkie-database's
-  people services, and in this repository phase 1, six atomics and the
-  arm atomics, the gaze loop and the HRI template, all built. On
-  the robot, also the MotionSupervisor, from the capability layer's PR C
+  people services, built in its commit 64403e9, and in this repository
+  phase 1, six atomics and the arm atomics, the gaze loop and the HRI
+  template, all built. On the robot, also the MotionSupervisor, from the
+  capability layer's PR C
   ([Robot Capabilities](capabilities.md#pr-c-the-motionsupervisor)), and
   Nav2 started with the head tilt near goals off.
 - **The bag goes in the left hand.** The robot holds out its hand, the
@@ -154,7 +155,7 @@ flowchart TB
 | ------ | ------ | ------ | ------------ |
 | `find_people(gesture=None, in_front=False)` | P | Built (sim) | Person handles, left to right. Each line gives where the person is in the image (left, centre or right), their box height as a share of the image height, their posture and gestures, and whether the face is seen well enough to recognize them: `face seen`, `face too small or unclear to recognize`, or `no face seen`. The height lets the LLM pick the nearest. The first line names the set. With `gesture`, only the people who show it. With `in_front`, only the people close in front of the robot ([One run](#one-run)), and a last line counts those left out by reason: `with no clear face`, `too far` or `to the side`. With two or more kept, the first line names the one with the largest face. When nobody is close in front, `NOT_FOUND` says why for each person and stores nothing. For the door, not the seats |
 | `recognize_person(person)` | R | Built (sim) | Takes one handle or the whole set from one `find_people` call. Matches the face first, else the appearance, else `UNKNOWN`. Each model among the person's vectors is matched on its own, within that model's distance limit. Over a set, names go to people closest match first, so no name is given twice |
-| `remember_person(person, name, facts={})` | W | Built (sim) | Stores the name, `facts` such as `{"drink": "milk"}`, the handle's own face and appearance vectors, and those collected for its track, minus outliers. On the robot, walkie-database will keep the facts in `person.attributes`. Takes one handle, not a set. Declares the code's provisional `W` effect until [Perception question 3](perception.md#open-questions) is decided |
+| `remember_person(person, name, facts={})` | W | Built (sim) | Stores the name, `facts` such as `{"drink": "milk"}`, the handle's own face and appearance vectors, and those collected for its track, minus outliers. On the robot, walkie-database keeps the facts in `person.attributes`. Takes one handle, not a set. Declares the code's provisional `W` effect until [Perception question 3](perception.md#open-questions) is decided |
 | `find_seats()` | P | Built (sim) | Seat handles, one per place to sit, left to right by the place's centre. A sofa gives a left, a middle and a right place. Each is `free` or `taken`, and the last line counts the free places |
 | `look_at(target)` | N | Built (sim) ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)) | Starts the gaze loop on a person handle, or turns to a seat handle and holds. For a person it returns once the base faces them, or after 4 s with the loop still following them, and then says the base is still turning. For a seat it returns once the base faces it, within 10 s. Both limits are on the node clock. Refuses with an arm out, as the drives do ([Gaze](#gaze)) |
 | `stop_looking()` | N | Built (sim) | Stops the gaze loop. When nothing runs, says which target ran last, why it stopped and how long ago. Never fails |
@@ -184,12 +185,13 @@ atomics:
   ([Delivery order](#delivery-order)).
 - **Two backends.** `vision` is a `VisionFeed`, which subscribes to
   `/walkie_vision/people` and `/walkie_vision/objects`.
-  `create_walkie_agent` always adds it. `people_memory` is an
-  `InMemoryPeopleMemory`, a mock of walkie-database's proposed people
-  services. The agent adds it only with the `--mock-people-memory` flag,
-  which `pixi run agent-sim` passes, and clears it at every new task.
-  Without the flag, `recognize_person` and `remember_person` do not load
-  ([The Agent](agent.md#where-atomics-live)).
+  `create_walkie_agent` always adds it. `people_memory` is a
+  `RosPeopleMemory` on walkie-database's people services by default. With
+  the `--mock-people-memory` flag, which `pixi run agent-sim` and
+  `agent-sim-hri` pass, it is an `InMemoryPeopleMemory`, because the sim's
+  fake vision models have no vector tables in walkie-database. Either one
+  forgets the guests at every new task
+  ([Perception](perception.md#people), [The Agent](agent.md#where-atomics-live)).
 - **Tested over ROS.** The tests run all four against a fake publisher of
   both arrays, with vectors from `src/walkie_agent/sim/fake_vectors.py`
   and the transforms from `map` to the camera on `/tf_static`. A test
@@ -894,7 +896,7 @@ The sim run:
 
 ```mermaid
 flowchart TB
-    di["<b>walkie-database</b><br/>People services:<br/>interface agreed"]:::proposed
+    di["<b>walkie-database</b><br/>People services:<br/>interface agreed (done)"]
     a0["<b>walkie-agent-ros</b><br/>Pin walkie_vision_msgs"]
     p1["<b>walkie-agent-ros</b><br/>Phase 1: host, todos,<br/>wait_for_person"]
     a1["<b>walkie-agent-ros</b><br/>HRI atomics, and arm<br/>atomics on the commander"]:::proposed
@@ -919,7 +921,7 @@ flowchart LR
     t["<b>walkie-agent-ros</b><br/>Sim run passes"]:::proposed
     v1["<b>walkie-vision</b><br/>Torch node: YOLOE with<br/>seat classes, pose, OSNet"]
     v2["<b>walkie-vision</b><br/>Face node, faces in<br/>PersonDetection"]
-    d3["<b>walkie-database</b><br/>People services built"]:::proposed
+    d3["<b>walkie-database</b><br/>People services built<br/>(done)"]
     cb["<b>walkie-agent-ros</b><br/>Capability layer PR A and B:<br/>ctx.base, ctx.arms, reset cancels a drive"]:::proposed
     ac["<b>walkie-agent-ros</b><br/>Capability layer PR C:<br/>MotionSupervisor"]:::proposed
     ht["<b>walkie-ros</b><br/>navigation submodule bump:<br/>head_tilt_near_goal switch, off"]:::proposed
@@ -951,6 +953,19 @@ flowchart LR
   on walkie-ros's branch `feat/chula-pat14-6-simulation` until its PR #58
   merges. walkie-vision and walkie-database are needed only for the
   robot.
+- **The people memory on the robot** is walkie-database, through
+  `RosPeopleMemory` ([Perception](perception.md#people)). Without the
+  node, `recognize_person` and `remember_person` answer `UNAVAILABLE`. It
+  needs:
+    - walkie-database's node at commit 64403e9, the pin in
+      `ros2_ws.repos`, running, so its migration 0003 applies when it
+      starts;
+    - the same `ROS_DOMAIN_ID` and Zenoh router as the agent;
+    - the vector tables `face_arcface_w600k_r50` and
+      `appearance_osnet_x1_0_msmt17`, 512 values each, from its
+      migration 0002.
+- **What still blocks the people atomics on the robot** is walkie-vision's
+  torch and face nodes, which publish vectors of those two models.
 - **The template, its pass check and the sim run are done.** Two sim runs
   in a row passed every criterion of the check
   ([In simulation](#in-simulation)). In both, Nav2 aborted the first
@@ -1390,7 +1405,7 @@ repository:
 | ---------- | ------ | ------ |
 | walkie-vision | The torch node, with the seat classes in its streaming list | Planned there. How a task sets the list is new here ([question 1](#open-questions)) |
 | walkie-vision | The face node, and which process puts faces into `PersonDetection` | Open there |
-| walkie-database | People services: remember a person with facts and several vectors, and recognize a set of faces | New ([Perception question 2](perception.md#open-questions)) |
+| walkie-database | People services: remember a person with facts and several vectors, and recognize a set of faces | Built in 64403e9 ([Perception question 2](perception.md#open-questions), done) |
 | walkie-ros | W2, arm speed scaling, before the hand-over runs with anyone but team members ([The bag hand-over](#the-bag-hand-over)) | Planned on [Manipulation](manipulation.md#changes-needed-in-walkie-ros) |
 | walkie-ros | A collision-checked input for the gaze loop, if [question 4](#open-questions) asks for one | — |
 | walkie-ros | Person bodies in the MuJoCo world, so the lidars, the depth image and the costmaps see the scenario's people | A proposal, after slice 2 passes with legs in the scan ([Slice 2](#slice-2-following-the-host)) |

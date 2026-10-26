@@ -61,11 +61,15 @@ class Args(BaseModel):
 
 class Out(ToolOutput):
     person_id: str
+    # The vectors stored.
     faces: int
     appearances: int
     # The vectors left out as outliers, such as a bystander's face in one image.
     dropped_faces: int
     dropped_appearances: int
+    # The models the people memory has no table for, whose vectors were left
+    # out, so they can never recognize the person.
+    unstored_models: list[str]
 
 
 def run(ctx: ToolContext, args: Args) -> Out:
@@ -88,20 +92,28 @@ def run(ctx: ToolContext, args: Args) -> Out:
     # The guest's answer may come long after the question; a stop since
     # then must not store them.
     ctx.check_cancelled()
-    person_id = memory.remember(args.name, args.facts, kept_faces, kept_appearances)
+    stored = memory.remember(args.name, args.facts, kept_faces, kept_appearances)
 
     facts = f" ({shared.facts_text(args.facts)})" if args.facts else ""
-    vectors = "vector" if len(kept_appearances) == 1 else "vectors"
+    vectors = "vector" if stored.appearances == 1 else "vectors"
+    summary = (
+        f"Remembered {args.name}{facts} from {stored.faces} face and "
+        f"{stored.appearances} appearance {vectors}."
+    )
+    if stored.unstored_models:
+        # Such a model can never name them, so the LLM must not count on it.
+        summary += (
+            f" Left out the vectors of {', '.join(stored.unstored_models)}: the people "
+            "memory has no table for them."
+        )
     return Out(
-        summary=(
-            f"Remembered {args.name}{facts} from {len(kept_faces)} face and "
-            f"{len(kept_appearances)} appearance {vectors}."
-        ),
-        person_id=person_id,
-        faces=len(kept_faces),
-        appearances=len(kept_appearances),
+        summary=summary,
+        person_id=stored.person_id,
+        faces=stored.faces,
+        appearances=stored.appearances,
         dropped_faces=len(faces) - len(kept_faces),
         dropped_appearances=len(appearances) - len(kept_appearances),
+        unstored_models=list(stored.unstored_models),
     )
 
 

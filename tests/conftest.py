@@ -1,3 +1,4 @@
+import importlib
 import importlib.util
 import os
 import random
@@ -14,6 +15,11 @@ import pytest
 os.environ["RMW_IMPLEMENTATION"] = "rmw_fastrtps_cpp"
 # Keep test traffic on this machine and off any domain a real robot might use.
 os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
+# Make every message constructor refuse an unknown field name. Without it,
+# ModelVector(model=..., values=...) builds a vector with an empty embedding
+# and raises nothing. Each message module reads the variable when it is
+# imported, so this must also run before any message import.
+os.environ.setdefault("ROS_PYTHON_CHECK_FIELDS", "1")
 
 # The message packages from ros2_ws.repos, built by `pixi run build-ros2`.
 # scripts/activate.sh adds them to the environment only once they are built.
@@ -36,6 +42,14 @@ if _missing:
     raise pytest.UsageError(
         f"Message packages not built: {', '.join(_missing)}. "
         "Run `pixi run build-ros2` once, then run the tests again."
+    )
+# A package built at an older pin imports, but lacks the newer types: the
+# people services came with walkie-database 64403e9.
+if not hasattr(importlib.import_module("walkie_database_msgs.srv"), "StartSession"):
+    raise pytest.UsageError(
+        "walkie_database_msgs is older than the walkie-database commit pinned in "
+        "ros2_ws.repos: it has no StartSession. Run `pixi run build-ros2` again, then "
+        "run the tests again."
     )
 
 import rclpy  # noqa: E402

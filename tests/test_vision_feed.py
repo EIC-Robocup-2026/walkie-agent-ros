@@ -105,9 +105,12 @@ def near(vector: ModelVector, key: str, weight: float = 0.1) -> ModelVector:
 
 def test_memory_matches_faces_nearest_first_within_one_model():
     memory = InMemoryPeopleMemory()
-    sam = memory.remember("Sam", {"drink": "milk"}, [face("sam")], [appearance("sam")])
-    ana = memory.remember("Ana", {}, [face("ana")], [])
+    stored = memory.remember("Sam", {"drink": "milk"}, [face("sam")], [appearance("sam")])
+    sam = stored.person_id
+    ana = memory.remember("Ana", {}, [face("ana")], []).person_id
 
+    # The mock takes every model, so it stores every vector.
+    assert stored == (sam, 1, 1, ())
     [matches] = memory.match_faces([near(face("sam"), "1")])
 
     assert [m.person_id for m in matches] == [sam, ana]
@@ -121,7 +124,7 @@ def test_memory_matches_faces_nearest_first_within_one_model():
 
 def test_memory_keeps_faces_and_appearances_apart():
     memory = InMemoryPeopleMemory()
-    sam = memory.remember("Sam", {}, [], [appearance("sam")])
+    sam = memory.remember("Sam", {}, [], [appearance("sam")]).person_id
 
     assert memory.match_faces([face("sam")]) == [[]]
     [[match]] = memory.match_appearances([appearance("sam")])
@@ -132,8 +135,8 @@ def test_memory_keeps_faces_and_appearances_apart():
 def test_memory_answers_each_query_and_uses_the_nearest_sample():
     memory = InMemoryPeopleMemory()
     # Two samples, as from two angles: the query is near the second only.
-    sam = memory.remember("Sam", {}, [face("sam front"), face("sam side")], [])
-    ana = memory.remember("Ana", {}, [face("ana")], [])
+    sam = memory.remember("Sam", {}, [face("sam front"), face("sam side")], []).person_id
+    ana = memory.remember("Ana", {}, [face("ana")], []).person_id
 
     sam_matches, ana_matches = memory.match_faces([face("sam side"), face("ana")])
 
@@ -144,13 +147,13 @@ def test_memory_answers_each_query_and_uses_the_nearest_sample():
 
 def test_memory_clear_forgets_everyone_and_never_reuses_an_id():
     memory = InMemoryPeopleMemory()
-    first = memory.remember("Sam", {}, [face("sam")], [])
+    first = memory.remember("Sam", {}, [face("sam")], []).person_id
 
     memory.clear()
 
     assert len(memory) == 0
     assert memory.match_faces([face("sam")]) == [[]]
-    assert memory.remember("Ana", {}, [face("ana")], []) != first
+    assert memory.remember("Ana", {}, [face("ana")], []).person_id != first
 
 
 def test_memory_returns_copies_of_the_facts():

@@ -2,8 +2,10 @@
 
 !!! note "Status: Proposed, three people atomics built"
     `find_people`, `recognize_person` and `remember_person` are built and
-    tested on fakes, with a mock people memory ([People](#people)). The
-    rest of this page is the design for team review. Each of the
+    tested on fakes. On the robot, the people memory is walkie-database's
+    people services, built in walkie-database 64403e9; in sim, it is a mock
+    ([People](#people)). The rest of this page is the design for team
+    review. Each of the
     [open questions](#open-questions) says what it blocks.
 
 walkie-vision runs the robot's vision models, and walkie-database
@@ -31,8 +33,9 @@ proposed).
   name, and the agent never compares across models. After the bake-off,
   walkie-database migrates, the torch process switches, and the agent's
   thresholds are tuned again, together.
-- **Gaps in other repositories.** A person's position needs depth, people
-  need walkie-database services, and captions have no interface yet.
+- **Gaps in other repositories.** A person's position needs depth, a
+  search by description needs a walkie-database service, and captions have
+  no interface yet.
 
 ## How the pieces connect
 
@@ -59,7 +62,8 @@ flowchart TB
         ingest["Object memory<br/>ingest and merge"]
         tables[("One vec0 table per model:<br/>object, room, face, appearance")]
         findsrv["find_objects"]
-        newsrv["Vector search,<br/>people services"]:::proposed
+        peoplesrv["People services"]
+        newsrv["Vector search<br/>by description"]:::proposed
     end
 
     subgraph agent["walkie-agent-ros"]
@@ -76,12 +80,13 @@ flowchart TB
     stream -- "/walkie_vision/objects" --> ingest
     ingest --> tables
     tables --> findsrv
+    tables --> peoplesrv
     tables -.-> newsrv
     findsrv -- "label search" --> objatoms
     ondemand -. "DetectObjects" .-> objatoms
     embedtext -- "EmbedText" --> objatoms
     stream -- "/walkie_vision/people" --> pplatoms
-    newsrv -. "matches" .-> pplatoms
+    peoplesrv -- "matches" --> pplatoms
     newsrv -. "matches by description" .-> objatoms
     objatoms --> llm
     pplatoms --> llm
@@ -96,7 +101,8 @@ flowchart TB
 | `/walkie_vision/embed_text` (`EmbedText`) | walkie-vision | Service type built, server not yet | `search_detections` |
 | `/walkie_vision/detect_objects` (`DetectObjects`) | walkie-vision | Proposed (its ADR-0009) | `detect_objects` |
 | `/walkie_database/find_objects` | walkie-database | Exists | `find_objects` |
-| Vector search and people services | walkie-database | Not designed ([questions 2 and 6](#open-questions)) | `recognize_person`, `remember_person`, a later `find_objects` by description |
+| `/walkie_database/start_session`, `end_session`, `remember_person`, `match_faces`, `match_appearances` | walkie-database | Built in 64403e9 | `recognize_person` and `remember_person`, through the agent's `RosPeopleMemory`. The agent never calls `end_session` |
+| Vector search by description | walkie-database | Not designed ([question 6](#open-questions)) | A later `find_objects` by description |
 
 ## From model to tool
 
@@ -108,8 +114,8 @@ Each model in walkie-vision's ADR-0008, and where the agent meets it:
 | YOLOE-26, on-demand instance | torch process | Boxes, embeddings, `points` and crops of the newest image | `detect_objects`, then `localize_object` | walkie-vision ADR-0009 |
 | Object embedder: SigLIP 2 B/16 proposed, CLIP ViT-B/16 the baseline, EmbeddingGemma 2 the challenger | torch process | `ObjectDetection.embedding` and `EmbedText` vectors, with `embedding_model` | `search_detections` | The bake-off |
 | YOLO26s-pose (or m) | torch process | 17 keypoints, box and track id per person | `find_people`, `refind_person` | The torch node |
-| SCRFD + ArcFace (`buffalo_l`) | face process | `face_embedding`, `face_model` | `recognize_person`, `remember_person` | The face process interface, walkie-database services |
-| OSNet x1.0, MSMT17 weights | torch process | `appearance_embedding`, `appearance_model` | `refind_person` when a track breaks, `remember_person` | walkie-database services |
+| SCRFD + ArcFace (`buffalo_l`) | face process | `face_embedding`, `face_model` | `recognize_person`, `remember_person` | The face process interface |
+| OSNet x1.0, MSMT17 weights | torch process | `appearance_embedding`, `appearance_model` | `refind_person` when a track breaks, `remember_person` | The torch node |
 | Florence-2 base | not placed yet | Nothing yet | `describe_person`, if it is built | An interface ([question 4](#open-questions)) |
 
 The cascade for objects is on
@@ -186,21 +192,48 @@ sequenceDiagram
 | `find_people(gesture=None, in_front=False)` | P | The newest `/walkie_vision/people` message, at most 1 s old, waiting at most 1 s. With `in_front`, also the base's pose from TF at the image's stamp | Person handles such as `per_51c0.1`, left to right, each with its gestures and postures and whether its face is seen well enough to recognize: `face seen`, `face too small or unclear to recognize`, or `no face seen`. With `in_front`, handles only for the people with a clear face of at least 0.10 rad within 25° of the base's heading, and a count of those left out by reason, for the guest at the door ([HRI Task](hri.md#one-run)). `NOT_FOUND` when no one matches |
 | `refind_person(person)` | P | The newest message again | A new handle for the same person: same track id, else the closest appearance embedding over a limit. `NOT_FOUND` otherwise |
 | `localize_person(person)`, internal | P | The person's depth, which the message lacks ([question 1](#open-questions)) | A pose handle for `navigate_to_pose`, as `localize_object` gives ([ADR-0043](decisions/0043-navigate-to-pose-provenance.md)) |
-| `recognize_person(person)` | R | walkie-database's face table, then its appearance table. Until its services exist, the mock people memory | A name and stored facts, or `UNKNOWN`. `NOT_FOUND` when one handle has neither a face nor an appearance vector. Also takes a whole set, giving each name to one person at most ([HRI Task](hri.md#atomics)) |
-| `remember_person(person, name, facts={})` | W, provisional ([question 3](#open-questions)) | Writes the person, its facts such as a drink, the handle's own face and appearance vectors, and those collected for its track ([HRI Task](hri.md#faces-collected-while-talking)), through walkie-database. Until its services exist, into the mock people memory | Confirmation, with the number of face and appearance vectors stored. The person is forgotten with the session (walkie-database ADR-0010). The mock forgets everyone on a reset or when a new task replaces the todo list |
+| `recognize_person(person)` | R | walkie-database's `match_faces`, then its `match_appearances`. In sim, the mock people memory | A name and stored facts, or `UNKNOWN`. `NOT_FOUND` when one handle has neither a face nor an appearance vector. Also takes a whole set, giving each name to one person at most ([HRI Task](hri.md#atomics)) |
+| `remember_person(person, name, facts={})` | W, provisional ([question 3](#open-questions)) | Writes the person, its facts such as a drink, the handle's own face and appearance vectors, and those collected for its track ([HRI Task](hri.md#faces-collected-while-talking)), through walkie-database's `remember_person`. In sim, into the mock people memory | Confirmation, with the number of face and appearance vectors stored, and the models left out because the database has no table for them. The person is forgotten with the session (walkie-database ADR-0010): both backends forget the guests on a reset or when a new task replaces the todo list |
 
-- **Built on a mock memory.** `find_people`, `recognize_person` and
+- **Two backends.** `find_people`, `recognize_person` and
   `remember_person` are built ([HRI Task](hri.md#atomics)).
-  `refind_person` and `localize_person` are not. Until walkie-database's
-  people services exist, the `people_memory` backend is
-  `InMemoryPeopleMemory`, in `src/walkie_agent/perception/people_memory.py`.
-  It follows the services' proposed interface, `PeopleMemory`, and matches
-  by cosine distance within one model name.
-- **Only with `--mock-people-memory`.** `create_walkie_agent` adds the mock
-  only when `main.py` gets this flag, and `pixi run agent-sim` passes it.
-  Without it, as in `pixi run agent`, `recognize_person` and
-  `remember_person` do not load, so a robot run never names a guest from a
-  mock.
+  `refind_person` and `localize_person` are not. The `people_memory`
+  backend is a `PeopleMemory`, in
+  `src/walkie_agent/perception/people_memory.py`. By default it is
+  `RosPeopleMemory`, in `perception/ros_people_memory.py`, on
+  walkie-database's people services. With `--mock-people-memory`, which
+  `pixi run agent-sim` and `agent-sim-hri` pass, it is
+  `InMemoryPeopleMemory`, which matches by cosine distance within one
+  model name. The sim keeps the mock, because its fake models have no
+  vector tables in walkie-database.
+- **Each task starts with no guests.** By default the agent forgets
+  walkie-database's open session at start-up and at each new task
+  (walkie-database ADR-0010, ADR-0017). With `--resume-people-session`, the
+  first task after an agent restart keeps the open session, so the guests
+  met before the restart are still known. A forget that fails stays
+  pending, and the next people call forgets first.
+- **People kept across sessions are matched.** walkie-database keeps team
+  members across sessions (`session_id` 0) precisely so that they are
+  recognized, and its `match_faces` includes them. No agent tool creates
+  one: `remember_person` always stores into the open session, so a kept
+  person comes only from a deliberate enrollment. The cost, from
+  walkie-database ADR-0017: the robot may name a guest after a team member
+  who looks alike, which the mock never does. The per-model limit guards
+  against it. To match guests only, `RosPeopleMemory` would drop the
+  matches whose `session_id` is 0.
+- **A stored person without a name is `UNKNOWN`.** Only walkie-database's
+  seed or another writer stores one, since `remember_person` always gives
+  a name. `recognize_person` still matches them, so they block a weaker
+  named match and the appearance fallback, and says `UNKNOWN, stored
+  without a name`, so the LLM has no name to guess from. If it then learns
+  the name, `remember_person` stores a second person.
+- **Models the database takes.** `start_session` answers with the face
+  and appearance models walkie-database has tables for. `RosPeopleMemory`
+  sends no vector of another model: such a query gets no matches.
+  `remember_person` drops such vectors and names their models in its
+  answer, so the LLM knows those models can never recognize the person. It
+  fails with `REFUSED` when no vector is left. A vector of the wrong length
+  reaches the node, which refuses it with `REFUSED`.
 - **The limits,** as cosine distance. A face of `arcface_w600k_r50`
   matches at 0.4 or less, walkie-agent-v2's value for the same weights. An
   appearance of `osnet_x1_0_msmt17` matches at 0.5 or less, still to be
@@ -335,7 +368,7 @@ flowchart TB
     v5["<b>walkie-vision</b><br/>Switch to the<br/>new model name"]
     d1["<b>walkie-database</b><br/>Object ingest"]
     d2["<b>walkie-database</b><br/>Migration after<br/>the bake-off"]
-    d3["<b>walkie-database</b><br/>People services"]:::proposed
+    d3["<b>walkie-database</b><br/>People services<br/>(done)"]
     a0["<b>walkie-agent-ros</b><br/>Pin walkie_vision_msgs<br/>(done)"]
     a1["<b>walkie-agent-ros</b><br/>Phase 2: atomics<br/>on mocks"]
     a2["<b>walkie-agent-ros</b><br/>Real vision clients"]
@@ -371,10 +404,10 @@ flowchart TB
   After a message change in walkie-vision, move the pin and build again.
 - **Phase 2 of the self-evolving agent** adds `refind_person` next to the
   object atomics, on mocks. `find_people` is built already, and so are
-  `recognize_person` and `remember_person`, on the mock people memory. On
-  the robot, those two wait for walkie-database's services.
-- **The real-backends track** adds the people clients next to the
-  `DetectObjects` and `EmbedText` clients, and reruns the bundle tests.
+  `recognize_person` and `remember_person`. On the robot, those two use
+  walkie-database's people services; in sim, the mock people memory.
+- **The real-backends track** adds the `DetectObjects` and `EmbedText`
+  clients next to the people memory client, and reruns the bundle tests.
 
 ## What changes in other repositories
 
@@ -386,7 +419,8 @@ flowchart TB
 | walkie-vision | A captions interface, if `describe_person` is built | New here ([question 4](#open-questions)) |
 | walkie-database | Ingest from `/walkie_vision/objects`, building `walkie_vision_msgs` | Proposed there |
 | walkie-database | One migration after the bake-off | In the bake-off guide |
-| walkie-database | Vector search for objects, and services to recognize and remember people | New here ([questions 2 and 6](#open-questions)) |
+| walkie-database | Services to recognize and remember people | Built in 64403e9 ([question 2](#open-questions), done) |
+| walkie-database | Vector search for objects | New here ([question 6](#open-questions)) |
 
 ## Open questions
 
@@ -395,15 +429,14 @@ flowchart TB
    cut from the depth image with the box or the keypoints, as
    `ObjectDetection` has. The alternative is a robot-side service, which
    needs the image the detection came from. Blocks: `localize_person`.
-2. **walkie-database's people services.** Their requests, the session rules
-   of walkie-database ADR-0010, and who tunes the face distance limit. The
-   limit is a `config.toml` key, so the tuning itself is a config edit
-   ([HRI Task](hri.md#delivery-order)). The HRI task needs a person
-   stored with facts and several vectors, and a set of faces recognized
-   at once. `PeopleMemory` in `perception/people_memory.py` is the
-   interface the atomics call today.
-   Blocks: `recognize_person` and `remember_person` on the robot, and so
-   the HRI task there. In sim they run on the mock.
+2. **walkie-database's people services.** Settled: walkie-database built
+   them in 64403e9: a person stored with facts and several vectors, a set
+   of queries matched at once, and the session rules of its ADR-0010 and
+   ADR-0017. `RosPeopleMemory` calls them behind `PeopleMemory`
+   ([People](#people)). The face distance limit is still tuned on the
+   robot, with team members, as a `config.toml` edit
+   ([HRI Task](hri.md#delivery-order)). Blocks: nothing. The robot run of
+   the HRI task now waits on walkie-vision's nodes.
 3. **No effect covers a memory write.** R, P, S, N and M cover reading,
    perceiving, speaking and moving. Proposed: `remember_person` stays a
    reviewed atomic that generated tools cannot call at any level, until a

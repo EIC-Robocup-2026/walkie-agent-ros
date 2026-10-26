@@ -58,8 +58,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--mock-people-memory",
         action="store_true",
         help=(
-            "Remember people in memory, cleared at every new task, so recognize_person "
-            "and remember_person load. For sim and tests; without it they do not load."
+            "Keep people in an in-memory mock, for sim and tests. Without it, the people "
+            "tools use walkie-database's services."
+        ),
+    )
+    parser.add_argument(
+        "--resume-people-session",
+        action="store_true",
+        help=(
+            "Keep walkie-database's open session for the first task after a restart, so "
+            "the guests met before it are still known. By default the agent forgets them "
+            "at start-up and at each new task (walkie-database ADR-0010)."
         ),
     )
     parser.add_argument(
@@ -85,6 +94,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """The command line, with the flags that cannot go together refused."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.resume_people_session and args.mock_people_memory:
+        parser.error(
+            "--resume-people-session needs walkie-database; it does nothing with "
+            "--mock-people-memory"
+        )
+    return args
+
+
 def tool_log_path(value: str | None, now: datetime | None = None) -> Path | None:
     """The --tool-log path: None without the flag, the default name for the bare flag."""
     if value is None:
@@ -96,7 +117,7 @@ def tool_log_path(value: str | None, now: datetime | None = None) -> Path | None
 
 
 def main() -> None:
-    args = build_parser().parse_args()
+    args = parse_args()
 
     # Variables already set in the shell take precedence over .env.
     load_dotenv()
@@ -116,7 +137,8 @@ def main() -> None:
             target_connectors={args.output_topic: hri_connector},
             whoami_dir=args.whoami_dir,
             templates=templates,
-            mock_people_memory=args.mock_people_memory,
+            people_memory="mock" if args.mock_people_memory else "database",
+            resume_people_session=args.resume_people_session,
             arms=args.arms,
             tool_log_path=tool_log_path(args.tool_log),
             tuning=tuning,

@@ -1076,6 +1076,44 @@ def test_a_third_person_never_met_is_unknown(world):
     assert out.people[1].person_id is None and out.people[1].matched_by is None
 
 
+def test_a_stored_person_without_a_name_is_unknown_and_blocks_a_weaker_name(
+    world, monkeypatch
+):
+    # Only walkie-database's seed or another writer stores someone without
+    # a name: remember_person always gives one. The nameless person is the
+    # nearer match, so neither Sam's face nor his appearance names them.
+    world.memory.remember(
+        "",
+        {"drink": "tea"},
+        [ModelVector(FAKE_FACE_MODEL, vector("face", "sam"))],
+        [ModelVector(FAKE_REID_MODEL, vector("reid", "sam"))],
+    )
+    world.memory.remember(
+        "Sam",
+        {"drink": "milk"},
+        [ModelVector(FAKE_FACE_MODEL, vector("face", "sam", shot=1))],
+        [ModelVector(FAKE_REID_MODEL, vector("reid", "sam", shot=1))],
+    )
+    appearance_calls = []
+    match_appearances = world.memory.match_appearances
+
+    def spy(queries):
+        appearance_calls.append(queries)
+        return match_appearances(queries)
+
+    monkeypatch.setattr(world.memory, "match_appearances", spy)
+    world.vision.show(people=[person(320, "sam", track_id=1)])
+    found = world.call("find_people")
+
+    out = world.call("recognize_person", person=found.handles[0])
+
+    assert lines(out) == [f"{found.handles[0]} (centre): UNKNOWN, stored without a name"]
+    [unknown] = out.people
+    assert (unknown.person_id, unknown.name, unknown.facts) == (None, None, {})
+    assert (unknown.matched_by, unknown.distance) == (None, None)
+    assert appearance_calls == []
+
+
 def test_appearance_names_a_person_whose_face_is_not_seen(world):
     meet(world, {"Sam": {"cx": 320, "key": "sam", "track_id": 1}})
     # Turned away: no face in the box.
@@ -1181,6 +1219,30 @@ def test_remember_person_stores_no_face_too_small_to_trust(world):
     out = world.call("remember_person", person=found.handles[0], name="Sam")
 
     assert out.summary == "Remembered Sam from 0 face and 3 appearance vectors."
+
+
+def test_remember_person_says_which_models_the_memory_left_out(world, monkeypatch):
+    # RosPeopleMemory leaves out the vectors of a model walkie-database has
+    # no table for, here the appearance model, and says so in its Stored.
+    remember = world.memory.remember
+
+    def without_appearances(name, facts, faces, appearances):
+        stored = remember(name, facts, faces, [])
+        return stored._replace(unstored_models=(FAKE_REID_MODEL,))
+
+    monkeypatch.setattr(world.memory, "remember", without_appearances)
+    for _ in range(3):
+        world.vision.show(people=[person(320, "sam", track_id=1)])
+    found = world.call("find_people")
+
+    out = world.call("remember_person", person=found.handles[0], name="Sam")
+
+    assert out.summary == (
+        "Remembered Sam from 3 face and 0 appearance vectors. Left out the vectors of "
+        f"{FAKE_REID_MODEL}: the people memory has no table for them."
+    )
+    assert (out.faces, out.appearances) == (3, 0)
+    assert out.unstored_models == [FAKE_REID_MODEL]
 
 
 def test_remember_person_checks_its_arguments(world):

@@ -22,6 +22,7 @@ from walkie_agent.agent import ARM_RULES, SYSTEM_PROMPT, WalkieAgent, create_wal
 from walkie_agent.arm.commander import CommanderClient
 from walkie_agent.gaze import STOP_HEARD, GazeLoop
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory, ModelVector
+from walkie_agent.perception.ros_people_memory import RosPeopleMemory
 from walkie_agent.perception.vision_feed import VisionFeed
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, hash_vector
 from walkie_agent.tasks import TaskTemplate
@@ -128,10 +129,11 @@ def test_the_agent_gets_a_toolbox_with_only_the_vision_and_gaze_atomics(connecto
     assert isinstance(agent.toolbox, Toolbox)
     assert agent.toolbox.ctx.connector is connector
     assert isinstance(agent.toolbox.ctx.backend("vision"), VisionFeed)
+    # recognize_person and remember_person need people_memory, which only a
+    # people_memory argument adds (main.py always gives one).
     assert not agent.toolbox.ctx.has_backend("people_memory")
-    # recognize_person and remember_person need people_memory, and the arm
-    # atomics need the arm backend, which only --arms adds, so a robot run
-    # without them never offers those tools, nor checks the arms before a drive.
+    # The arm atomics need the arm backend, which only --arms adds, so a robot
+    # run without it never offers those tools, nor checks the arms before a drive.
     assert not agent.toolbox.ctx.has_backend("arm")
     # The gaze loop loads in every run, sim or robot, with or without --arms.
     gaze = agent.toolbox.ctx.backend("gaze")
@@ -215,7 +217,7 @@ def test_the_mock_people_memory_loads_the_people_atomics_and_clears_on_a_new_tas
         connector,
         locations,
         target_connectors={},
-        mock_people_memory=True,
+        people_memory="mock",
     )
     memory = agent.toolbox.ctx.backend("people_memory")
     memory.remember("Sam", {}, [ModelVector(FAKE_FACE_MODEL, hash_vector("sam", 512))], [])
@@ -233,6 +235,51 @@ def test_the_mock_people_memory_loads_the_people_atomics_and_clears_on_a_new_tas
     assert len(memory) == 1
     agent.toolbox.new_task()
     assert len(memory) == 0
+
+
+def test_the_database_people_memory_loads_the_people_atomics_and_clears_on_a_new_task(
+    connector, locations, monkeypatch
+):
+    # No database node runs here; test_ros_people_memory.py covers the calls.
+    cleared = []
+    monkeypatch.setattr(RosPeopleMemory, "clear", lambda memory: cleared.append(memory))
+    agent = create_walkie_agent(
+        ScriptedChatModel(responses=[]),
+        connector,
+        locations,
+        target_connectors={},
+        people_memory="database",
+    )
+    memory = agent.toolbox.ctx.backend("people_memory")
+
+    assert isinstance(memory, RosPeopleMemory)
+    assert [t.name for t in agent.toolbox.tools()] == [
+        "find_people",
+        "find_seats",
+        "look_at",
+        "recognize_person",
+        "remember_person",
+        "stop_looking",
+    ]
+    agent.toolbox.new_task()
+    assert cleared == [memory]
+    # By default the first start forgets the open session.
+    assert not (memory._resume_pending or memory._adopt_next)
+
+
+def test_resume_people_session_reaches_the_database_people_memory(connector, locations):
+    agent = create_walkie_agent(
+        ScriptedChatModel(responses=[]),
+        connector,
+        locations,
+        target_connectors={},
+        people_memory="database",
+        resume_people_session=True,
+    )
+    memory = agent.toolbox.ctx.backend("people_memory")
+
+    # The first task after the restart keeps the open session.
+    assert memory._resume_pending and memory._adopt_next
 
 
 def test_arms_loads_the_arm_atomics_the_arm_rules_and_the_drive_check(

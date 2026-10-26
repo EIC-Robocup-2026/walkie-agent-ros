@@ -160,11 +160,14 @@ description = "Run the Walkie RAI agent (reads tasks from /from_human)"
 # The agent against walkie-ros's MuJoCo simulation (blank map). It uses the
 # Zenoh router on localhost:7447, from either repository, and the calling
 # shell's ROS_DOMAIN_ID, which must match the simulation's (ADR-0036). See
-# docs/getting-started.md. --mock-people-memory loads recognize_person and
-# remember_person on an in-memory mock, cleared at every new task. --arms
-# loads the arm tools on walkie-ros's bimanual_commander and the arm check
-# before every drive. The robot task `agent` leaves both out: --arms waits
-# for the robot track's MotionSupervisor (manipulation.md).
+# docs/getting-started.md. --mock-people-memory keeps the people that
+# recognize_person and remember_person store in an in-memory mock, cleared at
+# every new task: the simulation's fake vision models have no vector tables
+# in walkie-database. --arms loads the arm tools on walkie-ros's
+# bimanual_commander and the arm check before every drive. The robot task
+# `agent` leaves both out: --arms waits for the robot track's
+# MotionSupervisor (manipulation.md), and without --mock-people-memory the
+# two people tools use walkie-database's people services.
 [tasks.agent-sim]
 cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.sim.toml --mock-people-memory --arms"
 description = "Run the agent against walkie-ros's MuJoCo simulation (the shell's ROS_DOMAIN_ID)"

@@ -35,12 +35,22 @@ change after the bake-off, and walkie-database keeps one table per model
 - Gestures and postures are classified in the agent from the keypoints,
   by porting walkie-agent-v2's predicates, their eight ids and their tests.
 - Faces and appearance are matched by walkie-database, which owns the
-  vector tables. The agent sends the vector from its handle store and
-  stores no vector itself.
+  vector tables and stores the people. The agent stores no person. It
+  keeps the newest face and appearance vectors of each visible track, by
+  image stamp, for at most 60 s after the track was last seen. A person
+  handle lives longer, 600 s. It keeps its own vectors and the generation
+  of its track's collection, and sends its own vectors plus that
+  collection's while the collection lives. A handle whose collection was
+  dropped sends only its own, even when its track id names someone new
+  ([HRI Task](/architecture/hri.md#faces-collected-while-talking)).
 - Every vector comparison checks the model name that comes with each
   vector: `embedding_model`, `face_model` or `appearance_model`. The
   agent's thresholds live in config, keyed by model name. A model without
   tuned values fails the call instead of borrowing another model's values.
+  `recognize_person` instead never matches such a model and names it in
+  its `UNKNOWN` line. It matches each model among a person's vectors on
+  its own, within that model's limit. A person whose face model has no
+  limit can still be named by appearance.
 
 **Consequences**
 
@@ -50,8 +60,10 @@ change after the bake-off, and walkie-database keeps one table per model
   walkie-database's migration, the new model name from the torch process,
   and the agent's tuned values. Until all three land, the old model keeps
   working.
-- `recognize_person` and `remember_person` need walkie-database services
-  that do not exist yet. A person's position needs depth, which
+- On the robot, `recognize_person` and `remember_person` need
+  walkie-database services that do not exist yet. In sim and the tests
+  they run on an in-memory mock of the proposed interface, loaded only
+  with `--mock-people-memory`. A person's position needs depth, which
   `PersonDetection` does not carry
   ([Perception](/architecture/perception.md#open-questions)).
 - Generated tools reach people only through these atomics. Which of them

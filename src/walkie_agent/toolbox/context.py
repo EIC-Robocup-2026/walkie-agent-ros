@@ -22,7 +22,7 @@ from rclpy.qos import QoSProfile
 from rclpy.subscription import Subscription
 from rclpy.task import Future
 from rclpy.time import Time
-from tf2_ros import TransformException
+from tf2_ros import Buffer, TransformException
 from tf_transformations import euler_from_quaternion
 
 from walkie_agent.toolbox.handles import HandleStore, Pose2D
@@ -65,6 +65,21 @@ class ToolContext:
     @property
     def node(self) -> Node:
         return self.connector.node
+
+    @property
+    def tf_buffer(self) -> Buffer:
+        """The node's TF buffer, the one robot_pose() reads, for lookups at a stamp.
+
+        robot_pose() only needs the latest transform, which the connector's
+        get_transform() gives; perception needs the camera's transform at an
+        image's stamp, which only the buffer gives.
+        """
+        # RAI's ROS2Connector keeps its buffer private and has no accessor.
+        # It is reused rather than a second Buffer and TransformListener made
+        # here: each listener subscribes to /tf and /tf_static again and keeps
+        # its own copy of the tree, so one per node is enough. Recheck the
+        # attribute on every rai-core upgrade.
+        return self.connector._tf_buffer
 
     # -- Backends --------------------------------------------------------------
 

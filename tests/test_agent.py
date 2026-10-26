@@ -16,6 +16,9 @@ from std_msgs.msg import Empty, String
 
 from scripted_llm import ScriptedChatModel, tool_call
 from walkie_agent.agent import SYSTEM_PROMPT, WalkieAgent, create_walkie_agent
+from walkie_agent.perception.people_memory import InMemoryPeopleMemory, ModelVector
+from walkie_agent.perception.vision_feed import VisionFeed
+from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, hash_vector
 from walkie_agent.tasks import TaskTemplate
 from walkie_agent.toolbox import AtomicTool, Toolbox
 
@@ -111,16 +114,48 @@ def test_agent_sees_tool_failure(connector, locations):
     assert "Navigation is unavailable" in last_tool.content
 
 
-def test_the_agent_gets_a_toolbox_that_adds_no_tools_yet(connector, locations):
-    """create_walkie_agent builds one Toolbox; with no atomic shipped, the LLM sees no new tool."""
+def test_the_agent_gets_a_toolbox_with_only_the_vision_atomics(connector, locations):
+    """create_walkie_agent builds one Toolbox with a VisionFeed and no people memory."""
     agent = create_walkie_agent(
         ScriptedChatModel(responses=[]), connector, locations, target_connectors={}
     )
 
     assert isinstance(agent.toolbox, Toolbox)
     assert agent.toolbox.ctx.connector is connector
-    assert agent.toolbox.tools() == []
-    assert not any(isinstance(t, AtomicTool) for t in agent.tools.visible())
+    assert isinstance(agent.toolbox.ctx.backend("vision"), VisionFeed)
+    assert not agent.toolbox.ctx.has_backend("people_memory")
+    # recognize_person and remember_person need people_memory, so a robot
+    # run without the mock never offers them.
+    assert [t.name for t in agent.toolbox.tools()] == ["find_people", "find_seats"]
+    assert [t.name for t in agent.tools.visible() if isinstance(t, AtomicTool)] == [
+        "find_people",
+        "find_seats",
+    ]
+
+
+def test_the_mock_people_memory_loads_the_people_atomics_and_clears_on_a_new_task(
+    connector, locations
+):
+    agent = create_walkie_agent(
+        ScriptedChatModel(responses=[]),
+        connector,
+        locations,
+        target_connectors={},
+        mock_people_memory=True,
+    )
+    memory = agent.toolbox.ctx.backend("people_memory")
+    memory.remember("Sam", {}, [ModelVector(FAKE_FACE_MODEL, hash_vector("sam", 512))], [])
+
+    assert isinstance(memory, InMemoryPeopleMemory)
+    assert [t.name for t in agent.toolbox.tools()] == [
+        "find_people",
+        "find_seats",
+        "recognize_person",
+        "remember_person",
+    ]
+    assert len(memory) == 1
+    agent.toolbox.new_task()
+    assert len(memory) == 0
 
 
 def test_todo_tools_and_the_graph_share_one_list(connector, locations):

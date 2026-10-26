@@ -43,7 +43,8 @@ MIN_BASELINE_DEG = 1.0
 # An introduction faces the listener within the gaze criterion's limit.
 INTRODUCTION_LIMIT_DEG = 10.0
 # From the template's seeding to the last item completed, in sim seconds.
-TIME_LIMIT_S = 360.0
+# The rulebook's scoresheet sets 7 minutes for the HRI task.
+TIME_LIMIT_S = 420.0
 # An answer's asked_t is its line's t, both rounded to the millisecond.
 ASKED_T_TOLERANCE_S = 0.001
 
@@ -393,7 +394,7 @@ def check_valid(run: Run) -> list[Result]:
 
 
 def check_time(run: Run) -> list[Result]:
-    """From the template's seeding to the last item completed, within 6 minutes of sim time."""
+    """From the template's seeding to the last item completed, within 7 minutes of sim time."""
     lists = [r for r in run.of_type("todos") if r.get("items")]
     finished = [all(item.get("status") == "completed" for item in r["items"]) for r in lists]
     # /walkie/todos is latched, so the first list may be an earlier task's,

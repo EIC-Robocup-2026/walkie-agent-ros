@@ -3306,7 +3306,7 @@ def test_a_played_run_and_its_tool_log_pass_the_check_on_every_criterion(
     else:
         assert verdicts["drives"].startswith(f"FAIL drives: 1 of {drives} drives refused")
     assert re.fullmatch(r"PASS cmd_vel: \d+ messages", verdicts["cmd_vel"])
-    assert re.fullmatch(r"PASS time: \d+\.\d s, within 360 s", verdicts["time"])
+    assert re.fullmatch(r"PASS time: \d+\.\d s, within 420 s", verdicts["time"])
     # Two onlookers with each guest and the bystander.
     if mistake != "onlooker":
         assert verdicts["people"] == "PASS people: no call on the 5 other tracks"

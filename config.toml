@@ -67,12 +67,13 @@ vendor = "KokoroTTS"
 voice = ""
 speaker_device_name = "default"
 
-# Perception, gaze and LLM call values to tune on the robot, read by the agent
+# Perception, gaze, doorbell and LLM call values to tune on the robot, read by
+# the agent
 # at start-up (src/walkie_agent/tuning.py; hri.md, Delivery order). The values
 # shown are the defaults in the code. Uncomment a table and the keys you
 # change. A missing key keeps its default. An unknown table, key or model, a
-# table such as [gaze] without its walkie. prefix, or a value that is not a
-# number or out of range, stops the agent with a list of the problems.
+# table such as [gaze] without its walkie. prefix, or a value of the wrong
+# type or out of range, stops the agent with a list of the problems.
 # The same file runs the simulation, so values tuned here change sim runs too.
 #
 # How long find_people and find_seats wait for TF at an image's stamp, in
@@ -109,6 +110,46 @@ speaker_device_name = "default"
 # the robot, and stay in the code.
 # [walkie.gaze]
 # tf_wait_s = 0.2
+#
+# The agent's wait for the doorbell at the start pose (ADR-0054), which is not
+# built yet. timeout_s is how long a wait lasts when its call gives none, from
+# 3 to 25 s: the rulebook removes a robot that stands still for 30 s.
+# pre_roll_s is how long before the call a ring still counts, if the robot was
+# at start. start_radius_m is how near start the robot must wait, in metres.
+# drop_tail_s is how long after the wait overheard speech is still dropped.
+# [walkie.doorbell]
+# timeout_s = 20.0
+# pre_roll_s = 4.0
+# start_radius_m = 0.5
+# drop_tail_s = 3.0
+#
+# The doorbell detector's rules over YAMNet's class scores
+# (src/walkie_agent/doorbell.py, ADR-0054), read by `pixi run doorbell-eval`.
+# The agent checks this table too. The values are starting points, to tune on
+# the robot with the arena's doorbell. A score threshold lies above 0 and at
+# most 1.1, which turns its rule off. bell_single and bell_pair read Doorbell
+# and Ding-dong, in one window or in 2 of the newest 3. chime_pair reads Ding,
+# Chime, Bell and Buzzer in 2 of 3, unless Music or Television reached
+# context_veto in 4 of the 6 windows before. It is low because RAI's
+# per-block resample halves a chime's score from a 48 or 44.1 kHz microphone.
+# knock_pair reads Knock in 2 of 3. Windows below min_level_dbfs, in dB below
+# full scale, are not scored, and refractory_s seconds separate two rings.
+# enabled, sustain, post_ring_ignore_s and max_ignore_s are for the detector
+# inside voice-asr, which is not built yet. tests/data/audio/known_failures.toml
+# lists where these rules fail on the eval's clips: after changing a threshold,
+# run the eval and bring that file up to date (docs/setup/07-voice.md).
+# [walkie.doorbell.detector]
+# enabled = true
+# bell_single = 0.25
+# bell_pair = 0.15
+# chime_pair = 0.25
+# knock_pair = 0.35
+# context_veto = 0.3
+# sustain = 0.1
+# min_level_dbfs = -55.0
+# refractory_s = 3.0
+# post_ring_ignore_s = 2.5
+# max_ignore_s = 10.0
 #
 # The bounds on each call of the agent's LLM, in seconds, for the openai
 # vendor only (ADR-0042; src/walkie_agent/llm_deadline.py). timeout_s is the

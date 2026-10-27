@@ -1,4 +1,4 @@
-"""The perception, gaze and LLM call values that config.toml sets (walkie_agent.tuning).
+"""The perception, gaze, doorbell and LLM call values that config.toml sets (walkie_agent.tuning).
 
 The loader is plain logic over a parsed TOML file. One test builds the agent,
 to check that the configs reach the vision feed, the gaze loop and the
@@ -14,6 +14,12 @@ import pytest
 from conftest import PROJECT_ROOT
 from scripted_llm import ScriptedChatModel
 from walkie_agent.agent import create_walkie_agent
+from walkie_agent.doorbell import (
+    DETECTOR_KEYS,
+    DETECTOR_TABLE,
+    DetectorConfig,
+    parse_detector_config,
+)
 from walkie_agent.gaze import DEFAULT_CONFIG as DEFAULT_GAZE_CONFIG
 from walkie_agent.gaze import GazeConfig
 from walkie_agent.llm_deadline import AgentModelConfig
@@ -24,10 +30,12 @@ from walkie_agent.tools.atomic import _perception
 from walkie_agent.tools.atomic._perception import PerceptionConfig
 from walkie_agent.tuning import (
     AGENT_MODEL_KEYS,
+    DOORBELL_KEYS,
     FRONT_KEYS,
     GAZE_KEYS,
     PERCEPTION_KEYS,
     VISION_FEED_KEYS,
+    DoorbellConfig,
     Tuning,
     TuningError,
     load_tuning,
@@ -57,6 +65,25 @@ osnet_x1_0_msmt17 = 0.3
 [walkie.gaze]
 tf_wait_s = 0.4
 
+[walkie.doorbell]
+timeout_s = 15.0
+pre_roll_s = 3.0
+start_radius_m = 0.6
+drop_tail_s = 2.0
+
+[walkie.doorbell.detector]
+enabled = false
+bell_single = 0.3
+bell_pair = 0.2
+chime_pair = 0.4
+knock_pair = 1.1
+context_veto = 0.35
+sustain = 0.15
+min_level_dbfs = -50.0
+refractory_s = 4.0
+post_ring_ignore_s = 3.0
+max_ignore_s = 8.0
+
 [walkie.models.agent]
 timeout_s = 25.0
 read_timeout_s = 12.0
@@ -73,6 +100,8 @@ EXAMPLE_KEYS = (
         ("walkie.perception.identity.appearance_distance_limits", "osnet_x1_0_msmt17"),
     }
     | {("walkie.gaze", key) for key in GAZE_KEYS}
+    | {("walkie.doorbell", key) for key in DOORBELL_KEYS}
+    | {(DETECTOR_TABLE, key) for key in DETECTOR_KEYS}
     | {("walkie.models.agent", key) for key in AGENT_MODEL_KEYS}
 )
 
@@ -116,6 +145,7 @@ def test_without_walkie_tables_every_config_keeps_its_default():
     assert tuning.perception == PerceptionConfig() == _perception.CONFIG
     assert tuning.vision_feed is DEFAULT_VISION_FEED_CONFIG
     assert tuning.gaze is DEFAULT_GAZE_CONFIG
+    assert tuning.doorbell == DoorbellConfig()
     assert tuning.agent_model == AgentModelConfig()
 
 
@@ -140,6 +170,21 @@ def test_the_commented_keys_in_config_toml_show_their_defaults():
 
     # Uncommented, the keys still commented change nothing.
     assert parse_tuning(tomllib.loads(example)) == Tuning()
+
+
+def test_the_commented_detector_keys_in_config_toml_show_the_detectors_defaults():
+    # The agent only checks [walkie.doorbell.detector] and keeps nothing of
+    # it, so the test above holds whatever its values are: the detector's
+    # own parser reads them here.
+    keys = [
+        f"{key} = {value}"
+        for table, key, value, commented in walkie_key_lines(CONFIG.read_text())
+        if table == DETECTOR_TABLE and commented
+    ]
+    errors: list[str] = []
+
+    assert parse_detector_config(tomllib.loads("\n".join(keys)), errors) == DetectorConfig()
+    assert errors == []
 
 
 def test_a_tuning_edit_keeps_the_config_toml_checks_passing(tmp_path):
@@ -172,6 +217,10 @@ def test_the_defaults_are_the_values_the_code_had():
     gaze = GazeConfig()
     assert (gaze.gain, gaze.min_speed, gaze.max_speed) == (1.2, 0.15, 0.6)
     assert (gaze.deadband_deg, gaze.tf_wait_s) == (6.0, 0.2)
+    # The doorbell design's values (ADR-0054).
+    doorbell = DoorbellConfig()
+    assert (doorbell.timeout_s, doorbell.pre_roll_s) == (20.0, 4.0)
+    assert (doorbell.start_radius_m, doorbell.drop_tail_s) == (0.5, 3.0)
     # ADR-0042's agent timeout, and the read timeout its amendment measured.
     agent_model = AgentModelConfig()
     assert (agent_model.timeout_s, agent_model.read_timeout_s) == (20.0, 10.0)
@@ -223,6 +272,9 @@ def test_the_tables_set_their_values_and_leave_the_rest_alone():
         default.yaw_max_age_s,
     )
     assert gaze.cmd_vel_topic == "/cmd_vel"
+    assert tuning.doorbell == DoorbellConfig(
+        timeout_s=15.0, pre_roll_s=3.0, start_radius_m=0.6, drop_tail_s=2.0
+    )
     assert tuning.agent_model == AgentModelConfig(timeout_s=25.0, read_timeout_s=12.0)
 
 
@@ -233,6 +285,7 @@ def test_one_key_changes_only_its_own_value():
     assert tuning.perception.identity == IdentityConfig()
     assert tuning.vision_feed is DEFAULT_VISION_FEED_CONFIG
     assert tuning.gaze is DEFAULT_GAZE_CONFIG
+    assert tuning.doorbell == DoorbellConfig()
     assert tuning.agent_model == AgentModelConfig()
 
 
@@ -291,7 +344,7 @@ timeout_s = 10.0
     )
 
     assert errors == (
-        "[walkie]: unknown key 'gase'; it takes perception, gaze, models.",
+        "[walkie]: unknown key 'gase'; it takes perception, gaze, doorbell, models.",
         "[walkie.perception]: unknown key 'min_face_rad'; it takes tf_timeout_s, front, "
         "vision_feed, identity.",
         "[walkie.perception.front]: unknown key 'min_face_px'; it takes min_face_rad, "
@@ -335,9 +388,81 @@ timeout_s = 30.0
 
     assert errors == tuple(
         f"Unknown table [{name}]; the agent's tables go under [walkie], which takes "
-        "perception, gaze, models."
+        "perception, gaze, doorbell, models."
         for name in ("walky", "gaze", "walkie_perception", "front", "models", "agent")
     )
+
+
+def test_a_top_level_doorbell_or_detector_table_is_refused():
+    # Only the detector reads [walkie.doorbell.detector], so either would
+    # leave it on its defaults.
+    errors = problems("[doorbell]\ntimeout_s = 15.0\n\n[detector]\nchime_pair = 0.4\n")
+
+    assert errors == tuple(
+        f"Unknown table [{name}]; the agent's tables go under [walkie], which takes "
+        "perception, gaze, doorbell, models."
+        for name in ("doorbell", "detector")
+    )
+
+
+def test_a_detector_typo_stops_the_agent_too():
+    # The detector's own parser checks its table, so the agent refuses what
+    # the detector refuses.
+    errors = problems(
+        """
+[walkie.doorbell]
+timeout = 15.0
+
+[walkie.doorbell.detector]
+chime_pairs = 0.4
+enabled = 1
+knock_pair = 0.0
+"""
+    )
+
+    assert errors == (
+        "[walkie.doorbell]: unknown key 'timeout'; it takes timeout_s, pre_roll_s, "
+        "start_radius_m, drop_tail_s, detector.",
+        "[walkie.doorbell.detector]: unknown key 'chime_pairs'; it takes "
+        + ", ".join(DETECTOR_KEYS)
+        + ".",
+        "walkie.doorbell.detector.enabled = 1 is not true or false.",
+        "[walkie.doorbell.detector]: DetectorConfig.knock_pair must lie in (0, 1.1], not 0.0.",
+    )
+
+
+@pytest.mark.parametrize("timeout_s", [2.9, 25.5, 26])
+def test_a_doorbell_timeout_outside_3_to_25_s_is_refused(timeout_s):
+    # Above 25 s the robot would stand still near the rulebook's 30 s limit.
+    assert problems(f"[walkie.doorbell]\ntimeout_s = {timeout_s}\n") == (
+        "[walkie.doorbell]: DoorbellConfig.timeout_s must lie in [3, 25], "
+        f"not {float(timeout_s)}.",
+    )
+
+
+@pytest.mark.parametrize("timeout_s", [3, 25])
+def test_a_doorbell_timeout_on_its_limits_is_kept(timeout_s):
+    tuning = parse_tuning(tomllib.loads(f"[walkie.doorbell]\ntimeout_s = {timeout_s}\n"))
+
+    assert tuning.doorbell == DoorbellConfig(timeout_s=float(timeout_s))
+
+
+def test_the_doorbell_config_checks_its_values_itself():
+    with pytest.raises(ValueError, match="DoorbellConfig.pre_roll_s must be at least 0"):
+        DoorbellConfig(pre_roll_s=-1.0)
+    with pytest.raises(ValueError, match="DoorbellConfig.drop_tail_s must be at least 0"):
+        DoorbellConfig(drop_tail_s=math.inf)
+    with pytest.raises(ValueError, match="DoorbellConfig.start_radius_m must be positive"):
+        DoorbellConfig(start_radius_m=0.0)
+    with pytest.raises(ValueError, match="DoorbellConfig.timeout_s"):
+        DoorbellConfig(timeout_s=math.nan)
+
+
+def test_the_agent_only_checks_the_detector_table():
+    # Only the detector reads it; the agent's configs stay as they are.
+    tuning = parse_tuning(tomllib.loads("[walkie.doorbell.detector]\nchime_pair = 0.4\n"))
+
+    assert tuning == Tuning()
 
 
 def test_rais_own_tables_are_left_alone():

@@ -93,6 +93,10 @@ rai-s2s = { git = "https://github.com/RobotecAI/rai.git", tag = "2.12.2", subdir
   "kokoro",
 ] }
 rai-whoami = { git = "https://github.com/RobotecAI/rai.git", tag = "2.12.2", subdirectory = "src/rai_whoami" }
+# The doorbell detector runs YAMNet on ONNX Runtime (walkie_agent.doorbell,
+# ADR-0054). rai_s2s already requires it, at this range, for Silero VAD and
+# Kokoro; it is named here because the detector imports it itself.
+onnxruntime = ">=1.24.4, <1.25"
 # rai_s2s pins torchaudio 2.3.1, which pulls torch 2.3.1. The PyPI wheels are
 # CUDA 12.1 builds (NVIDIA driver 525 or newer), so Whisper runs on the GPU
 # when one is present and falls back to the CPU otherwise.
@@ -247,6 +251,40 @@ description = "Speak everything published on /to_human"
 [tasks.list-audio-devices]
 cmd = "python -c 'import sounddevice; print(sounddevice.query_devices())'"
 description = "List microphone and speaker names for config.toml"
+
+# The doorbell detector's model (ADR-0054): YAMNet's core network exported to
+# ONNX by tools/export_yamnet.py, and its class map, from this repository's
+# release doorbell-model-v1, whose NOTICE names their licences. Each file is
+# checked against its pinned SHA-256 before it is moved into models/, so a
+# failed or changed download fails the task and leaves no model in place. A
+# failed download names the release, which a maintainer publishes as
+# docs/setup/07-voice.md describes. A new export is a new release: its sums
+# replace these.
+[tasks.fetch-doorbell-model]
+cmd = """mkdir -p models \
+  && (wget --no-verbose --output-document models/yamnet.onnx.part \
+  https://github.com/EIC-Robocup-2026/walkie-agent-ros/releases/download/doorbell-model-v1/yamnet.onnx \
+  && wget --no-verbose --output-document models/yamnet_class_map.csv.part \
+  https://github.com/EIC-Robocup-2026/walkie-agent-ros/releases/download/doorbell-model-v1/yamnet_class_map.csv \
+  || (echo 'Cannot download the doorbell model from the release doorbell-model-v1 of EIC-Robocup-2026/walkie-agent-ros. If that release is not published yet, docs/setup/07-voice.md says how a maintainer publishes it.' >&2 \
+  && exit 1)) \
+  && echo '83fed6f30f0338c98e4d1dbbe12cfb5f4b2da03126792290eaee24a6a668bc6c  models/yamnet.onnx.part' \
+  | sha256sum --check --strict \
+  && echo 'cdf24d193e196d9e95912a2667051ae203e92a2ba09449218ccb40ef787c6df2  models/yamnet_class_map.csv.part' \
+  | sha256sum --check --strict \
+  && mv models/yamnet.onnx.part models/yamnet.onnx \
+  && mv models/yamnet_class_map.csv.part models/yamnet_class_map.csv"""
+description = "Download the doorbell detector's YAMNet model into models/ and check its SHA-256"
+
+# The doorbell detector on the clips in tests/data/audio, with
+# [walkie.doorbell.detector] from config.toml: each clip as a 16 kHz
+# microphone delivers it, and through RAI's resample from a 48 and a 44.1 kHz
+# one, at 8 onsets within a hop. Needs fetch-doorbell-model first. Exit code 0
+# is a pass, with only the failures that tests/data/audio/known_failures.toml
+# lists, and 1 a fail.
+[tasks.doorbell-eval]
+cmd = "python -m walkie_agent.doorbell eval tests/data/audio"
+description = "Score the doorbell test clips at 16, 48 and 44.1 kHz and 8 onsets, and report what rings"
 
 # Robot identity (RAI's rai_whoami). Calls the LLM and embeddings model from
 # config.toml, so it costs a little each run. See docs/setup/06-whoami.md.

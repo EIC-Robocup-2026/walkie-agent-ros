@@ -24,3 +24,5 @@ __pycache__/
 .pytest_cache/
 # Event logs of the simulated scenarios (pixi run hri-scenario)
 logs/
+# The doorbell model and its class map (pixi run fetch-doorbell-model)
+models/

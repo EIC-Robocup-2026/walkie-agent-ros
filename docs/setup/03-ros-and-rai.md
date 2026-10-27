@@ -226,18 +226,22 @@ uses defaults for missing vendor sections.
 
 We added tables of our own under `[walkie]`, which RAI ignores:
 
-| Section                 | What it is for                                                             |
-| ----------------------- | -------------------------------------------------------------------------- |
-| `[walkie.perception]`   | Perception values to tune on the robot, such as the face distance limits. |
-| `[walkie.gaze]`         | How long the gaze loop waits for TF, to tune on the robot.                 |
-| `[walkie.models.agent]` | The bounds on each call of the agent's LLM: the whole call and a silence.  |
+| Section                      | What it is for                                                                                    |
+| ---------------------------- | ------------------------------------------------------------------------------------------------- |
+| `[walkie.perception]`        | Perception values to tune on the robot, such as the face distance limits.                        |
+| `[walkie.gaze]`              | How long the gaze loop waits for TF, to tune on the robot.                                        |
+| `[walkie.doorbell]`          | The agent's wait for the doorbell: `timeout_s`, `pre_roll_s`, `start_radius_m` and `drop_tail_s`. |
+| `[walkie.doorbell.detector]` | The doorbell detector's thresholds, read by `pixi run doorbell-eval` and checked by the agent.    |
+| `[walkie.models.agent]`      | The bounds on each call of the agent's LLM: the whole call and a silence.                         |
 
-All three are commented out and show the defaults from the code. The agent
+All of them are commented out and show the defaults from the code. The agent
 checks them at start-up and stops on an unknown key or a bad value. See
-[HRI Task](../architecture/hri.md#delivery-order) for each perception and
-gaze key and why it is tuned on the robot, and
-[ADR-0042](../architecture/decisions/0042-per-role-models.md) for the LLM
-call bounds.
+[HRI Task](../architecture/hri.md#delivery-order) for each perception and gaze
+key and why it is tuned on the robot,
+[ADR-0054](../architecture/decisions/0054-doorbell-yamnet-in-voice-asr.md) for
+the doorbell's, [Voice](07-voice.md#the-doorbell-detector) for the detector's
+eval, and [ADR-0042](../architecture/decisions/0042-per-role-models.md) for
+the LLM call bounds.
 
 ### API keys go in `.env`
 

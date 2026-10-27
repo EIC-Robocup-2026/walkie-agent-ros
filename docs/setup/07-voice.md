@@ -206,6 +206,142 @@ While Walkie is quiet, ASR controls TTS on `/voice_commands`, as in RAI:
     `pause` or `stop`. Add `--qos-reliability reliable` when you watch this
     topic. `/walkie/speaking` uses fixed settings and is safe to watch.
 
+## The doorbell detector
+
+voice-asr will also listen for the doorbell, with YAMNet, a small sound
+classifier that runs on the CPU
+([ADR-0054](../architecture/decisions/0054-doorbell-yamnet-in-voice-asr.md)).
+The detector (`src/walkie_agent/doorbell.py`) and its offline eval are
+built. voice-asr does not run it yet.
+
+### Fetch the model
+
+```bash
+pixi run fetch-doorbell-model
+```
+
+!!! warning "The release is still to be published"
+    The release `doorbell-model-v1` is not on GitHub yet. Until a
+    maintainer publishes it, as [Publish the model](#publish-the-model)
+    describes, this task stops with a message that names the release, and
+    the tests that run the model skip.
+
+- It downloads `yamnet.onnx` (about 15 MB) and `yamnet_class_map.csv` from the
+  walkie-agent-ros release `doorbell-model-v1` into `models/`, next to
+  `config.toml`. git ignores `models/`, so run it once in every clone.
+- It checks each file against the SHA-256 pinned in `pixi.toml`. On a
+  mismatch it fails, and leaves the downloads as `.part` files.
+- The model is TF-Hub's YAMNet, converted to ONNX by
+  `tools/export_yamnet.py`. The release's NOTICE names the licences of
+  the weights (Apache 2.0) and of AudioSet's class names (CC BY-SA 4.0).
+
+Without the model, the tests that run it skip, and say so.
+
+### Score the test clips
+
+```bash
+pixi run doorbell-eval   # (1)!
+```
+
+1. Runs `python -m walkie_agent.doorbell eval tests/data/audio`. Add
+   `--config <file>` to try another `[walkie.doorbell.detector]` table.
+   The model is then read from `models/` next to that file.
+
+```text
+clip                                               16000 Hz  48000 Hz  44100 Hz
+bell/freesound_125967_dorrklocka.wav                    8/8       8/8       8/8  ok
+bell/freesound_69386_doorbell_distant.wav               8/8       7/8       7/8  known failures
+buzzer/freesound_164090_buzzer.wav                      4/8       5/8       5/8
+...
+none/freesound_369148_music_box.wav                     1/8       1/8       1/8  known failures
+...
+bell/freesound_69386_doorbell_distant.wav at 48000 Hz, onset 7: no ring, as known_failures.toml lists
+...
+none/freesound_369148_music_box.wav at 16000 Hz, onset 4: bell 0.42, as known_failures.toml lists
+...
+none/ at 48000 Hz: highest Knock 0.031, highest Tap 0.038
+KNOWN FAILURES ONLY: 15 of 480 cases fail, each listed in known_failures.toml
+```
+
+- Each clip in `tests/data/audio` is scored three ways: as a 16 kHz
+  microphone delivers it, and as RAI delivers it from a 48 kHz and a
+  44.1 kHz microphone. At any rate other than 16 kHz, RAI resamples each
+  80 ms block on its own, which lowers some chimes' scores.
+- At each rate the clip plays at 8 onsets, after 0 to 7 eighths of a hop
+  of silence (60 ms steps). A ring can start anywhere between two of
+  YAMNet's windows, and each onset gives the rules other windows of it. A
+  case is one clip at one rate and onset. Each column counts the onsets
+  at which the clip rang.
+- Every clip in `bell/`, `chime/` and `knock/` must ring in every case,
+  and no clip in `none/` may. A chime may ring as a bell. Clips in other
+  directories, such as `buzzer/`, are scored and not judged: the rules
+  miss most buzzers (ADR-0054), and the table shows by how much.
+- `tests/data/audio/known_failures.toml` lists the cases known to fail
+  with the rules in `config.toml`, and why. A line under the table names
+  each failing case, and each listed case that passes.
+- The last line is `PASS` when no case fails, `KNOWN FAILURES ONLY` when
+  only listed cases fail, and `FAIL` when a case fails that the file does
+  not list, or a listed case passes. The exit code is 1 for `FAIL`, and 0
+  otherwise.
+- The `none/` lines give the highest Knock and Tap scores on speech, music
+  and room tone. If they come near `knock_pair`, set `knock_pair = 1.1`
+  to turn the knock rule off. A rule whose thresholds are all at 1.1 is
+  off, and the eval does not judge its directory, and says so.
+
+The rules read the thresholds in `[walkie.doorbell.detector]` of
+`config.toml`. The values are starting points, to tune on the robot. After
+changing a threshold, run the eval and bring `known_failures.toml` up to
+date: the tests that run the model fail while it misses a failing case or
+lists one that passes. No change to the thresholds clears the file (see
+the comment at its top).
+
+A new clip must be 16 kHz mono 16-bit WAV, CC0 or public domain, and listed
+in `tests/data/audio/LICENSES.md`. The parity test also needs its
+TensorFlow scores in `tests/data/audio/yamnet_reference.npz`, which
+`tools/export_yamnet.py` writes. For a new clip, point its `--out` at a
+scratch directory and keep the published release.
+
+### Publish the model
+
+The release `doorbell-model-v1` of `EIC-Robocup-2026/walkie-agent-ros` holds
+`yamnet.onnx`, `yamnet_class_map.csv` and `NOTICE`. A maintainer with
+write access to the repository publishes it once:
+
+1. Make a throwaway Python 3.11 environment outside the repository, with
+   the packages that the docstring of `tools/export_yamnet.py` lists.
+   TensorFlow is not one of the project's dependencies, so pixi's
+   environments do not have it.
+2. Download TF-Hub's YAMNet weights (`google/yamnet/1`, Apache 2.0) from
+   the Kaggle URL in the same docstring, check the archive against the
+   SHA-256 given there, and extract it into an empty directory.
+3. From the repository root, run the export into a directory outside the
+   repository:
+
+    ```bash
+    python -I tools/export_yamnet.py --saved-model <extracted dir> \
+        --out <release dir> --clips tests/data/audio \
+        --reference tests/data/audio/yamnet_reference.npz
+    ```
+
+    It checks the export against the TF-Hub model on every test clip, and
+    stops if a score differs by 1e-3 or more. It prints the largest
+    differences and the SHA-256 of each file.
+
+4. Publish the three files:
+
+    ```bash
+    gh release create doorbell-model-v1 --repo EIC-Robocup-2026/walkie-agent-ros \
+        --title "Doorbell model v1" --notes-file <release dir>/NOTICE \
+        <release dir>/yamnet.onnx <release dir>/yamnet_class_map.csv <release dir>/NOTICE
+    ```
+
+5. The sums in the `fetch-doorbell-model` task of `pixi.toml` belong to
+   one export, since tf2onnx writes other bytes each time. If the
+   published files come from a new export, put the sums it printed for
+   `yamnet.onnx` and `yamnet_class_map.csv` into the task, and commit
+   them. Then run `pixi run fetch-doorbell-model` and `pixi run test`: the
+   tests that run the model no longer skip.
+
 ## Running on the robot PC
 
 The voice nodes reach the sound card through PipeWire, which runs as part

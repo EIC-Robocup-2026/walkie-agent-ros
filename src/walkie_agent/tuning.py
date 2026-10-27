@@ -1,4 +1,4 @@
-"""The perception, gaze and LLM call values to tune on the robot, read from config.toml.
+"""The perception, gaze, doorbell and LLM call values to tune on the robot, read from config.toml.
 
 Most of perception's and the gaze loop's values are walkie-agent-v2's,
 tuned on the robot, and stay in their dataclasses. The gaze loop's gain,
@@ -14,14 +14,22 @@ LLM (ADR-0042), which main.py reads before it builds the LLM:
     [walkie.perception.identity.face_distance_limits]        a limit per face_model
     [walkie.perception.identity.appearance_distance_limits]  a limit per appearance_model
     [walkie.gaze]                          GazeConfig: tf_wait_s
+    [walkie.doorbell]                      DoorbellConfig: timeout_s, pre_roll_s,
+                                           start_radius_m, drop_tail_s
+    [walkie.doorbell.detector]             walkie_agent.doorbell.DetectorConfig
     [walkie.models.agent]                  AgentModelConfig: timeout_s, read_timeout_s
+
+The doorbell detector (walkie_agent.doorbell, and later voice-asr) reads
+[walkie.doorbell.detector]. The agent checks it here too, with the
+detector's own parser, so a typo in it stops the agent as well as the
+detector.
 
 A missing table or key keeps the dataclass's default, so a config.toml
 without these tables changes nothing. A distance limit table changes the
 limits of the models it names; the other models keep theirs.
 
 load_tuning() raises one TuningError that lists every problem: a table or
-key that nothing reads, a value that is not a number, one its dataclass
+key that nothing reads, a value of the wrong type, one its dataclass
 refuses, or a pair of values that do not fit together. So a typo stops the
 agent at start-up instead of leaving a default in place unnoticed. RAI's own
 top-level tables, [vendor], [openai], [ollama], [tracing], [asr] and [tts],
@@ -33,10 +41,12 @@ The keys are read by walkie_agent.config_tables, which types each one by
 its dataclass field and holds TuningError. That module imports only the
 standard library. This one names the agent's tables, checks values across
 them, and imports the modules that hold the configs: the gaze loop,
-perception, the perception atomics and the LLM call's bounds.
+perception, the perception atomics, the doorbell detector and the LLM
+call's bounds.
 """
 
 import difflib
+import math
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -44,7 +54,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, TypeVar
 
-from walkie_agent import config_tables
+from walkie_agent import config_tables, doorbell
 
 # TuningError lives with the table readers, which any module can import
 # without the agent; it is re-exported here for the imports that name this
@@ -64,7 +74,7 @@ CONFIG_PATH = Path("config.toml")
 
 # The tables under [walkie] that the agent reads. A new [walkie.<name>]
 # table adds its name here, or this loader refuses it as a typo.
-WALKIE_TABLES = ("perception", "gaze", "models")
+WALKIE_TABLES = ("perception", "gaze", "doorbell", "models")
 
 # The top-level tables of config.toml that RAI reads: [vendor], [openai],
 # [ollama] and [tracing] (rai/initialization/model_initialization.py), and
@@ -79,18 +89,68 @@ FRONT_KEYS = ("min_face_rad", "half_angle_deg")
 VISION_FEED_KEYS = ("min_face_size_rad",)
 IDENTITY_TABLES = ("face_distance_limits", "appearance_distance_limits")
 GAZE_KEYS = ("tf_wait_s",)
+DOORBELL_KEYS = ("timeout_s", "pre_roll_s", "start_radius_m", "drop_tail_s")
 # The roles under [walkie.models], one table each (ADR-0042). Only the
 # agent's is read so far, and only for its call bounds.
 MODEL_ROLES = ("agent",)
 AGENT_MODEL_KEYS = ("timeout_s", "read_timeout_s")
 
-# The tables inside [walkie.perception].
+# The tables inside [walkie.perception] and [walkie.doorbell].
 _PERCEPTION_TABLES = ("front", "vision_feed", "identity")
+_DOORBELL_TABLES = ("detector",)
 # Every table name the loader reads. One of them at the top level of the
 # file is a table whose [walkie.] prefix was left out.
-_TABLE_NAMES = (*WALKIE_TABLES, *_PERCEPTION_TABLES, *IDENTITY_TABLES, *MODEL_ROLES)
+_TABLE_NAMES = (
+    *WALKIE_TABLES,
+    *_PERCEPTION_TABLES,
+    *IDENTITY_TABLES,
+    *_DOORBELL_TABLES,
+    *MODEL_ROLES,
+)
+
+# The range of the doorbell wait's timeout. The rulebook removes a robot
+# that stands still for 30 s, and the robot waits at start without moving.
+MIN_DOORBELL_TIMEOUT_S = 3.0
+MAX_DOORBELL_TIMEOUT_S = 25.0
 
 _Config = TypeVar("_Config")
+
+
+@dataclass(frozen=True)
+class DoorbellConfig:
+    """The agent's side of the doorbell, from [walkie.doorbell] in config.toml.
+
+    The agent's wait for the doorbell, which reads these values, is not
+    built yet (ADR-0054). The detector (walkie_agent.doorbell) has its own
+    table, [walkie.doorbell.detector].
+    """
+
+    # Seconds the wait lasts when its call gives no timeout.
+    timeout_s: float = 20.0
+    # Seconds before the wait's call in which a ring still counts, when the
+    # robot was at start as it rang.
+    pre_roll_s: float = 4.0
+    # The robot waits for the doorbell within this distance of the start
+    # location, in metres.
+    start_radius_m: float = 0.5
+    # Seconds after the wait returns in which overheard speech is still
+    # dropped: a transcription that began before the ring ends after it.
+    drop_tail_s: float = 3.0
+
+    def __post_init__(self) -> None:
+        if not MIN_DOORBELL_TIMEOUT_S <= self.timeout_s <= MAX_DOORBELL_TIMEOUT_S:
+            raise ValueError(
+                f"DoorbellConfig.timeout_s must lie in [{MIN_DOORBELL_TIMEOUT_S:g}, "
+                f"{MAX_DOORBELL_TIMEOUT_S:g}], not {self.timeout_s}."
+            )
+        for name in ("pre_roll_s", "drop_tail_s"):
+            value = getattr(self, name)
+            if not (math.isfinite(value) and value >= 0):
+                raise ValueError(f"DoorbellConfig.{name} must be at least 0, not {value}.")
+        if not (math.isfinite(self.start_radius_m) and self.start_radius_m > 0):
+            raise ValueError(
+                f"DoorbellConfig.start_radius_m must be positive, not {self.start_radius_m}."
+            )
 
 
 @dataclass(frozen=True)
@@ -101,6 +161,7 @@ class Tuning:
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     vision_feed: VisionFeedConfig = DEFAULT_VISION_FEED_CONFIG
     gaze: GazeConfig = DEFAULT_GAZE_CONFIG
+    doorbell: DoorbellConfig = field(default_factory=DoorbellConfig)
     # main.py builds the LLM with it; create_walkie_agent does not read it.
     agent_model: AgentModelConfig = field(default_factory=AgentModelConfig)
 
@@ -133,6 +194,18 @@ def parse_tuning(data: Mapping[str, Any], source: str = "config.toml") -> Tuning
         defaults, {**changes, "front": front, "identity": identity}, where, errors
     )
     gaze = _section(DEFAULT_GAZE_CONFIG, walkie, "walkie.gaze", GAZE_KEYS, errors)
+
+    where = "walkie.doorbell"
+    raw = config_tables.table(walkie, where, errors)
+    config_tables.refuse_unknown(raw, (*DOORBELL_KEYS, *_DOORBELL_TABLES), where, errors)
+    defaults = DoorbellConfig()
+    changes = config_tables.read_keys(defaults, raw, DOORBELL_KEYS, where, errors)
+    doorbell_config = config_tables.replace(defaults, changes, where, errors)
+    # Checked only: the agent runs no detector.
+    doorbell.parse_detector_config(
+        config_tables.table(raw, doorbell.DETECTOR_TABLE, errors), errors
+    )
+
     models = config_tables.table(walkie, "walkie.models", errors)
     config_tables.refuse_unknown(models, MODEL_ROLES, "walkie.models", errors)
     agent_model = _section(
@@ -142,7 +215,11 @@ def parse_tuning(data: Mapping[str, Any], source: str = "config.toml") -> Tuning
     if errors:
         raise TuningError(source, errors)
     return Tuning(
-        perception=perception, vision_feed=vision_feed, gaze=gaze, agent_model=agent_model
+        perception=perception,
+        vision_feed=vision_feed,
+        gaze=gaze,
+        doorbell=doorbell_config,
+        agent_model=agent_model,
     )
 
 

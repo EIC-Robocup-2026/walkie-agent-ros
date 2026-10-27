@@ -1187,7 +1187,7 @@ flowchart LR
 
     A missing key keeps its default, so a file without these tables runs
     as before. An unknown table, key or model stops the agent at start-up,
-    and so does a value that is not a number or that its config refuses.
+    and so does a value of the wrong type, or one its config refuses.
     So does a top-level table that looks meant for `[walkie]`, such as
     `[gaze]` or `[walky.gaze]`, and a `min_face_rad` below
     `min_face_size_rad`, since a person kept in front must have a face
@@ -1792,6 +1792,10 @@ decisions work.
 ??? note "ADR-0053: Follow the host through Nav2's FollowPoint tree, ranged by the 2D lidar · Proposed"
 
     --8<-- "architecture/decisions/0053-follow-through-nav2-followpoint.md:body"
+
+??? note "ADR-0054: Detect the doorbell with YAMNet inside voice-asr and wait for it in a bounded atomic · Proposed"
+
+    --8<-- "architecture/decisions/0054-doorbell-yamnet-in-voice-asr.md:body"
 
 ??? note "ADR-0059: Wait with a still, open hand before closing on a hand-over · Proposed"
 

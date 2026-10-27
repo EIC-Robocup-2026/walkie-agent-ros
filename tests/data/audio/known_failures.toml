@@ -1,0 +1,67 @@
+# The cases of the clips in this directory that the doorbell eval knows to
+# fail with the rules config.toml sets, and why: the defaults of
+# DetectorConfig while its [walkie.doorbell.detector] stays commented.
+# `pixi run doorbell-eval` and tests/test_doorbell.py read this file.
+#
+# A case is a clip played from a device at one rate, after one onset: a
+# delay of 0 to 7 eighths of a hop (60 ms each), so that the windows fall on
+# other parts of the sound. Each entry lists one clip, the rates and the
+# onsets: every rate at every onset is a case. A failing case that is not
+# listed fails the eval, and so does a listed case that passes: after a
+# change to the rules or the clips, run the eval and bring this file up to
+# date.
+#
+# No change to the thresholds removes every failure below without adding
+# others: no bell_single both rings bell/freesound_69386 at 44.1 kHz onset 3
+# (0.40) and keeps none/freesound_369148 quiet at 16 kHz onset 4 (0.43).
+
+[[failure]]
+clip = "bell/freesound_69386_doorbell_distant.wav"
+rates = [48000, 44100]
+onsets = [7]
+reason = """YAMNet hears this distant doorbell as Music and Mallet percussion. At \
+this onset, through RAI's resample, no window scores Doorbell or Ding-dong \
+above 0.06."""
+
+[[failure]]
+clip = "chime/freesound_491404_door_chimes.wav"
+rates = [48000, 44100]
+onsets = [3, 5, 7]
+reason = """A quiet chime, near -45 dBFS, that RAI's per-block resample turns \
+partly into Jingle, tinkle: at these onsets one window scores the chime \
+classes high, and its neighbours stay below chime_pair, 0.08 to 0.21 in 2 \
+of 3 windows."""
+
+[[failure]]
+clip = "knock/freesound_268500_door_knock.wav"
+rates = [16000]
+onsets = [3, 7]
+reason = """At these onsets one window scores Knock high and its neighbours \
+score Door, Tap, Wood or Bouncing, with Knock at 0.12 or less: no 2 of 3 \
+windows reach knock_pair."""
+
+[[failure]]
+clip = "knock/freesound_268500_door_knock.wav"
+rates = [48000, 44100]
+onsets = [7]
+reason = """Through RAI's resample, one window scores Knock 0.98, and the \
+next window above knock_pair is three windows later. The windows between \
+score Door, Tap and Bouncing, with Knock at 0.27 or less: no 2 of 3 windows \
+reach knock_pair."""
+
+[[failure]]
+clip = "none/freesound_369148_music_box.wav"
+rates = [16000]
+onsets = [4]
+reason = """One window of the music box scores Ding-dong 0.43, above \
+bell_single, between windows of Music and Glockenspiel. Raising bell_single \
+above it misses bell/freesound_69386, which rings on 0.40 from a 44.1 kHz \
+device."""
+
+[[failure]]
+clip = "none/freesound_369148_music_box.wav"
+rates = [48000, 44100]
+onsets = [5]
+reason = """Through RAI's resample, one window of the music box scores \
+Doorbell or Ding-dong at 0.27 to 0.28, above bell_single. The context veto \
+is the chime rule's alone, so the Music before it does not stop a bell."""

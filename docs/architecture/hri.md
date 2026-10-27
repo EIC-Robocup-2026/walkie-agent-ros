@@ -1255,8 +1255,9 @@ agent-sim-hri` gives the agent, so both use one pose each.
   both, and "Okay." for any other question, which the log counts as an
   extra question. Guest 1's first drink question gets "Hmm." instead, to
   test asking again. It is a mumble with no answer in it, not an empty
-  message, because the agent puts the text into an LLM message, which
-  rejects a blank one.
+  message, because the agent drops a blank line on arrival as not speech
+  ([The Agent](agent.md#how-a-task-runs)), so a blank answer would test
+  silence instead.
 - **The bag.** The world has no guest's bag, so an empty close ends near a
   gap of 0 and reads as holding nothing. When the robot asks guest 2 for
   the bag, in a sentence that mentions it and is a question, holds

@@ -1,6 +1,7 @@
 """Builds the Walkie agent: RAI's LangChainAgent running Walkie's own graph."""
 
 import copy
+import json
 import secrets
 import threading
 import time
@@ -23,6 +24,7 @@ from std_msgs.msg import Empty, String
 from walkie_agent.arm.commander import CommanderClient
 from walkie_agent.gaze import GazeLoop
 from walkie_agent.graph import ToolSet, build_walkie_graph
+from walkie_agent.heard_filter import text_verdict
 from walkie_agent.locations import Location
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory
 from walkie_agent.perception.vision_feed import VisionFeed
@@ -143,6 +145,10 @@ class WalkieAgent(LangChainAgent):
       the task ends. Only reset(), or an utterance that is just "stop" or
       "never mind", interrupts a task. _run_agent checks the interrupt
       between graph steps, so a running tool call finishes first.
+    - A line that is not speech, such as a blank transcript, "[BLANK_AUDIO]"
+      or "Thanks for watching!", is dropped before it is queued, with one
+      console line on the target connectors that says why
+      (walkie_agent.heard_filter).
     - submit() sends a task with a seeded todo list (ADR-0041). A message
       without a seed that starts while no todo item is open, and contains a
       template's keyword, starts with the template's task and todos.
@@ -242,7 +248,9 @@ class WalkieAgent(LangChainAgent):
         with an empty list, and None keeps the list as any other message does.
         The seed is checked here, so a bad seed raises TodoRejected in the
         caller rather than on the agent thread. So does a seed with a step
-        whose requires_tool is not loaded in this run.
+        whose requires_tool is not loaded in this run. A text that is not
+        speech, such as a blank one, is dropped with its seed, as an
+        utterance is.
         """
         seed = None
         if todos is not None:
@@ -329,8 +337,17 @@ class WalkieAgent(LangChainAgent):
         publish()
 
     def _enqueue(self, msg: HRIMessage, seed: _Seed | None) -> None:
-        # Replaces RAI's __call__. The seed is stored under the same lock as
-        # the message, so a reset can never separate the two.
+        # Replaces RAI's __call__. A line that is not speech, such as a blank
+        # transcript, is dropped first, so it takes no queue slot and pushes
+        # no queued message out (heard_filter.py). A message with images or
+        # audio holds more than its text, and is always queued.
+        if not msg.images and not msg.audios:
+            reason = text_verdict(msg.text)
+            if reason is not None:
+                self._ignore(msg.text, reason)
+                return
+        # The seed is stored under the same lock as the message, so a reset
+        # can never separate the two.
         stop = is_stop_utterance(msg.text)
         interrupted = False
         with self._buffer_lock:
@@ -362,6 +379,14 @@ class WalkieAgent(LangChainAgent):
             self._notify_toolbox_stop_heard()
         if interrupted:
             self._notify_toolbox_interrupt()
+
+    def _ignore(self, text: str, reason: str) -> None:
+        # One console line per dropped line, so the operator sees what the
+        # robot heard and did not act on. The text is JSON-quoted, which
+        # keeps the line on one line whatever the text holds.
+        line = f"Ignored ({reason}): {json.dumps(text, ensure_ascii=False)}"
+        self.logger.info(line)
+        self._send_to_targets(line)
 
     def _cancel_atomics(self) -> None:
         # Called with _buffer_lock held. A run clears the cancel under the
@@ -593,7 +618,7 @@ class WalkieAgent(LangChainAgent):
                 )
                 connector.send_message(message, target)
             except Exception:
-                self.logger.exception(f"Could not send a todo status line to {target}.")
+                self.logger.exception(f"Could not send a console line to {target}.")
 
     def _start_session(self) -> None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")

@@ -150,6 +150,22 @@ then cancel the current step
 joins the same conversation, so the LLM also sees the earlier tasks until a
 reset.
 
+A line that is not speech never joins the queue. Speech recognition turns
+silence, a cough or a clap into text as well: an empty line, a tag such as
+`[BLANK_AUDIO]` or `(music)`, or a phrase from subtitled videos such as
+"Thanks for watching!". The agent drops such a line on arrival, before the
+queue's overflow check, so it takes no slot and pushes no queued message
+out. It logs one line and sends the same line to `/walkie/console`, naming
+the reason and quoting the text: `Ignored (blank): ""`,
+`Ignored (non_speech): "[BLANK_AUDIO]"` or
+`Ignored (hallucination): "Thanks for watching!"`. Without the drop, a blank
+line would make every later task fail too: the LLM endpoint rejects a blank
+message, and the message stays in the history. The rules read the text
+alone (`heard_filter.py`), so they apply to typed lines and to `submit()`
+as well, and a dropped line takes its seed with it. "Hmm.", "Okay.",
+"Thank you." and "Bye." pass: they may carry no answer, but people say
+them. A message with images or audio is always queued.
+
 ### The agent's graph
 
 `build_walkie_graph()` in `src/walkie_agent/graph.py` builds the graph.
@@ -794,6 +810,10 @@ builds them on ROS.
   in it that began before the stop fails with `CANCELLED` or has its
   target stopped, because it reads the loop's stop generation first
   ([HRI Task](hri.md#stops)).
+- **Noise cancels nothing.** A line that the agent drops on arrival as
+  not speech, such as a blank transcript
+  ([How a task runs](#how-a-task-runs)), is never queued. It sets no
+  cancel and reaches no listener, even during a task.
 - **No run starts during the listeners.** The interrupt counts as
   pending from the cancel until its last listener returns. Until then
   `Toolbox.begin_task()` refuses, and the agent leaves the next message

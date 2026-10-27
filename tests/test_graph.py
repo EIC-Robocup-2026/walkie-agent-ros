@@ -15,6 +15,7 @@ import pytest
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool, ToolException, tool
 from langgraph.errors import GraphRecursionError
+from PIL import Image
 from pydantic import BaseModel
 from rai.communication.hri_connector import HRIMessage
 from rai.messages import HumanMultimodalMessage
@@ -998,6 +999,77 @@ def test_stop_utterances(text):
 )
 def test_other_utterances_are_not_stops(text):
     assert not is_stop_utterance(text)
+
+
+@pytest.mark.parametrize(
+    "text, line",
+    [
+        ("", 'Ignored (blank): ""'),
+        (" \n", 'Ignored (blank): " \\n"'),
+        ("[BLANK_AUDIO]", 'Ignored (non_speech): "[BLANK_AUDIO]"'),
+        ("Thanks for watching!", 'Ignored (hallucination): "Thanks for watching!"'),
+    ],
+)
+def test_a_line_that_is_not_speech_never_reaches_the_llm(start, caplog, text, line):
+    agent, llm = make_agent([AIMessage("Hello.")])
+    lines: list[str] = []
+    agent._send_to_targets = lines.append  # type: ignore[method-assign]
+    start(agent)
+
+    with caplog.at_level(logging.INFO):
+        agent(human(text))
+    # One console line and one log entry, both naming why.
+    assert lines == [line]
+    assert line in [r.getMessage() for r in caplog.records]
+
+    # A real line after it runs as the first task.
+    agent(human("Say hello."))
+    assert settle(agent, llm, 1)
+
+    assert contents(llm.received[0]) == ["Say hello.\n"]
+    assert contents(agent.state["messages"]) == ["Say hello.\n", "Hello."]
+    assert lines == [line]
+
+
+def test_a_line_that_is_not_speech_takes_no_queue_slot(start):
+    agent, llm = make_agent([AIMessage("Hello.")])
+    agent.max_size = 1
+    agent._send_to_targets = lambda _line: None  # type: ignore[method-assign]
+
+    # Both arrive before the agent starts, so the queue is full for the second.
+    agent(human("Say hello."))
+    agent(human("[BLANK_AUDIO]"))
+    start(agent)
+    assert settle(agent, llm, 1)
+
+    # The queued line was not pushed out.
+    assert contents(llm.received[0]) == ["Say hello.\n"]
+
+
+@pytest.mark.parametrize("text", ["Hmm.", "Okay."])
+def test_a_mumble_or_an_okay_reaches_the_llm(start, text):
+    agent, llm = make_agent([AIMessage("Sorry?")])
+    lines: list[str] = []
+    agent._send_to_targets = lines.append  # type: ignore[method-assign]
+    start(agent)
+
+    agent(human(text))
+    assert settle(agent, llm, 1)
+
+    assert contents(llm.received[0]) == [f"{text}\n"]
+    assert lines == []
+
+
+def test_a_blank_line_with_an_image_reaches_the_llm(start):
+    agent, llm = make_agent([AIMessage("A black square.")])
+    start(agent)
+
+    agent(HRIMessage(text="", images=[Image.new("RGB", (1, 1))], message_author="human"))
+    assert settle(agent, llm, 1)
+
+    task = llm.received[0][0]
+    assert isinstance(task, HumanMultimodalMessage)
+    assert len(task.images) == 1
 
 
 def test_reset_during_a_run_clears_history_todos_and_seeds(start):

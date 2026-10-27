@@ -341,8 +341,8 @@ NAME_ANSWER = "My name is {name}."
 DRINK_ANSWER = "I would like {drink}."
 BAG_ANSWER = "It is on your hand."
 OTHER_ANSWER = "Okay."
-# A mumble with no answer in it. Not empty: the agent puts the text into an
-# LLM message, and a blank message is rejected.
+# A mumble with no answer in it. Not empty: the agent drops a blank line on
+# arrival as not speech, so a blank answer would test silence instead.
 MUMBLE = "Hmm."
 
 # What a robot line asks.

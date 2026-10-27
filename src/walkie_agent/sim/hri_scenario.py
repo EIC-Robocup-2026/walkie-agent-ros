@@ -17,7 +17,8 @@ node plays them against the agent:
     0.5 m from the door pose, and is then out of view. A line that offers a
     seat seats the following guest, if the robot faces a free place.
   - The bag owner's hand-over request sets the commander's grasp_detect_min
-    to -1, so that the next empty close reads as holding the bag.
+    to -1, so that the next empty close reads as holding the bag. The guest
+    hangs it silently: the request gets no answer.
   - Every event, and the robot's state at 10 Hz, goes to the event log.
 
 HriScenario is the scenario's logic, with no ROS and an injected clock.
@@ -36,10 +37,11 @@ Rules
   does not.
 - Answers. The current guest is the one at the door, talking or following.
   The name gets "My name is <name>.", the drink "I would like <drink>.",
-  the bag owner's bag "It is on your hand.", and anything else "Okay.",
-  logged as an extra question. answers.mumble_once names one question,
-  such as guest1.drink, whose first ask is answered with "Hmm." instead.
-  The answer goes out answers.delay seconds after the line.
+  and anything else "Okay.", logged as an extra question. The bag owner's
+  bag gets no answer: the guest hangs it silently. answers.mumble_once
+  names one question, such as guest1.drink, whose first ask is answered
+  with "Hmm." instead. The answer goes out answers.delay seconds after the
+  line.
 - Guests. Guest 1 waits at the guest spot from the start, facing the
   robot. A guest starts talking at the first question, and guest k+1
   arrives once guest k is seated. The bystander walks its path once,
@@ -63,8 +65,11 @@ Rules
   order; off does nothing. It fires at most once, and is skipped when the
   item finishes or leaves the list first.
 - The bag. Each request hangs the bag, except the first one with
-  bag.early_answer, so that the first close reads empty. Its answer waits
-  up to HANG_WAIT_S for the commander to take the hang. On a reset
+  bag.miss_first, so that the first close reads empty. The guest then
+  hangs it on the silent retry: once the left hand has read open and then
+  closed after that request, the next time it reads open in the receive
+  pose hangs the bag (HriScenario.left_hand()), with no second request.
+  A second request hangs it as well, in place of the retry. On a reset
   (/walkie/reset) and on exit, grasp_detect_min goes back to the value
   read at start. The node sends the commander one request at a time. One
   that fails, or gets no answer within REQUEST_TIMEOUT_S, is sent again
@@ -127,7 +132,11 @@ that is not finite is null.
   seat_switch_skipped   mode, item, reason.
   bag_request    The bag owner was asked for the bag. guest, count (the
                  requests so far), hang (whether this one hangs the bag),
-                 early_answer.
+                 miss_first.
+  hand_reopened  With bag.miss_first, the left hand read open in the
+                 receive pose again after it read open and then closed
+                 following the first request, so the guest hangs the
+                 bag. guest.
   bag_hung       The commander took grasp_detect_min = value (-1.0).
                  already_held: true when it held -1 still, as after a
                  restore it refused, so that no set was sent.
@@ -139,10 +148,6 @@ that is not finite is null.
                  restore), reason. The node tries again within
                  COMMANDER_RETRY_S, until the commander holds the value
                  wanted.
-  bag_unconfirmed  The commander had not taken a hang when the answer's
-                 wait ended, so the answer went out first. waited_s,
-                 reason. The hang is still wanted: bag_hung follows once
-                 the commander takes it.
   bag_skipped    A bag action given up. action (hang or restore), reason:
                  no commander at the request, no such parameter, a
                  refused hang, a reset or exit before the commander took
@@ -299,9 +304,12 @@ COMMANDER_RETRY_S = 1.0
 # service call has no timeout of its own, so a lost answer would otherwise
 # block every later request.
 REQUEST_TIMEOUT_S = 2.0
-# How long a bag request waits for the commander before its answer may go
-# out, in seconds.
-HANG_WAIT_S = 2.0
+# The pose the bag is hung on the left hand in, and how far below the open
+# finger travel the left hand still reads open, in meters: the margin by
+# which set_gripper and wait_for_handover judge an open hand
+# (_arm.CONFIG.holding_margin_m), which this simulation tool does not import.
+RECEIVE_POSE = "receive"
+OPEN_MARGIN_M = 0.004
 # How long close() waits for the commander to take the restore, in seconds
 # of the computer's clock. Counted from when the restore can first go out,
 # once the request in flight is answered or dropped, so close() waits at
@@ -339,7 +347,6 @@ NAV_ACTIVE_STATUSES = frozenset(
 # What a guest says.
 NAME_ANSWER = "My name is {name}."
 DRINK_ANSWER = "I would like {drink}."
-BAG_ANSWER = "It is on your hand."
 OTHER_ANSWER = "Okay."
 # A mumble with no answer in it. Not empty: the agent drops a blank line on
 # arrival as not speech, so a blank answer would test silence instead.
@@ -375,6 +382,12 @@ NO_FREE_PLACE = "no free place for move"
 # A Step's bag actions.
 HANG = "hang"
 RESTORE = "restore"
+
+# The silent retry's stages in a bag.miss_first run (HriScenario.left_hand()).
+MISSED = "missed"
+OPENED = "opened"
+CLOSED = "closed"
+HUNG = "hung"
 
 # As the speak tool publishes /to_human and RAI subscribes /from_human.
 TO_HUMAN_QOS = QoSProfile(
@@ -575,8 +588,9 @@ class AnswersSpec(_Spec):
 class BagSpec(_Spec):
     """The bag hand-over."""
 
-    # The first request is answered without hanging the bag.
-    early_answer: bool = False
+    # The first request does not hang the bag, so the first close reads
+    # empty; the hand reopened in the receive pose after that close hangs it.
+    miss_first: bool = False
     # The guest who brings the bag; None for guest2, or nobody with one guest.
     owner: str | None = None
 
@@ -1034,9 +1048,9 @@ def _location_pose(location: Location) -> Pose:
 class HriScenario:
     """The scenario's logic: who is where, what they answer, and what to log.
 
-    robot_said(), todos_changed(), robot_pose(), reset(), tick() and
-    clock_jumped() each return a Step: the answers due now, the events to
-    log, and a bag action. scene() gives the Scene for the oracle, or None
+    robot_said(), todos_changed(), robot_pose(), left_hand(), reset(),
+    tick() and clock_jumped() each return a Step: the answers due now, the
+    events to log, and a bag action. scene() gives the Scene for the oracle, or None
     for a time it does not know. Times
     are seconds on `clock`, which each method reads unless given `t`. The
     events that happen at construction, the seated people, and guest 1 and
@@ -1090,6 +1104,11 @@ class HriScenario:
         self._first_question_t: float | None = None
         self._mumbled = False
         self._bag_requests = 0
+        # With bag.miss_first: MISSED once the first request did not hang
+        # the bag, OPENED once the left hand read open after it, CLOSED once
+        # it then read closed, and HUNG once the reopened hand hung it, or a
+        # second request did (left_hand()).
+        self._retry: str | None = None
         self._occupants: dict[str, str] = {}
         self._switch_item: str | None = None
         self._switch_done = False
@@ -1205,21 +1224,25 @@ class HriScenario:
                     parts.append(DRINK_ANSWER.format(drink=guest.drink))
                 answered.append(topic)
             elif topic == BAG and guest is not None and guest.id == self._bag_owner:
+                # The guest hangs the bag silently: the request gets no answer.
                 self._bag_requests += 1
-                early = self._spec.bag.early_answer
-                hang = not (early and self._bag_requests == 1)
+                miss = self._spec.bag.miss_first
+                hang = not (miss and self._bag_requests == 1)
                 self._emit(
                     "bag_request",
                     t,
                     guest=guest.id,
                     count=self._bag_requests,
                     hang=hang,
-                    early_answer=early,
+                    miss_first=miss,
                 )
-                if hang:
+                if not hang:
+                    self._retry = MISSED
+                else:
                     bag = HANG
-                parts.append(BAG_ANSWER)
-                answered.append(BAG)
+                    if self._retry is not None:
+                        # A second request hangs it, so the reopened hand need not.
+                        self._retry = HUNG
             else:
                 extra = True
         if extra:
@@ -1252,6 +1275,27 @@ class HriScenario:
                 if onlooker.state == STANDING:
                     ended, onlooker.state, onlooker.track_id = onlooker.track_id, ABSENT, 0
                     self._emit_onlooker(onlooker, GONE, ended, t)
+        return self._step()
+
+    def left_hand(self, open: bool, in_receive: bool, t: float | None = None) -> Step:
+        """The left hand as read now: whether it is open, and whether its arm is in receive.
+
+        Only for the silent retry of a bag.miss_first run. Once the first
+        request did not hang the bag, the hand must read open, then closed,
+        as by the empty close after that request, and the next reading of it
+        open in the receive pose hangs the bag, once. The open reading comes
+        first so that a hand still closed at the request is not taken for
+        the empty close. Every other reading does nothing.
+        """
+        t = self._now(t)
+        if self._retry == MISSED and open:
+            self._retry = OPENED
+        elif self._retry == OPENED and not open:
+            self._retry = CLOSED
+        elif self._retry == CLOSED and open and in_receive:
+            self._retry = HUNG
+            self._emit("hand_reopened", t, guest=self._bag_owner)
+            return self._step(bag=HANG)
         return self._step()
 
     def todos_changed(self, items: Sequence[Any], t: float | None = None) -> Step:
@@ -2178,7 +2222,8 @@ class HriScenarioNode(Node):
     Every call into HriScenario holds the node's lock: the scenario's inputs
     and the tick run in one mutually exclusive group, but the oracle asks
     for the scene from its own group. Each input reads the node's clock
-    once (_enter()), and the whole input uses that time.
+    once (_enter()), and the whole input uses that time. The tick gives the
+    scenario the left hand as /joint_states shows it (HriScenario.left_hand()).
     """
 
     def __init__(
@@ -2209,12 +2254,6 @@ class HriScenarioNode(Node):
         self._ground_truth: tuple[Pose, float] | None = None
         self._waiting_logged = False
         self._pose_found = False
-        # A hang the commander has not taken yet, when the wait for it began,
-        # and until when the tick holds the answers back for it, on the
-        # computer's monotonic clock.
-        self._hang_done: threading.Event | None = None
-        self._hang_since = 0.0
-        self._hang_deadline = 0.0
         config = oracle_config
         if config is None:
             config = OracleConfig(seed=spec.seed, **spec.oracle.overrides())
@@ -2326,7 +2365,6 @@ class HriScenarioNode(Node):
             if self._closed:
                 return
             self._closed = True
-            self._hang_done = None
         done = self._grasp.finish()
         if done is not None and not self._grasp.wait_restored(done, timeout_s):
             self._record(
@@ -2355,17 +2393,11 @@ class HriScenarioNode(Node):
                 step = self._scenario.robot_said(msg.text, now)
                 self._write_events(step.events)
                 if step.bag == HANG:
-                    # Under the lock, so no tick can send "It is on your
-                    # hand." before the tick knows to hold it (_hang_pending).
-                    # The callback does not wait itself: the tick keeps
-                    # logging the robot's state at 10 Hz meanwhile. A
-                    # request while a hang is pending gets the same event,
-                    # and keeps the first deadline.
-                    event = self._grasp.hang()
-                    if event is not None and event is not self._hang_done:
-                        self._hang_done = event
-                        self._hang_since = time.monotonic()
-                        self._hang_deadline = self._hang_since + HANG_WAIT_S
+                    # The callback does not wait for the commander: the
+                    # request gets no answer to hold back, and the close
+                    # comes after wait_for_handover's hold and set_gripper's
+                    # delay. bag_hung is logged once the commander takes it.
+                    self._grasp.hang()
         except Exception:
             # Never raised into the executor, which would end the thread.
             logger.exception("The scenario could not handle a robot line.")
@@ -2396,8 +2428,6 @@ class HriScenarioNode(Node):
                     return
                 step = self._scenario.reset(now)
                 self._write_events(step.events)
-                # The reset dropped the answer that waited for the hang.
-                self._hang_done = None
             if step.bag == RESTORE:
                 self._grasp.restore("reset")
         except Exception:
@@ -2412,41 +2442,33 @@ class HriScenarioNode(Node):
                     return
                 if pose is not None:
                     self._write_events(self._scenario.robot_pose(pose, now).events)
-                if not self._hang_pending():
-                    step = self._scenario.tick(now)
-                    self._write_events(step.events)
-                    for answer in step.answers:
-                        self._publish_answer(answer)
+                step = self._scenario.tick(now)
+                self._write_events(step.events)
+                for answer in step.answers:
+                    self._publish_answer(answer)
+                self._feed_left_hand(now)
                 self._write_state(pose, now)
         except Exception:
             logger.exception("The scenario's tick failed.")
 
-    def _hang_pending(self) -> bool:
-        """Whether the answers wait for the commander to take a hang. Called under the lock.
+    def _feed_left_hand(self, now: float) -> None:
+        """Give the scenario the left hand as /joint_states shows it. Called under the lock.
 
-        The scenario's tick waits as a whole, so the answer is logged and
-        sent only after bag_hung, and the answers due meanwhile keep their
-        order. After HANG_WAIT_S the answers go out anyway, logged as
-        bag_unconfirmed; the hang stays wanted, and bag_hung follows once
-        the commander takes it.
+        The hand reads open when the left finger's travel is at least the
+        open position less OPEN_MARGIN_M, and the arm in receive by
+        arm/state.py's pose judge. Nothing is given before the finger's
+        first finite reading, which would otherwise read as closed.
         """
-        done = self._hang_done
-        if done is None:
-            return False
-        if done.is_set():
-            self._hang_done = None
-            return False
-        now = time.monotonic()
-        if now < self._hang_deadline:
-            return True
-        reason = (
-            f"{self._topics.commander} had not taken the hang within {HANG_WAIT_S:g} s, "
-            "so the answer went out first"
-        )
-        logger.warning("%s.", reason)
-        self._record("bag_unconfirmed", waited_s=round(now - self._hang_since, 3), reason=reason)
-        self._hang_done = None
-        return False
+        finger = self._joints.get(self._fingers["left"])
+        if finger is None or not math.isfinite(finger):
+            return
+        left = ArmsState.from_joints(self._joints, self._arm_poses.poses).left
+        in_receive = left is not None and left.pose == RECEIVE_POSE
+        is_open = finger >= self._arm_poses.grippers.open_position - OPEN_MARGIN_M
+        step = self._scenario.left_hand(is_open, in_receive, now)
+        self._write_events(step.events)
+        if step.bag == HANG:
+            self._grasp.hang()
 
     def _on_cmd_vel(self, msg: TwistStamped) -> None:
         try:

@@ -320,6 +320,7 @@ def test_arms_loads_the_arm_atomics_the_arm_rules_and_the_drive_check(
             "move_arm_to_pose",
             "set_gripper",
             "stop_looking",
+            "wait_for_handover",
         ]
         assert agent.tools.get("navigate_to_location").arm is commander
         assert agent.tools.get("move_relative").arm is commander

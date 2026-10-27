@@ -11,7 +11,7 @@ it over ROS 2.
     [Self-Evolving Agent (Proposed)](self-evolving-agent.md). Phase 1's host
     graph and todo list are built, and so are the toolbox core of phase 2,
     the HRI task's four people and seat atomics, its gaze loop with two
-    gaze atomics, and four arm atomics. The rest of the redesign is
+    gaze atomics, and five arm atomics. The rest of the redesign is
     proposed.
     This page describes the agent as it is today. For a guided tour with
     runnable examples, start at [Learn the Agent](../learn/index.md).
@@ -413,8 +413,9 @@ todos = [
 | `stop_looking`                    | atomic     | Stops the turning that `look_at` started. Never fails; when nothing runs, says what was looked at last and why it stopped |
 | `list_arm_poses`                  | atomic     | Lists the named arm poses, which arms each can move, and whether it is safe for driving. Only with `--arms` |
 | `move_arm_to_pose`                | atomic     | Moves one arm or both to a named pose, then checks the joints. Only with `--arms` |
-| `set_gripper`                     | atomic     | Opens, half-opens or closes one gripper or both; after a close, says whether it holds something. Only with `--arms` |
+| `set_gripper`                     | atomic     | Opens, half-opens or closes one gripper or both; after a close, says whether it holds something. A close in the `receive` pose starts 5 s after the call. Only with `--arms` |
 | `get_arm_state`                   | atomic     | Reports the named pose each arm is in, whether it is safe for driving, and how far each gripper is open. Only with `--arms` |
+| `wait_for_handover`               | atomic     | Holds one hand still and open in the `receive` pose for 5 s, so a person can hang an object on it. Refuses unless the arm is there with the hand open; sends no motion. Only with `--arms` |
 
 `find_objects` calls `/walkie_database/find_objects` with a label and asks
 for at most 5 objects. It returns each object's room and position on the
@@ -448,7 +449,7 @@ people services, or a mock with `--mock-people-memory`, see
 [Where atomics live](#where-atomics-live). The HRI task's page shows what
 each one returns ([HRI Task](hri.md#atomics)). `look_at` and
 `stop_looking` always load. The same page says how the gaze loop turns the
-base and when it stops ([HRI Task](hri.md#gaze)). The four arm atomics
+base and when it stops ([HRI Task](hri.md#gaze)). The five arm atomics
 need the `arm` backend, which only `--arms` adds. Every arm tool ends its
 answer with "Arms: safe for driving.", "Arms: not safe for driving." or
 "Arms: state unknown." ([Arm Manipulation](manipulation.md#tools)).
@@ -487,14 +488,16 @@ For the full list of topics, see
 
 The toolbox core of phase 2 is built in `src/walkie_agent/toolbox/`: typed
 atomic tools, the `ctx` they run with, and handles
-([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). Ten atomics
+([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). Eleven atomics
 ship. Four are the HRI task's people and seat tools: `find_people`,
 `find_seats`, `recognize_person` and `remember_person`
 ([HRI Task](hri.md#atomics)). Two are its gaze tools, `look_at` and
-`stop_looking` ([HRI Task](hri.md#gaze)). Four are arm tools:
-`list_arm_poses`, `move_arm_to_pose`, `set_gripper` and `get_arm_state`
-([Arm Manipulation](manipulation.md#tools)). Bundles, the linker, access
-levels and tool search are not built
+`stop_looking` ([HRI Task](hri.md#gaze)). Five are arm tools:
+`list_arm_poses`, `move_arm_to_pose`, `set_gripper`, `get_arm_state`
+([Arm Manipulation](manipulation.md#tools)) and `wait_for_handover`, for
+the HRI task's bag hand-over
+([ADR-0059](decisions/0059-wait-with-a-still-open-hand-before-closing.md)).
+Bundles, the linker, access levels and tool search are not built
 ([Self-Evolving Agent](self-evolving-agent.md#tiers-and-folders)).
 
 ### An atomic
@@ -743,7 +746,7 @@ builds them on ROS.
 | `backend(name)`, `has_backend(name)` | The clients passed to `Toolbox` by name, such as `"arm"`. A missing one raises `UNAVAILABLE`. Tests pass fakes |
 | `base`, `speech` | Driving and speaking, as the `Base` and `Speech` Protocols of `walkie_agent.capabilities`. No ROS implementation yet, so they raise `UNAVAILABLE` outside the fakes |
 | `pose` | The base's pose from TF: `latest(max_age_s=...)`, `fresh(timeout_s=1.0)` and `at(stamp_ns, timeout_s=...)` |
-| `arms` | The named arm poses on the `"arm"` backend: `poses()`, `state(read=None)`, `move_to(pose, arm="both")` and `gripper(arm, state)`, with the arm atomics' errors and safety steps |
+| `arms` | The named arm poses on the `"arm"` backend: `poses()`, `state(read=None)`, `move_to(pose, arm="both")`, `gripper(arm, state)` and `finger(arm)`, with the arm atomics' errors and safety steps |
 | `gaze` | The gaze loop on the `"gaze"` backend: `look_at(handle)`, `face(looking, timeout_s)`, `stop(reason=None)` and `status()` |
 | `vision` | The people and objects on the `"vision"` backend: `people(max_age_s=...)` and `objects(labels=(), max_age_s=...)`, each stored as one handle set |
 | `handles` | The `HandleStore` above |
@@ -920,13 +923,14 @@ builds them on ROS.
   tools. An atomic named like an existing tool stops the agent with a
   `ValueError`, because the agent keeps one tool per name and would
   silently replace the older one.
-- **Ten ship.** `find_people`, `find_seats`, `recognize_person` and
+- **Eleven ship.** `find_people`, `find_seats`, `recognize_person` and
   `remember_person`, with what they share in `_perception.py`. The rules
   they use, ported from walkie-agent-v2, are plain functions in
   `src/walkie_agent/perception/`, which tests run without LangChain.
   `look_at` and `stop_looking`, with what they share in `_gaze.py`; the
-  loop itself is `src/walkie_agent/gaze.py`. `list_arm_poses`, `move_arm_to_pose`, `set_gripper` and `get_arm_state`,
-  with what they share in `_arm.py`. The pose loader and the pose matching
+  loop itself is `src/walkie_agent/gaze.py`. `list_arm_poses`,
+  `move_arm_to_pose`, `set_gripper`, `get_arm_state` and
+  `wait_for_handover`, with what they share in `_arm.py`. The pose loader and the pose matching
   are in `src/walkie_agent/arm/`.
 
 ## Running on the robot

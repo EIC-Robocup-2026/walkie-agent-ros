@@ -721,7 +721,7 @@ def test_atomics_load_only_with_their_backends(make_package, caplog):
 
 
 def test_the_shipped_package_has_the_people_seat_arm_and_gaze_atomics():
-    """vision alone loads find_people and find_seats; people_memory adds two; arm adds four;
+    """vision alone loads find_people and find_seats; people_memory adds two; arm adds five;
     gaze adds stop_looking, and look_at with vision."""
     atomics = discover()
     vision_only = ToolContext(None, backends={"vision": object()})
@@ -750,6 +750,7 @@ def test_the_shipped_package_has_the_people_seat_arm_and_gaze_atomics():
         "remember_person",
         "set_gripper",
         "stop_looking",
+        "wait_for_handover",
     ]
     assert [tool.name for tool in build_atomic_tools(vision_only, atomics)] == [
         "find_people",
@@ -766,6 +767,7 @@ def test_the_shipped_package_has_the_people_seat_arm_and_gaze_atomics():
         "list_arm_poses",
         "move_arm_to_pose",
         "set_gripper",
+        "wait_for_handover",
     ]
     # look_at also needs vision: every handle it takes comes from a vision atomic.
     assert [tool.name for tool in build_atomic_tools(gaze_only, atomics)] == ["stop_looking"]

@@ -43,11 +43,13 @@ from walkie_agent.arm.state import (
     ArmState,
 )
 from walkie_agent.sim.fake_commander import FakeCommander
+from walkie_agent.testing import FakeClock
 from walkie_agent.toolbox import StepError, Toolbox, ToolOutput
 from walkie_agent.tools import FORBIDDEN_NAMES
 from walkie_agent.tools import navigation as navigation_module
 from walkie_agent.tools.atomic import _arm as arm_shared
 from walkie_agent.tools.atomic._arm import FINGER_JOINTS
+from walkie_agent.tools.atomic.set_gripper import RECEIVE_CLOSE_DELAY_S
 from walkie_agent.tools.navigation import MoveRelativeTool, NavigateToLocationTool
 
 MODEL_PATH = PROJECT_ROOT / "config" / "robot_model.toml"
@@ -835,11 +837,12 @@ def test_a_second_gripper_goal_the_commander_rejects_keeps_what_the_first_did(
 
     error = error_of(toolbox, "set_gripper", arm="both", state="close")
 
-    # Nothing read the arms, and a failed call does not read them.
+    # The close read the arms first, to see whether one is in receive (ADR-0059),
+    # and a failed call does not read them again.
     assert (error.code, error.message) == (
         "INTERNAL",
         "Closed the left gripper. It is holding nothing. Could not move the right gripper: The "
-        f"commander rejected the goal for right_gripper. {UNKNOWN_SENTENCE}",
+        f"commander rejected the goal for right_gripper. {SAFE_SENTENCE}",
     )
     assert fake.gripper_goals == [("left_gripper", 0.0), ("right_gripper", 0.0)]
 
@@ -1005,10 +1008,11 @@ def test_an_interrupt_while_the_band_is_read_stops_the_call(toolbox, fake, monke
 
     error = error_of(toolbox, "set_gripper", arm="both", state="close")
 
+    # The close read the arms first, to see whether one is in receive.
     assert (error.code, error.message) == (
         "CANCELLED",
         "Stopped by reset before checking whether the left gripper holds something. "
-        f"{UNKNOWN_SENTENCE}",
+        f"{SAFE_SENTENCE}",
     )
     # The right gripper was never sent.
     assert fake.gripper_goals == [("left_gripper", 0.0)]
@@ -1115,10 +1119,11 @@ def test_an_interrupt_during_a_gripper_command_stops_it(toolbox, fake):
     timer.join()
 
     assert error.code == "CANCELLED"
+    # The close read the arms first, to see whether one is in receive.
     assert error.message == (
         "A stop or a reset interrupted the left_gripper command; the commander accepted the "
         "cancel, but the gripper finishes its current motion. Wait a few seconds for it to "
-        f"finish. {UNKNOWN_SENTENCE}"
+        f"finish. {SAFE_SENTENCE}"
     )
     assert error.data == {"cancel": "accepted"}
     # The right gripper was never sent.
@@ -1169,9 +1174,10 @@ def test_an_interrupted_gripper_command_says_how_the_commander_answered_the_canc
     error = error_of(toolbox, "set_gripper", arm="both", state="close")
     thread.join(timeout=10)
 
+    # The close read the arms first, to see whether one is in receive.
     assert (error.code, error.message, error.data) == (
         "CANCELLED",
-        f"A stop or a reset interrupted the left_gripper command; {answer} {UNKNOWN_SENTENCE}",
+        f"A stop or a reset interrupted the left_gripper command; {answer} {SAFE_SENTENCE}",
         {"cancel": outcome},
     )
     # The right gripper was never sent.
@@ -1199,9 +1205,10 @@ def test_a_stop_after_the_commander_cancelled_a_gripper_command_gives_its_report
     error = error_of(toolbox, "set_gripper", arm="both", state="close")
 
     # The command was sent, so not "Stopped by reset before the left gripper moved".
+    # The close read the arms first, to see whether one is in receive.
     assert (error.code, error.message, error.data) == (
         "CANCELLED",
-        f"The commander cancelled the left_gripper command. {UNKNOWN_SENTENCE}",
+        f"The commander cancelled the left_gripper command. {SAFE_SENTENCE}",
         {"group": "left_gripper", "status": "Canceled"},
     )
     assert fake.results == [("left_gripper", "Canceled")]
@@ -1210,6 +1217,8 @@ def test_a_stop_after_the_commander_cancelled_a_gripper_command_gives_its_report
 
 
 def test_an_interrupt_while_the_fingers_are_read_stops_the_call(toolbox, fake):
+    # The arms are known first, so the close reads only the fingers, after it.
+    client_of(toolbox).read_arms(threading.Event(), 2.0)
     fake.joint_states_delay_s = 2.0
     timer = threading.Timer(0.5, toolbox.interrupt)
     timer.start()
@@ -1222,11 +1231,79 @@ def test_an_interrupt_while_the_fingers_are_read_stops_the_call(toolbox, fake):
     assert (error.code, error.message) == (
         "CANCELLED",
         "Stopped by reset before checking whether the left gripper holds something. "
-        f"{UNKNOWN_SENTENCE}",
+        f"{SAFE_SENTENCE}",
     )
     assert elapsed < 1.5
     # The right gripper was never sent.
     assert fake.gripper_goals == [("left_gripper", 0.0)]
+
+
+def clock_the_gripper_goals(toolbox: Toolbox, monkeypatch) -> tuple[FakeClock, list[float]]:
+    """Put the ctx on a FakeClock, and note its time at each gripper goal the client sends."""
+    clock = FakeClock()
+    monkeypatch.setattr(toolbox.ctx, "clock", clock)
+    client = client_of(toolbox)
+    send = client.control_gripper
+    sent: list[float] = []
+
+    def noted(*args, **kwargs):
+        sent.append(clock.monotonic())
+        return send(*args, **kwargs)
+
+    # An instance attribute, which RosArms looks up on each call.
+    monkeypatch.setattr(client, "control_gripper", noted)
+    return clock, sent
+
+
+def test_a_close_in_receive_sends_its_goal_only_after_the_delay(toolbox, fake, poses, monkeypatch):
+    fake.teleport(targets(poses, "receive", "left"))
+    clock, sent = clock_the_gripper_goals(toolbox, monkeypatch)
+    start = clock.monotonic()
+
+    out = call(toolbox, "set_gripper", arm="left", state="close")
+
+    assert out.summary == f"Closed the left gripper. It is holding nothing. {NOT_SAFE_SENTENCE}"
+    assert sent == [pytest.approx(start + RECEIVE_CLOSE_DELAY_S)]
+    assert fake.gripper_goals == [("left_gripper", 0.0)]
+
+
+def test_a_stop_during_the_close_delay_sends_no_goal(toolbox, fake, poses, monkeypatch):
+    fake.teleport(targets(poses, "receive", "left"))
+    clock, sent = clock_the_gripper_goals(toolbox, monkeypatch)
+    start = clock.monotonic()
+    wait = clock.wait
+
+    def stopped_part_way(event: threading.Event, timeout_s: float) -> bool:
+        if clock.monotonic() >= start + 2.0:
+            toolbox.interrupt()
+        return wait(event, timeout_s)
+
+    monkeypatch.setattr(clock, "wait", stopped_part_way)
+
+    error = error_of(toolbox, "set_gripper", arm="left", state="close")
+
+    assert (error.code, error.message) == (
+        "CANCELLED",
+        f"Stopped by reset before the left gripper moved. {NOT_SAFE_SENTENCE}",
+    )
+    assert clock.monotonic() < start + RECEIVE_CLOSE_DELAY_S
+    assert sent == [] and fake.gripper_goals == []
+
+
+@pytest.mark.parametrize(
+    ("pose", "state"), [("receive", "open"), ("receive", "half"), ("home", "close")]
+)
+def test_an_open_in_receive_and_a_close_elsewhere_send_at_once(
+    toolbox, fake, poses, monkeypatch, pose, state
+):
+    fake.teleport(targets(poses, pose, "left"))
+    clock, sent = clock_the_gripper_goals(toolbox, monkeypatch)
+    start = clock.monotonic()
+
+    call(toolbox, "set_gripper", arm="left", state=state)
+
+    assert sent == [start]
+    assert clock.monotonic() == start
 
 
 # -- get_arm_state ------------------------------------------------------------------
@@ -1766,6 +1843,32 @@ def test_after_an_abandoned_goal_the_robot_does_not_drive_until_the_commander_en
     assert fake.results == [("left_arm", "Execution Failed")]
     assert client.unverified is None
     assert client.last_recovery.goals == (("the move of left_arm", "result"),)
+
+
+@pytest.mark.parametrize("state", ["open", "close"])
+def test_after_an_abandoned_goal_set_gripper_is_refused_without_recovering_the_arms(
+    toolbox, fake, poses, monkeypatch, state
+):
+    # A close asks where the left arm is, for the delay in receive. The
+    # abandoned move left the arm unknown, and a read would recover the
+    # arms, so the close reads nothing and is refused as an open is. Only
+    # get_arm_state and the drive check recover.
+    client = client_of(toolbox)
+    abandon_a_move(client, fake, poses, monkeypatch)
+    requests = len(fake.joint_state_requests)
+
+    error = error_of(toolbox, "set_gripper", arm="left", state=state)
+
+    assert (error.code, error.message) == (
+        "PRECONDITION_FAILED",
+        "Could not move the left gripper: Cannot move left_gripper: an arm or a gripper may "
+        f"still be moving, as {ABANDONED}. Call get_arm_state to check the arms, then try "
+        f"again. {UNKNOWN_SENTENCE}",
+    )
+    assert error.data == {"unverified": ABANDONED}
+    assert fake.joint_state_requests[requests:] == []
+    assert fake.gripper_goals == []
+    assert client.unverified == ABANDONED
 
 
 def test_recovery_in_the_drive_check_reads_the_arms_twice_within_its_timeout(

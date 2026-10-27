@@ -115,6 +115,7 @@ class Arms(Protocol):                        # ctx.arms, effect M
     def state(self, *, read: bool | None = None) -> ArmsReport: ...  # read: None when unknown, True always, False never
     def move_to(self, pose: str, arm: Arm = "both") -> ArmsMoved: ...
     def gripper(self, arm: Gripper, state: GripperState) -> GripperMoved: ...  # one gripper
+    def finger(self, arm: Gripper) -> float: ...  # one finger's travel now, in metres; sends no goal
 
 
 class Gaze(Protocol):                        # ctx.gaze, effect N
@@ -378,6 +379,13 @@ built. It returns once the message is published, not once it is spoken.
       is unknown; `True` always reads them and `False` never does.
       `poses()` is an ordered `Mapping` by name. `arms_report()` in
       `_arm.py` builds an `ArmsReport` from the client's `snapshot()`.
+      `finger(arm)` was added after PR A, for `wait_for_handover`
+      ([ADR-0059](decisions/0059-wait-with-a-still-open-hand-before-closing.md)),
+      an added method rather than a changed one, as ADR-0052 asks for a
+      new verb. It reads one gripper's finger travel once, through
+      `read_finger`, sends no goal, and raises the errors of a read of the
+      joints. `FakeArms` keeps one value per gripper, which `gripper()`
+      sets and `finger()` returns.
     - **`ctx.gaze`:** `look_at()` returns `Looking` once the loop has the
       target. `face(looking, timeout_s)` holds `look_at`'s facing poll and
       its TF read: `look_at` waits 4 s for a person, and a late turn is

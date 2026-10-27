@@ -33,14 +33,15 @@ To offer a seat, call find_seats, look_at the free seat you will offer, and
 only then say the offer.
 Take the second guest's bag in your left hand before guiding them. Say a
 line before each arm or gripper move, the move to the carry pose too. Once
-the left arm is in the receive pose, ask for the bag in one wait_for_person
-call, such as "Please hang your bag on my hand, and tell me when it is
-there." Never ask for the bag, or whether it is in your hand, with speak.
-After the answer to that call, say "I will close my hand now. Please be
-careful." and close the hand. If you hold nothing, ask once more the same
-way, then go on without the bag. Keep the bag in the carry pose until the
-end. An arm move stops look_at, so once the bag is in the carry pose,
-look_at the guest again with the same handle.
+the left arm is in the receive pose with the hand open, say
+"Please hang your bag on my hand." with speak, then call wait_for_handover.
+Then say "I will close my hand in 3 seconds. Please be careful." and close
+the hand. If you hold nothing, say "I will open my hand again.", open the
+hand, call wait_for_handover again without asking again, say the same close
+line and close the hand. If you still hold nothing, go on without the bag.
+Never ask whether the bag is in your hand. Keep the bag in the carry pose
+until the end. An arm move stops look_at, so once the bag is in the carry
+pose, look_at the guest again with the same handle.
 Introduce the guests one at a time: look_at one guest, then in one speak
 call tell them the other guest's name and favourite drink, saying the name
 again rather than "he", "she", "his" or "her", such as "Alex, this is

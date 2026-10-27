@@ -1,10 +1,13 @@
 # Arm Manipulation (Proposed)
 
-!!! note "Status: Proposed, four arm tools built"
+!!! note "Status: Proposed, five arm tools built"
     `list_arm_poses`, `move_arm_to_pose`, `set_gripper` and `get_arm_state`
-    are built, with the commander client and the drive check. They load only
-    with `--arms`. The rest of this page is the design for team review. Most
-    of the [open questions](#open-questions) say which phase they block.
+    are built, with the commander client and the drive check, and so is
+    `wait_for_handover`, for the HRI task's bag hand-over
+    ([ADR-0059](decisions/0059-wait-with-a-still-open-hand-before-closing.md)).
+    They load only with `--arms`. The rest of this page is the design for
+    team review. Most of the [open questions](#open-questions) say which
+    phase they block.
 
 Walkie has two 7-DOF OpenArm arms with grippers, on a lift. walkie-ros runs
 MoveIt and `bimanual_commander`, which plan and execute arm motion. This page
@@ -213,13 +216,14 @@ other nodes are not counted.
 | --------------------- | ------------------------------------------------- | ------ | ---------------------------------------------------------------------------- |
 | `list_arm_poses`      | none                                              | R      | Lists the named poses, which arms each can move, whether it is safe for driving, and its description |
 | `move_arm_to_pose`    | `pose`; `arm`: left, right, both (default both)   | M      | Moves one arm or both to a named pose, waits, and checks the joints          |
-| `set_gripper`         | `arm`: left, right, both; `state`: open, half, close | M   | Moves the grippers; after a close, reads the fingers and says whether it is holding something |
+| `set_gripper`         | `arm`: left, right, both; `state`: open, half, close | M   | Moves the grippers; after a close, reads the fingers and says whether it is holding something. A close of an arm in `receive` waits 5 s before its goal is sent, so the spoken close line plays first. The pose comes from the client's memory, read first when that does not know the arm, but not while the arms are unverified ([ADR-0059](decisions/0059-wait-with-a-still-open-hand-before-closing.md)) |
 | `get_arm_state`       | none                                              | R      | Reports the named pose each arm is in, or none, whether it is safe for driving, and how far each gripper is open |
+| `wait_for_handover`   | `arm`: left, right (default left)                 | R      | Holds one hand still and open in `receive` for 5 s, a set time, for a hand-over. Refuses unless the arm is in `receive` with the hand open, and fails when either changed during the hold. Sends no goal ([ADR-0059](decisions/0059-wait-with-a-still-open-hand-before-closing.md)) |
 | `list_skills`         | none                                              | R      | Phase 3. Lists the skills the robot offers. Not in the first set of atomics |
 | `run_skill`           | `skill`, `target`, `arm`                          | M      | Runs a skill and reports whether success was verified. Mocked from phase 2 of the self-evolving agent; the real skill server is phase 3 |
 
 Every tool except `list_skills` is an atomic of the self-evolving agent
-([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The first four are
+([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The first five are
 built. They need the `arm` backend, which the agent creates only with
 `--arms`, and are not loaded without it. `run_skill` will run against a mock
 until the skill server lands. The Effect column uses
@@ -635,7 +639,7 @@ wire only typed fields, never sentences, so this refactor comes first.
 `move_arm_to_pose` and `get_arm_state` are bound every turn. The other three
 are reached through `find_tools`, and `run_skill` usually through a preset
 ([What the agent sees each turn](self-evolving-agent.md#what-the-agent-sees-each-turn)).
-Until `find_tools` is built, the four built arm atomics are all bound every
+Until `find_tools` is built, the five built arm atomics are all bound every
 turn when the agent runs with `--arms`.
 
 - `run_skill` returns a `SkillResult` with `outcome`, `arm` (left or right)
@@ -842,7 +846,7 @@ from the spoken request to the hand-over.
 
 | Piece                                                            | Repository       | Location                                             |
 | ---------------------------------------------------------------- | ---------------- | ---------------------------------------------------- |
-| Arm atomics, one file per tool                                   | walkie-agent-ros | `src/walkie_agent/tools/atomic/` (four built; `run_skill` new) |
+| Arm atomics, one file per tool                                   | walkie-agent-ros | `src/walkie_agent/tools/atomic/` (five built; `run_skill` new) |
 | Commander client, pose loader, arm state                         | walkie-agent-ros | `src/walkie_agent/arm/` (`commander.py`, `poses.py`, `state.py`) |
 | Presets `find_object_in_view`, `pick_object`, `pickup_object_in_view`, `hand_over` | walkie-agent-ros | `src/walkie_agent/tools/bundled_preset/` (new) |
 | Typed results, `StepError`, the bundle runner and its runtime stow | walkie-agent-ros | `src/walkie_agent/toolbox/types.py`, `src/walkie_agent/toolbox/runner.py` (new) |
@@ -914,8 +918,10 @@ the `FakeSkillServer` serves in the sim harvest
   recovery, the settled read of the arms and the fingers, and goals that
   the commander accepts late. Recovery is tested for each answer to its
   cancel, a goal that still plans, a send never answered and a restarted
-  commander. `tests/test_arm_atomics.py` covers the four arm atomics and
-  the drive check against it. Those tests include the answer to a stop or
+  commander. `tests/test_arm_atomics.py` covers the four arm atomics of
+  phase 1 and the drive check against it, and
+  `tests/test_wait_for_handover.py` covers `wait_for_handover` on
+  `FakeArms`. Those tests include the answer to a stop or
   a reset for each answer to its cancel, grippers that fail, close
   unmeasured or are commanded again before the read, plan-only mode,
   readings that lack a joint or hold one that is not a number, a move too

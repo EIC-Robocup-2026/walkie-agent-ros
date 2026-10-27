@@ -45,11 +45,11 @@ INTRODUCTION_LIMIT_DEG = 10.0
 # From the template's seeding to the last item completed, in sim seconds.
 # The rulebook's scoresheet sets 7 minutes for the HRI task.
 TIME_LIMIT_S = 420.0
-# An answer's asked_t is its line's t, both rounded to the millisecond.
-ASKED_T_TOLERANCE_S = 0.001
 
 ARM_TOOLS = ("move_arm_to_pose", "set_gripper")
 LINE_TOOLS = ("speak", "wait_for_person")
+# The hold of the hand before a hand-over close; in neither list above.
+HANDOVER_TOOL = "wait_for_handover"
 DRIVE_TOOLS = ("navigate_to_location", "move_relative")
 HANDLE_TOOLS = ("look_at", "remember_person")
 # The arms a set_gripper call moves the left gripper with.
@@ -265,13 +265,12 @@ def check_pronouns(run: Run) -> list[Result]:
 
 
 def check_questions(run: Run) -> list[Result]:
-    """Only the essential questions, plus the repeats the scenario's variants allow."""
+    """Only the essential questions, plus the repeat the mumble allows; one bag request."""
     problems = [
         f"extra question to {r.get('guest')}: {r.get('text')!r}"
         for r in run.of_type("extra_question")
     ]
     mumble = run.scenario.get("answers", {}).get("mumble_once")
-    early_answer = bool(run.scenario.get("bag", {}).get("early_answer"))
     mumbled_t = {
         (r.get("guest"), topic): r["t"]
         for r in run.of_type("answer")
@@ -286,7 +285,9 @@ def check_questions(run: Run) -> list[Result]:
             ]
             allowed = 1
             if topic == "bag":
-                allowed = (1 + early_answer) if guest == run.bag_owner else 0
+                # One request in every variant: the retry after an empty
+                # close asks nothing (wait_for_handover again).
+                allowed = 1 if guest == run.bag_owner else 0
             if f"{guest}.{topic}" == mumble and (guest, topic) in mumbled_t:
                 # The repeat counts only once the mumble was heard.
                 if sum(t <= mumbled_t[guest, topic] for t in asked) > allowed:
@@ -300,7 +301,14 @@ def check_questions(run: Run) -> list[Result]:
 
 
 def check_arm_motion(run: Run) -> list[Result]:
-    """A line before every arm motion, and the bag hand closed only after the guest's answer."""
+    """A line before every arm motion, and the bag hand closed only after a request and a hold.
+
+    Each left close needs a bag request before it, and an ok left
+    wait_for_handover since the later of the run's start and the last left
+    open, so the silent retry after an empty close holds the hand again.
+    wait_for_handover moves nothing and says nothing, so it neither needs
+    a line nor counts as one.
+    """
     problems = []
     spoke = False
     arm_calls = 0
@@ -319,22 +327,26 @@ def check_arm_motion(run: Run) -> list[Result]:
                     )
             spoke = False
     requests = run.of_type("bag_request")
-    answers = [r for r in run.of_type("answer") if "bag" in (r.get("asks") or ())]
+    # The ok holds of the left hand; the call's `arm` defaults to left.
+    waits = [
+        c
+        for c in run.calls
+        if c.get("tool") == HANDOVER_TOOL
+        and c.get("outcome") == "ok"
+        and (c.get("args") or {}).get("arm", "left") == "left"
+    ]
+    opens = _left_grips(run, ("open",))
     for close in _left_grips(run, ("close",)):
         t = close["t"]
-        before = [r for r in requests if r["t"] <= t]
-        if not before:
+        if not any(r["t"] <= t for r in requests):
             problems.append(f"left close at t={t:g} s with no bag request before it")
             continue
-        request = before[-1]
-        if not any(
-            abs(a.get("asked_t", math.inf) - request["t"]) <= ASKED_T_TOLERANCE_S and a["t"] <= t
-            for a in answers
-        ):
-            problems.append(
-                f"left close at t={t:g} s before the answer to the bag request "
-                f"at t={request['t']:g} s"
-            )
+        # The hold must come after the last left open, so a retry holds again.
+        opened = max((c["t"] for c in opens if c["t"] < t), default=None)
+        since = -math.inf if opened is None else opened
+        if not any(since <= w["t"] and w.get("t_end", w["t"]) <= t for w in waits):
+            where = "the run's start" if opened is None else f"the left open at t={opened:g} s"
+            problems.append(f"left close at t={t:g} s with no ok {HANDOVER_TOOL} since {where}")
     if problems:
         return [Result("arm_motion", False, "; ".join(problems))]
     return [Result("arm_motion", True, f"a line before each of {arm_calls} arm calls")]

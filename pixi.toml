@@ -207,11 +207,12 @@ description = "Run the agent against walkie-ros's MuJoCo simulation (the shell's
 cmd = "python -m walkie_agent.sim.hri_scenario config/scenarios/hri.yaml"
 description = "Play the HRI scenario in the chula_pat14_6 simulation (the shell's ROS_DOMAIN_ID)"
 
-# The same scenario, except that guest 2 answers the first hand-over request
-# before the bag hangs, so the robot's first close reads empty.
-[tasks.hri-scenario-early-bag]
-cmd = "python -m walkie_agent.sim.hri_scenario config/scenarios/hri_early_bag.yaml"
-description = "Play the HRI scenario with the early bag answer (the shell's ROS_DOMAIN_ID)"
+# The same scenario, except that guest 2 does not hang the bag on the first
+# hand-over request, so the robot's first close reads empty, and hangs it
+# once the hand reopens in the receive pose for the silent retry.
+[tasks.hri-scenario-missed-bag]
+cmd = "python -m walkie_agent.sim.hri_scenario config/scenarios/hri_missed_bag.yaml"
+description = "Play the HRI scenario with the bag missed on the first close (the shell's ROS_DOMAIN_ID)"
 
 # agent-sim on the chula_pat14_6 world's named places, for the HRI scenario.
 # agent-sim stays on config/locations.sim.toml for the blank map.

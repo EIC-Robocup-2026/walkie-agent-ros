@@ -1,10 +1,10 @@
 # HRI Task (Proposed)
 
-!!! note "Status: Proposed, eight atomics and the gaze loop built"
+!!! note "Status: Proposed, nine atomics and the gaze loop built"
     The four people and seat atomics are built and tested on fakes. So are
     the gaze loop and its atomics `look_at` and `stop_looking`. The arm
-    atomics `move_arm_to_pose` and `set_gripper` are built too, and call the
-    commander. Their status is in the [Atomics](#atomics) table. The rest of
+    atomics `move_arm_to_pose`, `set_gripper` and `wait_for_handover` are
+    built too, and call the commander. Their status is in the [Atomics](#atomics) table. The rest of
     this page is the design for team review. Each of the
     [open questions](#open-questions) says what it blocks.
 
@@ -33,11 +33,14 @@ on top of [Perception](perception.md) and
   capability layer's PR C
   ([Robot Capabilities](capabilities.md#pr-c-the-motionsupervisor)), and
   Nav2 started with the head tilt near goals off.
-- **The bag goes in the left hand.** The robot holds out its hand, the
-  guest says when the bag is in it, and the gripper closes. The two poses
-  it needs, `receive` and `carry`, come from walkie-agent-v2's hand-over.
-  Rulebook 2026.2 likely takes 25 points for asking the guest to say when,
-  and wants the gripper within 10 cm of the guest's hand
+- **The bag goes in the left hand.** The robot holds out its open hand,
+  asks for the bag once, and `wait_for_handover` holds the hand still for
+  a set time. Then the robot says it will close in 3 seconds, and the
+  gripper closes. An empty close gets one silent retry, with no second
+  request ([ADR-0059](decisions/0059-wait-with-a-still-open-hand-before-closing.md)).
+  The two poses it needs, `receive` and `carry`, come from
+  walkie-agent-v2's hand-over. Rulebook 2026.2 also wants the gripper
+  within 10 cm of the guest's hand, which is not met yet
   ([Against rulebook 2026.2](#against-rulebook-20262)).
 - **Gaze turns the base.** An agent-side loop publishes rotation only, on
   `/cmd_vel`, below Nav2 and the joystick in `twist_mux`. It is the one
@@ -167,7 +170,7 @@ flowchart TB
     look --> ask["wait_for_person: name<br/>wait_for_person: drink"]
     ask --> mem["remember_person(<br/>guest, name, {drink})"]
     mem --> second{"Is this the<br/>second guest?"}
-    second -->|"yes"| bag["Take the bag, a line before each move:<br/>open, receive pose, wait_for_person,<br/>close, carry pose, look_at(guest)"]
+    second -->|"yes"| bag["Take the bag, a line before each move:<br/>open, receive pose, speak the request,<br/>wait_for_handover, the close line, close,<br/>carry pose, look_at(guest)"]
     second -->|"no"| guide
     bag --> guide["speak('Please follow me')<br/>navigate_to_location(<br/>'living_room')"]
     guide --> seats["find_seats()<br/>look_at(free seat), speak"]
@@ -217,16 +220,19 @@ flowchart TB
 | `stop_looking()` | N | Built (sim) | Stops the gaze loop. When nothing runs, says which target ran last, why it stopped and how long ago. Never fails |
 | `wait_for_person(question)` | — | Phase 1, a core tool | Speaks, marks the todo item waiting and ends the turn |
 | `move_arm_to_pose(pose, arm)` | M | Built (sim), as on [Manipulation](manipulation.md#tools), with two new poses | Moves the left arm to `receive` or `carry`, and checks the joints |
-| `set_gripper(arm, state)` | M | Built (sim), as on [Manipulation](manipulation.md#tools) | Opens or closes the left gripper. After a close, says whether it holds something |
+| `set_gripper(arm, state)` | M | Built (sim), as on [Manipulation](manipulation.md#tools) | Opens or closes the left gripper. After a close, says whether it holds something. A close in `receive` starts 5 s after the call, once the close line has played ([The bag hand-over](#the-bag-hand-over)) |
+| `wait_for_handover(arm="left")` | R | Built (sim) ([ADR-0059](decisions/0059-wait-with-a-still-open-hand-before-closing.md)) | Holds the open hand still in `receive` for 5 s, a set time the LLM does not choose, then reads the arm and the hand again. Refuses unless the arm is in `receive` with the hand open, and fails when either changed during the hold. Sends no motion and says nothing |
 
 `navigate_to_location` and `speak` exist today. `refind_person` is not
 needed: the gaze loop follows the track, and the face is matched again at
 the introductions.
 
 **Built (sim)** means built and tested in this repository, not yet run on
-the robot or with walkie-vision. The two arm atomics are tested on the
-`FakeCommander` and load only with `--arms`
-([Manipulation](manipulation.md#backends)). The two gaze atomics load in
+the robot or with walkie-vision. The three arm atomics load only with
+`--arms` ([Manipulation](manipulation.md#backends)). The two that move
+are tested on the `FakeCommander`, and `wait_for_handover` on `FakeArms`,
+with the finger read it uses on both
+([Robot Capabilities](capabilities.md#pose-arms-gaze-and-vision)). The two gaze atomics load in
 every run; [Gaze](#gaze) says how they are built. For the people and seat
 atomics:
 
@@ -456,14 +462,26 @@ and the template repeats, and the pass check counts
    `set_gripper("left", "open")`.
 2. **Hold out the hand.** `speak("Now I will hold out my hand.")`, then
    `move_arm_to_pose("receive", "left")`.
-3. **Wait for the guest.** `wait_for_person("Please hang your bag on my
-   hand, and tell me when it is there.")` ends the turn.
-4. **Close.** In the next turn, `speak("I will close my hand now. Please
-   be careful.")`, then `set_gripper("left", "close")`, which says whether
-   the gripper holds something. The line is a courtesy warning. It
-   becomes the safety cue rulebook 2026.2 allows (T:107) only once the
-   robot detects the bag itself ([question 10](#open-questions)).
-5. **Carry.** `speak("I will lift your bag to carry it.")`, then
+3. **Ask once.** `speak("Please hang your bag on my hand.")`. The request
+   does not ask the guest to say when the bag is there, and the turn goes
+   on.
+4. **Hold still.** `wait_for_handover("left")` refuses unless the left arm
+   is in `receive` with the hand open. It sends no goal and holds the hand
+   still for 5 s, a set time the LLM does not choose, then reads the arm
+   and the hand again
+   ([ADR-0059](decisions/0059-wait-with-a-still-open-hand-before-closing.md)).
+5. **Close.** `speak("I will close my hand in 3 seconds. Please be
+   careful.")`, then `set_gripper("left", "close")`, which says whether
+   the gripper holds something. A close in `receive` waits 5 s before its
+   goal is sent, because `speak` returns once the line is published, not
+   once it has played. The close starts after the cue has played, about
+   3 s after the guest hears "in 3 seconds".
+6. **Retry once, silently.** If the gripper holds nothing,
+   `speak("I will open my hand again.")`, `set_gripper("left", "open")`,
+   `wait_for_handover("left")` again, the same close line and the close.
+   The robot does not ask again. After a second miss it goes on without
+   the bag.
+7. **Carry.** `speak("I will lift your bag to carry it.")`, then
    `move_arm_to_pose("carry", "left")`. The arm move stopped the gaze
    loop, so `look_at` the guest again with the handle from the door, then
    guide the guest as before. In slice 1 the bag stays in the hand until
@@ -472,24 +490,34 @@ and the template repeats, and the pass check counts
 
 Why it works this way:
 
-- **The guest says when.** The gripper closes only after the guest's
-  answer, so it does not close on a hand that is still placing the bag.
+- **The robot detects the hand-over itself.** The guest is asked once
+  and never asked to say when the bag is there, or whether it is. The
+  hand waits still and open for a fixed hold, so a guest who is still
+  placing the bag has time, and the close is announced with an interval
+  first. `set_gripper`'s read after the close decides whether the bag is
+  in the hand. Grasp detection cannot start the close, since the
+  commander measures it only on a close.
   walkie-agent-v2 waited instead for joint 4's effort to change by 0.4,
   after asking the guest to press down on the hand. That needs efforts
   from `/joint_states`, which no atomic reads. v2 also went on as if it
-  held the bag when that wait timed out. Rulebook 2026.2 likely penalizes
-  the guest's answer ([Against rulebook 2026.2](#against-rulebook-20262)).
-- **One retry.** If the gripper holds nothing, the robot opens it and asks
-  once more. After a second miss it moves to `carry` empty, says it will
-  go on without the bag, and guides the guest. The template says so, so
-  the LLM does not keep asking. Rulebook 2026.2 takes 25 points for
-  requesting hand-over assistance (S:19), once, since the penalty has no
-  multiplier. The first request plausibly counts already. v2's request to
-  press on the hand was the same kind of request.
-- **No new atomics.** The two arm atomics from
-  [Manipulation](manipulation.md#tools) do it. `move_arm_to_pose` checks
-  the joints after the move, and `set_gripper` reads the fingers after a
-  close and judges it from that read and the commander's `grasped` flag.
+  held the bag when that wait timed out. Ending the hold early on a change
+  of the wrist's effort is kept for later
+  ([question 10](#open-questions)).
+- **One silent retry.** If the gripper holds nothing, the robot opens it,
+  holds it still again and closes again, with no second request. After a
+  second miss it moves to `carry` empty, says it will go on without the
+  bag, and guides the guest. The template says so, so the LLM does not
+  keep trying. The one request is the procedure (T:47), and the retry
+  adds no request for help (S:19), so it gives the referee no second
+  request to stop the task on (G/ContinueRules:72).
+- **One new atomic.** `wait_for_handover` is read-only (effect R): it
+  reads the arms and one finger through `ctx.arms` and sends no goal. The
+  two arm atomics from [Manipulation](manipulation.md#tools) do the rest.
+  `move_arm_to_pose` checks the joints after the move, and `set_gripper`
+  reads the fingers after a close and judges it from that read and the
+  commander's `grasped` flag. `set_gripper` delays a close in `receive`
+  by 5 s. The robot check tunes both times
+  ([ADR-0059](decisions/0059-wait-with-a-still-open-hand-before-closing.md)).
 - **Two new poses** in `config/arm_poses.toml`, both from walkie-agent-v2's
   hand-over:
 
@@ -523,32 +551,33 @@ Why it works this way:
 
 ### Against rulebook 2026.2
 
-The flow above was written for rulebook 2026.1, which already reduced the
-score when the robot asks the guest for help during the hand-over (T:101's
-first two sentences). Rulebook 2026.2 adds the conditions for the full 50
-(T:101-107) and sets the reduction at 25 points (S:19). The flow falls
-short of them in three places:
+Rulebook 2026.1 already reduced the score when the robot asks the guest
+for help during the hand-over (T:101's first two sentences). Rulebook
+2026.2 adds the conditions for the full 50 (T:101-107) and sets the
+reduction at 25 points (S:19). The flow above was rewritten for them
+([ADR-0059](decisions/0059-wait-with-a-still-open-hand-before-closing.md)):
 
-- **The guest's answer plausibly costs 25 points.** The robot should ask
-  for the bag to be handed over (T:47), so the request itself is the
-  procedure. The risk is "tell me when it is there", which has the guest
-  time the close. That reads as asking the guest for help (T:101), so the
-  referee may take the 25 points for requesting hand-over assistance
-  (S:19). T:106 penalizes explicit verbal guidance from the operator, but
-  its example, "Place the item in my gripper, I'll close it in 3…2…1", is
-  in the robot's voice. Read that way, the robot's own placement
-  instruction, "Please hang your bag on my hand", may be penalized too
-  ([question 13](#open-questions)). The safety cue the rulebook allows
-  starts from the robot's own detection of the bag and gives an interval,
-  "I will close my gripper in 3 seconds" (T:107). The template's close
-  line follows the guest's answer instead, and gives no interval:
+- **The guest no longer times the close.** The robot should ask for the
+  bag to be handed over (T:47), so the request itself is the procedure.
+  The earlier flow asked "tell me when it is there", which had the guest
+  time the close and read as asking the guest for help (T:101), so the
+  referee might have taken the 25 points for requesting hand-over
+  assistance (S:19). The request now only asks for the bag, and
+  `wait_for_handover` holds the open hand still, which shows that the
+  robot is ready (T:103).
+- **The cue gives an interval, apart from the request.** The safety cue
+  the rulebook allows gives an interval, "I will close my gripper in 3
+  seconds" (T:107), and the close line now does: "I will close my hand in
+  3 seconds. Please be careful." It comes after the hold, in its own
+  `speak`, not with the request. Together they would be T:106's penalized
+  example, "Place the item in my gripper, I'll close it in 3…2…1".
   `speak` returns once the line is published, not once it is spoken, so
-  the close can start while the line still plays. The pass check enforces
-  the risky flow today: `arm_motion` fails a close that comes before the
-  answer to the bag request.
-- **The retry risks the task.** It adds no second 25, but from the second
-  request for help on, the referee may stop the task
-  (G/ContinueRules:72).
+  `set_gripper` delays a close in `receive` by 5 s, and the close starts
+  after the line has played. Whether the robot's own request still reads
+  as T:106's guidance is [question 13](#open-questions).
+- **The retry asks nothing.** The earlier flow asked once more after an
+  empty close. From the second request for help on, the referee may stop
+  the task (G/ContinueRules:72). The silent retry makes no request.
 - **The hand stays far from the guest's hand.** For the full 50, the
   gripper must be within 10 cm of the guest's hand (T:104). In the
   simulation the guest waits 1.71 m from `door`. With the left arm in
@@ -559,18 +588,14 @@ short of them in three places:
   the bag through a parameter, and no criterion measures the distance
   ([question 11](#open-questions)).
 
-Settled instead, not yet built ([question 10](#open-questions)): a
-hand-over in which the guest does not time the close. The robot asks for
-the bag (T:47) without asking the guest to say when it is there. It opens
-the hand and holds it still in `receive`, which shows that it is ready
-(T:103). After a wait it gives a safety cue and closes, and
-`set_gripper`'s read decides whether the bag is in the hand. Grasp
-detection cannot start the close, since the commander measures it only on
-a close. It is the verdict. A close on a timer alone gives up what the
-guest's answer gives today, a close that does not come on a hand still
-placing the bag, and it may read as a dangerous movement toward the guest
-(T:105). Ending the wait on a change of the wrist's effort would make it a
-close on detection, as T:107's cue has it.
+What the timed hold gives up ([question 10](#open-questions)): the
+guest's answer used to keep the close off a hand still placing the bag.
+A close after a fixed hold has no such guard, and it may read as a
+dangerous movement toward the guest (T:105). The hold of 5 s, the cue
+with its interval, and the close delay are meant to leave the guest time,
+and the robot check tries them with a teammate's hand near the gripper.
+Ending the hold on a change of the wrist's effort would make it a close
+on detection, as T:107's cue has it. It is kept for later.
 
 ## Gaze
 
@@ -980,14 +1005,15 @@ To offer a seat, call find_seats, look_at the free seat you will offer, and
 only then say the offer.
 Take the second guest's bag in your left hand before guiding them. Say a
 line before each arm or gripper move, the move to the carry pose too. Once
-the left arm is in the receive pose, ask for the bag in one wait_for_person
-call, such as "Please hang your bag on my hand, and tell me when it is
-there." Never ask for the bag, or whether it is in your hand, with speak.
-After the answer to that call, say "I will close my hand now. Please be
-careful." and close the hand. If you hold nothing, ask once more the same
-way, then go on without the bag. Keep the bag in the carry pose until the
-end. An arm move stops look_at, so once the bag is in the carry pose,
-look_at the guest again with the same handle.
+the left arm is in the receive pose with the hand open, say
+"Please hang your bag on my hand." with speak, then call wait_for_handover.
+Then say "I will close my hand in 3 seconds. Please be careful." and close
+the hand. If you hold nothing, say "I will open my hand again.", open the
+hand, call wait_for_handover again without asking again, say the same close
+line and close the hand. If you still hold nothing, go on without the bag.
+Never ask whether the bag is in your hand. Keep the bag in the carry pose
+until the end. An arm move stops look_at, so once the bag is in the carry
+pose, look_at the guest again with the same handle.
 Introduce the guests one at a time: look_at one guest, then in one speak
 call tell them the other guest's name and favourite drink, saying the name
 again rather than "he", "she", "his" or "her", such as "Alex, this is
@@ -1011,7 +1037,7 @@ its keywords picks it too, while no todo item is open. The bag step needs
 ([Seeding a Task](../learn/seeding.md#steps-whose-tool-is-not-loaded)).
 
 The run uses no preset. Each step is two to four atomic calls, the
-hand-over about six over two turns, and the first goal is to see how the new agent loop handles a real task. Presets
+hand-over about eight in one turn, and the first goal is to see how the new agent loop handles a real task. Presets
 such as `greet_guest` and `offer_seat` can be promoted from the slice's
 traces once the bundle runtime exists.
 
@@ -1261,27 +1287,34 @@ agent-sim-hri` gives the agent, so both use one pose each.
 - **The bag.** The world has no guest's bag, so an empty close ends near a
   gap of 0 and reads as holding nothing. When the robot asks guest 2 for
   the bag, in a sentence that mentions it and is a question, holds
-  "please", or opens with a request verb, as in "Put your bag on my
-  hand.", the scenario sets the real commander's `grasp_detect_min`
-  parameter to -1 through `/bimanual_commander/set_parameters`. Then it
-  answers "It is on your hand.", and the next close reads as holding the
-  bag. That holds after an open too: a close from open can be measured
+  "please", or opens with a request verb, as in "Please hang your bag on
+  my hand.", the scenario sets the real commander's `grasp_detect_min`
+  parameter to -1 through `/bimanual_commander/set_parameters`, and the
+  next close reads as holding the bag. The guest hangs it silently: the
+  request gets no answer. Nothing waits for the commander, since the
+  close comes only after `wait_for_handover`'s hold and `set_gripper`'s
+  delay, and `bag_hung` is logged once the commander takes the value.
+  That holds after an open too: a close from open can be measured
   before the fingers settle, a few millimetres from `set_gripper`'s own
   read, and `set_gripper` then judges the read by the band the commander
   holds, which it reads back ([Safety](manipulation.md#safety)). The
-  answer waits until the commander has taken the value, for at most 2 s.
-  After that it goes out first, the log has `bag_unconfirmed`, and the
-  hang still lands when the commander takes it. The commander
-  runs in the simulation, started with `launch/commander_sim.launch.py`.
-  `config/scenarios/hri_early_bag.yaml` (`pixi run
-  hri-scenario-early-bag`) answers the first request without hanging the
-  bag, so the first close reads empty, and the second request hangs it.
+  commander runs in the simulation, started with
+  `launch/commander_sim.launch.py`.
+  `config/scenarios/hri_missed_bag.yaml` (`pixi run
+  hri-scenario-missed-bag`) has the first request hang nothing
+  (`bag.miss_first`), so the first close reads empty. The guest hangs the
+  bag on the silent retry instead. Once the left hand has read open and
+  then closed after that request, the next time it reads open with the
+  left arm in `receive`, the scenario hangs the bag and logs
+  `hand_reopened`. It reads the hand from `/joint_states` at 10 Hz, by
+  the finger's travel against the open position and the arm's pose. A
+  second request would hang the bag too, but the pass check counts it
+  over the allowance.
   On a reset (`/walkie/reset`) and on exit, the parameter goes back to the
   value read at start. The scenario sends the commander one request at a
   time, and sends a failed or unanswered one again until the commander
   holds the value wanted (`bag_retry`). Without a commander, or when the
-  commander refuses it, the hang is logged as skipped, and the guest still
-  answers. A hang while the commander still holds -1, as after a restore
+  commander refuses it, the hang is logged as skipped. A hang while the commander still holds -1, as after a restore
   it refused, is logged at once as `bag_hung` with `already_held`. On
   exit, the restore gets 2 s from when it can first go out, once a
   request in flight is answered or dropped at its 2 s timeout. So the
@@ -1366,13 +1399,16 @@ simulation's clock, so their times compare directly. A run passes when:
 - no robot line says "he", "she", "him", "her", "his", "hers", "himself"
   or "herself", as whole words in any case, since the robot cannot know a
   guest's pronouns. "They" is not checked;
-- the only questions are the four essential ones and the hand-over
-  request, plus one repeat after the mumble, and one more hand-over
-  request in the early-answer variant;
+- the only questions are the four essential ones and one hand-over
+  request, plus one repeat after the mumble. The missed-bag variant
+  allows no second request, since its retry asks nothing;
 - the robot speaks before every arm motion, with a `speak` or
   `wait_for_person` call since the previous arm or gripper call, a failed
-  one included since it may have moved, and
-  closes the gripper only after the guest's answer;
+  one included since it may have moved. `wait_for_handover` neither needs
+  a line nor counts as one. Each left close comes after a bag request,
+  and after an ok left `wait_for_handover` that started and ended since
+  the later of the run's start and the last left open, so the retry
+  holds the hand again;
 - the left gripper holds the bag before the second guest is guided;
 - no drive is refused because an arm is out, judged from the agent's
   record of its tool calls;
@@ -1587,8 +1623,11 @@ repository:
 5. **Whether `grasped` sees a bag's handles.** Handles are thin and soft.
    The fingers may close almost fully on them, below the commander's
    detection band, so `grasped` reads false while the bag hangs in the
-   hand. The robot then asks again and loses points. Recommended: try bags
-   with thin and thick handles while the band is calibrated
+   hand. The robot then takes the close as empty: it opens the hand again
+   with the bag hanging on it, which may let the bag fall, holds still and
+   closes again, with no second request. After a second empty read it goes
+   on without the bag. Recommended: try bags with thin and thick handles
+   while the band is calibrated
    ([Manipulation](manipulation.md#safety)). If thin handles read as
    empty, judge the hand-over by the gripper's effort on `/joint_states`
    instead. The self-detected hand-over of [question 10](#open-questions)
@@ -1644,10 +1683,10 @@ repository:
     run on main's MuJoCo stack with a local checkout of the branch.
 
 10. **What starts the close in the hand-over.** The robot should ask for
-    the bag to be handed over (T:47). Today the guest also says when the
-    bag is in the hand, which rulebook 2026.2 plausibly penalizes by 25
-    points (T:101, T:106,
-    [Against rulebook 2026.2](#against-rulebook-20262)). The options:
+    the bag to be handed over (T:47). The earlier flow also had the guest
+    say when the bag was in the hand, which rulebook 2026.2 plausibly
+    penalizes by 25 points (T:101, T:106,
+    [Against rulebook 2026.2](#against-rulebook-20262)). The options were:
     - **A hand-over the robot detects itself.** The robot asks for the
       bag without asking the guest to say when it is there, opens the
       left hand and moves it to `receive`. A new atomic,
@@ -1655,28 +1694,33 @@ repository:
       refuses unless that arm is in `receive` with its gripper open. Then
       the robot gives a safety cue, closes, and `set_gripper`'s read
       decides. A close on that timer alone gives up the guarantee the
-      guest's answer gives today, that the gripper does not close on a
-      hand still placing the bag, and it may read as a dangerous movement
+      guest's answer gave, that the gripper does not close on a hand
+      still placing the bag, and it may read as a dangerous movement
       toward the guest (T:105). A later robot change could end the wait
       early on a change of the wrist's effort on `/joint_states`, which
       `/get_joint_states` and MuJoCo do not give. That early end is what
       would make the cue T:107's, a cue given once the robot detects the
-      bag. It needs the atomic, a scenario guest who hangs the bag
-      without answering, and a changed `arm_motion` criterion, and it may
-      conflict with the capability layer's `ctx.arms`. It plausibly avoids
-      the 25, pending [question 13](#open-questions).
+      bag. It plausibly avoids the 25, pending
+      [question 13](#open-questions).
     - **An offer in one `wait_for_person` call,** such as "May I carry
       your bag for you?", and the close after the answer. It is cheap, but
       the guest's answer still times the close.
-    - **The current flow,** which plausibly loses the 25.
+    - **The earlier flow,** which plausibly loses the 25.
 
     Also open was whether a miss is tried once more, opening the hand and
     waiting again with no spoken request, or not at all. A silent retry
     asks for nothing, so it is no second request for help
     (G/ContinueRules:72).
 
-    Settled: the self-detected hand-over, with one silent retry. Not yet
-    built. Blocks: the full 50 for the hand-over, not a sim run.
+    Settled: the self-detected hand-over, with one silent retry. Built
+    (sim)
+    ([ADR-0059](decisions/0059-wait-with-a-still-open-hand-before-closing.md)):
+    `wait_for_handover` reads the finger through `ctx.arms.finger`,
+    `set_gripper` delays a close in `receive`, the scenario's guest hangs
+    the bag without answering, and `arm_motion` wants a hold before each
+    close. The wrist-effort early end is kept for later. Still open: the
+    robot check of the hold and the close delay with a teammate's hand.
+    Blocks: nothing in sim.
 
 11. **Reaching within 10 cm of the guest's hand.** The gripper must be
     within 10 cm of the guest's hand (T:104), but the robot should not
@@ -1713,8 +1757,10 @@ repository:
     the signal. Blocks: a run in the arena, not in sim.
 
 13. **Questions for the Technical Committee.**
-    - Whether a close the guest times ("tell me when it is there") counts
-      as requesting hand-over assistance (S:19, T:101).
+    - Answered by design: whether a close the guest times ("tell me when
+      it is there") counts as requesting hand-over assistance (S:19,
+      T:101). The guest no longer times the close
+      ([question 10](#open-questions)), so it need not be asked.
     - Whether T:106's example, "Place the item in my gripper, I'll close
       it in 3…2…1", is the robot speaking. If it is, a placement
       instruction from the robot, such as "Please hang your bag on my
@@ -1731,8 +1777,8 @@ repository:
       glance at the other guest while saying their name, which T:63
       allows.
 
-    Recommended: ask all four before the setup days. Blocks: nothing in
-    sim.
+    Recommended: ask the other three before the setup days. Blocks:
+    nothing in sim.
 
 ## Decisions
 
@@ -1746,3 +1792,7 @@ decisions work.
 ??? note "ADR-0053: Follow the host through Nav2's FollowPoint tree, ranged by the 2D lidar · Proposed"
 
     --8<-- "architecture/decisions/0053-follow-through-nav2-followpoint.md:body"
+
+??? note "ADR-0059: Wait with a still, open hand before closing on a hand-over · Proposed"
+
+    --8<-- "architecture/decisions/0059-wait-with-a-still-open-hand-before-closing.md:body"

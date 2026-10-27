@@ -617,6 +617,40 @@ def test_a_close_is_judged_by_where_the_fingers_settle(make_arms):
     assert (wide.result.success, wide.result.grasped) == (False, True)
 
 
+def test_finger_reads_where_each_gripper_settled_and_sends_nothing(make_arms):
+    side = make_arms()
+    side.hold("right", width=0.025)
+    arms = side.ctx.arms
+
+    # Both grippers start open.
+    assert arms.finger("left") == pytest.approx(0.044, abs=1e-6)
+    assert arms.finger("right") == pytest.approx(0.044, abs=1e-6)
+    arms.gripper("left", "close")
+    arms.gripper("right", "close")
+    assert arms.finger("left") == pytest.approx(0.0, abs=1e-6)
+    assert arms.finger("right") == pytest.approx(0.025, abs=1e-6)
+    arms.gripper("left", "open")
+    assert arms.finger("left") == pytest.approx(0.044, abs=1e-6)
+    assert side.steps == ["gripper.goal"] * 3
+
+
+def test_finger_fails_as_a_read_of_the_joints_does(make_arms):
+    side = make_arms()
+    side.fault("read_failure", "MoveIt has no robot state")
+
+    err = error_of(side.ctx.arms.finger, "left")
+    assert (err.code, err.message) == (
+        "UNAVAILABLE",
+        "The commander could not read the joints of left_gripper: MoveIt has no robot state",
+    )
+
+    side.fault("read_failure", None)
+    side.ctx.cancel.set()
+    err = error_of(side.ctx.arms.finger, "left")
+    assert (err.code, err.message) == ("CANCELLED", "A stop or a reset interrupted the call.")
+    assert side.steps == []
+
+
 def test_a_goal_given_up_on_refuses_every_call_until_its_end_is_known(make_arms, monkeypatch):
     monkeypatch.setattr(_arm, "CONFIG", dataclasses.replace(_arm.CONFIG, gripper_timeout_s=0.5))
     side = make_arms()
@@ -1489,7 +1523,8 @@ def test_set_gripper_close_runs_on_fake_ctx():
         "Closed the left gripper. It is holding something. Arms: safe for driving."
     )
     assert out.holding == {"left": True}
-    assert robot.calls == ["arms.gripper", "arms.state"]
+    # The first read asks whether the left arm is in receive, for the close delay.
+    assert robot.calls == ["arms.state", "arms.gripper", "arms.state"]
     assert robot.gaze.stops == []
 
 

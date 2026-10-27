@@ -28,6 +28,18 @@ The commander reports `grasped` and the gap only on a close; on an open or
 "half" it reports false and 0.0 whatever the fingers did, so those are never
 read (CommanderClient returns None for them). ctx.arms.gripper() makes these
 judgements (_arm.RosArms.gripper), and this atomic words them.
+
+A close of a gripper whose arm reads the receive pose waits
+RECEIVE_CLOSE_DELAY_S before its goal is sent. That close follows the spoken
+cue of a hand-over, and speak returns once the line is published, not once it
+has played, so a close sent at once would start while the cue still plays
+(ADR-0059). The wait runs on ctx.clock and ends at once on a stop or a reset,
+with no goal sent. The pose comes from the client's memory, and a close
+reads the arms first only when that memory does not know where its arm is
+and the arms are verified. While they are unverified a read would recover
+them, which get_arm_state and the drive check do, so the close takes the
+memory alone, and its goal is then refused as every goal is. Opens, "half",
+and closes in any other pose are sent at once.
 """
 
 from typing import Literal
@@ -38,14 +50,22 @@ from walkie_agent.arm.poses import ARMS, BOTH
 from walkie_agent.toolbox import Effect, StepError, ToolContext, ToolMeta, ToolOutput
 from walkie_agent.tools.atomic import _arm as shared
 
+# The pose a guest hands the robot an object in, and how long a close there
+# waits before its goal is sent. The cue "I will close my hand in 3 seconds."
+# says its interval about 1.5 s into a line of about 3 s, and the first audio
+# comes a fraction of a second after the publish; the robot check tunes it.
+RECEIVE_POSE = "receive"
+RECEIVE_CLOSE_DELAY_S = 5.0
+
 META = ToolMeta(
     name="set_gripper",
     description=(
         "Open, half open or close the gripper of one arm or both. arm is left, right or "
         "both; state is open, half or close. After a close, the answer says whether the "
         "gripper is holding something, or that it could not tell. Close only once the "
-        "object is between the fingers, such as after the person says the bag is in your "
-        "hand. Tell the person before the gripper moves."
+        "object is between the fingers, such as after wait_for_handover. A close in the "
+        f"receive pose starts {RECEIVE_CLOSE_DELAY_S:g} s after the call, so say the close "
+        "line right before it. Tell the person before the gripper moves."
     ),
     effects=frozenset({Effect.M}),
     questions=(
@@ -82,6 +102,18 @@ class Out(ToolOutput):
 
 def run(ctx: ToolContext, args: Args) -> Out:
     arms = ARMS if args.arm == BOTH else (args.arm,)
+    if args.state == "close" and _in_receive(ctx, arms):
+        try:
+            ctx.sleep(RECEIVE_CLOSE_DELAY_S)
+        except StepError as e:
+            if e.code != "CANCELLED":
+                raise
+            which = "both grippers" if len(arms) == len(ARMS) else f"the {args.arm} gripper"
+            raise StepError(
+                "CANCELLED",
+                f"Stopped by reset before {which} moved. "
+                f"{shared.state_sentence(ctx.arms.state(read=False))}",
+            ) from None
     holding: dict[str, bool | None] = {}
     # One sentence per gripper that finished, in arm order.
     done: list[str] = []
@@ -147,6 +179,22 @@ def run(ctx: ToolContext, args: Args) -> Out:
             "SKILL_FAILED", text, {"arm": args.arm, "state": args.state, "holding": holding}
         )
     return Out(summary=text, arm=args.arm, state=args.state, holding=holding)
+
+
+def _in_receive(ctx: ToolContext, arms: tuple[str, ...]) -> bool:
+    """Whether one of `arms` reads the receive pose, by the client's memory or a read.
+
+    The arms are read only when the memory does not know one of `arms` and
+    they are verified. A read while they are unverified would recover them,
+    and the close must then be refused, as every goal is.
+    """
+    report = ctx.arms.state(read=False)
+    if report.unverified is None and any(report.arms.arm(arm) is None for arm in arms):
+        report = ctx.arms.state(read=True)
+    return any(
+        (state := report.arms.arm(arm)) is not None and state.pose == RECEIVE_POSE
+        for arm in arms
+    )
 
 
 def _moved(state: str, which: str) -> str:

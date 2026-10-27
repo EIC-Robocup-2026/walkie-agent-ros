@@ -126,14 +126,22 @@ from walkie_agent.tasks import load_task_templates
 from walkie_agent.todo import TodoItem
 from walkie_agent.tool_log import CURRENT_CALL, ToolLog, hand_out, mark_run
 from walkie_agent.toolbox import HandleStore, Pose2D, ToolContext, ToolOutput
-from walkie_agent.tools.atomic import find_people, move_arm_to_pose, remember_person, set_gripper
+from walkie_agent.tools.atomic import (
+    find_people,
+    move_arm_to_pose,
+    remember_person,
+    set_gripper,
+    wait_for_handover,
+)
 from walkie_agent.tools.atomic.find_people import FACE_SEEN, NO_FACE
+from walkie_agent.tools.atomic.set_gripper import RECEIVE_CLOSE_DELAY_S
+from walkie_agent.tools.atomic.wait_for_handover import HOLD_S
 from walkie_agent.tools.navigation import ROBOT_FRAME as NAVIGATION_ROBOT_FRAME
 from walkie_agent.tools.navigation import _arms_not_safe
 
 SCENARIOS = PROJECT_ROOT / "config" / "scenarios"
 DEFAULT_FILE = SCENARIOS / "hri.yaml"
-EARLY_BAG_FILE = SCENARIOS / "hri_early_bag.yaml"
+MISSED_BAG_FILE = SCENARIOS / "hri_missed_bag.yaml"
 LOCATIONS_FILE = PROJECT_ROOT / "config" / "locations.chula_pat14_6.toml"
 
 # The poses of config/locations.chula_pat14_6.toml that the geometry below
@@ -420,13 +428,14 @@ def test_a_line_that_asks_nothing_gets_no_answer(text):
     assert scenario.person("guest1").state == AT_DOOR
 
 
-def test_the_bag_owners_request_hangs_the_bag_and_gets_its_answer():
+def test_the_bag_owners_request_hangs_the_bag_and_gets_no_answer():
     scenario, clock = make_scenario()
     seat(scenario, "sofa.middle")
     clock.advance(5.0)
-    text = "Could you hand me your bag, please?"
+    # The answers still due from guiding guest 1 go out first.
+    scenario.tick()
 
-    step = scenario.robot_said(text)
+    step = scenario.robot_said("Please hang your bag on my hand.")
 
     assert step.bag == HANG
     assert of_type(step.events, "bag_request") == [
@@ -436,15 +445,31 @@ def test_the_bag_owners_request_hangs_the_bag_and_gets_its_answer():
             "guest": "guest2",
             "count": 1,
             "hang": True,
-            "early_answer": False,
+            "miss_first": False,
         }
     ]
-    [answer] = [a for a in scenario.tick(clock.t + 1.0).answers if a.to == text]
-    assert (answer.text, answer.guest, answer.asks) == ("It is on your hand.", "guest2", (BAG,))
+    # The guest hangs the bag silently: no answer, and no extra question.
+    assert types(step) == ["robot_line", "bag_request"]
+    assert scenario.tick(clock.t + 5.0).answers == ()
     # Every request of the owner asks for the hang; the node skips it while the bag hangs.
     step = scenario.robot_said("Please give me your bag.")
     assert step.bag == HANG
     assert of_type(step.events, "bag_request")[0]["count"] == 2
+    assert scenario.tick(clock.t + 10.0).answers == ()
+
+
+def test_the_templates_bag_lines_ask_for_the_bag_once_and_nothing_else():
+    task = load_task_templates(PROJECT_ROOT / "config" / "task_templates.toml")["hri"].task
+    request = "Please hang your bag on my hand."
+    cue = "I will close my hand in 3 seconds. Please be careful."
+    reopen = "I will open my hand again."
+
+    assert all(f'"{line}"' in task for line in (request, cue, reopen))
+    # The request is a bag request, and no question: it starts no talk.
+    assert classify_line(request) == Line(question=False, asks=(BAG,), seat=False)
+    # The cue and the reopen line ask nothing, so the retry makes no request.
+    assert classify_line(cue) == Line(question=False, asks=(), seat=False)
+    assert classify_line(reopen) == Line(question=False, asks=(), seat=False)
 
 
 def test_a_bag_request_to_a_guest_without_the_bag_is_an_extra_question():
@@ -853,22 +878,74 @@ def test_only_the_hri_templates_introduction_item_fires_the_swap():
     assert switch["item"] == f"t{len(contents)}"
 
 
-def test_the_early_bag_variant_hangs_the_bag_only_on_the_second_request():
-    scenario, clock = make_scenario(EARLY_BAG_FILE)
+def test_the_missed_bag_variant_hangs_the_bag_on_the_hand_reopened_after_the_first_close():
+    scenario, clock = make_scenario(MISSED_BAG_FILE)
+    seat(scenario, "sofa.middle")
+    # Before any request, the hand does nothing.
+    assert scenario.left_hand(False, True).bag is None
+    assert scenario.left_hand(True, True).bag is None
+
+    first = scenario.robot_said("Please hang your bag on my hand.")
+
+    assert first.bag is None
+    [request] = of_type(first.events, "bag_request")
+    assert (request["count"], request["hang"], request["miss_first"]) == (1, False, True)
+    # Still open in receive, during the hold: the bag is not hung yet.
+    assert scenario.left_hand(True, True).bag is None
+    # The first close reads empty, and the hand is opened outside receive.
+    assert scenario.left_hand(False, True).events == ()
+    assert scenario.left_hand(True, False).bag is None
+    # Opened in receive for the silent retry: the guest hangs the bag.
+    clock.advance(3.0)
+    reopened = scenario.left_hand(True, True)
+    assert reopened.bag == HANG
+    assert reopened.events == (
+        {"type": "hand_reopened", "t": clock.t, "guest": "guest2"},
+    )
+    # Once only: the second close holds the bag, and a later open hangs nothing.
+    assert scenario.left_hand(False, True).bag is None
+    assert scenario.left_hand(True, True).bag is None
+    assert [a for a in scenario.tick(clock.t + 5.0).answers if a.guest == "guest2"] == []
+
+
+def test_a_hand_still_closed_at_the_missed_request_is_not_taken_for_the_empty_close():
+    # The simulation's grippers start closed: the hand must open, then close.
+    scenario, _ = make_scenario(MISSED_BAG_FILE)
+    seat(scenario, "sofa.middle")
+    scenario.robot_said("Please hang your bag on my hand.")
+
+    # Closed, then opened in receive: the first hold, not the retry.
+    assert scenario.left_hand(False, True).bag is None
+    assert scenario.left_hand(True, True).bag is None
+    # The empty close, then the reopen in receive: the retry hangs the bag.
+    assert scenario.left_hand(False, True).bag is None
+    assert scenario.left_hand(True, True).bag == HANG
+
+
+def test_without_miss_first_the_hand_hangs_nothing():
+    scenario, _ = make_scenario()
     seat(scenario, "sofa.middle")
 
-    first = scenario.robot_said("Could you hand me your bag, please?")
-    second = scenario.robot_said("Could you hand me your bag again, please?")
+    assert scenario.robot_said("Please hang your bag on my hand.").bag == HANG
 
-    assert first.bag is None and second.bag == HANG
-    requests = of_type(first.events, "bag_request") + of_type(second.events, "bag_request")
-    assert [(r["count"], r["hang"], r["early_answer"]) for r in requests] == [
-        (1, False, True),
-        (2, True, True),
-    ]
-    # Both are answered: the first close then reads empty, and the second holds the bag.
-    answers = [a for a in scenario.tick(clock.t + 1.0).answers if a.guest == "guest2"]
-    assert [a.text for a in answers] == ["It is on your hand."] * 2
+    for is_open in (False, True, False, True):
+        step = scenario.left_hand(is_open, True)
+        assert (step.bag, step.events) == (None, ())
+
+
+def test_a_second_request_in_the_missed_bag_variant_hangs_the_bag_in_place_of_the_retry():
+    scenario, _ = make_scenario(MISSED_BAG_FILE)
+    seat(scenario, "sofa.middle")
+    scenario.robot_said("Please hang your bag on my hand.")
+    scenario.left_hand(False, True)
+
+    second = scenario.robot_said("Please hang your bag on my hand.")
+
+    assert second.bag == HANG
+    [request] = of_type(second.events, "bag_request")
+    assert (request["count"], request["hang"]) == (2, True)
+    # The reopened hand need not hang it again.
+    assert scenario.left_hand(True, True).bag is None
 
 
 def test_a_reset_drops_the_answers_not_sent_and_restores_the_bag():
@@ -1433,17 +1510,17 @@ def test_the_scenarios_door_and_living_room_are_the_locations_files():
     assert (scenario.door, scenario.living_room) == (DOOR, LIVING_ROOM)
 
 
-def test_the_early_bag_file_differs_from_the_default_only_in_early_answer():
-    default, early = read_yaml(DEFAULT_FILE), read_yaml(EARLY_BAG_FILE)
+def test_the_missed_bag_file_differs_from_the_default_only_in_miss_first():
+    default, missed = read_yaml(DEFAULT_FILE), read_yaml(MISSED_BAG_FILE)
 
-    assert (default["bag"]["early_answer"], early["bag"]["early_answer"]) == (False, True)
-    early["bag"]["early_answer"] = False
-    assert early == default
+    assert (default["bag"]["miss_first"], missed["bag"]["miss_first"]) == (False, True)
+    missed["bag"]["miss_first"] = False
+    assert missed == default
     # The comments too: each file reads on its own.
-    lines = [p.read_text(encoding="utf-8").splitlines() for p in (DEFAULT_FILE, EARLY_BAG_FILE)]
+    lines = [p.read_text(encoding="utf-8").splitlines() for p in (DEFAULT_FILE, MISSED_BAG_FILE)]
     assert len(lines[0]) == len(lines[1])
     assert [(a, b) for a, b in zip(*lines) if a != b] == [
-        ("bag: {early_answer: false}", "bag: {early_answer: true}")
+        ("bag: {miss_first: false}", "bag: {miss_first: true}")
     ]
 
 
@@ -2586,7 +2663,15 @@ def test_after_close_no_callback_calls_into_the_scenario(idle_node, monkeypatch)
     node = idle_node.node
     node.close()
     called: list[str] = []
-    for name in ("robot_pose", "robot_said", "todos_changed", "reset", "tick", "scene"):
+    for name in (
+        "robot_pose",
+        "robot_said",
+        "todos_changed",
+        "reset",
+        "tick",
+        "left_hand",
+        "scene",
+    ):
         monkeypatch.setattr(
             node.scenario, name, lambda *_args, _name=name, **_kwargs: called.append(_name)
         )
@@ -2601,30 +2686,73 @@ def test_after_close_no_callback_calls_into_the_scenario(idle_node, monkeypatch)
     assert scene == Scene()
 
 
-def test_a_bag_request_skipped_while_a_hang_is_pending_keeps_the_answers_waiting(
-    make_idle_node, monkeypatch
-):
-    # Far beyond the test's run, so the wait cannot end at its deadline.
-    monkeypatch.setattr(hri_scenario, "HANG_WAIT_S", 60.0)
+def test_a_hang_still_pending_holds_back_no_answer(make_idle_node, monkeypatch):
     idle = make_idle_node(bag={"owner": "guest1"}, answers={"delay": 0.1, "mumble_once": None})
     node = idle.node
     clock = FakeClock(node._now())
     monkeypatch.setattr(node, "_now", clock)
-    # The second request's hang is skipped at once, as when the commander
-    # went away while the first one's was still pending.
+    # A commander that has not taken the hang yet.
     pending = threading.Event()
-    monkeypatch.setattr(node, "_grasp", StubGrasp(pending, None))
-    node._on_to_human(HRIMessage(text="Could you hand me your bag, please?"))
-    node._on_to_human(HRIMessage(text="Please give me your bag."))
+    monkeypatch.setattr(node, "_grasp", StubGrasp(pending))
+    node._on_to_human(HRIMessage(text="Please hang your bag on my hand."))
+    node._on_to_human(HRIMessage(text="What is your name?"))
     clock.advance(0.5)
 
     node._on_tick()
 
-    assert of_type(idle.records(), "answer") == []
-    pending.set()
-    node._on_tick()
+    # The request gets no answer, and the next question's answer does not wait for the hang.
     answers = of_type(idle.records(), "answer")
-    assert [a["text"] for a in answers] == ["It is on your hand."] * 2
+    assert [a["text"] for a in answers] == ["My name is Sam."]
+    assert of_type(idle.records(), "bag_request")[0]["hang"] is True
+
+
+def joint_states(node: HriScenarioNode, pose: str, finger: float) -> JointState:
+    """Both arms' joints with the left arm in `pose` and the right at home, and the left finger."""
+    poses = load_arm_poses().poses
+    joints = {**poses["home"].tables["left"], **poses["home"].tables["right"]}
+    joints.update(poses[pose].tables["left"])
+    joints[node._fingers["left"]] = finger
+    return JointState(name=list(joints), position=list(joints.values()))
+
+
+def test_the_tick_hangs_the_missed_bag_once_the_left_hand_reopens_in_receive(
+    make_idle_node, monkeypatch
+):
+    idle = make_idle_node(bag={"owner": "guest1", "miss_first": True})
+    node = idle.node
+    clock = FakeClock(node._now())
+    monkeypatch.setattr(node, "_now", clock)
+    monkeypatch.setattr(node, "_grasp", InstantGrasp(node._record))
+    grippers = load_arm_poses().grippers
+    # No finger reading yet: the hand reads neither open nor closed.
+    node._on_to_human(HRIMessage(text="Please hang your bag on my hand."))
+    node._on_tick()
+    assert of_type(idle.records(), "bag_request")[0]["hang"] is False
+
+    # The simulation's gripper starts closed and opens in receive; the first
+    # close reads empty; then the hand opens outside receive, and in it.
+    for pose, finger in (
+        ("home", 0.0),
+        ("receive", grippers.open_position),
+        ("receive", 0.0),
+        ("home", grippers.open_position),
+        ("receive", grippers.open_position - 0.002),
+    ):
+        node._on_joint_states(joint_states(node, pose, finger))
+        clock.advance(STATE_PERIOD_S)
+        node._on_tick()
+
+    found = [r["type"] for r in idle.records()]
+    assert found.count("hand_reopened") == 1 and found.count("bag_hung") == 1
+    assert found.index("hand_reopened") < found.index("bag_hung")
+    reopened = idle.records()[found.index("hand_reopened")]
+    assert (reopened["t"], reopened["guest"]) == (round(clock.t, 3), "guest1")
+    # The next close and open hang nothing more.
+    for finger in (0.0, grippers.open_position):
+        node._on_joint_states(joint_states(node, "receive", finger))
+        clock.advance(STATE_PERIOD_S)
+        node._on_tick()
+    assert [r["type"] for r in idle.records()].count("bag_hung") == 1
 
 
 def test_until_tf_has_the_robot_the_node_logs_once_that_it_waits_for_amcl(make_rig, caplog):
@@ -2673,19 +2801,21 @@ def test_the_latched_todo_list_is_logged(make_rig):
     assert rig.wait_for("todos")["items"] == items
 
 
-def test_a_bag_request_hangs_the_bag_before_its_answer_and_a_reset_restores_it(make_rig):
+def test_a_bag_request_hangs_the_bag_with_no_answer_and_a_reset_restores_it(make_rig):
     rig = make_rig(bag={"owner": "guest1"})
     commander = rig.wait_for("commander")
     assert commander["node"] == rig.topics.commander
     assert commander["grasp_detect_min"] == GRASP_DETECT_MIN
 
-    rig.say("Could you hand me your bag, please?")
+    rig.say("Please hang your bag on my hand.")
 
-    rig.wait_for_answer("It is on your hand.")
+    assert rig.wait_for("bag_hung")["value"] == HUNG_VALUE
     assert rig.commander_value() == HUNG_VALUE
     found = [r["type"] for r in rig.records()]
-    assert found.index("bag_request") < found.index("bag_hung") < found.index("answer")
-    assert rig.find("bag_hung")["value"] == HUNG_VALUE
+    assert found.index("bag_request") < found.index("bag_hung")
+    # The guest hangs it silently.
+    assert not wait_until(lambda: rig.answers, timeout=0.5)
+    assert "answer" not in [r["type"] for r in rig.records()]
 
     rig.reset_pub.publish(Empty())
 
@@ -2695,7 +2825,7 @@ def test_a_bag_request_hangs_the_bag_before_its_answer_and_a_reset_restores_it(m
     assert rig.commander_value() == GRASP_DETECT_MIN
 
 
-def test_the_bag_answer_waits_for_a_commander_slower_than_the_answer_delay(make_rig):
+def test_a_commander_slower_than_the_answer_delay_holds_back_no_answer(make_rig):
     rig = make_rig(bag={"owner": "guest1"})
     rig.wait_for("commander")
     # The commander takes the hang only once the test lets it, long after
@@ -2708,22 +2838,28 @@ def test_the_bag_answer_waits_for_a_commander_slower_than_the_answer_delay(make_
 
     rig.commander.add_on_set_parameters_callback(held)
 
-    said = rig.say("Could you hand me your bag, please?")["t"]
+    said = rig.say("Please hang your bag on my hand.")["t"]
+    rig.say("What is your name?")
 
-    assert not wait_until(lambda: rig.answers, timeout=0.5)
-    # The robot's state is still logged at 10 Hz while the answer waits.
-    assert len([r for r in of_type(rig.records(), "state") if r["t"] > said]) >= 3
+    # The next question's answer goes out while the hang waits.
+    rig.wait_for_answer("My name is Sam.")
+    # The robot's state is still logged at 10 Hz meanwhile.
+    assert wait_until(
+        lambda: len([r for r in of_type(rig.records(), "state") if r["t"] > said]) >= 3
+    )
+    assert rig.find("bag_hung") is None
     gate.set()
-    rig.wait_for_answer("It is on your hand.")
+    rig.wait_for("bag_hung")
     found = [r["type"] for r in rig.records()]
-    assert found.index("bag_hung") < found.index("answer")
+    assert found.index("answer") < found.index("bag_hung")
+    assert [a.text for a in rig.answers] == ["My name is Sam."]
 
 
 def test_closing_restores_the_hung_bag_and_ends_the_log(make_rig):
     rig = make_rig(bag={"owner": "guest1"})
     rig.wait_for("commander")
-    rig.say("Could you hand me your bag, please?")
-    rig.wait_for_answer("It is on your hand.")
+    rig.say("Please hang your bag on my hand.")
+    rig.wait_for("bag_hung")
 
     rig.node.close()
 
@@ -2733,11 +2869,12 @@ def test_closing_restores_the_hung_bag_and_ends_the_log(make_rig):
     restored = records[found.index("bag_restored")]
     assert (restored["value"], restored["cause"]) == (GRASP_DETECT_MIN, "exit")
     assert rig.commander_value() == GRASP_DETECT_MIN
-    # The node still spins, but a bag request after the end hangs nothing
-    # and gets no answer, and nothing comes after the end.
-    rig.publish_line("Could you hand me your bag, please?")
+    # The node still spins, but a question after the end gets no answer, a
+    # bag request hangs nothing, and nothing comes after the end.
+    rig.publish_line("What is your name?")
+    rig.publish_line("Please hang your bag on my hand.")
     assert not wait_until(
-        lambda: len(rig.answers) > 1 or rig.commander_value() != GRASP_DETECT_MIN, timeout=0.5
+        lambda: rig.answers or rig.commander_value() != GRASP_DETECT_MIN, timeout=0.5
     )
     assert rig.records() == records
 
@@ -2833,17 +2970,15 @@ def test_closing_just_after_a_hang_whose_answer_was_lost_still_restores_the_bag(
     assert rig.commander_value() == GRASP_DETECT_MIN
 
 
-def test_a_second_bag_request_while_the_hang_is_pending_waits_for_the_same_hang(
-    make_rig, monkeypatch
-):
-    # Beyond the test's run, so the wait cannot end at its deadline on a slow machine.
-    monkeypatch.setattr(hri_scenario, "HANG_WAIT_S", 10.0)
+def test_a_second_bag_request_while_the_hang_is_pending_sends_the_same_hang(make_rig):
     rig = make_rig(bag={"owner": "guest1"})
     rig.wait_for("commander")
     # The commander takes the hang only once the test lets it.
     gate = threading.Event()
+    sets: list[Any] = []
 
-    def held(_parameters) -> SetParametersResult:
+    def held(parameters) -> SetParametersResult:
+        sets.extend(parameter.value for parameter in parameters)
         gate.wait(5.0)
         return SetParametersResult(successful=True)
 
@@ -2852,55 +2987,29 @@ def test_a_second_bag_request_while_the_hang_is_pending_waits_for_the_same_hang(
 
     rig.say("Please give me your bag.")
 
-    assert not wait_until(lambda: rig.answers, timeout=0.5)
-    gate.set()
-    assert wait_until(lambda: len(rig.answers) == 2)
-    found = [r["type"] for r in rig.records()]
-    assert found.count("bag_hung") == 1 and found.count("answer") == 2
-    assert found.index("bag_hung") < found.index("answer")
-    assert "bag_skipped" not in found and "bag_unconfirmed" not in found
-
-
-def test_a_hang_not_taken_by_the_deadline_is_unconfirmed_and_still_lands(make_rig, monkeypatch):
-    monkeypatch.setattr(hri_scenario, "HANG_WAIT_S", 0.3)
-    rig = make_rig(bag={"owner": "guest1"})
-    rig.wait_for("commander")
-    gate = threading.Event()
-
-    def held(_parameters) -> SetParametersResult:
-        gate.wait(5.0)
-        return SetParametersResult(successful=True)
-
-    rig.commander.add_on_set_parameters_callback(held)
-
-    rig.say("Could you hand me your bag, please?")
-
-    unconfirmed = rig.wait_for("bag_unconfirmed")
-    assert unconfirmed["waited_s"] >= 0.3
-    assert unconfirmed["reason"] == (
-        f"{rig.topics.commander} had not taken the hang within 0.3 s, so the answer went out first"
-    )
-    rig.wait_for_answer("It is on your hand.")
-    # The hang is still wanted, and is logged once the commander takes it.
     gate.set()
     rig.wait_for("bag_hung")
     found = [r["type"] for r in rig.records()]
-    assert found.index("bag_unconfirmed") < found.index("answer") < found.index("bag_hung")
+    assert found.count("bag_request") == 2 and found.count("bag_hung") == 1
+    assert sets == [HUNG_VALUE]
+    # Neither request gets an answer.
+    assert not wait_until(lambda: rig.answers, timeout=0.5)
+    assert "bag_skipped" not in found and "answer" not in found
     assert rig.commander_value() == HUNG_VALUE
 
 
-def test_without_a_commander_the_bag_is_skipped_and_still_answered(make_rig):
+def test_without_a_commander_the_bag_is_skipped_with_no_answer(make_rig):
     rig = make_rig(commander=None, bag={"owner": "guest1"})
 
     rig.say("Could you hand me your bag, please?")
 
-    rig.wait_for_answer("It is on your hand.")
     skipped = rig.wait_for("bag_skipped")
     commander = rig.topics.commander
     assert (skipped["action"], skipped["reason"]) == (
         "hang",
         f"no {commander}: {commander}/set_parameters has no server",
     )
+    assert not wait_until(lambda: rig.answers, timeout=0.5)
     rig.node.close()
     assert not rig.find("bag_restored") and rig.records()[-1]["type"] == "end"
 
@@ -2917,7 +3026,7 @@ def test_a_commander_without_grasp_detect_min_skips_the_bag(make_rig):
         "hang",
         f"{rig.topics.commander} has no parameter grasp_detect_min",
     )
-    rig.wait_for_answer("It is on your hand.")
+    assert not wait_until(lambda: rig.answers, timeout=0.5)
 
 
 def test_a_hung_value_left_from_another_run_is_restored_at_start(make_rig):
@@ -3138,7 +3247,26 @@ class PlayedRun:
         args = {"pose": pose, "arm": "left"}
         self.call("move_arm_to_pose", args, out.summary, out=out, effect=effect)
 
+    def wait_for_handover(self) -> None:
+        """The hold of the open left hand in receive, HOLD_S on the clock."""
+        out = wait_for_handover.Out(
+            summary=(
+                f"The left hand stayed open in receive for {HOLD_S:g} s. Say the close line, "
+                "then close the hand. Arms: not safe for driving."
+            ),
+            arm="left",
+            waited_s=HOLD_S,
+        )
+        self.call(
+            "wait_for_handover",
+            {"arm": "left"},
+            out.summary,
+            out=out,
+            effect=lambda: self.wait(HOLD_S),
+        )
+
     def close_left(self) -> None:
+        """A close in receive: set_gripper's delay, then the gripper's motion."""
         out = set_gripper.Out(
             summary="Closed the left gripper. It is holding something.",
             arm="left",
@@ -3146,7 +3274,13 @@ class PlayedRun:
             holding={"left": True},
         )
         args = {"arm": "left", "state": "close"}
-        self.call("set_gripper", args, out.summary, out=out, effect=lambda: self.wait(0.5))
+        self.call(
+            "set_gripper",
+            args,
+            out.summary,
+            out=out,
+            effect=lambda: self.wait(RECEIVE_CLOSE_DELAY_S + 0.5),
+        )
 
     def drive(self, location: str, to: Pose) -> None:
         def effect() -> None:
@@ -3213,8 +3347,10 @@ def play_hri_run(run: PlayedRun, mistake: str | None = None) -> None:
         if guest == "guest2":
             run.say(f"{name}, I will hold out my left hand for your bag.")
             run.move_arm("receive")
-            run.ask(f"{name}, could you put your bag in my hand, please?")
-            run.say("I will close my hand now. Please be careful.")
+            # As the template words it: one request, the hold, then the cue.
+            run.say("Please hang your bag on my hand.")
+            run.wait_for_handover()
+            run.say("I will close my hand in 3 seconds. Please be careful.")
             run.close_left()
             if mistake == "drive with an arm out":
                 run.refused_drive("living_room")

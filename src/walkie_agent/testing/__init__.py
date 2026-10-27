@@ -640,7 +640,11 @@ class FakeArms:
     between the fingers, `object_width_m` wide, also by arm. A close is
     judged by where the fingers settle, as FakeCommander and RosArms judge
     it: "holding" or "empty" by the grasp band, and "not_closed" near the
-    open position.
+    open position. `finger_m`, by arm, is each gripper's finger travel in
+    metres: it starts at the open position, as FakeCommander's fingers do,
+    a gripper goal moves it to where the fingers settle, except an open or
+    "half" that is `not_reached`, and finger() reads it ("arms.finger"),
+    failing as a read does.
     """
 
     def __init__(
@@ -683,6 +687,7 @@ class FakeArms:
         self.not_reached = False
         self.holding = {"left": False, "right": False}
         self.object_width_m = {"left": 0.02, "right": 0.02}
+        self.finger_m = {side: poses.grippers.open_position for side in ARMS}
         # By arm, as the client counts each gripper group's commands.
         self._commands = {"left": 0, "right": 0}
         # The groups whose joint order the client has read; known arms were
@@ -841,6 +846,10 @@ class FakeArms:
         # position, and the goal then fails.
         settled = max(position, self.object_width_m[arm]) if self.holding[arm] else position
         closed = position <= GRASP_CLOSE_THRESHOLD
+        if state == "close" or not self.not_reached:
+            # An open or "half" that the gripper did not reach leaves the
+            # fingers where they were.
+            self.finger_m[arm] = settled
         if state != "close":
             reached = settled == position and not self.not_reached
             result = GripperResult(reached, "Success" if reached else "Failed", None, None, command)
@@ -881,6 +890,16 @@ class FakeArms:
             result=result,
             finger_m=finger,
         )
+
+    def finger(self, arm: Gripper) -> float:
+        self._robot._call("arms.finger")
+        group = GRIPPER_GROUPS[arm]
+        if self._robot.ctx.cancel.is_set():
+            raise StepError("CANCELLED", "A stop or a reset interrupted the call.")
+        self._check_free(f"read the joints of {group}", sends=False)
+        if self.read_failure is not None:
+            raise self._read_error(group)
+        return self.finger_m[arm]
 
     # -- The arm client's drive check, which navigation.check_arms calls --------
 

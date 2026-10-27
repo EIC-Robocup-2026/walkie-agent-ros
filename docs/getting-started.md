@@ -309,7 +309,7 @@ publishes both, in the `chula_pat14_6` room
 
 ### Arms in the simulation
 
-`agent-sim` also passes `--arms`, so the four arm tools load and the robot
+`agent-sim` also passes `--arms`, so the five arm tools load and the robot
 checks its arms before it drives
 ([Arm Manipulation](architecture/manipulation.md#tools)). They need MoveIt
 and walkie-ros's arm commander, `bimanual_commander`. Start both in two more
@@ -386,8 +386,9 @@ pixi run agent-sim-hri
   to `logs/hri_scenario_<time>.jsonl`, or to the file given with `--log`.
   A simulation restart sends the clock back, and the log then has
   `clock_jump`: that run is not valid, so start the scenario again too.
-  `pixi run hri-scenario-early-bag` plays the variant in which guest 2
-  answers the first hand-over request before the bag hangs.
+  `pixi run hri-scenario-missed-bag` plays the variant in which guest 2
+  does not hang the bag on the first hand-over request, so the first
+  close reads empty, and hangs it on the robot's silent retry.
 - **Onlookers stand at the door.** With each guest, two other people stand
   in view of `door`: one far behind the guest in the hallway, and one
   beside the robot by the TV desk. They never answer or follow, and they

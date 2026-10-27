@@ -33,6 +33,8 @@ ONLOOKER_HANDLE = "per_cccc.1"
 TALK_T = {"guest1": 12.0, "guest2": 40.0}
 SEEDED_T = 10.0
 DONE_T = 80.0
+# The close line, an interval before the close (rulebook 2026.2, T:107).
+CUE = "I will close my hand in 3 seconds. Please be careful."
 
 
 # -- Record factories ---------------------------------------------------------------------
@@ -43,7 +45,7 @@ def event(type_: str, t: float, **fields: Any) -> Record:
 
 
 def start(**changes: Any) -> Record:
-    scenario = {"answers": {"delay": 1.0, "mumble_once": None}, "bag": {"early_answer": False}}
+    scenario = {"answers": {"delay": 1.0, "mumble_once": None}, "bag": {"miss_first": False}}
     return event(
         "start",
         0.0,
@@ -188,6 +190,11 @@ def gripper(t: float, state_: str, holding: bool | None = None, outcome: str = "
     return call(t, "set_gripper", {"arm": arm, "state": state_}, outcome, out=out)
 
 
+def handover(t: float, outcome: str = "ok", arm: str | None = "left") -> Record:
+    """A wait_for_handover call; arm None leaves the argument to its default, left."""
+    return call(t, "wait_for_handover", {} if arm is None else {"arm": arm}, outcome)
+
+
 def remember(t: float, guest: str, name: str, facts: Record, track_id: int | None = None):
     track = DOOR_TRACK[guest] if track_id is None else track_id
     args = {"person": HANDLE[guest], "name": name, "facts": facts}
@@ -228,10 +235,11 @@ def passing_run() -> tuple[list[Record], list[Record]]:
         answer(g2 + 3, "guest2", g2 + 2, ["drink"]),
         *conversation("guest2"),
         line(45.0, "Ana, I will raise my left arm for your bag.", "guest2"),
-        line(47.0, "Please put your bag on my left hand.", "guest2", ["bag"]),
-        event("bag_request", 47.0, guest="guest2", count=1, hang=True, early_answer=False),
+        line(47.0, "Please hang your bag on my hand.", "guest2", ["bag"]),
+        # The guest hangs the bag silently: the request gets no answer.
+        event("bag_request", 47.0, guest="guest2", count=1, hang=True, miss_first=False),
         event("bag_hung", 47.5, value=-1.0, already_held=False),
-        answer(48.0, "guest2", 47.0, ["bag"]),
+        line(48.0, CUE, "guest2"),
         person(50.0, "guest2", "following", None),
         event("bystander", 52.0, state="gone", track_id=BYSTANDER_TRACK),
         line(60.0, "Please take this seat.", "guest2", offer=True),
@@ -257,7 +265,9 @@ def passing_run() -> tuple[list[Record], list[Record]]:
         remember(44.0, "guest2", " ana ", {"Favourite drink": "Cola, please"}),
         speak(45.0, "Ana, I will raise my left arm for your bag."),
         call(45.5, "move_arm_to_pose", {"arm": "left", "pose": "receive"}),
-        speak(47.0, "Please put your bag on my left hand."),
+        speak(47.0, "Please hang your bag on my hand."),
+        handover(47.5),
+        speak(48.0, CUE),
         gripper(49.0, "close", holding=True),
         call(51.0, "navigate_to_location", {"location": "living_room"}),
         speak(60.0, "Please take this seat."),
@@ -619,7 +629,7 @@ def test_pronouns_match_whole_words_only():
 
     result = result_of("pronouns", events, tools)
 
-    assert (result.ok, result.reason) == (True, "none in 11 lines")
+    assert (result.ok, result.reason) == (True, "none in 12 lines")
 
 
 # -- questions ----------------------------------------------------------------------------
@@ -694,26 +704,24 @@ def test_questions_allow_no_repeat_before_the_mumbled_answer_comes():
     assert result.reason == "guest1 drink asked again before the mumbled answer"
 
 
-def second_bag_request(events: list[Record]) -> None:
+def second_bag_request(events: list[Record], miss_first: bool) -> None:
     following = at(events, "person", person="guest2", state="following")
     events[following:following] = [
         line(48.5, "Is your bag on my hand now?", "guest2", ["bag"]),
-        event("bag_request", 48.5, guest="guest2", count=2, hang=True, early_answer=True),
-        answer(49.5, "guest2", 48.5, ["bag"]),
+        event("bag_request", 48.5, guest="guest2", count=2, hang=True, miss_first=miss_first),
     ]
 
 
-def test_questions_allow_a_second_bag_request_in_the_early_answer_variant():
+@pytest.mark.parametrize("miss_first", [False, True])
+def test_questions_allow_one_bag_request_in_both_variants(miss_first):
     events, tools = passing_run()
-    events[0]["scenario"]["bag"]["early_answer"] = True
-    second_bag_request(events)
+    events[0]["scenario"]["bag"]["miss_first"] = miss_first
 
     assert result_of("questions", events, tools).ok
 
-
-def test_questions_fail_a_second_bag_request_without_the_early_answer():
-    events, tools = passing_run()
-    second_bag_request(events)
+    # The retry after an empty close asks nothing, so a second request is
+    # over the allowance in the missed-bag variant too.
+    second_bag_request(events, miss_first)
 
     result = result_of("questions", events, tools)
 
@@ -723,9 +731,15 @@ def test_questions_fail_a_second_bag_request_without_the_early_answer():
 # -- arm_motion ---------------------------------------------------------------------------
 
 
+def without_lines_before_the_close(tools: list[Record]) -> None:
+    """The request and the close line gone: no speak between the receive move and the close."""
+    for t in (47.0, 48.0):
+        del tools[tool_at(tools, "speak", t)]
+
+
 def test_arm_motion_fails_an_arm_call_with_no_line_since_the_last_one():
     events, tools = passing_run()
-    del tools[tool_at(tools, "speak", 47.0)]
+    without_lines_before_the_close(tools)
 
     result = result_of("arm_motion", events, tools)
 
@@ -751,23 +765,105 @@ def test_arm_motion_counts_a_failed_arm_call_as_the_last_one(outcome, ok):
 
 def test_arm_motion_counts_wait_for_person_as_the_line_before_an_arm_call():
     events, tools = passing_run()
-    tools[tool_at(tools, "speak", 47.0)]["tool"] = "wait_for_person"
+    tools[tool_at(tools, "speak", 48.0)]["tool"] = "wait_for_person"
 
     assert result_of("arm_motion", events, tools).ok
 
 
-def test_arm_motion_fails_a_close_before_the_bag_answer():
+def test_arm_motion_counts_no_wait_for_handover_as_the_line_before_an_arm_call():
     events, tools = passing_run()
-    close = tools.pop(tool_at(tools, "set_gripper", 49.0))
-    close["t"] = 47.8
-    tools.insert(tool_at(tools, "speak", 47.0) + 1, close)
+    # The hold, at 47.5 s, is still between the receive move and the close.
+    without_lines_before_the_close(tools)
 
     result = result_of("arm_motion", events, tools)
 
     assert (result.ok, result.reason) == (
         False,
-        "left close at t=47.8 s before the answer to the bag request at t=47 s",
+        "set_gripper at t=49 s with no line since the last arm call",
     )
+
+
+@pytest.mark.parametrize("change", ["removed", "error", "right arm", "ends after the close"])
+def test_arm_motion_fails_a_left_close_with_no_ok_wait_for_handover_in_the_run(change):
+    events, tools = passing_run()
+    i = tool_at(tools, "wait_for_handover", 47.5)
+    if change == "removed":
+        del tools[i]
+    elif change == "error":
+        tools[i] = handover(47.5, outcome="error")
+    elif change == "right arm":
+        tools[i] = handover(47.5, arm="right")
+    else:
+        tools[i]["t_end"] = 49.5
+
+    result = result_of("arm_motion", events, tools)
+
+    assert (result.ok, result.reason) == (
+        False,
+        "left close at t=49 s with no ok wait_for_handover since the run's start",
+    )
+
+
+def test_arm_motion_takes_a_wait_for_handover_with_no_arm_for_the_left_hand():
+    events, tools = passing_run()
+    tools[tool_at(tools, "wait_for_handover", 47.5)] = handover(47.5, arm=None)
+
+    assert result_of("arm_motion", events, tools).ok
+
+
+REOPEN = "I will open my hand again."
+
+
+def missed_bag_retry(events: list[Record], tools: list[Record], second_wait: bool) -> None:
+    """The run as hri_missed_bag plays it: an empty close, the reopen, and the close at 49.5 s.
+
+    The first request hangs nothing, and the guest hangs the bag on the
+    reopened hand. With `second_wait`, the retry holds the hand again before
+    its close line.
+    """
+    events[0]["scenario"]["bag"]["miss_first"] = True
+    request = events[at(events, "bag_request")]
+    request.update(hang=False, miss_first=True)
+    del events[at(events, "bag_hung")]
+    following = at(events, "person", person="guest2", state="following")
+    events[following:following] = [
+        line(48.4, REOPEN, "guest2"),
+        event("hand_reopened", 48.7, guest="guest2"),
+        event("bag_hung", 48.7, value=-1.0, already_held=False),
+        line(49.1, CUE, "guest2"),
+    ]
+    i = tool_at(tools, "set_gripper", 49.0)
+    tools[i] = gripper(49.5, "close", holding=True)
+    tools[i:i] = [
+        gripper(48.2, "close", holding=False),
+        speak(48.4, REOPEN),
+        gripper(48.6, "open"),
+        *([handover(48.8)] if second_wait else []),
+        speak(49.1, CUE),
+    ]
+
+
+def test_arm_motion_fails_a_left_close_with_no_ok_wait_for_handover_since_the_last_open():
+    events, tools = passing_run()
+    missed_bag_retry(events, tools, second_wait=False)
+
+    result = result_of("arm_motion", events, tools)
+
+    assert (result.ok, result.reason) == (
+        False,
+        "left close at t=49.5 s with no ok wait_for_handover since the left open at t=48.6 s",
+    )
+
+
+def test_a_retry_close_after_an_open_and_a_second_wait_passes():
+    events, tools = passing_run()
+    missed_bag_retry(events, tools, second_wait=True)
+
+    found = results(events, tools)
+
+    assert [r for r in found.values() if not r.ok] == []
+    assert found["arm_motion"].reason == "a line before each of 4 arm calls"
+    assert found["bag"].reason == "held in the left hand from t=49.5 s"
 
 
 def test_arm_motion_fails_a_close_with_no_bag_request_before_it():

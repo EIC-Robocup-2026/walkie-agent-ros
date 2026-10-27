@@ -339,6 +339,13 @@ class Arms(Protocol):
     "not_reached", "holding", "empty", "not_closed", "unmeasured",
     "superseded" or "unread" (GripperMoved). The messages end with the arm
     sentence, as the arm atomics give it.
+
+    finger() reads how far one gripper is open now, one finger's travel in
+    metres, once, and sends no goal. It raises StepError as a read of the
+    joints does: PRECONDITION_FAILED while another call's goal runs or is
+    outstanding; TIMEOUT; UNAVAILABLE without the commander or when it
+    cannot read the joints; INTERNAL for a reading without the finger
+    joint; CANCELLED on a stop or a reset.
     """
 
     def poses(self) -> Mapping[str, ArmPose]: ...
@@ -348,6 +355,8 @@ class Arms(Protocol):
     def move_to(self, pose: str, arm: Arm = "both") -> ArmsMoved: ...
 
     def gripper(self, arm: Gripper, state: GripperState) -> GripperMoved: ...
+
+    def finger(self, arm: Gripper) -> float: ...
 
 
 class Gaze(Protocol):

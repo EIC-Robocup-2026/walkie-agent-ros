@@ -474,6 +474,12 @@ class RosArms:
             finger_m=finger,
         )
 
+    def finger(self, arm: Gripper) -> float:
+        """How far `arm`'s gripper is open now, in metres, read once; no goal is sent."""
+        # The module's read_finger, looked up on each call, so a test can
+        # replace it.
+        return read_finger(self._client, arm, self._ctx.cancel)
+
     def _memory_sentence(self) -> str:
         """The arm sentence from the client's memory, with no call to the commander."""
         return state_sentence(self.state(read=False))

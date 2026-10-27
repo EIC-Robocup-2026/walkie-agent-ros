@@ -72,6 +72,12 @@ wget = "*"
 [pypi-dependencies]
 rai-core = ">=2.12.1, <2.13"
 python-dotenv = ">=1.0"
+# src/walkie_agent/llm_deadline.py builds the LLM's HTTP client on them.
+# rai-core's langchain-openai pulls both in already; naming them here keeps an
+# update of langchain-openai from moving them past the API that file uses
+# (openai 3 is built on httpx2).
+openai = ">=3.29,<4"
+httpx2 = ">=2.13,<3"
 walkie-agent = { path = ".", editable = true }
 # rai_s2s and rai_whoami are not published on PyPI for this RAI release, so
 # they come from the RAI repository. Tag 2.12.2 has the same rai_s2s and

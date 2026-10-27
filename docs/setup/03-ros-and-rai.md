@@ -226,15 +226,18 @@ uses defaults for missing vendor sections.
 
 We added tables of our own under `[walkie]`, which RAI ignores:
 
-| Section               | What it is for                                                             |
-| --------------------- | -------------------------------------------------------------------------- |
-| `[walkie.perception]` | Perception values to tune on the robot, such as the face distance limits. |
-| `[walkie.gaze]`       | How long the gaze loop waits for TF, to tune on the robot.                 |
+| Section                 | What it is for                                                             |
+| ----------------------- | -------------------------------------------------------------------------- |
+| `[walkie.perception]`   | Perception values to tune on the robot, such as the face distance limits. |
+| `[walkie.gaze]`         | How long the gaze loop waits for TF, to tune on the robot.                 |
+| `[walkie.models.agent]` | The bounds on each call of the agent's LLM: the whole call and a silence.  |
 
-Both are commented out and show the defaults from the code. The agent checks
-them at start-up and stops on an unknown key or a bad value. See
-[HRI Task](../architecture/hri.md#delivery-order) for each key and why it is
-tuned on the robot.
+All three are commented out and show the defaults from the code. The agent
+checks them at start-up and stops on an unknown key or a bad value. See
+[HRI Task](../architecture/hri.md#delivery-order) for each perception and
+gaze key and why it is tuned on the robot, and
+[ADR-0042](../architecture/decisions/0042-per-role-models.md) for the LLM
+call bounds.
 
 ### API keys go in `.env`
 

@@ -1,4 +1,4 @@
-"""The perception and gaze values that config.toml sets (walkie_agent.tuning).
+"""The perception, gaze and LLM call values that config.toml sets (walkie_agent.tuning).
 
 The loader is plain logic over a parsed TOML file. One test builds the agent,
 to check that the configs reach the vision feed, the gaze loop and the
@@ -16,12 +16,14 @@ from scripted_llm import ScriptedChatModel
 from walkie_agent.agent import create_walkie_agent
 from walkie_agent.gaze import DEFAULT_CONFIG as DEFAULT_GAZE_CONFIG
 from walkie_agent.gaze import GazeConfig
+from walkie_agent.llm_deadline import AgentModelConfig
 from walkie_agent.perception.front import FrontConfig
 from walkie_agent.perception.identity import IdentityConfig
 from walkie_agent.perception.vision_feed import DEFAULT_CONFIG as DEFAULT_VISION_FEED_CONFIG
 from walkie_agent.tools.atomic import _perception
 from walkie_agent.tools.atomic._perception import PerceptionConfig
 from walkie_agent.tuning import (
+    AGENT_MODEL_KEYS,
     FRONT_KEYS,
     GAZE_KEYS,
     PERCEPTION_KEYS,
@@ -54,6 +56,10 @@ osnet_x1_0_msmt17 = 0.3
 
 [walkie.gaze]
 tf_wait_s = 0.4
+
+[walkie.models.agent]
+timeout_s = 25.0
+read_timeout_s = 12.0
 """
 
 # Every (table, key) that config.toml's example shows: the keys the loader
@@ -67,6 +73,7 @@ EXAMPLE_KEYS = (
         ("walkie.perception.identity.appearance_distance_limits", "osnet_x1_0_msmt17"),
     }
     | {("walkie.gaze", key) for key in GAZE_KEYS}
+    | {("walkie.models.agent", key) for key in AGENT_MODEL_KEYS}
 )
 
 # A table or key line of config.toml, commented or not: "[table]" or
@@ -109,6 +116,7 @@ def test_without_walkie_tables_every_config_keeps_its_default():
     assert tuning.perception == PerceptionConfig() == _perception.CONFIG
     assert tuning.vision_feed is DEFAULT_VISION_FEED_CONFIG
     assert tuning.gaze is DEFAULT_GAZE_CONFIG
+    assert tuning.agent_model == AgentModelConfig()
 
 
 def test_the_repository_config_loads():
@@ -164,6 +172,9 @@ def test_the_defaults_are_the_values_the_code_had():
     gaze = GazeConfig()
     assert (gaze.gain, gaze.min_speed, gaze.max_speed) == (1.2, 0.15, 0.6)
     assert (gaze.deadband_deg, gaze.tf_wait_s) == (6.0, 0.2)
+    # ADR-0042's agent timeout, and the read timeout its amendment measured.
+    agent_model = AgentModelConfig()
+    assert (agent_model.timeout_s, agent_model.read_timeout_s) == (20.0, 10.0)
 
 
 # -- Setting values -----------------------------------------------------------------------------
@@ -212,6 +223,7 @@ def test_the_tables_set_their_values_and_leave_the_rest_alone():
         default.yaw_max_age_s,
     )
     assert gaze.cmd_vel_topic == "/cmd_vel"
+    assert tuning.agent_model == AgentModelConfig(timeout_s=25.0, read_timeout_s=12.0)
 
 
 def test_one_key_changes_only_its_own_value():
@@ -220,6 +232,15 @@ def test_one_key_changes_only_its_own_value():
     assert tuning.perception.front == FrontConfig(half_angle_deg=30.0)
     assert tuning.perception.identity == IdentityConfig()
     assert tuning.vision_feed is DEFAULT_VISION_FEED_CONFIG
+    assert tuning.gaze is DEFAULT_GAZE_CONFIG
+    assert tuning.agent_model == AgentModelConfig()
+
+
+def test_the_llm_call_deadline_can_be_set_alone():
+    tuning = parse_tuning(tomllib.loads("[walkie.models.agent]\ntimeout_s = 30.0\n"))
+
+    assert tuning.agent_model == AgentModelConfig(timeout_s=30.0, read_timeout_s=10.0)
+    assert tuning.perception == PerceptionConfig()
     assert tuning.gaze is DEFAULT_GAZE_CONFIG
 
 
@@ -259,11 +280,18 @@ outlier_mad_k = 2.0
 gain = 1.0
 cmd_vel_topic = "/cmd_vel_nav"
 lost_after_s = 2.0
+
+[walkie.models.agent]
+primary = "google/gemini-3-flash-preview"
+timeout = 20.0
+
+[walkie.models.atomic_agent]
+timeout_s = 10.0
 """
     )
 
     assert errors == (
-        "[walkie]: unknown key 'gase'; it takes perception, gaze.",
+        "[walkie]: unknown key 'gase'; it takes perception, gaze, models.",
         "[walkie.perception]: unknown key 'min_face_rad'; it takes tf_timeout_s, front, "
         "vision_feed, identity.",
         "[walkie.perception.front]: unknown key 'min_face_px'; it takes min_face_rad, "
@@ -274,6 +302,10 @@ lost_after_s = 2.0
         "[walkie.gaze]: unknown key 'gain'; it takes tf_wait_s.",
         "[walkie.gaze]: unknown key 'cmd_vel_topic'; it takes tf_wait_s.",
         "[walkie.gaze]: unknown key 'lost_after_s'; it takes tf_wait_s.",
+        # The rest of ADR-0042's role tables comes with ADR-0042's own change.
+        "[walkie.models]: unknown key 'atomic_agent'; it takes agent.",
+        "[walkie.models.agent]: unknown key 'primary'; it takes timeout_s, read_timeout_s.",
+        "[walkie.models.agent]: unknown key 'timeout'; it takes timeout_s, read_timeout_s.",
     )
 
 
@@ -292,13 +324,19 @@ tf_timeout_s = 0.3
 
 [front]
 min_face_rad = 0.12
+
+[models.agent]
+timeout_s = 30.0
+
+[agent]
+timeout_s = 30.0
 """
     )
 
     assert errors == tuple(
         f"Unknown table [{name}]; the agent's tables go under [walkie], which takes "
-        "perception, gaze."
-        for name in ("walky", "gaze", "walkie_perception", "front")
+        "perception, gaze, models."
+        for name in ("walky", "gaze", "walkie_perception", "front", "models", "agent")
     )
 
 
@@ -340,6 +378,9 @@ arcface_w600k_r50 = nan
 
 [walkie.gaze]
 tf_wait_s = [0.2]
+
+[walkie.models.agent]
+timeout_s = "20"
 """
     )
 
@@ -350,6 +391,7 @@ tf_wait_s = [0.2]
         "finite number.",
         "walkie.perception.tf_timeout_s = '0.3' is not a number.",
         "walkie.gaze.tf_wait_s = [0.2] is not a number.",
+        "walkie.models.agent.timeout_s = '20' is not a number.",
     )
 
 
@@ -381,6 +423,9 @@ osnet_x1_0_msmt17 = 2.0
 
 [walkie.gaze]
 tf_wait_s = 0.0
+
+[walkie.models.agent]
+read_timeout_s = -1.0
 """
     )
 
@@ -391,7 +436,20 @@ tf_wait_s = 0.0
         "['osnet_x1_0_msmt17'] must lie in (0, 2), not 2.0.",
         "[walkie.perception]: PerceptionConfig.tf_timeout_s must be a positive number, not 0.0.",
         "[walkie.gaze]: GazeConfig.tf_wait_s must be a positive number, not 0.0.",
+        "[walkie.models.agent]: AgentModelConfig.read_timeout_s must be a positive number, "
+        "not -1.0.",
     )
+
+
+def test_a_read_timeout_above_the_call_deadline_is_refused():
+    # A server silent from the start would outlast the deadline. Each value
+    # alone is one the config takes: the default deadline is 20 s.
+    assert problems("[walkie.models.agent]\nread_timeout_s = 25.0\n") == (
+        "[walkie.models.agent]: AgentModelConfig.read_timeout_s 25 must not be above "
+        "timeout_s 20.",
+    )
+    tuning = parse_tuning(tomllib.loads("[walkie.models.agent]\nread_timeout_s = 20.0\n"))
+    assert tuning.agent_model.read_timeout_s == tuning.agent_model.timeout_s
 
 
 @pytest.mark.parametrize(

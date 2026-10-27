@@ -1,11 +1,12 @@
-"""The perception and gaze values to tune on the robot, read from config.toml.
+"""The perception, gaze and LLM call values to tune on the robot, read from config.toml.
 
 Most of perception's and the gaze loop's values are walkie-agent-v2's,
 tuned on the robot, and stay in their dataclasses. The gaze loop's gain,
 speeds and deadband are among them. The few that are still to tune there,
 depend on the robot's camera or TF, or were tuned in simulation only
 (hri.md, Delivery order) can be set in config.toml, so that tuning them at
-the arena is a config edit:
+the arena is a config edit. So can the bounds on each call of the agent's
+LLM (ADR-0042), which main.py reads before it builds the LLM:
 
     [walkie.perception]                    PerceptionConfig: tf_timeout_s
     [walkie.perception.front]              FrontConfig: min_face_rad, half_angle_deg
@@ -13,6 +14,7 @@ the arena is a config edit:
     [walkie.perception.identity.face_distance_limits]        a limit per face_model
     [walkie.perception.identity.appearance_distance_limits]  a limit per appearance_model
     [walkie.gaze]                          GazeConfig: tf_wait_s
+    [walkie.models.agent]                  AgentModelConfig: timeout_s, read_timeout_s
 
 A missing table or key keeps the dataclass's default, so a config.toml
 without these tables changes nothing. A distance limit table changes the
@@ -31,7 +33,7 @@ The keys are read by walkie_agent.config_tables, which types each one by
 its dataclass field and holds TuningError. That module imports only the
 standard library. This one names the agent's tables, checks values across
 them, and imports the modules that hold the configs: the gaze loop,
-perception and the perception atomics.
+perception, the perception atomics and the LLM call's bounds.
 """
 
 import difflib
@@ -50,6 +52,7 @@ from walkie_agent import config_tables
 from walkie_agent.config_tables import TuningError
 from walkie_agent.gaze import DEFAULT_CONFIG as DEFAULT_GAZE_CONFIG
 from walkie_agent.gaze import GazeConfig
+from walkie_agent.llm_deadline import AgentModelConfig
 from walkie_agent.perception.front import FrontConfig
 from walkie_agent.perception.identity import IdentityConfig
 from walkie_agent.perception.vision_feed import DEFAULT_CONFIG as DEFAULT_VISION_FEED_CONFIG
@@ -61,7 +64,7 @@ CONFIG_PATH = Path("config.toml")
 
 # The tables under [walkie] that the agent reads. A new [walkie.<name>]
 # table adds its name here, or this loader refuses it as a typo.
-WALKIE_TABLES = ("perception", "gaze")
+WALKIE_TABLES = ("perception", "gaze", "models")
 
 # The top-level tables of config.toml that RAI reads: [vendor], [openai],
 # [ollama] and [tracing] (rai/initialization/model_initialization.py), and
@@ -76,12 +79,16 @@ FRONT_KEYS = ("min_face_rad", "half_angle_deg")
 VISION_FEED_KEYS = ("min_face_size_rad",)
 IDENTITY_TABLES = ("face_distance_limits", "appearance_distance_limits")
 GAZE_KEYS = ("tf_wait_s",)
+# The roles under [walkie.models], one table each (ADR-0042). Only the
+# agent's is read so far, and only for its call bounds.
+MODEL_ROLES = ("agent",)
+AGENT_MODEL_KEYS = ("timeout_s", "read_timeout_s")
 
 # The tables inside [walkie.perception].
 _PERCEPTION_TABLES = ("front", "vision_feed", "identity")
 # Every table name the loader reads. One of them at the top level of the
 # file is a table whose [walkie.] prefix was left out.
-_TABLE_NAMES = (*WALKIE_TABLES, *_PERCEPTION_TABLES, *IDENTITY_TABLES)
+_TABLE_NAMES = (*WALKIE_TABLES, *_PERCEPTION_TABLES, *IDENTITY_TABLES, *MODEL_ROLES)
 
 _Config = TypeVar("_Config")
 
@@ -94,6 +101,8 @@ class Tuning:
     perception: PerceptionConfig = field(default_factory=PerceptionConfig)
     vision_feed: VisionFeedConfig = DEFAULT_VISION_FEED_CONFIG
     gaze: GazeConfig = DEFAULT_GAZE_CONFIG
+    # main.py builds the LLM with it; create_walkie_agent does not read it.
+    agent_model: AgentModelConfig = field(default_factory=AgentModelConfig)
 
 
 def load_tuning(path: str | Path = CONFIG_PATH) -> Tuning:
@@ -124,10 +133,17 @@ def parse_tuning(data: Mapping[str, Any], source: str = "config.toml") -> Tuning
         defaults, {**changes, "front": front, "identity": identity}, where, errors
     )
     gaze = _section(DEFAULT_GAZE_CONFIG, walkie, "walkie.gaze", GAZE_KEYS, errors)
+    models = config_tables.table(walkie, "walkie.models", errors)
+    config_tables.refuse_unknown(models, MODEL_ROLES, "walkie.models", errors)
+    agent_model = _section(
+        AgentModelConfig(), models, "walkie.models.agent", AGENT_MODEL_KEYS, errors
+    )
     _check_front_faces(perception.front, vision_feed, errors)
     if errors:
         raise TuningError(source, errors)
-    return Tuning(perception=perception, vision_feed=vision_feed, gaze=gaze)
+    return Tuning(
+        perception=perception, vision_feed=vision_feed, gaze=gaze, agent_model=agent_model
+    )
 
 
 def _refuse_misplaced(data: Mapping[str, Any], errors: list[str]) -> None:

@@ -15,8 +15,9 @@ call also goes to a JSON lines record, which the HRI pass check reads.
 
 The LLM is selected by config.toml (see RAI's get_llm_model), which is read
 from the current working directory. The same file's [walkie.perception] and
-[walkie.gaze] tables set the perception and gaze values to tune on the robot
-(see tuning.py). API keys are read from the environment, or from a .env file
+[walkie.gaze] tables set the perception and gaze values to tune on the robot,
+and [walkie.models.agent] the bounds on each LLM call (see tuning.py and
+llm_deadline.py). API keys are read from the environment, or from a .env file
 in the working directory (see .env.example).
 """
 
@@ -25,11 +26,13 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from rai import get_llm_model
+from langchain_core.language_models import BaseChatModel
+from rai import get_llm_model, get_llm_model_config_and_vendor
 from rai.agents import AgentRunner
 from rai.communication.ros2 import ROS2Connector, ROS2Context, ROS2HRIConnector
 
 from walkie_agent.agent import create_walkie_agent
+from walkie_agent.llm_deadline import AgentModelConfig, chat_openai_kwargs
 from walkie_agent.locations import load_locations
 from walkie_agent.tasks import load_task_templates
 from walkie_agent.tuning import load_tuning
@@ -116,6 +119,20 @@ def tool_log_path(value: str | None, now: datetime | None = None) -> Path | None
     return Path("logs") / f"agent_tools_{now or datetime.now():%Y%m%d-%H%M%S}.jsonl"
 
 
+def build_llm(config: AgentModelConfig) -> BaseChatModel:
+    """The agent's LLM, RAI's complex_model, streaming, with each call bounded by `config`.
+
+    Only RAI's openai vendor, whose ChatOpenAI hands the bounds to the
+    OpenAI SDK, gets them. ChatOllama has neither a timeout nor a
+    max_retries field and drops both (ADR-0042), and the other vendors take
+    no OpenAI SDK client, so their calls keep their own timeouts and
+    retries.
+    """
+    _, vendor = get_llm_model_config_and_vendor("complex_model")
+    bounds = chat_openai_kwargs(config) if vendor == "openai" else {}
+    return get_llm_model("complex_model", vendor=vendor, streaming=True, **bounds)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -123,9 +140,10 @@ def main() -> None:
     load_dotenv()
 
     # Built before ROS starts so a config or credential error fails fast.
-    llm = get_llm_model("complex_model", streaming=True)
-    templates = load_task_templates(args.task_templates)
+    # The tuning comes first: it holds the bounds on the LLM's calls.
     tuning = load_tuning()
+    llm = build_llm(tuning.agent_model)
+    templates = load_task_templates(args.task_templates)
     locations = load_locations(args.locations)
 
     with ROS2Context():

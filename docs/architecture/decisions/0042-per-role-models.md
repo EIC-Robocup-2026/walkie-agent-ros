@@ -1,7 +1,8 @@
 # ADR-0042: Pick a model and an API key per role
 
 <!-- --8<-- [start:body] -->
-**Status:** Proposed · **Date:** 2026-10-22
+**Status:** Proposed, with the agent role's call bounds built (amended
+2026-10-27, see below) · **Date:** 2026-10-22
 
 **Context**
 
@@ -13,9 +14,12 @@ The [self-evolving agent](/architecture/self-evolving-agent.md) adds more
 LLM roles: an atomic agent that composes bundles, a tool coder, a judge for
 the harvest, a query writer for web lookups and an embedder. One model and one key do not fit them:
 
-- **Timeouts.** The OpenAI SDK defaults to a 600 s timeout and 2 retries,
-  and `langchain_openai` 1.7 leaves `max_retries` unset, so those defaults
-  apply. A hung cloud call would freeze the robot for minutes.
+- **Timeouts.** `langchain_openai` 1.7 passes `timeout=None` to the OpenAI
+  SDK. That overrides the SDK's 600 s default, so a call has no timeout at
+  all. `langchain_openai` leaves `max_retries` unset, so the SDK's 2
+  retries apply, each after the server's `Retry-After` of up to 120 s. A
+  hung cloud call would freeze the robot until the connection drops.
+  (Corrected on 2026-10-27: this bullet said the 600 s default applied.)
 - **Budgets.** With one key, a runaway tool coder or harvest can use up the
   spend limit or the rate limit and cut off the task agent mid-task.
 - **Config.** RAI's `load_config` ignores unknown top-level tables, but
@@ -99,13 +103,62 @@ join `OPENAI_API_KEY`. The `[vendor]` and `[openai]` tables stay, with the
 OpenRouter `base_url`, for RAI's own roles: the whoami build's LLM call,
 and the embeddings behind `search_robot_docs`.
 
+**Amendment, 2026-10-27: the agent role's call bounds are built.** This is
+the first slice of this ADR. `config.toml` gains `[walkie.models.agent]`
+with two keys, read by `src/walkie_agent/tuning.py` before `main.py`
+builds the LLM. The agent still uses RAI's `complex_model`. The primary
+model, the fallbacks and `api_key_env` come with the rest of this ADR, and
+until then the loader refuses them as unknown keys. The rest of this ADR
+stays Proposed.
+
+- **`timeout_s` is the whole-call deadline**, 20 s. httpx applies a
+  timeout to each connect, read and write, not to the whole call, and
+  OpenRouter sends SSE comments (`: OPENROUTER PROCESSING`) while a model
+  has not answered, so a per-read timeout alone lets a slow call run on.
+  `DeadlineTransport` in `src/walkie_agent/llm_deadline.py`, a subclass of
+  `httpx2.HTTPTransport`, stamps the start of each request and checks the
+  deadline on every chunk of the reply, comments included. Once it has
+  passed, the chunk raises `httpx2.ReadTimeout("call deadline")`, which the
+  OpenAI SDK raises as `APITimeoutError`. The check runs in the thread that
+  reads the stream. A watchdog thread that closes the client was rejected:
+  on Linux, `close()` on a socket does not wake a `recv()` blocked in
+  another thread, and the SSL socket is not safe to tear down from another
+  thread.
+- **`read_timeout_s` is new**, 10 s: the longest silence, as the httpx read
+  timeout, for a server that stops sending anything. It may not be above
+  `timeout_s`. Connecting has 5 s, the SDK's own default, fixed in the
+  code.
+- **The measured gap.** Langfuse tracing was off in the sim runs, so no
+  trace kept chunk times. A scratch script outside the repository streamed
+  8 calls with the agent's settings: `deepseek/deepseek-v4.1-flash:nitro`
+  through OpenRouter, streaming, with the messages and the 20 bound tools
+  of the HRI task's first 8 turns, requests of 19 to 21 KB. The longest
+  silence was 1.52 s, before the reply's headers. The longest gap between
+  two chunks of a reply was 0.29 s. No SSE comment was sent, and the
+  longest call took 3.41 s. That is well under 10 s, so `read_timeout_s`
+  ships at 10 s. Measure again before lowering it: late-task histories and
+  other models were not measured.
+- **`max_retries=0`.** A 429 or a 5xx raises at once, whatever its
+  `Retry-After`.
+- **The openai vendor only.** `build_llm` in `main.py` passes the bounds,
+  with `http_client=openai.DefaultHttpxClient(transport=DeadlineTransport(timeout_s))`,
+  only when RAI's `complex_model` vendor is `openai`. An Ollama model's
+  `client_kwargs` timeout comes with the rest of this ADR.
+
 **Consequences**
 
-- A cloud call that stops answering hits the 20 s timeout and goes to the
-  fallback, instead of waiting out the SDK's 600 s default. httpx applies
-  the timeout to each connect, read and write, not to the whole call, so a
-  slow streamed reply can run longer. With `max_retries=0`, a brief server
-  error also goes straight to the fallback instead of a retry.
+- A cloud call no longer runs without a bound. A call that keeps sending
+  bytes, SSE comments included, raises at the first chunk after 20 s. A
+  silent one raises 10 s after its last byte. The worst case, bytes until
+  just under 20 s and then silence, is about 30 s. Until the fallbacks are
+  built, the error ends the task: `_run_agent` logs it and waits for the
+  next message. With the fallbacks, the call goes to the next model
+  instead. With `max_retries=0`, a brief server error or a 429 also raises
+  at once instead of a retry.
+- The agent's HTTP client has its own transport. httpx then reads no proxy
+  settings from the environment for it, and `langchain_openai`'s default
+  TCP keepalive options do not apply; the read timeout bounds a silent
+  connection instead.
 - A runaway tool coder or harvest cannot starve the task agent of budget.
 - The team manages three OpenRouter keys and two search keys instead of one
   key.

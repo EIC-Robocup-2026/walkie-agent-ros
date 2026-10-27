@@ -457,8 +457,10 @@ Each role gets a model, fallbacks, a timeout and an API key in a
 | `judge` | harvest v1 only | a different family from the agent | `WALKIE_HARVEST_API_KEY` (new) | 60 s |
 
 Every OpenAI-compatible model is built with `max_retries=0` and an explicit
-timeout, because the OpenAI SDK defaults, 600 s and 2 retries, would freeze
-the robot. Ollama models get the timeout through `client_kwargs`.
+timeout, because `langchain_openai` otherwise leaves a call with no timeout
+at all and the SDK's 2 retries, which would freeze the robot. The agent
+role's timeout is built: a whole-call deadline checked on every chunk, and
+a read timeout for silence ([ADR-0042](decisions/0042-per-role-models.md)). Ollama models get the timeout through `client_kwargs`.
 Today's `[ollama] complex_model`, `llama3.1:70b`, needs about 40 GB at q4
 and does not fit on the 32 GB GPU beside walkie-vision, so the fallback
 must be 7 to 14B (a 14B at q4 is about 9 GB, an estimate).
@@ -756,7 +758,7 @@ proposed. See [Architecture](index.md) for how decisions work.
 
     --8<-- "architecture/decisions/0041-todo-list-and-seeding.md:body"
 
-??? note "ADR-0042: Pick a model and an API key per role · Proposed"
+??? note "ADR-0042: Pick a model and an API key per role · Proposed, with the agent role's call bounds built"
 
     --8<-- "architecture/decisions/0042-per-role-models.md:body"
 

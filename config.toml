@@ -67,8 +67,8 @@ vendor = "KokoroTTS"
 voice = ""
 speaker_device_name = "default"
 
-# Perception and gaze values to tune on the robot, read by the agent at
-# start-up (src/walkie_agent/tuning.py; hri.md, Delivery order). The values
+# Perception, gaze and LLM call values to tune on the robot, read by the agent
+# at start-up (src/walkie_agent/tuning.py; hri.md, Delivery order). The values
 # shown are the defaults in the code. Uncomment a table and the keys you
 # change. A missing key keeps its default. An unknown table, key or model, a
 # table such as [gaze] without its walkie. prefix, or a value that is not a
@@ -109,3 +109,13 @@ speaker_device_name = "default"
 # the robot, and stay in the code.
 # [walkie.gaze]
 # tf_wait_s = 0.2
+#
+# The bounds on each call of the agent's LLM, in seconds, for the openai
+# vendor only (ADR-0042; src/walkie_agent/llm_deadline.py). timeout_s is the
+# whole call, checked on every chunk of the streamed reply, so a provider that
+# keeps sending keep-alive comments cannot hold the robot past it.
+# read_timeout_s is the longest silence, and may not be above timeout_s.
+# Connecting may take 5 s, and a failed call is never retried.
+# [walkie.models.agent]
+# timeout_s = 20.0
+# read_timeout_s = 10.0

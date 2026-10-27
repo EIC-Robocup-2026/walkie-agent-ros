@@ -6,7 +6,7 @@ import secrets
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -134,6 +134,38 @@ class _Seed:
     source: Literal["seed", "operator"]
 
 
+@dataclass
+class _Entry:
+    """One queued message and what the agent keeps with it until its task starts.
+
+    WalkieAgent._entries holds one entry per message in the queue, by
+    id(msg). The entry holds the message itself, so its id cannot be reused
+    by another object while the message waits.
+    """
+
+    msg: HRIMessage
+    seed: _Seed | None
+    # time.monotonic() when the message arrived. Not the node clock, which
+    # follows /clock in the sim: the stamp is for comparing with times that
+    # run at wall rate, such as the delays of speech recognition.
+    received_mono: float
+    # A status the robot posts about itself, which no person said; None for
+    # a message from a person or the operator. Nothing posts one yet.
+    status: object | None = None
+    # Lines to follow the message's text when its task starts. Nothing adds
+    # one yet, and _run_agent does not read them.
+    annotations: list[str] = field(default_factory=list)
+
+    def kept_on_overheard_drop(self) -> bool:
+        """True when a drop of overheard speech must keep this message.
+
+        A seeded message comes from the operator or from Python, not from a
+        microphone. A status comes from the robot itself. A stop must always
+        reach the agent, so that it still interrupts a task.
+        """
+        return self.seed is not None or self.status is not None or is_stop_utterance(self.msg.text)
+
+
 class WalkieAgent(LangChainAgent):
     """RAI's LangChainAgent running Walkie's own graph (ADR-0038).
 
@@ -215,10 +247,11 @@ class WalkieAgent(LangChainAgent):
         )
         self._graph = self.agent
         self._reset_requested = threading.Event()
-        # The seed of each queued message that has one, by id(message). The
-        # entry also holds the message, so its id cannot be reused by another
-        # object while the seed waits. Guarded by _buffer_lock.
-        self._seeds: dict[int, tuple[HRIMessage, _Seed]] = {}
+        # One entry per queued message, by id(message), in queue order.
+        # Guarded by _buffer_lock, and changed with the queue wherever the
+        # queue changes: the append, the overflow drop and a stop's drop of
+        # older messages in _enqueue, reset(), and the pop in _run_agent.
+        self._entries: dict[int, _Entry] = {}
         self.session_id = ""
         self._start_session()
         self.todos.add_listener(self._send_status_lines)
@@ -268,7 +301,7 @@ class WalkieAgent(LangChainAgent):
         """
         with self._buffer_lock:
             self._received_messages.clear()
-            self._seeds.clear()
+            self._entries.clear()
             self._reset_requested.set()
             self._interrupt_event.set()
             self._cancel_atomics()
@@ -336,17 +369,24 @@ class WalkieAgent(LangChainAgent):
         self.todos.add_listener(publish)
         publish()
 
-    def _enqueue(self, msg: HRIMessage, seed: _Seed | None) -> None:
-        # Replaces RAI's __call__. A line that is not speech, such as a blank
-        # transcript, is dropped first, so it takes no queue slot and pushes
-        # no queued message out (heard_filter.py). A message with images or
-        # audio holds more than its text, and is always queued.
+    def _enqueue(
+        self, msg: HRIMessage, seed: _Seed | None, received_mono: float | None = None
+    ) -> None:
+        # Replaces RAI's __call__. The receive stamp is taken first, on
+        # arrival. A caller that judges a message before it queues it passes
+        # the stamp it took when the message arrived instead.
+        if received_mono is None:
+            received_mono = time.monotonic()
+        # A line that is not speech, such as a blank transcript, is dropped
+        # first, so it takes no queue slot and pushes no queued message out
+        # (heard_filter.py). A message with images or audio holds more than
+        # its text, and is always queued.
         if not msg.images and not msg.audios:
             reason = text_verdict(msg.text)
             if reason is not None:
                 self._ignore(msg.text, reason)
                 return
-        # The seed is stored under the same lock as the message, so a reset
+        # The entry is stored under the same lock as the message, so a reset
         # can never separate the two.
         stop = is_stop_utterance(msg.text)
         interrupted = False
@@ -354,10 +394,13 @@ class WalkieAgent(LangChainAgent):
             if self.max_size is not None and len(self._received_messages) >= self.max_size:
                 self.logger.warning("Buffer overflow. Dropping the oldest message.")
                 dropped = self._received_messages.popleft()
-                self._seeds.pop(id(dropped), None)
+                del self._entries[id(dropped)]
+            if id(msg) in self._entries:
+                # The same object, queued again while it still waits, would
+                # share one entry. A copy gets an entry of its own.
+                msg = msg.model_copy()
             self.logger.info(f"Received message: {msg}, {type(msg)}")
-            if seed is not None:
-                self._seeds[id(msg)] = (msg, seed)
+            self._entries[id(msg)] = _Entry(msg=msg, seed=seed, received_mono=received_mono)
             self._received_messages.append(msg)
 
             # _run_agent takes a message and clears the ready event under this
@@ -366,7 +409,7 @@ class WalkieAgent(LangChainAgent):
             running = self._thread is not None and not self._agent_ready_event.is_set()
             if running and stop:
                 for queued in list(self._received_messages)[:-1]:
-                    self._seeds.pop(id(queued), None)
+                    del self._entries[id(queued)]
                 self._received_messages.clear()
                 # The stop itself stays queued, so the LLM sees it next and
                 # can cancel the open steps.
@@ -456,8 +499,7 @@ class WalkieAgent(LangChainAgent):
             ):
                 # "queue": one message per task, oldest first.
                 msg = self._received_messages.popleft()
-                entry = self._seeds.pop(id(msg), None)
-                seed = entry[1] if entry is not None else None
+                seed = self._entries.pop(id(msg)).seed
                 # An interrupt meant for the previous run must not end this one.
                 self._interrupt_event.clear()
                 self._agent_ready_event.clear()

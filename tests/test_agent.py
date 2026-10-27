@@ -18,7 +18,14 @@ from std_msgs.msg import Empty, String
 
 from conftest import PROJECT_ROOT
 from scripted_llm import ScriptedChatModel, tool_call
-from walkie_agent.agent import ARM_RULES, SYSTEM_PROMPT, WalkieAgent, create_walkie_agent
+from walkie_agent.agent import (
+    ARM_RULES,
+    SYSTEM_PROMPT,
+    WalkieAgent,
+    _Entry,
+    _Seed,
+    create_walkie_agent,
+)
 from walkie_agent.arm.commander import CommanderClient
 from walkie_agent.gaze import STOP_HEARD, GazeLoop
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory, ModelVector
@@ -470,6 +477,189 @@ def test_reset_stops_task_after_current_tool(connector):
         agent.stop()
 
     assert len(llm.received) == 1
+
+
+# -- One entry per queued message ------------------------------------------------
+
+
+def human(text: str) -> HRIMessage:
+    return HRIMessage(text=text, message_author="human")
+
+
+def queued(agent: WalkieAgent) -> list[tuple[str, list | None]]:
+    """The queue as (text, seed items) pairs, once its entries are checked against it."""
+    with agent._buffer_lock:
+        messages = list(agent._received_messages)
+        keys = list(agent._entries)
+        entries = list(agent._entries.values())
+    # One entry per queued message, in queue order, each holding its own message.
+    assert keys == [id(msg) for msg in messages]
+    assert all(entry.msg is msg for entry, msg in zip(entries, messages, strict=True))
+    return [(entry.msg.text, None if entry.seed is None else entry.seed.items) for entry in entries]
+
+
+def slow_agent(
+    responses: list[AIMessage],
+) -> tuple[WalkieAgent, ScriptedChatModel, threading.Event, threading.Event]:
+    """An agent whose slow_action tool runs until the test sets the release event."""
+    started, release = threading.Event(), threading.Event()
+
+    @tool
+    def slow_action() -> str:
+        """Takes a while, like driving somewhere."""
+        started.set()
+        release.wait(timeout=5)
+        return "done"
+
+    llm = ScriptedChatModel(responses=responses)
+    agent = WalkieAgent(target_connectors={}, llm=llm, tools=[slow_action], stream_response=False)
+    return agent, llm, started, release
+
+
+def test_each_queued_message_has_one_entry_in_queue_order():
+    agent = WalkieAgent(target_connectors={}, llm=ScriptedChatModel(responses=[]))
+
+    agent(human("Go to the kitchen."))
+    agent.submit("Then the bedroom.", todos=["Go to the bedroom"], source="operator")
+    # A line that is not speech is never queued, so it has no entry.
+    agent(human("[BLANK_AUDIO]"))
+    agent.submit("Start over.", todos=[])
+
+    assert queued(agent) == [
+        ("Go to the kitchen.", None),
+        ("Then the bedroom.", ["Go to the bedroom"]),
+        ("Start over.", []),
+    ]
+    entries = list(agent._entries.values())
+    assert [entry.seed.source for entry in entries[1:]] == ["operator", "seed"]
+    assert [(entry.status, entry.annotations) for entry in entries] == [(None, [])] * 3
+
+
+def test_the_same_message_queued_twice_gets_two_entries():
+    agent = WalkieAgent(target_connectors={}, llm=ScriptedChatModel(responses=[]))
+    msg = human("Say hi.")
+
+    agent(msg)
+    agent(msg)
+
+    # The second is queued as a copy, so that the ids stay unique.
+    assert queued(agent) == [("Say hi.", None), ("Say hi.", None)]
+    assert agent._received_messages[0] is msg
+
+
+def test_a_full_queue_drops_the_oldest_message_with_its_entry():
+    agent = WalkieAgent(target_connectors={}, llm=ScriptedChatModel(responses=[]))
+    agent.max_size = 2
+
+    agent.submit("Go to the kitchen.", todos=["Go to the kitchen"])
+    agent(human("Then the bedroom."))
+    agent(human("Then the garage."))
+
+    assert queued(agent) == [("Then the bedroom.", None), ("Then the garage.", None)]
+
+
+def test_reset_drops_every_entry():
+    agent = WalkieAgent(target_connectors={}, llm=ScriptedChatModel(responses=[]))
+    agent(human("Go to the kitchen."))
+    agent.submit("Then the bedroom.", todos=["Go to the bedroom"])
+
+    agent.reset()
+
+    assert queued(agent) == []
+    assert agent._entries == {}
+
+
+def test_a_stop_during_a_task_keeps_only_its_own_entry():
+    agent, llm, started, release = slow_agent(
+        [tool_call("slow_action"), AIMessage(content="Stopped.")]
+    )
+    agent.run()
+    try:
+        agent(human("Drive to the kitchen."))
+        assert started.wait(timeout=5)
+        agent.submit("Then the bedroom.", todos=["Go to the bedroom"])
+        agent(human("Say hi."))
+        assert queued(agent) == [("Then the bedroom.", ["Go to the bedroom"]), ("Say hi.", None)]
+
+        agent(human("Stop."))
+
+        assert queued(agent) == [("Stop.", None)]
+        release.set()
+        # The stop runs next, and its entry leaves with it.
+        assert wait_until(lambda: len(llm.received) == 2 and agent.ready())
+    finally:
+        release.set()
+        agent.stop()
+
+    assert queued(agent) == []
+    assert llm.received[1][-1].content == "Stop.\n"
+
+
+def test_a_task_takes_its_message_with_its_entry():
+    agent, llm, started, release = slow_agent(
+        [tool_call("slow_action"), AIMessage(content="At the kitchen.")]
+        # The seeded step stays open, so the gate sends the LLM back twice.
+        + [AIMessage(content=f"On it {n}.") for n in range(3)]
+    )
+    agent.run()
+    try:
+        agent(human("Drive to the kitchen."))
+        assert started.wait(timeout=5)
+        # The running task took its message, and the entry went with it.
+        assert queued(agent) == []
+        agent.submit("Say hi.", todos=["Say hi"])
+        assert queued(agent) == [("Say hi.", ["Say hi"])]
+
+        release.set()
+        assert wait_until(lambda: len(llm.received) == 5 and agent.ready())
+    finally:
+        release.set()
+        agent.stop()
+
+    assert queued(agent) == []
+    # The seed came off the entry when its own task started.
+    assert llm.reminders[2] == "<todos>\n[ ] t1 Say hi\n</todos>"
+
+
+@pytest.mark.parametrize(
+    ("text", "seed", "status", "kept"),
+    [
+        ("Say hi.", None, None, False),
+        ("Walkie, stop.", None, None, False),
+        # An empty seed is still a seed: it empties the list when its task starts.
+        ("Say hi.", _Seed(items=[], source="seed"), None, True),
+        ("Say hi.", _Seed(items=["Say hi"], source="operator"), None, True),
+        ("Say hi.", None, object(), True),
+        ("Stop.", None, None, True),
+        ("never mind", None, None, True),
+    ],
+    ids=["utterance", "not a stop", "empty seed", "seed", "status", "stop", "never mind"],
+)
+def test_an_overheard_drop_keeps_seeds_statuses_and_stops(text, seed, status, kept):
+    entry = _Entry(msg=human(text), seed=seed, received_mono=0.0, status=status)
+
+    assert entry.kept_on_overheard_drop() is kept
+
+
+def test_a_message_is_stamped_on_the_monotonic_clock_when_it_arrives():
+    agent = WalkieAgent(target_connectors={}, llm=ScriptedChatModel(responses=[]))
+
+    before = time.monotonic()
+    agent(human("Go to the kitchen."))
+    agent.submit("Then the bedroom.", todos=["Go to the bedroom"])
+    after = time.monotonic()
+
+    stamps = [entry.received_mono for entry in agent._entries.values()]
+    assert before <= stamps[0] <= stamps[1] <= after
+
+
+def test_a_caller_can_pass_the_receive_stamp_in():
+    agent = WalkieAgent(target_connectors={}, llm=ScriptedChatModel(responses=[]))
+    arrived = time.monotonic() - 2.0
+
+    agent._enqueue(human("Go to the kitchen."), None, received_mono=arrived)
+
+    assert [entry.received_mono for entry in agent._entries.values()] == [arrived]
 
 
 # -- The operator's task topic and the todo topic (ADR-0041) ---------------------

@@ -10,9 +10,11 @@ undone, and a venue is noisy.
 
 `WalkieAgent` passes `new_message_behavior="queue"` to RAI's `LangChainAgent`.
 Both `__call__`, which RAI calls for every utterance, and `submit` go through
-`_enqueue`, and `_run_agent` takes one message per task, oldest first. A
-message's seed waits in `_seeds`, keyed by `id(msg)` and stored under the
-same `_buffer_lock`, so a reset can never separate the two.
+`_enqueue`, and `_run_agent` takes one message per task, oldest first. Each
+queued message has one entry in `_entries`, keyed by `id(msg)`: an `_Entry`
+that holds the message, its seed, if any, and the `time.monotonic()` at
+which it arrived. The entry is stored under the same `_buffer_lock` as the
+message, so a reset can never separate the two.
 
 `is_stop_utterance` decides what counts as a stop. It lowercases the text,
 trims spaces and `. , ! ?` from both ends, and collapses inner spaces. The
@@ -33,7 +35,7 @@ result must be exactly `stop`, `never mind` or `nevermind`.
 ```
 
 A stop interrupts only while a task runs. `_enqueue` then drops the older
-queued messages and their seeds, keeps the stop itself queued, sets
+queued messages and their entries, keeps the stop itself queued, sets
 `_interrupt_event` and cancels the running atomics with `Toolbox.cancel()`.
 While the agent is idle, "stop" is an ordinary message. Either way, once
 it has queued the stop and released `_buffer_lock`, `_enqueue` calls
@@ -69,7 +71,7 @@ calls never run, and the history repair below answers them.
 
 | Event | What happens at once | What the agent thread does next |
 | --- | --- | --- |
-| `reset()`, or `std_msgs/Empty` on `/walkie/reset` | Under `_buffer_lock`: clears the queue and `_seeds`, sets `_reset_requested` and the interrupt | At the top of the next `_run_agent`: clears the history and the todo list, which publishes `[]`, and starts a new Langfuse session |
+| `reset()`, or `std_msgs/Empty` on `/walkie/reset` | Under `_buffer_lock`: clears the queue and `_entries`, sets `_reset_requested` and the interrupt | At the top of the next `_run_agent`: clears the history and the todo list, which publishes `[]`, and starts a new Langfuse session |
 | `stop()` | Under `_buffer_lock`: sets `_stop_event` and the interrupt, then calls RAI's `stop()`, which joins the thread | Starts no new run, because taking a message checks `_stop_event` |
 | An LLM or graph error | `_run_agent` catches any `Exception`, including LangGraph's error at `RECURSION_LIMIT` | Logs it and serves the next message |
 

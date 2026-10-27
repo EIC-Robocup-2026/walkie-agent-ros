@@ -150,6 +150,15 @@ then cancel the current step
 joins the same conversation, so the LLM also sees the earlier tasks until a
 reset.
 
+Each queued message has exactly one entry beside it, `_Entry` in
+`agent.py`. The entry holds the message, its seed when it has one, and the
+time it arrived on the monotonic clock, which keeps wall rate in the sim
+too. The entry joins and leaves the queue with its message, under the same
+lock: on arrival, when a full queue drops its oldest message, when a stop
+or a reset drops the queued messages, and when a task takes the message.
+So a seed always starts the task of its own message, and a dropped message
+takes its seed with it.
+
 A line that is not speech never joins the queue. Speech recognition turns
 silence, a cough or a clap into text as well: an empty line, a tag such as
 `[BLANK_AUDIO]` or `(music)`, or a phrase from subtitled videos such as

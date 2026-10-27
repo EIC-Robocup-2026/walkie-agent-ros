@@ -22,13 +22,19 @@ load_tuning() raises one TuningError that lists every problem: a table or
 key that nothing reads, a value that is not a number, one its dataclass
 refuses, or a pair of values that do not fit together. So a typo stops the
 agent at start-up instead of leaving a default in place unnoticed. RAI's own
-tables, such as [vendor] and [asr], are not checked here. A top-level table
-that looks meant for [walkie], such as [walky.gaze] or [gaze], is refused.
+top-level tables, [vendor], [openai], [ollama], [tracing], [asr] and [tts],
+are never checked here, even when a walkie table shares a name with one.
+Another top-level table that looks meant for [walkie], such as [walky.gaze]
+or [gaze], is refused.
+
+The keys are read by walkie_agent.config_tables, which types each one by
+its dataclass field and holds TuningError. That module imports only the
+standard library. This one names the agent's tables, checks values across
+them, and imports the modules that hold the configs: the gaze loop,
+perception and the perception atomics.
 """
 
-import dataclasses
 import difflib
-import math
 import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -36,6 +42,12 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, TypeVar
 
+from walkie_agent import config_tables
+
+# TuningError lives with the table readers, which any module can import
+# without the agent; it is re-exported here for the imports that name this
+# module.
+from walkie_agent.config_tables import TuningError
 from walkie_agent.gaze import DEFAULT_CONFIG as DEFAULT_GAZE_CONFIG
 from walkie_agent.gaze import GazeConfig
 from walkie_agent.perception.front import FrontConfig
@@ -51,6 +63,13 @@ CONFIG_PATH = Path("config.toml")
 # table adds its name here, or this loader refuses it as a typo.
 WALKIE_TABLES = ("perception", "gaze")
 
+# The top-level tables of config.toml that RAI reads: [vendor], [openai],
+# [ollama] and [tracing] (rai/initialization/model_initialization.py), and
+# rai_s2s's [asr] and [tts] for voice-asr and voice-tts. They are never
+# refused, so a walkie table named like one of them, such as [walkie.asr],
+# cannot turn RAI's table into an unknown one.
+RAI_TABLES = ("vendor", "openai", "ollama", "tracing", "asr", "tts")
+
 # The keys of each table, named as the dataclass fields they set.
 PERCEPTION_KEYS = ("tf_timeout_s",)
 FRONT_KEYS = ("min_face_rad", "half_angle_deg")
@@ -65,16 +84,6 @@ _PERCEPTION_TABLES = ("front", "vision_feed", "identity")
 _TABLE_NAMES = (*WALKIE_TABLES, *_PERCEPTION_TABLES, *IDENTITY_TABLES)
 
 _Config = TypeVar("_Config")
-
-
-class TuningError(ValueError):
-    """The tuning tables of config.toml are wrong. `errors` holds every problem found."""
-
-    def __init__(self, source: str, errors: list[str]) -> None:
-        self.source = source
-        self.errors = tuple(errors)
-        count = "1 problem" if len(errors) == 1 else f"{len(errors)} problems"
-        super().__init__(f"{source}: {count}:\n" + "\n".join(f"- {e}" for e in errors))
 
 
 @dataclass(frozen=True)
@@ -98,20 +107,20 @@ def parse_tuning(data: Mapping[str, Any], source: str = "config.toml") -> Tuning
     """The configs that a parsed config.toml sets. Raises TuningError listing every problem."""
     errors: list[str] = []
     _refuse_misplaced(data, errors)
-    walkie = _table(data, "walkie", errors)
-    _refuse_unknown(walkie, WALKIE_TABLES, "walkie", errors)
+    walkie = config_tables.table(data, "walkie", errors)
+    config_tables.refuse_unknown(walkie, WALKIE_TABLES, "walkie", errors)
 
     where = "walkie.perception"
-    raw = _table(walkie, where, errors)
-    _refuse_unknown(raw, (*PERCEPTION_KEYS, *_PERCEPTION_TABLES), where, errors)
+    raw = config_tables.table(walkie, where, errors)
+    config_tables.refuse_unknown(raw, (*PERCEPTION_KEYS, *_PERCEPTION_TABLES), where, errors)
     defaults = PerceptionConfig()
     front = _section(defaults.front, raw, f"{where}.front", FRONT_KEYS, errors)
     vision_feed = _section(
         DEFAULT_VISION_FEED_CONFIG, raw, f"{where}.vision_feed", VISION_FEED_KEYS, errors
     )
     identity = _identity(defaults.identity, raw, errors)
-    changes = _read_numbers(raw, PERCEPTION_KEYS, where, errors)
-    perception = _replace(
+    changes = config_tables.read_keys(defaults, raw, PERCEPTION_KEYS, where, errors)
+    perception = config_tables.replace(
         defaults, {**changes, "front": front, "identity": identity}, where, errors
     )
     gaze = _section(DEFAULT_GAZE_CONFIG, walkie, "walkie.gaze", GAZE_KEYS, errors)
@@ -125,11 +134,12 @@ def _refuse_misplaced(data: Mapping[str, Any], errors: list[str]) -> None:
     """Refuse a top-level table meant for [walkie] whose name misses or misspells it.
 
     Such a table would otherwise be read by nothing, and the defaults would
-    stay in place. The other top-level tables are RAI's, such as [vendor]
-    and [asr], and are not checked.
+    stay in place. RAI's own tables are skipped first, so none is refused,
+    even one whose name a walkie table also has. The other top-level tables
+    are refused only when they look meant for [walkie].
     """
     for key in data:
-        if key == "walkie":
+        if key == "walkie" or key in RAI_TABLES:
             continue
         name = key.lower()
         if (
@@ -169,12 +179,12 @@ def _identity(
 ) -> IdentityConfig:
     """`default` with the distance limits that [walkie.perception.identity] sets."""
     where = "walkie.perception.identity"
-    raw = _table(perception, where, errors)
-    _refuse_unknown(raw, IDENTITY_TABLES, where, errors)
+    raw = config_tables.table(perception, where, errors)
+    config_tables.refuse_unknown(raw, IDENTITY_TABLES, where, errors)
     changes: dict[str, Mapping[str, float]] = {}
     for name in IDENTITY_TABLES:
         known: Mapping[str, float] = getattr(default, name)
-        table = _table(raw, f"{where}.{name}", errors)
+        table = config_tables.table(raw, f"{where}.{name}", errors)
         limits = dict(known)
         for model, value in table.items():
             if model not in known:
@@ -185,12 +195,12 @@ def _identity(
                     "are " + ", ".join(known) + "."
                 )
                 continue
-            number = _number(value, f"{where}.{name}.{model}", errors)
+            number = config_tables.number(value, f"{where}.{name}.{model}", errors)
             if number is not None:
                 limits[model] = number
         if table:
             changes[name] = MappingProxyType(limits)
-    return _replace(default, changes, where, errors)
+    return config_tables.replace(default, changes, where, errors)
 
 
 def _section(
@@ -200,66 +210,8 @@ def _section(
     keys: tuple[str, ...],
     errors: list[str],
 ) -> _Config:
-    """`default` with the numbers that the table `name` sets for `keys`."""
-    raw = _table(parent, name, errors)
-    _refuse_unknown(raw, keys, name, errors)
-    return _replace(default, _read_numbers(raw, keys, name, errors), name, errors)
-
-
-def _table(parent: Mapping[str, Any], name: str, errors: list[str]) -> Mapping[str, Any]:
-    """The table `name`, whose last dotted part is its key in `parent`; empty when missing."""
-    value = parent.get(name.rpartition(".")[2])
-    if value is None:
-        return {}
-    if not isinstance(value, Mapping):
-        errors.append(f"{name} = {value!r} is not a table; write it as [{name}].")
-        return {}
-    return value
-
-
-def _refuse_unknown(
-    raw: Mapping[str, Any], known: tuple[str, ...], where: str, errors: list[str]
-) -> None:
-    errors.extend(
-        f"[{where}]: unknown key {key!r}; it takes " + ", ".join(known) + "."
-        for key in raw
-        if key not in known
-    )
-
-
-def _read_numbers(
-    raw: Mapping[str, Any], keys: tuple[str, ...], where: str, errors: list[str]
-) -> dict[str, float]:
-    numbers: dict[str, float] = {}
-    for key in keys:
-        if key in raw:
-            number = _number(raw[key], f"{where}.{key}", errors)
-            if number is not None:
-                numbers[key] = number
-    return numbers
-
-
-def _number(value: Any, name: str, errors: list[str]) -> float | None:
-    # TOML booleans are Python bools, which are ints: `true` is a mistake,
-    # not 1. TOML also has inf and nan, which none of these values can be.
-    if isinstance(value, bool) or not isinstance(value, int | float):
-        errors.append(f"{name} = {value!r} is not a number.")
-        return None
-    if not math.isfinite(value):
-        errors.append(f"{name} = {value!r} is not a finite number.")
-        return None
-    return float(value)
-
-
-def _replace(
-    default: _Config, changes: Mapping[str, Any], where: str, errors: list[str]
-) -> _Config:
-    # Each dataclass checks its own values, so a value it refuses is
-    # reported with its reason, and the default stands in for the rest.
-    if not changes:
-        return default
-    try:
-        return dataclasses.replace(default, **changes)  # type: ignore[type-var]
-    except ValueError as e:
-        errors.append(f"[{where}]: {e}")
-        return default
+    """`default` with the values that the table `name` sets for `keys`."""
+    raw = config_tables.table(parent, name, errors)
+    config_tables.refuse_unknown(raw, keys, name, errors)
+    changes = config_tables.read_keys(default, raw, keys, name, errors)
+    return config_tables.replace(default, changes, name, errors)

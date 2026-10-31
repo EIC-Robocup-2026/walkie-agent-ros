@@ -6,9 +6,11 @@ import time
 import pytest
 from geometry_msgs.msg import TransformStamped, Twist
 from rai.tools.ros2.navigation.nav2_blocking import GetCurrentPoseTool
+from rclpy.time import Time
 from std_msgs.msg import Empty, String
 from tf2_ros import StaticTransformBroadcaster
 
+from conftest import wait_for_nav_server
 from walkie_agent.locations import Location
 from walkie_agent.tools import (
     MoveRelativeTool,
@@ -29,6 +31,7 @@ def wait_until(predicate, timeout=3.0):
 
 
 def test_navigate_to_location_moves_robot(fake_walkie, connector, locations):
+    wait_for_nav_server(connector.node)
     tool = NavigateToLocationTool(connector=connector, locations=locations)
 
     assert tool.invoke({"location": "kitchen"}) == "Arrived at kitchen."
@@ -39,6 +42,7 @@ def test_navigate_to_location_moves_robot(fake_walkie, connector, locations):
 
 
 def test_navigate_to_location_is_case_insensitive(fake_walkie, connector, locations):
+    wait_for_nav_server(connector.node)
     tool = NavigateToLocationTool(connector=connector, locations=locations)
     assert tool.invoke({"location": " Bedroom "}) == "Arrived at bedroom."
 
@@ -62,6 +66,7 @@ def test_navigate_without_nav2_fails_fast(connector, locations):
 
 
 def test_navigate_reports_nav2_abort(fake_walkie, connector):
+    wait_for_nav_server(connector.node)
     far = {"moon": Location(name="moon", x=100.0, y=0.0, yaw=0.0)}
     result = NavigateToLocationTool(connector=connector, locations=far).invoke(
         {"location": "moon"}
@@ -72,7 +77,10 @@ def test_navigate_reports_nav2_abort(fake_walkie, connector):
 
 
 def test_navigate_timeout_cancels_goal(fake_walkie, connector, locations):
-    fake_walkie.drive_time_sec = 3.0
+    # Far longer than every wait here, so only the cancel ends the drive. The
+    # fake looks for a cancel between its ten steps, 3 s apart.
+    fake_walkie.drive_time_sec = 30.0
+    wait_for_nav_server(connector.node)
     tool = NavigateToLocationTool(
         connector=connector, locations=locations, navigation_timeout_sec=0.5
     )
@@ -80,9 +88,11 @@ def test_navigate_timeout_cancels_goal(fake_walkie, connector, locations):
     result = tool.invoke({"location": "kitchen"})
 
     assert result == "Navigation to kitchen timed out after 0.5 s and was cancelled."
-    time.sleep(0.6)  # let the cancel reach the fake and the drive loop stop
+    assert fake_walkie.cancelled.wait(10), "the fake's drive did not end as cancelled"
     x, _, _ = fake_walkie.pose()
-    assert 0.0 < x < 3.5, "robot should have stopped partway to the kitchen"
+    time.sleep(0.2)
+    assert fake_walkie.pose()[0] == x, "robot should not move after the cancel"
+    assert x < 3.5, "robot should have stopped short of the kitchen"
 
 
 def test_navigate_respects_forbidden_action(connector, locations):
@@ -204,6 +214,7 @@ def test_move_relative_moves_in_the_robots_frame(fake_walkie, connector):
 
 
 def test_move_relative_right_after_a_goal_uses_the_new_heading(fake_walkie, connector, locations):
+    wait_for_nav_server(connector.node)
     # The fake turns to the goal heading at the very end, so a TF pose cached
     # from before the result arrived still faces the old way.
     NavigateToLocationTool(connector=connector, locations=locations).invoke(
@@ -222,6 +233,12 @@ def test_move_relative_refuses_stale_tf(connector):
     t.child_frame_id = ROBOT_FRAME
     t.transform.rotation.w = 1.0
     static.sendTransform(t)
+    # A transform missing from the buffer reads as "unknown". Once the buffer
+    # holds it, only its stamp, older than the call, decides.
+    stamp = Time.from_msg(t.header.stamp)
+    assert wait_until(
+        lambda: connector._tf_buffer.can_transform(MAP_FRAME, ROBOT_FRAME, stamp), 10.0
+    )
 
     tool = MoveRelativeTool(connector=connector, tf_timeout_sec=0.5)
     assert tool.invoke({"forward_m": 1.0}).startswith(

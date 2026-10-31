@@ -42,5 +42,17 @@ jobs:
       - name: Build ROS 2 workspace
         run: pixi run build-ros2
 
+      # The step limit stops a session that even the hang watchdog cannot end,
+      # such as a hang inside a C call. It leaves room for the suite to grow:
+      # on a branch with about 2000 tests, pytest took 432 s on the slowest image.
       - name: Run tests
-        run: pixi run test
+        timeout-minutes: 20
+        run: pixi run test --durations=30 --junitxml=junit.xml
+
+      # The per-test times of a run, which its log gives only for the slowest 30.
+      - name: Upload the test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: junit
+          path: junit.xml

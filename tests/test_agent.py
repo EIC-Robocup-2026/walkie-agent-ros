@@ -14,6 +14,7 @@ from rai.communication.ros2 import ROS2Connector, ROS2HRIConnector, ROS2HRIMessa
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Empty, String
 
+from conftest import wait_for_nav_server, wait_for_subscriber
 from scripted_llm import ScriptedChatModel, tool_call
 from walkie_agent.agent import SYSTEM_PROMPT, WalkieAgent, create_walkie_agent
 from walkie_agent.tasks import TaskTemplate
@@ -76,6 +77,8 @@ def fetch_drink_script() -> list[AIMessage]:
 
 
 def test_agent_runs_tools_in_order(fake_walkie, connector, locations):
+    wait_for_nav_server(connector.node)
+    wait_for_subscriber(connector.node, "/to_human")
     llm = ScriptedChatModel(responses=fetch_drink_script())
     agent = create_walkie_agent(llm, connector, locations, target_connectors={})
 
@@ -131,6 +134,10 @@ def test_todo_tools_and_the_graph_share_one_list(connector, locations):
 
 def test_agent_over_ros_hri_topics(fake_walkie, connector, locations):
     """A human sends a task on /from_human; the agent acts and replies on the console topic."""
+    # Before the run, so the tools' own 2 s waits meet a graph that already
+    # has the fake robot.
+    wait_for_nav_server(connector.node)
+    wait_for_subscriber(connector.node, "/to_human")
     agent_hri = ROS2HRIConnector(node_name="walkie_agent_hri_test")
     human_hri = ROS2HRIConnector(node_name="human_console_test")
     replies: list[str] = []
@@ -158,7 +165,7 @@ def test_agent_over_ros_hri_topics(fake_walkie, connector, locations):
         agent_hri.shutdown()
         human_hri.shutdown()
 
-    assert fake_walkie.heard == ["I am at the kitchen."]
+    assert wait_until(lambda: fake_walkie.heard == ["I am at the kitchen."])
     task_message = llm.received[0][1]
     assert isinstance(task_message, HumanMessage)
     # The agent takes one queued message per task and ends its text with a

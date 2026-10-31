@@ -12,7 +12,6 @@ failure path can be tested too.
 
 import math
 import threading
-import time
 
 import rclpy
 from geometry_msgs.msg import TransformStamped
@@ -24,6 +23,10 @@ from rai_interfaces.msg import HRIMessage
 from rclpy.node import Node
 from tf2_ros import TransformBroadcaster
 from tf_transformations import euler_from_quaternion, quaternion_from_euler
+
+# How long destroy_node() waits for running drives to end. A drive ends within
+# one step once it sees _closing, so this is reached only by a stuck one.
+_RELEASE_S = 5.0
 
 
 class FakeWalkie(Node):
@@ -41,7 +44,13 @@ class FakeWalkie(Node):
         self.yaw = 0.0
         self.heard: list[str] = []
         self.heard_speech_ids: list[str] = []
+        # Set once a drive has ended as cancelled, for a test to wait on.
+        self.cancelled = threading.Event()
         self._lock = threading.Lock()
+        # Set by destroy_node(), to end every running drive.
+        self._closing = threading.Event()
+        self._idle = threading.Condition()
+        self._active = 0
 
         group = ReentrantCallbackGroup()
         self._tf = TransformBroadcaster(self)
@@ -58,8 +67,13 @@ class FakeWalkie(Node):
         )
 
     def destroy_node(self) -> None:
-        # Node.destroy_node() does not destroy action servers; without this a
-        # destroyed FakeWalkie leaves an unserved navigate_to_pose on the graph.
+        # A running drive holds an executor thread; it aborts and finishes
+        # before the server goes. Node.destroy_node() does not destroy action
+        # servers; without this a destroyed FakeWalkie leaves an unserved
+        # navigate_to_pose on the graph.
+        self._closing.set()
+        with self._idle:
+            self._idle.wait_for(lambda: self._active == 0, timeout=_RELEASE_S)
         self._nav_server.destroy()
         super().destroy_node()
 
@@ -93,6 +107,16 @@ class FakeWalkie(Node):
         self.get_logger().info(f"[Walkie says] {msg.text}")
 
     def _execute_nav(self, goal_handle):
+        with self._idle:
+            self._active += 1
+        try:
+            return self._drive(goal_handle)
+        finally:
+            with self._idle:
+                self._active -= 1
+                self._idle.notify_all()
+
+    def _drive(self, goal_handle):
         target = goal_handle.request.pose.pose
         tx, ty = target.position.x, target.position.y
         q = target.orientation
@@ -111,6 +135,12 @@ class FakeWalkie(Node):
         for i in range(1, steps + 1):
             if goal_handle.is_cancel_requested:
                 goal_handle.canceled()
+                self.cancelled.set()
+                return result
+            if self._closing.is_set():
+                result.error_code = 1
+                result.error_msg = "The fake robot closed during the drive."
+                goal_handle.abort()
                 return result
             frac = i / steps
             with self._lock:
@@ -119,7 +149,7 @@ class FakeWalkie(Node):
             feedback = NavigateToPose.Feedback()
             feedback.distance_remaining = math.hypot(tx - self.x, ty - self.y)
             goal_handle.publish_feedback(feedback)
-            time.sleep(self.drive_time_sec / steps)
+            self._closing.wait(self.drive_time_sec / steps)
 
         with self._lock:
             self.yaw = tyaw

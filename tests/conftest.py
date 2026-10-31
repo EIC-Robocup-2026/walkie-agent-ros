@@ -122,11 +122,16 @@ os.environ["ROS_DOMAIN_ID"] = str(TEST_DOMAIN_ID)
 # scripts/activate.sh adds them to the environment only once they are built.
 # Without them, an import fails with an ImportError that does not say what to
 # do: the FakeWalkie import below needs rai_interfaces, and the test modules
-# import walkie_database_msgs. The check runs here, before those imports,
-# because pytest imports this file before it calls pytest_configure.
+# import walkie_database_msgs and walkie_vision_msgs. The check runs here,
+# before those imports, because pytest imports this file before it calls
+# pytest_configure.
 _missing = [
     name
-    for name in ("rai_interfaces", "walkie_database_msgs")
+    for name in (
+        "rai_interfaces",
+        "walkie_database_msgs",
+        "walkie_vision_msgs",
+    )
     if importlib.util.find_spec(name) is None
 ]
 if _missing:

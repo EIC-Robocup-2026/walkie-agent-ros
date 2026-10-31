@@ -256,7 +256,8 @@ make = "*"
 ```
 
 The repository and its exact commit are listed in `ros2_ws.repos`. The file
-now also lists walkie-database, which was added later (see the note below):
+now also lists walkie-database and walkie-vision, which were added later
+(see the note below):
 
 ```yaml title="ros2_ws.repos"
 repositories:
@@ -268,6 +269,10 @@ repositories:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-database.git
     version: ...  # the commit of the database node the robot runs
+  ros2_ws/src/walkie-vision:
+    type: git
+    url: https://github.com/EIC-Robocup-2026/walkie-vision.git
+    version: ...  # the commit of the vision node the robot runs
 ```
 
 Two tasks clone and build them:
@@ -279,10 +284,12 @@ inputs = ["ros2_ws.repos"]
 outputs = [
   "ros2_ws/src/rai_interfaces/package.xml",
   "ros2_ws/src/walkie-database/ros2_ws/src/walkie_database_msgs/package.xml",
+  "ros2_ws/src/walkie-vision/ros2_ws/src/walkie_vision_msgs/package.xml",
 ]
 
 [tasks.build-ros2]
-cmd = """colcon build --symlink-install --packages-select rai_interfaces walkie_database_msgs \
+cmd = """colcon build --symlink-install \
+  --packages-select rai_interfaces walkie_database_msgs walkie_vision_msgs \
   --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python"""
 cwd = "ros2_ws"
 depends-on = ["clone-ros2-ws"]
@@ -298,14 +305,17 @@ depends-on = ["clone-ros2-ws"]
   a `~/.colcon/defaults.yaml` made for a system ROS install can point the
   build at the wrong Python.
 
-!!! note "Later: walkie-database"
+!!! note "Later: walkie-database and walkie-vision"
     [walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)
-    was added for the messages of Walkie's memory, `walkie_database_msgs`.
-    Its clone holds a whole repository, so `build-ros2` builds only the
+    was added for the messages of Walkie's memory, `walkie_database_msgs`
+    ([ADR-0035](../architecture/decisions/0035-memory-through-walkie-database.md)),
+    and [walkie-vision](https://github.com/EIC-Robocup-2026/walkie-vision)
+    for the messages of its vision node, `walkie_vision_msgs`
+    ([ADR-0034](../architecture/decisions/0034-vision-models-in-walkie-vision.md)).
+    Each clone holds a whole repository, so `build-ros2` builds only the
     packages named after `--packages-select`. That list is an allow-list: a
     message package from `ros2_ws.repos` that is missing from it is not
-    built
-    ([ADR-0035](../architecture/decisions/0035-memory-through-walkie-database.md)).
+    built.
 
 ```bash
 pixi run build-ros2

@@ -1,7 +1,7 @@
 # ADR-0019: Test against in-repo fakes on Fast DDS
 
 <!-- --8<-- [start:body] -->
-**Status:** Proposed · **Date:** 2026-10-12
+**Status:** Proposed (amended 2026-10-31, see below) · **Date:** 2026-10-12
 
 **Context**
 
@@ -36,4 +36,16 @@ needs such a node fails with a timeout that says nothing about the cause.
   Fast DDS and Zenoh do not talk to each other.
 - Zenoh-specific problems show up only in the smoke test and on the robot.
 - When walkie-ros behavior changes, its fake must change too.
+
+**Amendment, 2026-10-31: the test domain.** A test session no longer draws
+its domain with `random.randint`, which let two sessions on one computer
+collide about once in 101 pairs. When `tests/conftest.py` is imported, before
+rclpy is, it takes `WALKIE_TEST_DOMAIN_ID` if that is set, and otherwise the
+first free domain in a shuffled 100 to 200. Free means that the session gets
+an exclusive `flock` on the domain's lock file in the temporary directory, and
+it holds that lock until it ends. A requested domain that another session
+holds fails the session at once. The session never reads the shell's
+`ROS_DOMAIN_ID`, which may point at a running simulation or the robot. It
+exports the domain it took as `ROS_DOMAIN_ID`, so a subprocess that a test
+starts joins it, and prints `ros domain: <d>` in the pytest header.
 <!-- --8<-- [end:body] -->

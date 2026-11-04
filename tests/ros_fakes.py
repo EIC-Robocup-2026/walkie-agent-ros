@@ -10,6 +10,7 @@ import concurrent.futures
 import math
 import threading
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import Any
 
 from action_msgs.msg import GoalStatus
@@ -141,9 +142,14 @@ class FakeNode:
         self.subscriptions: list[FakeSubscription] = []
         self.destroyed: list[Any] = []
         self.destroy_error: Exception | None = None
+        self.use_sim_time = False
 
     def get_clock(self) -> FakeClock:
         return self.clock
+
+    def get_parameter(self, name: str) -> Any:
+        assert name == "use_sim_time", f"unexpected parameter {name}"
+        return SimpleNamespace(value=self.use_sim_time)
 
     def resolve_topic_name(self, name: str, *, only_expand: bool = False) -> str:
         expanded = name if name.startswith("/") else f"{self.namespace.rstrip('/')}/{name}"

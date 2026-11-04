@@ -92,6 +92,19 @@ These settle the 2026-11-04 review findings of the same number.
 | M12 | A relay tracks what the recipient knows, regardless of order. | Commands can be solved in more than one order. | None. | Delegated |
 | M15 | The deadline is checked after each host call and before completion. A running call still finishes first. | A host call cannot be interrupted safely. | An episode can overrun by one call. | Delegated |
 
+These came up while building those fixes.
+
+| ID | Decision | Why | Alternative and consequence | Status |
+| --- | --- | --- | --- | --- |
+| M16 | The shelf loader shadows `eval`, `exec` and `locals`. | A probe showed that a script could read the counter token from a caught error and forge evidence through them. | They raise `PermissionError` only in a script with something to watch, so their behaviour depends on the script. This is no security boundary. | Delegated |
+| M17 | Evidence counters run inside the Monty worker. After the wall budget is spent, a script gets up to one more feed period to unwind, with every call refused. | A host call per function would spend the script's call budget and could not run inside a builtin's key function. Without the unwind the counters could not be read. | A wrapper adds a frame, so recursion through a watched function hits the depth limit in half the calls. Evidence is lost, failing closed, on a worker crash. | Delegated |
+| M18 | A verified function that names a saved function which never ran stays off the frozen shelf. | Stricter verification would otherwise leave it unable to stand alone. | A useful function can miss the shelf until its helper has run. | Delegated |
+| M19 | Scheduled epochs missing from the log count as failures. A log whose status is not success is incomplete, and so is a comparison of arms given different commands. | This goes past M8, because each case would flatter an arm. | A run that lost one episode reads as incomplete. | Delegated |
+| M20 | `run --arms induct` needs an explicit `--split train`. | The default split is trial, and M7 refuses induction there. | The plan's flow is unaffected, but a bare `--arms induct` now exits with code 2. | Delegated |
+| M21 | Keep both retry layers: the OpenAI client's 3 requests per attempt, inside Inspect's 4 attempts. | Nothing asked to change the client layer. | A dead provider sees up to 12 requests per model call, a computed figure. Passing `max_retries=0` as a model argument would remove the client layer. | Delegated |
+| M22 | The first line that mentions a candidate decides, and later lines go unread. | Reading corrections and negation needs the language parsing M5 ruled out. | Known wrong passes: "I see 2." then "No, 5.", and "It is not the banana." Known wrong fails: "There are two, one apple and one banana", and "No one is waving". Read failed answers from real-model runs before trusting a score. | Delegated |
+| M23 | Reaching an escort's destination is judged from the records after the find, and a destination that is or holds the named origin needs no further move. | The generator can draw "from the shelf to the shelf", and a robot that moves on afterwards still got there. | The fake's people do not move, so an escort whose person never came along still passes. | Delegated |
+
 ## Not built on purpose
 
 | Item | Reason | What it would take |

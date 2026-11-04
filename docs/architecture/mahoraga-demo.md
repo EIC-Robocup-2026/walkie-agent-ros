@@ -406,8 +406,10 @@ parsing language:
   number even as a pronoun.
 - A bare article is not a count, so "There is a dish" fails. Reading "a" as one would
   make "on a bar" a second number.
-- A look again at the same things needs an answer after it, even if an earlier
-  answer was right.
+- A look again at the same things with no answer after it leaves the earlier answer
+  standing, right or wrong. An answer after it takes over from the earlier one.
+- A line that also names a leg or a foot says no raised arm, so "Their left arm is
+  raised and their legs are crossed" fails. Words are not attached to each other.
 - A shortened name such as "the plate" for "red plate" is not a candidate.
 - What a `talk` line says is not checked, so a refusal to the right person, found at
   the right place, passes.
@@ -483,6 +485,13 @@ M1 as a failure, and the usage it logged counts towards tokens and cost. Rounds,
 time and the script metrics cover every episode logged. Any such episode sets the
 arm's `complete` to false, and that of each comparison with the arm. `report` then
 gives a plain `warning`, which is null only if every arm is complete.
+
+M3's input tokens are everything the model was sent, with the cached part also given
+alone. Its cost is what the provider recorded in each raw response, which needs
+`log_model_api=True`. A call with no record, such as an abandoned attempt, counts in
+`M3_cost_unrecorded_calls`, and any such call makes the cost a lower bound. A provider
+that returns no cost at all makes it null. The report holds no price list, because the
+plan's prices were wrong for this route.
 
 A comparison's own `complete` is also false when its arms were scheduled different
 (command, epoch) pairs, or when one sample id holds different command text in the two

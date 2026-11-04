@@ -23,7 +23,7 @@ Status values:
 | S3 | Real-model runs are small slices on OpenRouter with `deepseek-v4.1-flash`. They stop before the 600-episode trial. Tests stay on fake models. | They prove that the pipeline runs at low cost. | The demo cannot say whether scripts beat per-step calls. | Owner |
 | S4 | Claude implements and fixes. Codex `gpt-6-astra` reviews, verifies, researches and writes briefs. | Reviews stay independent of the builder. | None. | Owner |
 | S5 | The agent decides demo questions alone and records them here. | This is a demo, and the choices can be reversed. | Asking first would stall the build. | Owner |
-| S6 | `run_script` stays off the robot agent for this demo. The small real-model runs below show that scripts work in the fake world, which was the condition to reconsider, so this is now a choice and not a wait. | Scripts cost fewer rounds but gained no success, the fake world's moves take no time, and the script budget of 30 s of wall clock would not survive real moves. Monty is also not in the environment the robot agent runs from. | Joining them now shows a script driving the simulated robot, but needs a budget for real motion and environment work. The robot agent keeps per-step tools, at about 7 model calls a command against 4 for scripts. Revisit once the robot path runs. | Delegated |
+| S6 | `run_script` stays off the robot agent for this demo. The small real-model runs below show that scripts work in the fake world, which was the condition to reconsider, so this is now a choice and not a wait. | Scripts cost fewer rounds and fewer tokens but gained no success, the fake world's moves take no time, and the script budget of 30 s of wall clock would not survive real moves. Monty is also not in the environment the robot agent runs from. | Joining them now shows a script driving the simulated robot, but needs a budget for real motion and environment work. The robot agent keeps per-step tools, at about 7 model calls a command against 4 for scripts, while arm B spent 30% to 39% fewer tokens per success than arm A in the fake world. Revisit once the robot path runs. | Delegated |
 
 ## Plan decisions
 
@@ -111,26 +111,31 @@ These came up while building those fixes.
 | M28 | A comparison's `complete` also needs equal scheduled (command, epoch) sets and, for each id logged in both arms, the same `sample.input`. When `sample_ids` is missing, a log schedules `dataset.samples` times its epochs. | Recheck findings R8 and R9. Comparing command ids alone called one epoch against three complete, and accepted changed text under one id. A log without ids saw only the episodes it kept, so a lost one left the denominator and the arm read as complete. | A partial rerun with a different `--epochs` in one log directory now reads incomplete, and `compare` still averages by command. A command a log without ids never logged gets a stand-in id unique to that log, so it counts as a failure in M1 and pairs with nothing. Text is compared only over logged samples, so an id one arm never logged goes unchecked. `warning` stays null when only a comparison is incomplete. | Delegated |
 | M29 | Each model attempt in the gym has 30 s, then it is abandoned and retried. `run_limit` stays 25 and `deadline_s` stays 60. | 5 of 1750 model calls ran away. One wrote 131072 tokens in 275 s, most of the first shelf build's output, and the other 4 had not finished when their episode reached its 300 s limit, which fails an episode through no fault of its answer. Inspect's `timeout` only stops further retries. The longest normal call took 13 s and the longest episode 15 calls. | Abandoned attempts may still be billed by the provider, and Inspect's usage does not count them. Both limits are measured only on the fake world, on a fast model, so a slower model needs a higher attempt limit. | Delegated |
 | M30 | A `talk` command that asks for a fact gets a source and a check: a clock and team facts on `ctx`, the same in the fake world and on the robot, and a checker that compares the line for those topics. "Something about yourself" stays unchecked. To build after the ROS merge, which is changing the same capability files. | Third run: 4 of 30 held-out and 8 of 30 training commands ask for a fact that nothing supplies. Every arm invented one ("It is 3 o'clock"), and in A, B and D the line "What day is tomorrow?", which reads the command back as a question, passed. The robot has no clock either, so it would state a made-up time. The hunt for a clock also caused the longest failure of the run. | Keeping the documented limit leaves about 13% of held-out commands free in every arm and the robot inventing answers. The cost is one more capability, a new function in every arm's prompt, and a gate rerun. Runs before this are not comparable on these commands. | Delegated, not built |
-| M31 | A later look with no answer after it no longer discards an earlier answer. The checker judges the last look that a line naming a candidate follows. To build with M30. | Third run, training command 100030: the model said the right answer, "chips bag", then looked again without speaking and scored 0. The limit was documented, and a real model has now hit it. | A right answer, a look and a wrong answer still fails, and a wrong answer, a look and a right answer still passes. Only a right answer followed by a silent look changes. | Delegated, not built |
+| M31 | A later look with no answer after it no longer discards an earlier answer. The checker judges the last look that a line naming a candidate follows. | Third run, training command 100030: the model said the right answer, "chips bag", then looked again without speaking and scored 0. The limit was documented, and a real model hit it. | A right answer, a look and a wrong answer still fails, and a wrong answer, a look and a right answer still passes. Only a silent look after an answer changes, and a wrong answer followed by one still fails. | Delegated |
+| M32 | M3's input counts everything the model was sent, with the cached part also given alone. Its cost is what the provider recorded in each raw response, with calls that have no record counted beside it, and `run` sets `log_model_api=True`. The plan's prices are gone from the report. | Third review, N1 and N2. Inspect's `input_tokens` leaves out cache reads, about 90% of input here, so a figure of 2177 tokens per success was really 17343, and the order of the arms changed. The plan's prices made the second training run read $0.023 when the provider recorded at least $0.074. Inspect keeps only the first few raw responses unless told otherwise. | Logs from before this have a lower bound for cost, and larger logs follow from now on: 31 KB for 3 commands. Abandoned attempts have no record, so they remain a lower bound. A provider that returns no cost reports null, with no estimate. | Delegated |
+| M33 | A raise counts against the version that ran, whether or not the script saved it. | Third review, N3. A failed script that defined the same text as a saved version lost its raise, because only saved or shelf versions were kept, and a later recovery then verified that version. | None seen. A version that never reaches the shelf only adds an entry nothing reads. | Delegated |
+| M34 | "Forearm" counts as an arm, and a line naming a leg, knee or foot says no raised arm. | Third review, N4 and N5. The arm requirement of M27 rejected "Their right forearm is raised" and still passed "Their hand rests on their raised right leg", since words are not attached to each other. | A true arm answer that also mentions a leg now fails. Limits left as they are, all low in likelihood and short of parsing language: "I can see the person's feet" reads as standing, "waist-high" holds "high", "rightward" and "palm" are not read, and "TV stand" reads as standing. | Delegated |
 
 ### Small real-model runs
 
 All three ran `deepseek/deepseek-v4.1-flash:nitro` on 30 held-out commands, one epoch
 each, in the fake world, on 2026-11-05. These are checks that the pipeline works, not
-the planned comparison. No difference between arms is significant (McNemar p is 0.5 or
-higher in each pair), and success is near the ceiling, so it cannot separate arms at
-this size. Tokens per success leave out cached input.
+the planned comparison. No difference in success between arms is significant (McNemar
+p is 0.5 or higher in each pair), and success is near the ceiling, so it cannot separate
+arms at this size. Tokens per success include cached input (M32). Costs are what the
+provider recorded and are lower bounds, because these runs kept only some raw responses.
 
 Third run, after M25 to M29. Shelf: 23 functions from 30 training commands, with 27 of
-30 training episodes passing, which cost $0.050. The held-out arms cost $0.058.
+30 training episodes passing, which cost at least $0.123. The held-out arms cost at
+least $0.162.
 
 | Arm | Success | Mean rounds | Longest episode | Tokens per success | Shelf used |
 |---|---|---|---|---|---|
-| A | 30/30 | 7.0 | 13 | 2417 | n/a |
-| B | 29/30 | 4.2 | 7 | 2041 | n/a |
-| C | 28/30 | 5.2 | 22 | 3975 | 30% of episodes |
-| C2 | 30/30 | 3.4 | 6 | 2182 | as examples |
-| D | 30/30 | 6.2 | 13 | 2252 | n/a |
+| A | 30/30 | 7.0 | 13 | 16911 | n/a |
+| B | 29/30 | 4.2 | 7 | 10277 | n/a |
+| C | 28/30 | 5.2 | 22 | 20885 | 30% of episodes |
+| C2 | 30/30 | 3.4 | 6 | 12554 | as examples |
+| D | 30/30 | 6.2 | 13 | 19908 | n/a |
 
 What the third run showed:
 
@@ -155,24 +160,29 @@ What the third run showed:
   completed calls.
 - Training `100021`: `throw_object_in_trash` searched the room, so the apple did not
   come from the shelf the command named. This is a fair failure.
-- Training `100030`: a false failure, which M31 addresses.
+- Training `100030`: a false failure, which M31 fixes. The scores above predate M31.
 - Training `100031`: "follow them" names no destination. The model followed the person
   to three places and kept checking, until 205K tokens passed the 200K limit. 143K of
   those were cached input, which counts toward the limit.
 
-In both runs with a real shelf, C took more rounds and more tokens than C2, which holds
-the same scripts as examples. Two small runs are a direction to test, not a result.
+In both runs with a real shelf, the script arms B and C2 spent the fewest tokens per
+success, 30% to 39% fewer for B than for A. C spent the most, with more rounds than C2,
+which holds the same scripts as examples. Two small runs are a direction to test, not a
+result.
 
-Second run, after M24. Shelf: 22 functions from 30 training commands, which cost
-$0.023.
+A very small check after M32 ran arm B on 3 commands, on the gate digest
+`09fd4c35c5483df3`: 3/3, with every call's cost recorded, for a total of $0.0028.
+
+Second run, after M24. Shelf: 22 functions from 30 training commands, which cost at
+least $0.074. The held-out arms cost at least $0.164.
 
 | Arm | Success | Mean rounds | Longest episode | Tokens per success | Shelf used |
 |---|---|---|---|---|---|
-| A | 29/30 | 6.9 | 13 | 2177 | n/a |
-| B | 29/30 | 4.4 | 8 | 2151 | n/a |
-| C | 28/30 | 4.9 | 15 | 3581 | 37% of episodes |
-| C2 | 29/30 | 3.4 | 8 | 2472 | as examples |
-| D | 29/30 | 5.8 | 12 | 1938 | n/a |
+| A | 29/30 | 6.9 | 13 | 17343 | n/a |
+| B | 29/30 | 4.4 | 8 | 12113 | n/a |
+| C | 28/30 | 4.9 | 15 | 19160 | 37% of episodes |
+| C2 | 29/30 | 3.4 | 8 | 13709 | as examples |
+| D | 29/30 | 5.8 | 12 | 18035 | n/a |
 
 What the failures were:
 

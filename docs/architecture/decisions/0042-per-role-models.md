@@ -3,6 +3,11 @@
 <!-- --8<-- [start:body] -->
 **Status:** Proposed · **Date:** 2026-10-22
 
+**Scope, 2026-11-05.** The agent no longer calls `get_llm_model`. Proposed
+[ADR-0062](/architecture/decisions/0062-bounded-model-calls.md) replaces this proposal's
+model selection and bounds for the implemented agent. Roles and per-role keys are not
+built, and stay proposed.
+
 **Context**
 
 Today the agent builds one model, `get_llm_model("complex_model",

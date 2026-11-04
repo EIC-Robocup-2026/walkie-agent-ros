@@ -1,7 +1,12 @@
 # ADR-0007: Speak only through the speak tool; plain replies go to the console
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-12
+**Status:** Accepted, amended by
+[ADR-0052](/architecture/decisions/0052-capability-verbs-and-backends.md) ·
+**Date:** 2026-10-12
+
+The `speak` tool is now the `say` atomic over `ctx.speech`, and the fixed stop line also
+reaches `/to_human`. Plain replies still go to the console only.
 
 **Context**
 

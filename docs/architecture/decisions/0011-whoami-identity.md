@@ -1,7 +1,9 @@
 # ADR-0011: Give the agent Walkie's identity with rai_whoami
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-12
+**Status:** Superseded by
+[ADR-0068](/architecture/decisions/0068-static-robot-description.md) ·
+**Date:** 2026-10-12
 
 **Context**
 
@@ -35,5 +37,5 @@ index of the documents.
 - `rai_whoami` ignores URDF files
   ([ADR-0020](/architecture/decisions/0020-no-urdf-in-agent.md)).
 
-**See also:** [Give Walkie an identity](/setup/06-whoami.md)
+**See also:** [What Walkie knows about itself](/architecture/agent.md#what-walkie-knows-about-itself)
 <!-- --8<-- [end:body] -->

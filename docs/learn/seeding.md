@@ -86,9 +86,9 @@ non-empty `task`, exactly one of `todos` or `template`, and no other keys.
 ...         parse_task_message(data, {})
 ...     except ValueError as e:
 ...         print(e)
-The message needs exactly one of todos and template.
-The message has unknown keys: todo.
-The message is not valid JSON: Expecting value: line 1 column 1 (char 0).
+The task message is malformed: Value error, needs exactly one of todos and template.
+The task message is malformed: todo: Extra inputs are not permitted.
+The task message is malformed: Invalid JSON: expected value at line 1 column 1.
 
 ```
 

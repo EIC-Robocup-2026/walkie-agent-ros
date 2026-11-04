@@ -76,17 +76,23 @@ def test_the_shipped_file_has_no_templates_and_a_valid_example(tmp_path):
 @pytest.mark.parametrize(
     ("text", "error"),
     [
-        ('[tour]\ntask = "x"\ntodos = ["a"]\n', "unknown top-level keys tour"),
-        ("templates = 3\n", "templates must be a table"),
-        ("[templates]\ntour = 3\n", "template 'tour' must be a table"),
-        ('[templates.tour]\ntask = "x"\nitems = ["a"]\n', "template 'tour' has unknown keys: items"),
+        ('[tour]\ntask = "x"\ntodos = ["a"]\n', "tour: Extra inputs"),
+        ("templates = 3\n", "templates: Input should be a valid dictionary"),
+        ("[templates]\ntour = 3\n", "templates.tour: Input should be a valid dictionary"),
+        ('[templates.tour]\ntask = "x"\nitems = ["a"]\n', "templates.tour.items: Extra inputs"),
         (
             '[templates.tour]\nkeywords = ["tour"]\ntask = "x"\ntodos = ["a"]\n',
-            "template 'tour' has unknown keys: keywords",
+            "templates.tour.keywords: Extra inputs",
         ),
-        ('[templates.tour]\ntodos = ["a"]\n', "template 'tour' has no task text"),
-        ('[templates.tour]\ntask = "x"\ntodos = []\n', "template 'tour' needs todos"),
-        ('[templates.tour]\ntask = "x"\ntodos = "a"\n', "template 'tour' needs todos"),
+        # The name is the table's key, so a name inside the table is an unknown key.
+        (
+            '[templates.tour]\nname = "other"\ntask = "x"\ntodos = ["a"]\n',
+            "templates.tour.name: Extra inputs",
+        ),
+        ('[templates.tour]\ntodos = ["a"]\n', "templates.tour.task: Field required"),
+        ('[templates.tour]\ntask = " "\ntodos = ["a"]\n', "templates.tour.task: String should"),
+        ('[templates.tour]\ntask = "x"\ntodos = []\n', "templates.tour.todos: List should"),
+        ('[templates.tour]\ntask = "x"\ntodos = "a"\n', "templates.tour.todos: Input should"),
         ('[templates.tour]\ntask = "x"\ntodos = [{ content = "" }]\n', "Seed item t1 has no content"),
         (
             '[templates.tour]\ntask = "x"\ntodos = [{ content = "a", require_tool = "speak" }]\n',
@@ -95,8 +101,17 @@ def test_the_shipped_file_has_no_templates_and_a_valid_example(tmp_path):
     ],
 )
 def test_a_bad_template_fails_at_load(tmp_path, text, error):
-    with pytest.raises(ValueError, match=re.escape(error)):
-        load_task_templates(write(tmp_path, text))
+    path = write(tmp_path, text)
+    with pytest.raises(ValueError, match=re.escape(error)) as caught:
+        load_task_templates(path)
+    message = str(caught.value)
+    assert "\n" not in message
+    assert str(path) in message
+    assert "[templates.<name>]" in message
+
+
+def test_a_template_task_is_stripped():
+    assert TaskTemplate(name="tour", task="  Show.\n", todos=["a"]).task == "Show."
 
 
 # -- /walkie/task messages -------------------------------------------------------
@@ -118,18 +133,29 @@ def test_a_task_message_with_a_template():
 @pytest.mark.parametrize(
     ("data", "error"),
     [
-        ("Go to the kitchen", "not valid JSON"),
-        ('["Go to the kitchen"]', "must be a JSON object"),
-        ('{"todos": ["Go"]}', "no task text"),
-        ('{"task": " ", "todos": ["Go"]}', "no task text"),
-        ('{"task": 3, "todos": ["Go"]}', "no task text"),
+        ("Go to the kitchen", "Invalid JSON"),
+        ('["Go to the kitchen"]', "Input should be an object"),
+        ('{"todos": ["Go"]}', "task: Field required"),
+        ('{"task": " ", "todos": ["Go"]}', "task: String should have at least 1 character"),
+        ('{"task": 3, "todos": ["Go"]}', "task: Input should be a valid string"),
         ('{"task": "Go."}', "exactly one of todos and template"),
         ('{"task": "Go.", "todos": ["Go"], "template": "tour"}', "exactly one of todos and template"),
+        # Both keys are present, so a null on either side does not make it one seed.
+        ('{"task": "Go.", "todos": null, "template": "tour"}', "todos: Input should be a valid array"),
+        ('{"task": "Go.", "todos": [], "template": null}', "template: Input should be a valid string"),
+        ('{"task": "Go.", "todos": null}', "todos: Input should be a valid array"),
+        ('{"task": "Go.", "template": null}', "template: Input should be a valid string"),
         ('{"task": "Go.", "template": "garage"}', "no task template 'garage'. Known templates: tour"),
-        ('{"task": "Go.", "todos": {"content": "Go"}}', "todos must be a list"),
-        ('{"task": "Go.", "todo": ["Go"]}', "unknown keys: todo"),
+        ('{"task": "Go.", "template": " tour "}', "no task template ' tour '. Known templates: tour"),
+        ('{"task": "Go.", "todos": {"content": "Go"}}', "todos: Input should be a valid array"),
+        ('{"task": "Go.", "todo": ["Go"]}', "todo: Extra inputs"),
     ],
 )
 def test_a_malformed_task_message_raises(data, error):
-    with pytest.raises(ValueError, match=re.escape(error)):
+    with pytest.raises(ValueError, match=re.escape(error)) as caught:
         parse_task_message(data, {"tour": template()})
+    assert "\n" not in str(caught.value)
+
+
+def test_an_empty_seed_is_a_seed():
+    assert parse_task_message('{"task": "Go.", "todos": []}', {}) == ("Go.", [])

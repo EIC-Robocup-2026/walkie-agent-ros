@@ -1,14 +1,21 @@
 # Self-Evolving Agent (Proposed)
 
-!!! note "Status: Proposed"
-    The host graph and the todo list are partly built: see
-    [The Agent](agent.md#how-a-task-runs) for how they work today. Levels,
-    taint, tool search and the cancel token are not built yet. The rest of
-    this page is the design for team review. Each of the
-    [open questions](#open-questions) says which phase it blocks.
+!!! note "Status: a larger proposal, on top of a fixed runtime"
+    Most of this page is not built. It is the design for team review, and each of
+    the [open questions](#open-questions) says which phase it blocks.
+
+    What is built is smaller: `create_agent`, one tool set bound at startup, the todo
+    list and the cancel token. See [The Agent](agent.md) for how they work and what
+    their evidence covers. That runtime replaced the host this page first assumed
+    ([ADR-0061](decisions/0061-create-agent-runtime-and-cancellation.md)), and it does
+    not bind tools per turn ([ADR-0067](decisions/0067-static-tool-sets.md)).
+
+    Levels, taint, bundles, tool search, tool creation, generated code and live perception
+    are not built. Sections below say where the proposal differs from the code. Whether to
+    keep, rescope or withdraw the rest is the team's call.
 
 Today's agent has a fixed set of tools, built once at startup (see
-[The Agent](agent.md)). The self-evolving agent, nicknamed Mahoraga, can
+[The Agent](agent.md)). The self-evolving agent, nicknamed Mahoraga, would
 also combine its tools into larger ones and create new tools while it runs.
 The tools that work can later join the reviewed set. The levels and the
 sandbox are on [Access Levels and Generated Tools](access-levels.md), the
@@ -18,14 +25,16 @@ and the vision models on [Perception](perception.md).
 
 ## Summary
 
-- **Own graph, tools bound every turn**, so a tool found or created
-  mid-task is callable on the next turn
-  ([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
-- **A todo list for every task**, with its rules in code, seedable before
+- **Tools bound every turn (not built)**, so a tool found or created mid-task
+  would be callable on the next turn. The first design for this,
+  [ADR-0038](decisions/0038-own-graph-per-turn-binding.md), is superseded. The
+  runtime now binds one fixed set, so this would need a new decision.
+- **A todo list for every task (built)**, with its rules in code, seedable before
   the first turn ([ADR-0041](decisions/0041-todo-list-and-seeding.md)).
-- **Typed atomic tools and bundles.** A bundle chains atomics. It is data,
-  checked by a linker, and reports the step that failed
-  ([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)).
+- **Typed atomic tools (built) and bundles (not built).** The atomics are plain
+  typed functions ([ADR-0060](decisions/0060-atomic-tools-and-adapter.md)). A bundle
+  would chain atomics. It would be data, checked by a linker, and report the step
+  that failed ([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)).
 - **Effects** (read, perceive, speak, drive, move an arm), allowed by tier
   and access level ([ADR-0039](decisions/0039-access-levels.md)).
 - **Hybrid tool search.** At most 20 tools are bound per turn. The rest are
@@ -41,18 +50,18 @@ and the vision models on [Perception](perception.md).
 
 | Area | Today | Proposed |
 | ---- | ----- | -------- |
-| Host | `WalkieAgent` subclasses RAI's `LangChainAgent` and runs its own graph, which binds every tool every turn (phase 1) | The same graph binds only the visible tools, filtered by access level and taint |
-| Tools | Ten tools from `build_walkie_tools()`, `update_todos` and `wait_for_person` included, plus `search_robot_docs` after `pixi run whoami-build`. Most return one sentence | Typed atomics and reviewed bundles in git, plus generated tools outside it, in four tiers |
-| Planning | A todo list with rules in code, seedable through `submit()`, templates or `/walkie/task`, and published on `/walkie/todos` (phase 1) | The same list. In a turn tainted by web content, only a status can change |
-| Tool choice | Every tool is bound | At most 20 bound. The rest are found with `find_tools` |
+| Host | `create_agent` with a fixed stack of middlewares and one Runner, which binds one tool set at build | Binds only the visible tools, filtered by access level and taint. Needs a new decision on how to change bound tools under `create_agent` |
+| Tools | One of `default`, `gpsr` or `hri`, as plain typed atomics, plus `update_todos` and `wait_for_person`. Most return one sentence | Typed atomics and reviewed bundles in git, plus generated tools outside it, in four tiers |
+| Planning | A todo list with rules in code, seedable through `Runner.submit()` or `/walkie/task`, with templates by exact name, and published on `/walkie/todos` | The same list. In a turn tainted by web content, only a status can change |
+| Tool choice | The whole set is bound | At most 20 bound. The rest are found with `find_tools` |
 | New tools | None at runtime | `request_tool`: reuse, compose or write code, as the access level allows |
-| Models | One agent model in `config.toml` | A model, fallbacks, a timeout and an API key per role |
-| Perception and arms | Memory only, through `find_objects` | Detection, matching, 3D position and arm skills as typed atomics, on mocks first |
+| Models | One agent model and an optional fallback from `config.toml`, with a run limit and a deadline. No fallback is selected | A model, fallbacks, a timeout and an API key per role |
+| Perception and arms | None. The vision and arm verbs answer `UNAVAILABLE` on the robot's `ctx`. The remembered-object tool is retired | Detection, matching, 3D position and arm skills as typed atomics, on mocks first |
 | Sounds | Speech only | `play_sound` through `/to_human` ([ADR-0045](decisions/0045-play-sound-through-to-human.md)) |
 
 ## The loop
 
-A task runs in the agent's own graph, which binds the visible tools on
+In this proposal, a task runs in a graph that binds the visible tools on
 every turn. When no bound tool fits, the agent finds one or has one made,
 and it is bound on the next turn. Traces and drafts go to the sim harvest,
 where a human decides what enters git. Every run starts from what is in
@@ -83,6 +92,9 @@ Each box has its own diagram where it is described:
 
 ## One task, end to end
 
+This run is the design's target, and it has not happened. It uses bundles, live vision
+and arm skills, none of which exist.
+
 "Bring me the red mug from the kitchen." A template seeds four todo items,
 and the first drives to the kitchen. Two mugs match, so the bundle stops
 and the agent asks. The first pick fails in the mock, the runtime stows the
@@ -97,7 +109,7 @@ sequenceDiagram
     participant M as Mocks
     P->>A: Bring me the red mug from the kitchen
     Note over A: a template seeds t1 to t4
-    A->>X: navigate_to_location("kitchen")
+    A->>X: go_to("kitchen")
     A->>R: pickup_object_in_view(object="mug", description="red")
     R->>X: detect_objects("mug")
     X->>M: DetectObjects on the latest image
@@ -115,7 +127,7 @@ sequenceDiagram
     Note over A,R: the error ledger blocks completing t2 until a pick succeeds
     A->>R: pick_object(obj="obj_3f2a.0")
     R-->>A: Holding mug obj_3f2a.0 in the right arm. Arms in carry.
-    A->>X: navigate_to_location back to the person
+    A->>X: go_to back to the person
     A->>R: hand_over(arm="right")
     R-->>A: Handed over. Arms: home, safe for driving.
 ```
@@ -137,34 +149,36 @@ bundle ([The tool creator](#the-tool-creator)).
 
 | Tier | Folder | Format | Written by | Runs in | Loads at |
 | ---- | ------ | ------ | ---------- | ------- | -------- |
-| atomic | `src/walkie_agent/tools/atomic/` | Python: `META`, `Args`, `Out`, `run(ctx, args)` | a human, or a promoted generated tool | the agent process if `META.runtime = "inprocess"`, otherwise a sandbox worker | every level, within its reviewed manifest |
-| bundled_preset | `src/walkie_agent/tools/bundled_preset/` | Bundle DSL | a human, often from a promoted bundle | `BundleRunner` | every level, if its backends are real or the run is a simulation |
+| atomic | `src/walkie_agent/atomics/` | Built: plain typed functions over `ctx`. Proposed in addition: `META`, `Args`, `Out`, `run(ctx, args)` | a human, or a promoted generated tool | the agent process if `META.runtime = "inprocess"`, otherwise a sandbox worker | every level, within its reviewed manifest |
+| bundled_preset | `src/walkie_agent/bundled_preset/` (proposed) | Bundle DSL | a human, often from a promoted bundle | `BundleRunner` | every level, if its backends are real or the run is a simulation |
 | bundled | `$WALKIE_TOOLS_HOME/bundled/` | Bundle DSL, rendered from JSON | the atomic agent | `BundleRunner` | Unrestricted and Standard: drafts stamped at or below the level. Competition: this session's only |
 | temporary | `$WALKIE_TOOLS_HOME/temporary/` | Python, same shape as atomic | the tool coder | a sandbox worker | as for bundled |
 
 A Competition run builds its index in memory from the git tiers and loads
 no generated file, so a sim draft cannot reach a competition by accident.
-Today's `navigation.py`, `memory.py` and `speech.py` gain a typed `core()`
-in place and keep their sentences. The registry scans them and
-`tools/atomic/`, so there is one catalogue without a large file move.
+The built atomics in `src/walkie_agent/atomics/` are plain typed functions
+that return sentences or JSON ([ADR-0060](decisions/0060-atomic-tools-and-adapter.md)).
+The `META`, `Args` and `Out` shape, the typed `core()` and the registry are not built,
+and a registry would have to be reconciled with those functions.
 
 ### How a tool call runs
 
-`WalkieToolRunner` sends each call down one of three paths. Everything
-spoken passes the [speech gate](competition.md#speech-gate). Generated code
+A dispatcher would send each call down one of three paths. None of it is built:
+today `create_agent`'s tools node runs the atomics directly. Everything
+spoken would pass the [speech gate](competition.md#speech-gate). Generated code
 reaches tools, ROS and the web only through a `ctx` that the parent checks
 on every call ([The shared ctx API](access-levels.md#the-shared-ctx-api)).
 
 ```mermaid
 flowchart TD
-    TR["WalkieToolRunner"] -->|"atomic"| ATOM["Atomic tools<br/>typed, reviewed, in git"]
+    TR["Proposed dispatcher"] -->|"atomic"| ATOM["Atomic tools<br/>typed, reviewed, in git"]
     TR -->|"bundle"| RUN["BundleRunner<br/>checks, runs and traces each step"]
     TR -->|"generated Python"| HOST["Sandbox host<br/>bwrap worker, every ctx call checked"]
     RUN --> ATOM
     HOST -->|"ctx.tools"| ATOM
     HOST -->|"ctx.http"| WEB["HTTP broker<br/>named sources, web search"]
     HOST -->|"ctx.ros: Unrestricted, Standard"| BE
-    ATOM -->|"speak, play_sound"| SG["Speech gate<br/>word list, caps"]
+    ATOM -->|"say, play_sound"| SG["Speech gate<br/>word list, caps"]
     ATOM --> BE["ROS 2 clients or mocks"]
     SG --> BE
 ```
@@ -173,10 +187,10 @@ flowchart TD
 
 | Effect | Meaning | Examples |
 | ------ | ------- | -------- |
-| R | reads stored or robot state | `list_locations`, `find_objects`, `get_current_pose`, `get_arm_state` |
+| R | reads stored or robot state | `list_places`, a remembered-object tool, `get_current_pose`, `get_arm_state` |
 | P | perceives or computes | `detect_objects`, `search_detections`, `relate_objects`, `localize_object` |
-| S | speaks or plays a sound ([ADR-0007](decisions/0007-speak-tool-and-console.md)) | `speak`, `play_sound` |
-| N | moves the base | `navigate_to_location`, `move_relative`, `navigate_to_pose`, `look_at` |
+| S | speaks or plays a sound ([ADR-0007](decisions/0007-speak-tool-and-console.md)) | `say`, `play_sound` |
+| N | moves the base | `go_to`, `move_relative`, `navigate_to_pose`, `look_at` |
 | M | moves an arm or gripper | `move_arm_to_pose`, `set_gripper`, `run_skill` |
 
 A bundle's effects are the union of its steps, and retries are allowed only
@@ -196,7 +210,7 @@ which is all the LLM sees on success. An atomic's `META` also holds
 each parameter's `description` make up the schema the LLM sees, so both are
 required.
 
-```python title="tools/bundled_preset/pickup_object_in_view.py"
+```python title="bundled_preset/pickup_object_in_view.py (proposed)"
 """Find an object the head camera sees now, described in words, and pick it up."""
 from walkie_agent.toolbox.dsl import Arg, Bundle, Fmt, Param, Ref, Step
 
@@ -299,11 +313,12 @@ on reset and when a new task replaces the todo list.
 
 | Today | Proposed | Note |
 | ----- | -------- | ---- |
-| `speak`, `list_locations`, `navigate_to_location`, `move_relative`, `find_objects` | core atomics, bound every turn | Each gains a typed `core()` and keeps its sentence |
-| RAI's `WaitForSecondsTool` | core, bound as `wait_for_seconds` | Its tool name today is `WaitForSecondsTool`. The rename to the name that the lint and level policy use is planned |
-| RAI's `get_current_pose` | reached through `find_tools` | Exposed to generated code through `ctx.tools` at every level. Counts as local sensing for the Rule of Two |
-| RAI's `get_ros2_topics_names_and_types` | never shown to the task LLM | The tool coder gets level-filtered `ros_list` and `ros_describe` instead |
-| `search_robot_docs` | reached through `find_tools` | Keeps today's OpenRouter embeddings, so it needs the network |
+| `say`, `list_places`, `go_to`, `move_relative` | core atomics, bound every turn | Built as plain typed functions over `ctx` |
+| `find_objects` | a live-view atomic | Built, but it answers `UNAVAILABLE` on the robot's `ctx`. The old tool of this name read remembered rows, and it is retired |
+| No wait tool | core, bound as `wait_for_seconds` | RAI's `WaitForSecondsTool` is no longer bound. Proposed: a typed atomic under the name that the lint and level policy use |
+| No pose tool | reached through `find_tools` | RAI's `get_current_pose` is no longer bound. `ctx.base.pose()` exists, and no atomic exposes it. Proposed: expose it to generated code through `ctx.tools` at every level. Counts as local sensing for the Rule of Two |
+| No topic tool | never shown to the task LLM | RAI's `get_ros2_topics_names_and_types` is no longer bound. The tool coder would get level-filtered `ros_list` and `ros_describe` instead |
+| No docs tool | not planned yet | `search_robot_docs` left with the whoami tree ([ADR-0068](decisions/0068-static-robot-description.md)). `robot.md` is static. A docs tool would need its own index and a new decision |
 
 The early design named some tools differently:
 
@@ -311,8 +326,8 @@ The early design named some tools differently:
 | ---------- | ------- | ---- |
 | `move_absolute` | internal `navigate_to_pose(pose: PoseRef)` | Never shown to the task LLM. Reviewed presets use it, and in sim at Standard or Unrestricted generated code may call it through `ctx.tools`. It drives to a stand-off approach pose and refuses far or off-map targets. The pose comes from memory or perception ([ADR-0043](decisions/0043-navigate-to-pose-provenance.md)) |
 | `move_relative` | today's `move_relative` | Already bounded to 3 m ([ADR-0031](decisions/0031-bounded-relative-moves.md)) |
-| `query_objects` | `find_objects` (memory), then `detect_objects` (live view) | Memory is checked first |
-| `query_rooms` | today's `list_locations` | A rooms query needs its own walkie-database interface and ADR |
+| `query_objects` | a separate remembered-object tool (proposed), then `detect_objects` (live view) | Memory is checked first, and its answer says where an object was last seen. It is never presented as a current view |
+| `query_rooms` | today's `list_places` | A rooms query needs its own walkie-database interface and ADR |
 | `set_arms_pose` | `move_arm_to_pose(pose, arm)` | Named poses, starting from the SRDF presets walkie-agent-v2 used ([ADR-0022](decisions/0022-named-arm-poses.md)), no lift motion or `*_lift` groups ([ADR-0026](decisions/0026-exclude-lift.md)) |
 | `capture_frame` | folded into `detect_objects` | No frames are kept ([ADR-0028](decisions/0028-images-and-policy-robot-side.md)) |
 | `get_transform` | internal, stamp-aware | Used by `localize_object`, never shown to the LLM ([ADR-0010](decisions/0010-bounded-navigation-tool.md)) |
@@ -322,12 +337,17 @@ Sound, time and web atomics are on [Competition Mode](competition.md).
 
 ## Finding objects with search_detections
 
+None of this cascade is built. On the robot's `ctx`, `find_objects` answers
+`UNAVAILABLE` today. The memory stage below would be a separate named tool. A remembered
+row says where an object was last seen, which is not a live observation, so it can't be
+shown as one.
+
 Ranking detection embeddings against the request is the right core, as one
 stage of a cascade that runs on the robot.
 
 ```mermaid
 flowchart LR
-    Q["object, description, relation"] --> MEM["find_objects<br/>memory first"]
+    Q["object, description, relation"] --> MEM["Remembered objects<br/>a separate tool, memory first"]
     MEM -->|not remembered here| DET["detect_objects<br/>YOLOE by noun"]
     DET --> RANK["search_detections<br/>embedding cosine + margin"]
     RANK -->|FOUND| LOC["localize_object<br/>robot-side 3D"]
@@ -348,9 +368,10 @@ each one, and the people atomics are on [Perception](perception.md).
 
 ## The todo list
 
-The LLM edits the list by id with `update_todos(ops)`.
+This part is built, and has run with a scripted model only. The LLM edits the list by id
+with `update_todos(ops)`.
 `wait_for_person(question)` speaks a question, marks the item `waiting` and
-ends the turn. The rules are enforced in code
+ends the run. The rules are enforced in code
 ([ADR-0041](decisions/0041-todo-list-and-seeding.md)). Before each LLM
 call, the list goes out as one trailing message that is not saved:
 
@@ -363,59 +384,50 @@ call, the list goes out as one trailing message that is not saved:
 </todos>
 ```
 
-Seeds come from `WalkieAgent.submit(text, todos=None)`, a template in
-`config/task_templates.toml`, or `/walkie/task`. `/walkie/todos` publishes
+Seeds come from `Runner.submit(text, todos=None)` or `/walkie/task`, with its steps or a
+template's exact name from `config/task_templates.toml`. `/walkie/todos` publishes
 a JSON snapshot, and both topics join `FORBIDDEN_NAMES`.
 
 ## The host graph and interrupts
 
-`WalkieAgent` subclasses `LangChainAgent` and builds its own graph
-([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)). The **llm
-node** binds the visible tools for this turn, repairs the history and adds
-the reminder. The **tools node**, `WalkieToolRunner`, looks up unknown
-names in the registry and reports each result to the error ledger. With no
-tool call while items are open and none is waiting, a **completion gate**
-sends the LLM back, at most twice.
+The host is built on `create_agent`, not on the graph this page first proposed
+([ADR-0061](decisions/0061-create-agent-runtime-and-cancellation.md), which supersedes
+[ADR-0038](decisions/0038-own-graph-per-turn-binding.md)). The diagram and the middleware
+order are in [The agent's graph](agent.md#the-agents-graph).
 
-```mermaid
-flowchart TD
-    IN["Utterance, or<br/>submit(text, todos),<br/>queued while a task runs"] --> LLM["llm node<br/>binds the visible tools, repairs the history,<br/>adds the todo reminder"]
-    LLM -->|"tool calls"| TR["tools node: WalkieToolRunner<br/>looks up unknown names in the registry"]
-    TR -->|"results"| LLM
-    TR -->|"after wait_for_person"| DONE(["Run ends"])
-    LLM -->|"no tool call"| GATE{"Items open,<br/>none waiting?"}
-    GATE -->|"yes: completion gate,<br/>at most twice per task"| LLM
-    GATE -->|"no, or already twice"| DONE
-```
+It differs from this proposal in two ways:
 
-**A new utterance.** Phase 1 switches from RAI's default,
-`interrupt_keep_last`, to its `queue` behaviour: an utterance that arrives
-mid-task waits until the task ends. Only a reset, or an utterance that is
-just "stop" or "never mind", interrupts. It sets the interrupt event and
-the cancel token, so it also aborts a running tool creation. A correction
-such as "no, the red one" waits, but overheard booth speech can no longer
-cancel a pick. `_run_agent` checks the interrupt only between graph steps, so a
-running tool or bundle finishes first. A break right after the llm node
-leaves tool calls with no results, which OpenAI-compatible endpoints
-reject, so phase 1 also adds a **history repair** that answers each with an
-error ToolMessage.
+- It binds one fixed set when the agent is built
+  ([ADR-0067](decisions/0067-static-tool-sets.md)). Binding the visible tools per turn
+  would need a new decision.
+- There is no registry. An unknown tool name gets an error, and the task goes on.
 
-**Reset.** `reset()` keeps clearing the history and starting a new Langfuse
-session. It also trips the cancel token; clears the todo list (publishing
-`[]`), active tools, handles, the error ledger and the taint flag; stops a
-running sandbox worker, whose bridge cancels that invocation's goals and
-stops what it commanded; aborts a running tool coder; and flushes queued
-audio. Draft files under `bundled/` and `temporary/` survive a reset. At
-Competition, session tools survive it too, and end only with the agent or
-on the new `/walkie/reset_session` topic. After a demotion, tools above the
-new level drop out of the next bind, and the reminder carries one line:
+**A new utterance.** This is built. An utterance that arrives mid-task waits until the
+task ends. Only a reset, or an utterance that is just "stop" or "never mind", interrupts.
+It sets the cancel token at once. A correction such as "no, the red one" waits, and
+overheard booth speech cannot cancel a drive. The token also ends a drive that a verb is
+waiting on. If a run ends with tool calls unanswered, **history repair** answers each
+with an error, because OpenAI-compatible endpoints reject them otherwise. In the proposal,
+the token would also abort a running tool creation.
+
+**Reset.** The built part cancels, drops the queue, deletes the conversation, starts a new
+session and publishes `[]`. The rest is proposed. A reset would also clear active tools,
+handles and the taint flag; stop a running sandbox worker, whose bridge cancels that
+invocation's goals and stops what it commanded; abort a running tool coder; and flush
+queued audio. Draft files under `bundled/` and `temporary/` would survive a reset. At
+Competition, session tools would survive it too, and end only with the agent or
+on a new `/walkie/reset_session` topic. After a demotion, tools above the
+new level would drop out of the next bind, and the reminder would carry one line:
 `[level] Running at Competition level: <reason>`.
 
 ## What the agent sees each turn
 
+This table is the proposal. Today the LLM sees one fixed set, listed on
+[The Agent](agent.md#tools), and most of these names do not exist.
+
 | Group | Tools | Count |
 | ----- | ----- | ----- |
-| Core | `speak`, `list_locations`, `navigate_to_location`, `move_relative`, `find_objects`, `wait_for_seconds`, `update_todos`, `wait_for_person`, `get_arm_state`, `move_arm_to_pose` | 10 |
+| Core | `say`, `list_places`, `go_to`, `move_relative`, a remembered-object tool, `wait_for_seconds`, `update_todos`, `wait_for_person`, `get_arm_state`, `move_arm_to_pose` | 10 |
 | Presets | `find_object_in_view`, `pick_object`, `pickup_object_in_view`, `hand_over` | 4 |
 | Discovery | `find_tools`, `request_tool` | 2 |
 | Session slots | tools activated by `find_tools` or `request_tool` for this task | 4 |
@@ -424,11 +436,16 @@ new level drop out of the next bind, and the reminder carries one line:
 and network state. Other tools are reached through `find_tools`.
 `navigate_to_pose`, `get_transform` and RAI's
 `get_ros2_topics_names_and_types` are never shown, and the system prompt
-and the whoami docs need updating to match. At Competition, a turn with a
+and `robot.md` would need updating to match. At Competition, a turn with a
 web result hides every N and M tool and `request_tool`, and `find_tools`
 activates nothing ([Turn taint](competition.md#turn-taint-and-the-history-scrub)).
 
 ## Roles and models
+
+The agent has one model today, and an optional fallback that nobody has selected.
+`runtime/model.py` loads them, and every attempt has a deadline
+([ADR-0062](decisions/0062-bounded-model-calls.md), proposed, with provisional numbers).
+The rest of this section is the proposal.
 
 Each role gets a model, fallbacks, a timeout and an API key in a
 `[walkie.models.<role>]` table ([ADR-0042](decisions/0042-per-role-models.md)).
@@ -444,12 +461,16 @@ Each role gets a model, fallbacks, a timeout and an API key in a
 
 Every OpenAI-compatible model is built with `max_retries=0` and an explicit
 timeout, because the OpenAI SDK defaults, 600 s and 2 retries, would freeze
-the robot. Ollama models get the timeout through `client_kwargs`.
+the robot. Ollama models get the timeout through `client_kwargs`. `runtime/model.py`
+already does both for the one agent model.
 Today's `[ollama] complex_model`, `llama3.1:70b`, needs about 40 GB at q4
 and does not fit on the 32 GB GPU beside walkie-vision, so the fallback
 must be 7 to 14B (a 14B at q4 is about 9 GB, an estimate).
 
 ## Tool search
+
+None of this is built. The agent has no index, and nothing can find or activate a tool at
+runtime ([ADR-0067](decisions/0067-static-tool-sets.md)). In this proposal:
 
 One index serves `find_tools`, the atomic agent, the coder and, in sim, a
 generated tool's read-only `ctx.tools.search`
@@ -573,14 +594,16 @@ Tests still need no API key and no hardware
 also records the bound tool names and the reminder per call. Bundles and
 atomics run against `FakeScene` and the mocks, and tests assert both the
 structured result (step, tool, code) and the exact text. Every new path
-takes a root argument (`tmp_path`). Every new LLM call goes through RAI's
-`invoke_llm_with_tracing`, so the `no_tracing` fixture covers it, and no
-new tool returns an artifact.
+takes a root argument (`tmp_path`), and no new tool returns an artifact.
 
-| New test file | What it pins | Phase |
+The first three rows of this table exist, with a scripted model and fakes. The rest are
+proposed. Per-turn binding has no test, because it does not exist.
+
+| Test file | What it pins | Phase |
 | ------------- | ------------ | ----- |
-| `test_todo.py` | the todo list and its rules | 1 |
-| `test_graph.py` | two tasks in a row, reset, an interrupt between llm and tools, an unknown tool, per-turn binding, no completion gate after `wait_for_person` | 1 |
+| `test_runtime_todos.py` | the todo list and its rules | Built |
+| `test_runtime.py` | the middleware order, serial calls, an unknown tool, no completion gate after `wait_for_person` | Built |
+| `test_runtime_runner.py` | two tasks in a row, the queue, stop, reset, shutdown | Built |
 | `test_dsl.py` | the DSL loader and renderer | 2 |
 | `test_linker.py` | one case per L-code | 2, 3 |
 | `test_runner.py` | `BundleRunner` against `FakeScene` and the mocks | 2 |
@@ -601,7 +624,7 @@ BM25-only, dense-only and hybrid search, per level.
 | Phase | What ships (MVP) | Deferred | Done when |
 | ----- | ---------------- | -------- | --------- |
 | 0. Decisions | These ADRs. `artifact_database.pkl` in `.gitignore`. A draft `config/arm_poses.toml` copying the seven SRDF arm presets, plus `carry` and `receive`, with `travel_safe` flags ([Pose configuration](manipulation.md#pose-configuration)). `robot_check.sh` run on the robot PC. `/etc/walkie/sim-host` installed on dev machines | — | ADRs reviewed. The `robot_check.sh` result is known |
-| 1. Host, todos, roles | `graph.py` and the base swap, the `_run_agent` override, `todo.py`, seeding, `/walkie/todos`, `FORBIDDEN_NAMES` additions | `models.py` with per-role keys, the `--access-level` flag and profile plumbing, Ollama with an sm_120 check and the eval of the local fallback model. The HRI task does not need them; phase 2's level checks do, so they land before phase 2 | All 65 existing tests pass, plus `test_todo.py` and `test_graph.py`. A seeded run on `agent-sim` |
+| 1. Host, todos, roles | Built differently: `create_agent`, middlewares and the Runner in `runtime/`, seeding, `/walkie/todos`, `FORBIDDEN_NAMES` additions, with fixed tool sets | `models.py` with per-role keys, the `--access-level` flag and profile plumbing, Ollama with an sm_120 check and the eval of the local fallback model. The HRI task does not need them; phase 2's level checks do, so they land before phase 2 | Tests pass with a scripted model. **A seeded run on `agent-sim` has not been done** |
 | 2. Typed atomics, mocks, bundles, levels | `toolbox/` core, linker L01 to L06, `core()` for today's tools, perception and arm atomics, internal `navigate_to_pose`, the four presets, `META.requires`, `walkie_toolbox_facade`, the level policy, interlock checks 1, 2, 3, 5 and 6, the local speech gate, `play_sound`, `tell_time`, `tell_date`. `agent-sim` passes `--access-level standard` | Interlock checks 4 and 7 to 9, periodic re-checks | `test_dsl`, `test_linker`, `test_runner`, `test_nav_interlock`, `test_levels`, `test_interlock`, `test_play_sound` and `test_speech_gate` pass. A mock fetch with injected faults on `agent-sim`. The interlock grants Standard on a marked dev machine, and Competition without the marker or with the robot marker |
 | 3. Index and atomic agent | `find_tools`, `request_tool` with compose, linker L07 to L13 and L15, stamped drafts, run traces, the cloud embedder with its pinned provider and startup check, 100 spoken requests for the eval | A second embedding provider | `test_index`, `test_atomic_agent` and `test_names` pass. Hybrid beats BM25-only on Recall@5, or the team decides. Embedding latency measured from the robot PC |
 | 4a. Sandbox and coder (sim) | Sandbox, bridges, lint, the tool coder and the assets store at Standard and Unrestricted, interlock checks 4 and 7 to 9 and the fresh checks before motion | `restrict_self` (Landlock, seccomp) | `test_sandbox`, `test_http_policy`, `test_web_search`, `test_ros_bridge`, `test_stamps` and `test_coder` pass. In sim the coder makes a scan-reading tool at Standard and an action-using navigation tool at Unrestricted. The Unrestricted one never loads at Standard |
@@ -628,7 +651,7 @@ not on main, so those paths may change
 
 | Area | Risk | Mitigation |
 | ---- | ---- | ---------- |
-| Core | History or state lost in the new graph | Keep RAI's in-place state. Tests for two tasks in a row, reset and an interrupt between llm and tools land first, in phase 1 |
+| Core | History or state lost in the new graph | State lives in the `create_agent` checkpoint. Tests for two tasks in a row, reset and a stop between the model and the tools exist, with a scripted model |
 | Core | A bundle links but does the wrong thing, such as left and right swapped | Postconditions, stops at decision points, no generated motion at Competition, generated arm motion only in sim through mocked `run_skill`, drafts until traced runs, human promotion. Expect slow growth: published self-evolving agents keep a small share of what they generate |
 | Core | Tool creation is slow or flaky mid-task | Honest budgets: writing code takes 20 to 35 s, `request_tool` has 30 s at Competition, and the request stops at 40 s. A filler within one turn, progress lines, cancel by voice, a fast model at Competition, `fetch_sound` without an LLM, pre-baked tools. Creation is never required |
 | Core | The local fallback model cannot handle the tool set | At most 20 bound tools, presets, a phase 1 eval with the exact model the robot runs |
@@ -636,7 +659,7 @@ not on main, so those paths may change
 | Core | The perception chain does not exist yet | Presets stay mock-backed, and `META.requires` keeps them out of real runs |
 | Core | Scope too large for the season | MVP and deferred items per phase, harvest v0 before v1, Unrestricted extras only on evidence, real backends in parallel |
 | Core | A reset during a long step | Cancel checks between steps. A running skill or Nav2 goal stops only when its own wait checks the token. [ADR-0023](decisions/0023-motion-supervisor.md) is the real fix |
-| Core | Coupling to private RAI members | `_run_agent`, `_interrupt_event` and the `ToolRunner` internals stay under the `<2.13` pin. `create_agent` stays in reserve |
+| Core | Coupling to LangChain behaviour | Serial tool calls rest on `max_concurrency=1`, which is observed, not documented. `tests/test_runtime.py` pins it, so rerun it on any dependency update. The private RAI coupling left with the old host |
 | Core | Ollama missing or unsupported on the robot (RTX 5090, sm_120) | Install and check in phase 1. Only the local fallback model needs it |
 | Core | The cloud embedder is slow, down or unreachable | BM25 runs alongside and answers alone after 1 s, or at once when the network probe fails. `META.questions` keeps spoken phrasings in BM25. The trace counts BM25-only answers |
 | Core | The model behind the embedder's name changes silently | The startup check re-embeds 20 fixed strings. Below a cosine of 0.99, the dense branch stays off until re-embedded |
@@ -668,17 +691,20 @@ T12 on [Access Levels](access-levels.md#safety-model).
 
 | Piece | Repository | Location |
 | ----- | ---------- | -------- |
-| Host graph, session state, todo list | walkie-agent-ros | `src/walkie_agent/agent.py` (changed), `graph.py`, `session.py`, `todo.py` (new) |
+| Host graph, session state, todo list | walkie-agent-ros | `src/walkie_agent/runtime/` (built) |
+| One agent model and a fallback | walkie-agent-ros | `src/walkie_agent/runtime/model.py` (built) |
 | Per-role models | walkie-agent-ros | `src/walkie_agent/models.py` (new), `[walkie.*]` tables in `config.toml` |
 | Linker, runner, registry, index, sandbox | walkie-agent-ros | `src/walkie_agent/toolbox/` (new) |
 | Tool creator, coder and harvest | walkie-agent-ros | `src/walkie_agent/toolsmith/` (new) |
-| Atomic tools and presets | walkie-agent-ros | `src/walkie_agent/tools/atomic/`, `tools/bundled_preset/` (new) |
+| Atomic tools | walkie-agent-ros | `src/walkie_agent/atomics/` (built) |
+| Presets | walkie-agent-ros | `src/walkie_agent/bundled_preset/` (new) |
 | Protocol mocks and ROS-level fakes | walkie-agent-ros | `src/walkie_agent/sim/`: `fake_scene.py`, `mock_vision.py`, `mock_skill.py`, `mock_arm.py`, `fake_skill_server.py`, `oracle_perception.py` (new files beside today's `fake_walkie.py`) |
 | Client package for sandboxed code | walkie-agent-ros | `src/walkie_toolbox_facade/` (new) |
-| Templates, level policy, arm poses | walkie-agent-ros | `config/task_templates.toml`, `config/access_levels.toml`, `config/arm_poses.toml` (new) |
+| Templates | walkie-agent-ros | `config/task_templates.toml` (built, ships with none) |
+| Level policy, arm poses | walkie-agent-ros | `config/access_levels.toml`, `config/arm_poses.toml` (new) |
 | Generated tools, index, traces | each machine, never git | `$WALKIE_TOOLS_HOME` |
 | `DetectObjects`, `EmbedText`, `/walkie_vision/people` | walkie-vision | `walkie_vision_msgs`. `DetectObjects` is proposed ([Perception](perception.md)) |
-| Object memory | walkie-database | `/walkie_database/find_objects` (exists) |
+| Object memory | walkie-database | `/walkie_database/find_objects` (exists, and the agent no longer calls it) |
 | Face and appearance matching, vector search | walkie-database | Services not designed yet ([Perception](perception.md#open-questions)) |
 | Skill server, commander, grasps | walkie-ros | robot-side. The commander and `/grasp/from_cloud` exist. The skill server is proposed ([ADR-0027](decisions/0027-runskill-action.md)) |
 | Embedding model | none, a cloud service | `qwen/qwen3-embedding-8b` through OpenRouter, set in `[walkie.toolbox.embedder]` |
@@ -688,17 +714,19 @@ T12 on [Access Levels](access-levels.md#safety-model).
 ADR-0037 and ADR-0043 propose the recommended answers to questions 2
 and 5, so reviewing them settles those.
 
-1. **What does a new utterance do mid-task?** Settled: RAI's `queue`
-   behaviour, with only reset, "stop" or "never mind" as interrupts
-   ([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
+1. **What does a new utterance do mid-task?** Settled: it queues, with only
+   reset, "stop" or "never mind" as interrupts
+   ([ADR-0061](decisions/0061-create-agent-runtime-and-cancellation.md)).
 2. **Bundle syntax.** Proposed: the `ast`-parsed DSL, over YAML (no IDE
    help) or plain Python (every bundle needs the sandbox). Blocks phase 2.
-3. **Host.** Settled: our own graph on `LangChainAgent`, over
-   `create_agent` with middleware, built in phase 1
-   ([ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
-4. **Seeding.** Settled: `submit()`, templates and the `/walkie/task`
-   topic, built in phase 1, with a typed `RunTask` action later only if
-   it is needed ([ADR-0041](decisions/0041-todo-list-and-seeding.md)).
+3. **Host.** Settled the other way round: `create_agent` with middleware,
+   not our own graph on RAI's host
+   ([ADR-0061](decisions/0061-create-agent-runtime-and-cancellation.md) supersedes
+   [ADR-0038](decisions/0038-own-graph-per-turn-binding.md)).
+4. **Seeding.** Settled: `Runner.submit()` and the `/walkie/task` topic, with
+   templates by exact name, and a typed `RunTask` action later only if
+   it is needed ([ADR-0041](decisions/0041-todo-list-and-seeding.md),
+   [ADR-0069](decisions/0069-task-templates-by-name.md)).
 5. **`move_absolute`.** Proposed: an internal `navigate_to_pose` with a
    stand-off, used by presets and, in sim at Standard and Unrestricted, by
    generated code through `ctx.tools`. The alternative gives the LLM
@@ -712,31 +740,31 @@ and 5, so reviewing them settles those.
 8. **Trivial requests such as "say Meow!".** Open on
    [Competition Mode](competition.md#open-questions), question 7.
 9. **The local fallback model.** 7 to 14B, chosen by a phase 1 eval.
-   Blocks phase 1.
+   Not chosen. `runtime/model.py` can load a fallback, and no fallback is selected.
 10. **Ollama on the robot PC.** Whether a build with RTX 5090 (sm_120)
-    support runs there is unverified. Blocks the local fallback model in
-    phase 1.
+    support runs there is unverified. Blocks a local fallback model.
 11. **Hybrid against BM25-only.** Not measured until the phase 3 eval.
     Blocks enabling vectors at Competition.
-12. **`search_robot_docs` offline.** Settled with question 6: it keeps
-    embedding through OpenRouter, so docs search needs the network. Whether
-    it fails fast offline, rather than after a timeout, is unverified and
-    checked in phase 3.
+12. **`search_robot_docs` offline.** Retired: the tool left with the whoami tree
+    ([ADR-0068](decisions/0068-static-robot-description.md)), and `robot.md` needs
+    no network. A future catalogue would have to answer this again.
 
 ## Decisions
 
 Click a decision to expand it. Green blocks are accepted, blue blocks are
-proposed. See [Architecture](index.md) for how decisions work.
+proposed, and gray blocks are superseded. See [Architecture](index.md) for how
+decisions work. The decisions that replaced parts of these are on
+[The Agent](agent.md#decisions).
 
 ??? note "ADR-0037: Split tools into atomic and bundled tiers, keep bundles as data, and gate them by effect · Proposed"
 
     --8<-- "architecture/decisions/0037-tool-tiers-bundles-effects.md:body"
 
-??? success "ADR-0038: Run our own graph on LangChainAgent and bind the visible tools every turn · Accepted"
+??? quote "ADR-0038: Run our own graph on LangChainAgent and bind the visible tools every turn · Superseded by ADR-0061, with fixed binding in ADR-0067"
 
     --8<-- "architecture/decisions/0038-own-graph-per-turn-binding.md:body"
 
-??? success "ADR-0041: Keep a seedable todo list for every task · Accepted"
+??? success "ADR-0041: Keep a seedable todo list for every task · Accepted, partly superseded and amended by ADR-0060, ADR-0061 and ADR-0069"
 
     --8<-- "architecture/decisions/0041-todo-list-and-seeding.md:body"
 

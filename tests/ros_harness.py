@@ -5,6 +5,7 @@ rclpy, so the importer must have chosen the middleware first: conftest does that
 tests, and the recipe for the demo. Nothing here plays sound. /to_human is only recorded.
 """
 
+import itertools
 import json
 import threading
 import time
@@ -74,9 +75,10 @@ class ObservedWalkie(FakeWalkie):
     """FakeWalkie, which keeps no record of its goals, with the probes tests need.
 
     `goals_received` counts what reached the server, so "no goal was sent" is observed
-    rather than inferred from a robot that did not move. `driving` is set at the first
-    step of a drive, and a test clears it before it starts the next one. `ends` holds the
-    terminal status of each goal, read after the server's own code has set it.
+    rather than inferred from a robot that did not move. `driving` is set at the second
+    step of a drive, because the first runs before the client can have heard the acceptance,
+    and a test clears it before it starts the next one. `ends` holds the terminal status
+    of each goal, read after the server's own code has set it.
     """
 
     def __init__(self, drive_time_sec: float = 0.2, **kwargs: Any) -> None:
@@ -94,17 +96,20 @@ class ObservedWalkie(FakeWalkie):
             self.goals_received += 1
         return GoalResponse.ACCEPT
 
-    def _on_step(self) -> None:
-        sample = self.pose()
-        with self._probe:
-            self.samples.append(sample)
-        self.driving.set()
-
     def _execute_nav(self, goal_handle: Any) -> Any:
         goal_id = uuid.UUID(bytes=bytes(goal_handle.goal_id.uuid)).hex
         with self._probe:
             self.goal_ids.append(goal_id)
-        result = super()._execute_nav(_ObservedHandle(goal_handle, self._on_step))
+        steps = itertools.count(1)
+
+        def on_step() -> None:
+            sample = self.pose()
+            with self._probe:
+                self.samples.append(sample)
+            if next(steps) >= 2:
+                self.driving.set()
+
+        result = super()._execute_nav(_ObservedHandle(goal_handle, on_step))
         end = GoalEnd(goal_id, goal_handle.status, time.monotonic(), self.pose())
         with self._probe:
             self.ends.append(end)

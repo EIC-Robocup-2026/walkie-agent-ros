@@ -206,6 +206,9 @@ class ScriptRunner:
                     if time.monotonic() > deadline:
                         raise _WallClockSpent
                     snapshot = self._answer(snapshot, checked, result.calls)
+                # A last slow call overruns with no suspension left to catch it.
+                if time.monotonic() > deadline:
+                    raise _WallClockSpent
                 result.ok, result.phase = True, "ok"
                 result.output = _jsonable(snapshot.output, _OUTPUT_CHARS)
         finally:

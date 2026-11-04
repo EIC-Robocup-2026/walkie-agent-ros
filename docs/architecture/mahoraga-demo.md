@@ -260,6 +260,11 @@ runs, it gets a type check against stubs made from the same signatures.
 | A bug in the host function | `RuntimeError("INTERNAL: tool failed with Type.")` |
 | A budget, by default 40 calls, 2 s a feed, 30 s of wall clock, 64 MiB or 4000 bytes printed | An error it cannot catch, which ends the run |
 
+The wall clock is checked after every host call and before a run reports success,
+so a last slow call that overruns fails the budget, and no host call starts after
+the budget is spent. A call already running still finishes first: nothing interrupts
+a host function, so a run can outlast its budget by one call.
+
 `ScriptResult.calls` is the ledger: one entry per call, with its status. The model
 sees only `script_summary(result)`.
 

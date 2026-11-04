@@ -253,13 +253,23 @@ def test_a_refused_call_of_a_stopped_run_does_not_reach_the_ledger(serve):
 
 
 def test_a_stop_during_a_hung_llm_call_speaks_at_once_and_updates_after_the_deadline(serve):
-    stack = serve(_hang, DONE, deadline_s=0.5)
+    # The test ends the call with what the deadline raises, so no step here races a real
+    # clock on a loaded machine. test_a_failed_task_is_logged_... proves the real deadline.
+    deadline_passed = threading.Event()
+
+    async def hang_until_the_deadline(_messages):
+        while not deadline_passed.is_set():
+            await asyncio.sleep(0.005)
+        raise TimeoutError
+
+    stack = serve(hang_until_the_deadline, DONE)
     stack.runner.submit("Go.", todos=["Open step"])
     wait_until(lambda: stack.model.received)
     stack.runner.stop()
 
-    wait_until(lambda: stack.robot.said == [STOP_LINE], timeout_s=0.3)
+    wait_until(lambda: stack.robot.said == [STOP_LINE])
     assert stack.statuses() == ["pending"]  # the active run still holds the checkpoint
+    deadline_passed.set()
     idle(stack)
     assert stack.statuses() == ["cancelled"]
 

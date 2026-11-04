@@ -644,6 +644,31 @@ def test_escort_needs_the_greeting_before_it_leaves():
     assert _run(GREET_ADEL, greets_first)[0]
 
 
+def test_escort_fails_when_the_greeting_follows_the_only_move_inside_one_room():
+    def greets_at_the_destination(f, _start, _spec):
+        f["go_to"]("kitchen room")
+        f["find_people"]("Simone")
+        f["go_to"]("table")
+        f["say"]("Hello Simone")
+
+    ok, why = _run(SALUTE_SIMONE, greets_at_the_destination)
+
+    assert not ok, why
+
+
+def test_escort_fails_when_the_greeting_is_said_away_from_the_person():
+    def greets_from_the_next_room(f, _start, _spec):
+        f["go_to"]("kitchen room")
+        f["find_people"]("Adel")
+        f["go_to"]("instruction point")
+        f["say"]("Hello Adel")
+        f["go_to"]("living room")
+
+    ok, why = _run(GREET_ADEL, greets_from_the_next_room)
+
+    assert not ok, why
+
+
 def test_a_relative_move_into_the_destination_room_reaches_it():
     def walks_there(f, _start, _spec):
         f["go_to"]("living room")
@@ -856,6 +881,18 @@ def test_a_relay_said_before_the_source_was_looked_at_fails():
         f["go_to"]("living room")
 
     ok, why = _run(NAME_TO_TV, says_too_soon)
+
+    assert not ok, why
+
+
+def test_a_relay_said_before_the_recipient_was_looked_at_fails():
+    def looks_too_late(f, start, spec):
+        name = _source_name(f, start, spec)
+        f["go_to"]("living room")
+        f["say"](name)
+        f["find_people"]()
+
+    ok, why = _run(NAME_TO_TV, looks_too_late)
 
     assert not ok, why
 

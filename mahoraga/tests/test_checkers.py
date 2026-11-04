@@ -206,6 +206,16 @@ def test_count_objects_needs_a_look_that_returned_all_it_counts():
     assert episode(COUNT, world(TWO_FRUITS), go, ("objects", "apple"), ("objects", "banana"), ("say", "2"))[0]
 
 
+def test_count_objects_of_nothing_needs_a_look_from_that_place():
+    """With nothing to return, where the look happened is all that shows it was the right one."""
+    orange_elsewhere = [("orange_1", "orange", "bar")]
+    answer = ("say", "0")
+
+    assert not episode(COUNT, world(orange_elsewhere), ("go_to", "bar"), ("objects", ""), answer)[0]
+    assert episode(COUNT, world(orange_elsewhere), ("go_to", "shelf"), ("objects", ""), answer)[0]
+    assert episode(COUNT, world(orange_elsewhere), ("go_to", "kitchen room"), ("objects", ""), answer)[0]
+
+
 def test_count_objects_refuses_a_line_that_asserts_more_than_one_number():
     look = (("go_to", "shelf"), ("objects", ""))
 
@@ -303,6 +313,29 @@ def test_count_people_leaves_the_operator_out():
     spec = {"kind": "count_people", "description": "no gesture", "room": "living room"}
 
     assert episode(spec, world(), ("people", ""), ("say", "zero"))[0]
+
+
+def test_count_people_needs_a_look_that_returned_all_it_counts():
+    built = world(
+        people=_people(
+            a=("kitchen room", "Jane", {}),
+            b=("kitchen room", "Axel", {}),
+        )
+    )
+    go = ("go_to", "kitchen room")
+
+    assert not episode(COUNT_PEOPLE, built, go, ("people", "nobody"), ("say", "2"))[0]
+    assert not episode(COUNT_PEOPLE, built, go, ("people", "Jane"), ("say", "2"))[0]
+    assert episode(COUNT_PEOPLE, built, go, ("people", "waving person"), ("say", "2"))[0]
+
+
+def test_count_people_of_nobody_needs_a_look_from_that_room():
+    """With nobody to return, where the look happened is all that shows it was the right one."""
+    spec = {"kind": "count_people", "description": "person pointing to the left", "room": "living room"}
+    answer = ("say", "0")
+
+    assert not episode(spec, world(), ("go_to", "kitchen room"), ("people", ""), answer)[0]
+    assert episode(spec, world(), ("go_to", "living room"), ("people", ""), answer)[0]
 
 
 @pytest.mark.parametrize(

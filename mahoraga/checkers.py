@@ -15,6 +15,7 @@ not checked. docs/architecture/mahoraga-demo.md lists the rules and known limits
 
 import re
 from collections.abc import Callable, Iterable, Mapping
+from functools import partial
 from typing import Any
 
 from mahoraga.worlds import OPERATOR, at_source, object_matches, person_matches
@@ -46,7 +47,10 @@ _NUMBER_WORDS = dict(
 _MOVES = {"base.go_to", "base.move_relative"}
 _RAISING = {"raising", "raises", "raise", "raised", "lifting", "lifts", "lift", "lifted", "up", "aloft", "high"}
 _POINTING = {"pointing", "points", "point", "pointed", "indicating", "indicates", "indicate", "gesturing", "gestures"}
-_ARM = {"arm", "arms", "hand", "hands"}
+_ARM = {"arm", "arms", "forearm", "forearms", "hand", "hands"}
+# Words stay unattached to each other, so a line naming a leg says no raised arm, even
+# with a hand in it. A true arm answer that also mentions a leg fails with it.
+_NOT_ARM = {"leg", "legs", "knee", "knees", "foot", "feet"}
 # How ordinary speech says each pose and gesture. A line says a value when it holds
 # a word from each of the value's groups.
 _INFO_WORDS = {
@@ -88,22 +92,35 @@ def _after_look(calls: list[Call], verb: str, seen: Seen) -> list[Call] | None:
     return None
 
 
-def _after_last_look(calls: list[Call], verb: str, seen: Seen, needed: set[str]) -> list[Call] | None:
-    """The calls after the last qualifying `verb` where `seen` holds, or None if there was none.
+def _after_last_look(
+    calls: list[Call],
+    verb: str,
+    seen: Seen,
+    needed: set[str],
+    candidates: Callable[[str], set],
+    room: str | None = None,
+) -> list[Call] | None:
+    """The calls after the last qualifying `verb` that an answer follows.
 
-    A look qualifies if it returned any of `needed` and all of it has been returned by
-    then, so a later look at something else is not looking again. With nothing needed,
-    any look there qualifies.
+    A look qualifies if `seen` holds, it returned any of `needed` and all of it has been
+    returned by then, so a later look at something else is not looking again. With
+    nothing needed, any look there qualifies. An answer is a line in `room`, if given,
+    that names one of `candidates`, so a look with none after it leaves an earlier answer
+    standing. With no answer at all, these are the calls after the last qualifying look,
+    or None if there was none.
     """
     shown: set[str] = set()
-    after = None
+    tails = []
     for index, call in enumerate(calls):
         if call["verb"] == verb and seen(call):
             returned = set(call.get("returned", ()))
             shown |= returned
             if needed <= shown and (returned & needed or not needed):
-                after = calls[index + 1 :]
-    return after
+                tails.append(calls[index + 1 :])
+    for tail in reversed(tails):
+        if any(candidates(line) for line in _said(tail, room)):
+            return tail
+    return tails[-1] if tails else None
 
 
 def _said(calls: list[Call] | None, room: str | None = None) -> list[str]:
@@ -172,7 +189,7 @@ def _info_said(start: Snapshot, info: str, line: str) -> set[str]:
     return {
         value
         for value, groups in _INFO_WORDS[info].items()
-        if all(words & group for group in groups)
+        if all(words & group for group in groups) and not (_ARM in groups and words & _NOT_ARM)
     }
 
 
@@ -216,7 +233,7 @@ def _check_moved(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tup
 def _check_count_objects(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
     place = spec["place"]
     items = _objects_at(start, place, spec["category"])
-    after = _after_last_look(_done(end), "vision.objects", _sees_place(start, place), set(items))
+    after = _after_last_look(_done(end), "vision.objects", _sees_place(start, place), set(items), _numbers)
     return _first_answer(_said(after), _numbers, len(items))
 
 
@@ -226,14 +243,15 @@ def _check_best(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tupl
     items = _objects_at(start, place, spec["category"])
     best = pick(items.values(), key=lambda item: item[field])["name"]
     known = {item["name"] for item in _objects_at(start, place, None).values()}
-    after = _after_last_look(_done(end), "vision.objects", _sees_place(start, place), set(items))
-    return _first_answer(_said(after), lambda line: _named(known, line), best)
+    names = partial(_named, known)
+    after =_after_last_look(_done(end), "vision.objects", _sees_place(start, place), set(items), names)
+    return _first_answer(_said(after), names, best)
 
 
 def _check_count_people(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
     room = spec["room"]
     counted = _people_matching(start, {"room": room, "description": spec["description"]})
-    after = _after_last_look(_done(end), "vision.people", _in_room(room), counted)
+    after = _after_last_look(_done(end), "vision.people", _in_room(room), counted, _numbers)
     return _first_answer(_said(after), _numbers, len(counted))
 
 
@@ -249,8 +267,9 @@ def _only_other(start: Snapshot, room: str) -> tuple[str, Mapping[str, Any]]:
 def _check_person_info(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
     room, info = spec["room"], spec["info"]
     person, who = _only_other(start, room)
-    after = _after_last_look(_done(end), "vision.people", _in_room(room), {person})
-    return _first_answer(_said(after), lambda line: _info_said(start, info, line), who[info])
+    values = partial(_info_said, start, info)
+    after =_after_last_look(_done(end), "vision.people", _in_room(room), {person}, values)
+    return _first_answer(_said(after), values, who[info])
 
 
 def _check_relay(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
@@ -258,7 +277,8 @@ def _check_relay(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tup
     room, to_room, info = spec["room"], spec["to_room"], spec["info"]
     calls = _done(end)
     person, who = _only_other(start, room)
-    learned = _after_last_look(calls, "vision.people", _in_room(room), {person})
+    values = partial(_info_said, start, info)
+    learned =_after_last_look(calls, "vision.people", _in_room(room), {person}, values, to_room)
     recipients = {
         other
         for other, them in start["people"].items()
@@ -273,7 +293,7 @@ def _check_relay(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tup
         return False, f"Expected a look that returned someone in each of {room} and {to_room}."
     # Both are tails of the calls, so the shorter one comes after both looks.
     after_both = min(learned, met, key=len)
-    return _first_answer(_said(after_both, to_room), lambda line: _info_said(start, info, line), who[info])
+    return _first_answer(_said(after_both, to_room), values, who[info])
 
 
 def _is_at(start: Snapshot, call: Call, place: str) -> bool:

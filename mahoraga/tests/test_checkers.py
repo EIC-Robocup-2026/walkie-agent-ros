@@ -254,7 +254,17 @@ def test_count_objects_judges_the_line_after_the_last_look_that_showed_them():
 
     assert episode(COUNT, world(TWO_FRUITS), *look, ("say", "5"), *look, ("say", "2"))[0]
     assert not episode(COUNT, world(TWO_FRUITS), *look, ("say", "2"), *look, ("say", "5"))[0]
-    assert not episode(COUNT, world(TWO_FRUITS), *look, ("say", "2"), *look)[0]
+
+
+def test_a_later_look_with_no_answer_after_it_leaves_the_earlier_answer_standing():
+    look = (("go_to", "shelf"), ("objects", "fruit"))
+
+    assert episode(COUNT, world(TWO_FRUITS), *look, ("say", "2"), *look)[0]
+    assert not episode(COUNT, world(TWO_FRUITS), *look, ("say", "5"), *look)[0]
+    assert episode(COUNT, world(TWO_FRUITS), *look, ("say", "5"), *look, ("say", "2"), *look)[0]
+    assert not episode(COUNT, world(TWO_FRUITS), *look, ("say", "2"), *look, ("say", "5"), *look)[0]
+    assert episode(COUNT, world(TWO_FRUITS), *look, ("say", "2"), *look, ("say", "Task done."))[0]
+    assert not episode(COUNT, world(TWO_FRUITS), ("say", "2"), *look)[0]
 
 
 def test_a_later_look_at_something_else_needs_no_second_answer():
@@ -512,6 +522,8 @@ def test_person_info_accepts_an_ordinary_way_to_say_the_pose(pose, line, passes)
         ("person pointing to the left", "He gestures left.", True),
         ("waving person", "They are on their feet, waving.", True),
         ("person raising their right arm", "The person is raising their right leg.", False),
+        ("person raising their right arm", "Their right forearm is raised.", True),
+        ("person raising their right arm", "Their hand rests on their raised right leg.", False),
         ("person raising their left arm", "Their left leg is up.", False),
         ("person raising their right arm", "Raising to the right.", False),
         ("person raising their right arm", "Their left arm is up.", False),

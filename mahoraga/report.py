@@ -18,15 +18,13 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
+from inspect_ai.event import ModelEvent
 from inspect_ai.log import EvalLog, EvalSample, read_eval_log
 
 from mahoraga.shelf import Shelf
 from mahoraga.tasks import SCORER
 
-# OpenRouter's USD per million tokens for deepseek-v4.1-flash, from the plan.
-PRICE_IN = 0.045
-PRICE_OUT = 0.50
-_WARNING = "Incomplete, so these comparisons do not measure the whole evaluation. {}. They count as failures."
+_WARNING ="Incomplete, so these comparisons do not measure the whole evaluation. {}. They count as failures."
 
 
 def read_runs(log_dir: str | Path) -> dict[str, EvalLog]:
@@ -78,16 +76,34 @@ def _mean(values: Iterable[float]) -> float | None:
     return statistics.fmean(values) if values else None
 
 
-def arm_metrics(log: EvalLog, *, price_in: float = PRICE_IN, price_out: float = PRICE_OUT) -> dict[str, Any]:
-    """M1 to M9 for one arm. M9 counts refused calls: an escape would not show in a log."""
+def _recorded_cost(event: ModelEvent) -> float | None:
+    """The USD a provider's raw response says a model call cost, if the log holds one."""
+    response = event.call.response if event.call else None
+    usage = response.get("usage") if isinstance(response, dict) else None
+    return usage.get("cost") if isinstance(usage, dict) else None
+
+
+def arm_metrics(log: EvalLog) -> dict[str, Any]:
+    """M1 to M9 for one arm. M9 counts refused calls: an escape would not show in a log.
+
+    M3's input holds everything the model was sent, with the part read from the cache
+    also given alone, because Inspect's `input_tokens` leaves out cache reads and writes.
+    Its cost is what the provider recorded. Any call with no record, such as an abandoned
+    attempt, is counted beside it, which makes the cost a lower bound, and no records at
+    all make it None.
+    """
     logged = log.samples or []
     scheduled = _scheduled(log)
     errored = sum(not _was_scored(sample) for sample in logged)
     never_ran = len(set(scheduled) - {(sample.id, sample.epoch) for sample in logged})
     successes = sum(scheduled.values())
-    tokens_in = sum(u.input_tokens for s in logged for u in (s.model_usage or {}).values())
-    tokens_out = sum(u.output_tokens for s in logged for u in (s.model_usage or {}).values())
-    cost = (tokens_in * price_in + tokens_out * price_out) / 1_000_000
+    usages = [usage for sample in logged for usage in (sample.model_usage or {}).values()]
+    tokens_cached = sum(usage.input_tokens_cache_read or 0 for usage in usages)
+    tokens_in = tokens_cached + sum(usage.input_tokens + (usage.input_tokens_cache_write or 0) for usage in usages)
+    tokens_out = sum(usage.output_tokens for usage in usages)
+    costs = [_recorded_cost(event) for sample in logged for event in sample.events if event.event == "model"]
+    recorded = [cost for cost in costs if cost is not None]
+    cost = sum(recorded) if recorded else None
     per_episode = [sample.store.get("scripts") or [] for sample in logged]
     with_scripts = [scripts for scripts in per_episode if scripts]
     failed_first = [scripts for scripts in with_scripts if not scripts[0]["ok"]]
@@ -100,10 +116,12 @@ def arm_metrics(log: EvalLog, *, price_in: float = PRICE_IN, price_out: float = 
         "M1_success": _mean(by_command(log).values()),
         "M2_rounds": _mean(sum(e.event == "model" for e in s.events) for s in logged),
         "M3_tokens_in": tokens_in,
+        "M3_tokens_in_cached": tokens_cached,
         "M3_tokens_out": tokens_out,
         "M3_tokens_per_success": _rate(tokens_in + tokens_out, successes),
         "M3_cost_usd": cost,
-        "M3_cost_per_success_usd": _rate(cost, successes),
+        "M3_cost_per_success_usd": None if cost is None else _rate(cost, successes),
+        "M3_cost_unrecorded_calls": len(costs) - len(recorded),
         "M4_wall_s": _mean(s.total_time for s in logged if s.total_time is not None),
         "M5_first_try_type_check": _rate(
             sum(scripts[0]["phase"] not in ("type_check", "syntax") for scripts in with_scripts),

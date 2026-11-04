@@ -190,6 +190,9 @@ def run_episodes(
                 max_retries=3,
                 timeout=120,
                 attempt_timeout=_ATTEMPT_TIMEOUT_S,
+                # By default Inspect keeps only the first few raw responses, and the
+                # report reads each call's cost from them.
+                log_model_api=True,
                 score_display=False,
             )
     return logs

@@ -732,6 +732,8 @@ def test_a_model_id_goes_to_the_base_url_with_the_key_from_the_environment(gated
     log = _run_on_the_fake_provider(gated, monkeypatch)
 
     assert log.status == "success", log.error
+    assert log.eval.config.log_model_api is True
+    assert log.plan.config.attempt_timeout == 30
     assert log.samples[0].error is None
     [call] = _FakeProvider.seen
     assert call["path"] == "/api/v1/chat/completions"

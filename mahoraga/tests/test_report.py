@@ -2,7 +2,7 @@
 
 import pytest
 from inspect_ai.log import write_eval_log
-from inspect_ai.model import ModelOutput, ModelUsage, get_model
+from inspect_ai.model import ModelCall, ModelOutput, ModelUsage, get_model
 
 from mahoraga.commands import commands
 from mahoraga.gym import run_episodes
@@ -139,6 +139,64 @@ def _one_success_two_errors(gated):
     return record, log
 
 
+def _one_cached_success(gated, tmp_path):
+    """A passing episode of two model calls, each with cached input in its usage."""
+    record = commands("trial", 1)[0]
+    gated([record])
+    outputs = [
+        ModelOutput.for_tool_call(MOCK, "run_script", {"code": oracle_script(record["spec"])}),
+        ModelOutput.from_content(MOCK, "Done."),
+    ]
+    for output in outputs:
+        output.usage = ModelUsage(
+            input_tokens=10,
+            output_tokens=5,
+            total_tokens=115,
+            input_tokens_cache_read=90,
+            input_tokens_cache_write=10,
+        )
+    model = get_model(MOCK, custom_outputs=outputs, memoize=False)
+    return run_episodes(["B"], 1, model=model, max_samples=1, log_dir=tmp_path)[0]
+
+
+def _model_events(log):
+    return [event for sample in log.samples for event in sample.events if event.event == "model"]
+
+
+def test_tokens_count_the_input_that_was_read_from_or_written_to_the_cache(gated, tmp_path):
+    metrics = arm_metrics(_one_cached_success(gated, tmp_path))
+
+    assert metrics["M3_tokens_in"] == 2 * (10 + 90 + 10)
+    assert metrics["M3_tokens_in_cached"] == 2 * 90
+    assert metrics["M3_tokens_out"] == 2 * 5
+    assert metrics["M3_tokens_per_success"] == 2 * 115
+
+
+def test_cost_is_what_the_provider_recorded_and_a_call_without_a_record_is_counted(gated, tmp_path):
+    log = _one_cached_success(gated, tmp_path)
+    first, second = _model_events(log)
+    first.call = ModelCall(request={}, response={"usage": {"cost": 0.25}})
+    second.call = None
+
+    metrics = arm_metrics(log)
+
+    assert metrics["M3_cost_usd"] == 0.25
+    assert metrics["M3_cost_per_success_usd"] == 0.25
+    assert metrics["M3_cost_unrecorded_calls"] == 1
+
+
+def test_cost_is_unknown_when_no_call_has_a_record(gated, tmp_path):
+    log = _one_cached_success(gated, tmp_path)
+    for event in _model_events(log):
+        event.call = ModelCall(request={}, response={"usage": {"total_tokens": 1}})
+
+    metrics = arm_metrics(log)
+
+    assert metrics["M3_cost_usd"] is None
+    assert metrics["M3_cost_per_success_usd"] is None
+    assert metrics["M3_cost_unrecorded_calls"] == 2
+
+
 def test_an_errored_epoch_stays_in_the_denominator_and_its_usage_counts(gated):
     record, log = _one_success_two_errors(gated)
     tokens = sum(u.input_tokens + u.output_tokens for s in log.samples for u in s.model_usage.values())
@@ -264,20 +322,21 @@ def test_a_comparison_over_the_same_epochs_is_complete(gated, tmp_path):
     assert report(tmp_path)["against_baseline"]["B"]["complete"] is True
 
 
-def test_a_comparison_of_one_id_with_different_text_is_not_complete(gated, tmp_path):
-    gated(commands("trial", 1))
-    run_episodes(["A"], 1, model=_says_done(), max_samples=1, log_dir=tmp_path)
-    other = run_episodes(["B"], 1, model=_says_done(), max_samples=1, log_dir=tmp_path)[0]
+@pytest.mark.parametrize("changed", [0, 1], ids=["first_command", "last_command"])
+def test_a_comparison_of_one_id_with_different_text_is_not_complete(gated, tmp_path, changed):
+    gated(commands("trial", 2))
+    run_episodes(["A"], 2, model=_says_done(), max_samples=1, log_dir=tmp_path)
+    other = run_episodes(["B"], 2, model=_says_done(), max_samples=1, log_dir=tmp_path)[0]
     assert report(tmp_path)["against_baseline"]["B"]["complete"] is True
 
-    other.samples[0].input = "An entirely different command."
+    other.samples[changed].input = "An entirely different command."
     write_eval_log(other)
 
     result = report(tmp_path)
 
     assert result["arms"]["A"]["complete"] is True
     assert result["arms"]["B"]["complete"] is True
-    assert result["against_baseline"]["B"]["commands"] == 1
+    assert result["against_baseline"]["B"]["commands"] == 2
     assert result["against_baseline"]["B"]["complete"] is False
 
 

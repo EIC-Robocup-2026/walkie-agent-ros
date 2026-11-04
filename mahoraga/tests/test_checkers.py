@@ -338,6 +338,14 @@ def test_count_people_of_nobody_needs_a_look_from_that_room():
     assert episode(spec, world(), ("go_to", "living room"), ("people", ""), answer)[0]
 
 
+def test_count_people_of_nobody_judges_the_room_a_relative_move_reached():
+    """No lookup result can give this away, so only the record's room can."""
+    spec = {"kind": "count_people", "description": "person pointing to the left", "room": "living room"}
+    walks_out = (("go_to", "living room"), ("move_relative", 0.0, -3.0), ("people", ""))
+
+    assert not episode(spec, world(), *walks_out, ("say", "0"))[0]
+
+
 @pytest.mark.parametrize(
     ("info", "line", "passes"),
     [

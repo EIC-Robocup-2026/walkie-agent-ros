@@ -10,11 +10,11 @@ todo list. This module reads where those steps come from, without ROS:
 
 Pydantic checks both formats. `extra="forbid"` matters, because an unknown key
 is most likely a typo, such as "items", that would silently drop a seed.
-The agent (walkie_agent.agent) subscribes to the topic and submits the result.
+RosBridge subscribes to the topic and hands the result to Runner.submit.
 """
 
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -29,7 +29,7 @@ from pydantic import (
     model_validator,
 )
 
-from walkie_agent.todo import TodoList
+from walkie_agent.runtime.todos import parse_seed
 
 # Only task text is stripped: a template name must match exactly.
 _TaskText = Annotated[StrictStr, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -41,13 +41,14 @@ class _TemplateEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     task: _TaskText  # instructions for the LLM, sent after the person's request
-    todos: list[Any] = Field(min_length=1)  # the seed, in the shape TodoList.seed takes
+    todos: list[Any] = Field(min_length=1)  # the seed, in the shape parse_seed takes
 
     @field_validator("todos")
     @classmethod
     def _can_seed(cls, todos: list[Any]) -> list[Any]:
-        # A scratch list runs the same checks as the seed will.
-        TodoList().seed(todos)
+        # This runs the same checks as the seed will. It keeps the raw entries, since
+        # Runner.submit parses them again and internal items are not legal seed input.
+        parse_seed(todos)
         return todos
 
 
@@ -68,7 +69,7 @@ class _TemplateFile(BaseModel):
 
 
 class TaskMessage(BaseModel):
-    """A `/walkie/task` message. Its seed's items are checked by WalkieAgent.submit."""
+    """A `/walkie/task` message. Its seed's items are checked by Runner.submit."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -108,6 +109,25 @@ def load_task_templates(path: str | Path) -> dict[str, TaskTemplate]:
         name: TaskTemplate(name=name, task=entry.task, todos=entry.todos)
         for name, entry in entries.items()
     }
+
+
+def check_required_tools(templates: Mapping[str, TaskTemplate], tools: Collection[str]) -> None:
+    """Raise ValueError for a template step that requires a tool outside `tools`.
+
+    Such a step could never complete, so it stops the agent at startup. A step with
+    no requirement is always valid.
+    """
+    problems = [
+        f"{template.name}.{item['id']} requires {item['requires_tool']}"
+        for template in templates.values()
+        for item in parse_seed(template.todos)
+        if item["requires_tool"] and item["requires_tool"] not in tools
+    ]
+    if problems:
+        raise ValueError(
+            f"Task templates require tools this tool set lacks: {'; '.join(problems)}. "
+            f"Available: {', '.join(sorted(tools))}."
+        )
 
 
 def parse_task_message(

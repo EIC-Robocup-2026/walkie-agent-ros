@@ -7,8 +7,11 @@ from pathlib import Path
 import pytest
 
 from conftest import PROJECT_ROOT
+from walkie_agent.atomics import DEFAULT, GPSR, HRI
+from walkie_agent.runtime.todos import parse_seed
 from walkie_agent.tasks import (
     TaskTemplate,
+    check_required_tools,
     load_task_templates,
     parse_task_message,
 )
@@ -39,7 +42,7 @@ Receive the guests one at a time.
 """
 todos = [
   "Meet the guest",
-  { content = "Take the bag", active_form = "Taking the bag", requires_tool = "speak" },
+  { content = "Take the bag", active_form = "Taking the bag", requires_tool = "say" },
 ]
 
 [templates.tour]
@@ -55,7 +58,7 @@ todos = ["Go to the kitchen"]
     assert receptionist.task == "Receive the guests one at a time."
     assert receptionist.todos == [
         "Meet the guest",
-        {"content": "Take the bag", "active_form": "Taking the bag", "requires_tool": "speak"},
+        {"content": "Take the bag", "active_form": "Taking the bag", "requires_tool": "say"},
     ]
 
 
@@ -70,7 +73,11 @@ def test_the_shipped_file_has_no_templates_and_a_valid_example(tmp_path):
     lines = TEMPLATES_FILE.read_text().splitlines()
     start = next(n for n, line in enumerate(lines) if line.startswith("# [templates."))
     example = "\n".join(line.removeprefix("#").removeprefix(" ") for line in lines[start:])
-    assert list(load_task_templates(write(tmp_path, example))) == ["tour"]
+    templates = load_task_templates(write(tmp_path, example))
+    assert list(templates) == ["tour"]
+    # It names only tools that every selectable tool set really binds.
+    for tool_set in (DEFAULT, GPSR, HRI):
+        check_required_tools(templates, {fn.__name__ for fn in tool_set})
 
 
 @pytest.mark.parametrize(
@@ -95,7 +102,7 @@ def test_the_shipped_file_has_no_templates_and_a_valid_example(tmp_path):
         ('[templates.tour]\ntask = "x"\ntodos = "a"\n', "templates.tour.todos: Input should"),
         ('[templates.tour]\ntask = "x"\ntodos = [{ content = "" }]\n', "Seed item t1 has no content"),
         (
-            '[templates.tour]\ntask = "x"\ntodos = [{ content = "a", require_tool = "speak" }]\n',
+            '[templates.tour]\ntask = "x"\ntodos = [{ content = "a", require_tool = "say" }]\n',
             "Seed item t1 has unknown keys: require_tool",
         ),
     ],
@@ -112,6 +119,31 @@ def test_a_bad_template_fails_at_load(tmp_path, text, error):
 
 def test_a_template_task_is_stripped():
     assert TaskTemplate(name="tour", task="  Show.\n", todos=["a"]).task == "Show."
+
+
+def test_template_validation_keeps_raw_seed_for_runner():
+    raw = ["Meet the guest", {"content": "Greet", "requires_tool": "say"}]
+    tour = TaskTemplate(name="tour", task="Show.", todos=raw)
+    assert tour.todos == raw
+    # The Runner parses the seed again. Parsed items would be refused here.
+    assert [item["content"] for item in parse_seed(tour.todos)] == ["Meet the guest", "Greet"]
+    with pytest.raises(ValueError, match="unknown keys"):
+        parse_seed(parse_seed(raw))
+
+
+def test_required_tools_must_be_available():
+    tour = TaskTemplate(
+        name="tour",
+        task="Show.",
+        todos=["Meet", {"content": "Go", "requires_tool": "go_to"}, {"content": "Say"}],
+    )
+    check_required_tools({"tour": tour}, {"go_to"})
+    with pytest.raises(ValueError, match=r"tour\.t2 requires go_to.*Available: say\."):
+        check_required_tools({"tour": tour}, {"say"})
+
+
+def test_a_template_with_no_requirement_needs_no_tool():
+    check_required_tools({"tour": template()}, ())
 
 
 # -- /walkie/task messages -------------------------------------------------------

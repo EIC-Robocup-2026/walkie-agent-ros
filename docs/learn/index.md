@@ -27,7 +27,7 @@ gave the agent a todo list for each task.
   reworded. A step that requires a tool cannot be completed without a
   successful call to that tool.
 - **Tasks can come with their steps.** An operator seeds them on
-  `/walkie/task`, or a template seeds them from a keyword. Progress shows on
+  `/walkie/task`, by giving the steps or naming a template. Progress shows on
   `/walkie/todos` and the console.
 
 ## The pages

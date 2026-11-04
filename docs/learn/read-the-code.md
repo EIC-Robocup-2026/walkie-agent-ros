@@ -12,13 +12,13 @@ a rai-core upgrade, what phase 1 left for later, and five exercises.
 | [`src/walkie_agent/tools/todos.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/tools/todos.py) | `UpdateTodosTool` and `WaitForPersonTool` | ~100 |
 | [`src/walkie_agent/graph.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/graph.py) | `ToolSet`, `repair_history`, `WalkieToolRunner` and `build_walkie_graph` | ~420 |
 | [`src/walkie_agent/agent.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/agent.py) | `WalkieAgent`: queue, stop, reset, seeds, `/walkie/task`, `/walkie/todos` and console lines. Also `create_walkie_agent` | ~420 |
-| [`src/walkie_agent/tasks.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/tasks.py) | `TaskTemplate`, `load_task_templates`, `match_template` and `parse_task_message` | ~150 |
+| [`src/walkie_agent/tasks.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/tasks.py) | `TaskTemplate`, `load_task_templates` and `parse_task_message` | ~130 |
 | [`src/walkie_agent/main.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/src/walkie_agent/main.py) | The ROS entry point and its flags, such as `--task-templates` and `--todos-topic` | ~90 |
 | [`config/task_templates.toml`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/config/task_templates.toml) | The task templates. It ships with one commented example | ~30 |
 | [`src/walkie_agent/tools/`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/tree/main/src/walkie_agent/tools) | The ROS tools in `navigation.py`, `speech.py` and `memory.py`. A failure raises `ToolException`, so its result has status `error` | ~530 |
 | [`tests/test_todo.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_todo.py) | One test per list rule, on a plain `TodoList` | ~880 |
 | [`tests/test_graph.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_graph.py) | Routes, gate, repair, queue, stop, reset and seeding, with no ROS | ~1170 |
-| [`tests/test_tasks.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_tasks.py) | Template loading, keyword matching and `/walkie/task` parsing | ~170 |
+| [`tests/test_tasks.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_tasks.py) | Template loading and `/walkie/task` parsing | ~140 |
 | [`tests/test_agent.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/test_agent.py) | The agent over ROS topics, against the fake robot | ~440 |
 | [`tests/scripted_llm.py`](https://github.com/EIC-Robocup-2026/walkie-agent-ros/blob/main/tests/scripted_llm.py) | `ScriptedChatModel`, the fake LLM that replays scripted replies and records what it was sent | ~70 |
 
@@ -137,8 +137,8 @@ Run each test with `pixi run pytest -k <name>` from the repository root.
 4. **A stop:** `-k stop_interrupts_the_task_and_drops_older_messages` runs once
    per stop phrase. Why does "Walkie, stop" not stop a task? Find the answer
    in `is_stop_utterance`, then run `-k other_utterances_are_not_stops`.
-5. **A keyword:** `-k a_keyword_matches_as_whole_words_in_any_case`. Read
-   `_keyword_pattern` in `tasks.py` and predict whether "a lighthouse tour"
-   and "house tours" match. Check with `-k no_match_without_the_whole_keyword`.
+5. **A template:** `-k a_task_message_with_a_template`. Read `parse_task_message`
+   in `tasks.py` and predict what a message with both `todos` and `template`
+   does. Check with `-k a_malformed_task_message_raises`.
 
 Previous: [Watching Progress](watching-progress.md)

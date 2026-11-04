@@ -217,8 +217,8 @@ example while the agent waits for an answer.
 written. The seed replaces the list when that task starts, before the first
 LLM call. Seeded steps cannot be reworded or removed. A bad seed raises
 `TodoRejected` from `submit()` at once, not later on the agent thread.
-The operator can seed a task over ROS on `/walkie/task`, and an utterance
-can start a template
+The operator can seed a task over ROS on `/walkie/task`, with its steps or
+the name of a template
 ([ADR-0041](decisions/0041-todo-list-and-seeding.md)).
 
 ### Seeding a task on /walkie/task
@@ -257,7 +257,6 @@ example. `--task-templates` points the agent at another file.
 
 ```toml title="config/task_templates.toml"
 [templates.tour]
-keywords = ["house tour", "show me around"]
 task = """
 Show the person the main rooms. In each room, say what it is for.
 """
@@ -269,19 +268,9 @@ todos = [
 ```
 
 - **`task` and `todos` are required.** `todos` uses the seed format above.
-- **`keywords` is optional.** A template without keywords can only be
-  started on `/walkie/task`.
-- **Matching happens when a task starts.** A task without a seed is matched
-  only when no step is open. Its text is checked against each template's
-  keywords, in file order, and the first match wins. A keyword matches as
-  whole words in any case, so "house tour" matches "Give me a House Tour!"
-  but not "a lighthouse tour".
-- **A match seeds the template.** The LLM gets the utterance, a blank line
-  and the template's task text. The steps get the source `seed`.
-- **Why at task start.** A task that is still queued must not start a
-  template while an earlier task may still open or finish steps. While a
-  step is open, for example while the agent waits for an answer, an answer
-  that contains a keyword is just an answer.
+- **Only the operator picks a template, by its exact name, on
+  `/walkie/task`.** An utterance never starts one, so a stray word in speech
+  cannot start the wrong plan.
 - **The file is checked at startup.** A missing file means no templates. A
   bad template, such as an unknown key, no task text or a bad step, stops
   the agent with an error that names the file and the template.

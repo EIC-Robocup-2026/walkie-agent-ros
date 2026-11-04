@@ -31,7 +31,6 @@ LATCHED = QoSProfile(
 )
 TOUR = TaskTemplate(
     name="tour",
-    keywords=("house tour",),
     task="Show the person the house.",
     todos=["Go to the kitchen", {"content": "Describe the kitchen", "requires_tool": "speak"}],
 )
@@ -287,6 +286,23 @@ def test_task_topic_starts_a_seeded_task(connector, operator, locations, message
     assert llm.received[0][1].content == text
     assert llm.reminders[0] == TOUR_REMINDER
     assert [(i.source, i.locked) for i in agent.todos.snapshot()] == [("operator", True)] * 2
+
+
+def test_an_utterance_naming_a_template_seeds_nothing(connector, locations):
+    llm = ScriptedChatModel(responses=[AIMessage(content="Which tour?")])
+    agent = create_walkie_agent(
+        llm, connector, locations, target_connectors={}, templates={"tour": TOUR}
+    )
+
+    agent.run()
+    try:
+        agent(ROS2HRIMessage(text="Give me the tour, like a house tour.", message_author="human"))
+        assert wait_until(lambda: len(llm.received) == 1 and agent.ready())
+    finally:
+        agent.stop()
+
+    assert llm.received[0][1].content == "Give me the tour, like a house tour.\n"
+    assert agent.todos.snapshot() == []
 
 
 def test_malformed_task_messages_are_ignored(connector, operator, locations, caplog):

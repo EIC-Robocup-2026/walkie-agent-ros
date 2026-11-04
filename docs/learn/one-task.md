@@ -14,8 +14,8 @@ A listener prints the console lines, as `_send_status_lines` does.
 ## Turn 1: the plan and the first step
 
 1. **`_run_agent` takes the message.** It has no seed, so `_prepare_todos`
-   finds nothing waiting and nothing open, and tries `match_template`. No
-   template matches, so the text goes to the graph unchanged.
+   finds nothing waiting and nothing to clear. The text goes to the graph
+   unchanged.
 2. **`llm` runs with no reminder,** because the list is empty. The model
    replies with two calls in one message: `update_todos` adding t1 as
    `in_progress` plus t2 and t3, then `navigate_to_location("kitchen")`.
@@ -84,7 +84,7 @@ t2 waiting: Find the cup
 
 1. **"The red one" arrives while the agent is idle.** `_prepare_todos` calls
    `resume_waiting`, so t2 is back `in_progress` with the same window. Items
-   are open, so the message belongs to this task and no template is tried.
+   are open, so the message belongs to this task.
 2. **The model completes t2, starts t3 and drives to `start`.** Nav2 rejects
    the goal. The tool's `ToolException` becomes a result with status `error`,
    and the ledger records a failure.

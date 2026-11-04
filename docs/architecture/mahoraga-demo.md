@@ -24,7 +24,7 @@ Each layer calls only the layer below it. Mahoraga reaches layer 3 only.
 | 4. Adapter to LangChain tools | `walkie_agent/adapter.py` | This one |
 | 5. `create_agent`, middlewares, Runner | `walkie_agent/runtime/` | Later |
 | 1 to 2. rclpy glue, ROS-backed verbs | `walkie_agent/ros/` | Later |
-| 6. `run_script`, shelf, gym | `mahoraga/`, with its own pixi environment | Later |
+| 6. `run_script`, shelf, gym | `mahoraga/`, with its own pixi environment | [Built](#mahoraga), fake world only |
 
 `errors`, `capabilities`, `atomics` and `adapter` never import rclpy, rai,
 rai_interfaces or any ROS message. `tests/test_ros_free.py` checks this in a
@@ -216,6 +216,120 @@ async paths. `ToolNode` answers argument validation errors before it.
 `format_tool_error` gives `"CODE: message"` for a `StepError`. Anything else
 logs its traceback and gives `"INTERNAL: <tool> failed with <ExceptionType>."`.
 
+## Mahoraga
+
+The research gym, in the `mahoraga` pixi environment and solve group. Its
+dependencies stay out of `default`, which `tests/test_mahoraga_absent.py` checks,
+and it never imports ROS, which `mahoraga/tests/test_ros_free.py` checks. It reaches
+the foundation through the atomics and `adapter`, and it covers rungs R0 to R2 in
+the fake world. MuJoCo validation and promotion are not built.
+
+| Module | What it holds |
+| --- | --- |
+| `driver` | `ScriptRunner`, `Budgets`, `ScriptResult`, `allow_list`, `stubs_for`, `describe_functions`, `script_summary` |
+| `shelf` | `Shelf`: saved functions and `ledger.jsonl`, outside git |
+| `sandbox` | `open_pool`, the Monty pool with each worker inside bwrap. It fails closed. |
+| `commands` | `RecordingGenerator`, `parse`, `commands(split, n, category)`, and the arena's names in `data/` |
+| `worlds` | `build_world(spec, seed)`, `world_seed(sample_id, epoch)` |
+| `checkers` | `check(spec, start, end)` over `FakeRobot.snapshot()` |
+| `oracle` | `oracle_script(spec)`, written from the slots with no LLM |
+| `bundles` | `BUNDLES`, stand-ins for arm D until the team's bundles exist |
+| `arms` | `ARMS`, `INDUCT`, `ArmSetup(arm, pool=, shelf_root=).episode(ctx)` |
+| `tasks` | `dataset`, `episode_robot`, the `ground_truth` scorer |
+| `gate` | `run_gate`, `run_standard_gate`, `require_gate`, `GateError` |
+| `gym` | `gpsr_task`, `run_episodes`, `resolve_model` |
+| `report` | `report(log_dir)`, `arm_metrics`, `compare`, `mcnemar_p` |
+
+### `run_script`
+
+```python
+ScriptRunner(pool, *, shelf=None, budgets=Budgets()).run(code, fns, *, save=()) -> ScriptResult
+```
+
+A script calls only the functions in `fns`, which `allow_list(atomics, ctx)` builds
+with ctx bound. Every other call or name lookup is refused, including any OS call,
+so a script reaches no ctx, file, network or unknown function. Before a script
+runs, it gets a type check against stubs made from the same signatures.
+
+| What fails | What the script sees |
+| --- | --- |
+| A `StepError` | `RuntimeError("CODE: message")`, which it may catch |
+| Bad arguments | `TypeError("tool: argument: reason")` |
+| A call off the list | `PermissionError` |
+| A bug in the host function | `RuntimeError("INTERNAL: tool failed with Type.")` |
+| A budget, by default 40 calls, 2 s a feed, 30 s of wall clock, 64 MiB or 4000 bytes printed | An error it cannot catch, which ends the run |
+
+`ScriptResult.calls` is the ledger: one entry per call, with its status. The model
+sees only `script_summary(result)`.
+
+### Shelf
+
+`Shelf(root=None, *, frozen=False)` keeps `<name>.py` files and `ledger.jsonl` in
+`root`, by default `<home>/shelf`. The home is the `--home` argument, then
+`MAHORAGA_HOME`, then `~/.local/share/mahoraga`, and it may not be inside a git work
+tree. A run with `save=[names]` keeps top-level functions only if it succeeds. A
+frozen shelf fixes its callable set when it is built, to the functions verified by
+then. Only the scorer calls `mark_verified`, after a success.
+
+### Arms
+
+| Arm | The model gets |
+| --- | --- |
+| `A` | The per-step GPSR tools |
+| `B` | `run_script`, with no shelf |
+| `C` | `run_script`, with the frozen, verified shelf callable |
+| `C2` | `run_script`, with the same scripts as prompt examples, not callable |
+| `D` | The per-step tools plus `BUNDLES` |
+| `induct` | `run_script` with `save`, on a writable shelf, for training only |
+
+All arms share the prompt, the atomics and the eval's model, temperature and seed.
+One (command, epoch) is one seeded world, the same for every arm.
+
+### The oracle gate
+
+An LLM arm refuses to start until the oracle has scored 100% twice with identical
+logs, for the same code and the same data.
+
+`run_gate` plays the oracle's scripts through the same driver, world builder and
+scorer an arm uses, twice, into `.eval` logs. It reads both back and compares them
+as JSON, with samples in a fixed order and without the fields in `gate.VOLATILE`:
+clocks, random ids and the log's location. The result lands in `<home>/gate/`.
+
+`require_gate(records, epochs)` raises `GateError` unless passing results for the
+current `code_digest()` cover a digest of every (command, epoch, world) requested.
+The code digest covers the files `gate._digested_files()` lists, so changing a
+checker, the driver or `fake.py` means running the gate again. `gpsr_task` and
+`run_episodes` both call it. Arms, the report and the CLI are not digested.
+
+### Running it
+
+Run these with `pixi run --frozen -e mahoraga`, from the repository root. The gate
+is offline and costs nothing. `run` calls a real model, so `--commands` has no default.
+
+```bash
+# The tests
+python -m pytest mahoraga/tests
+
+# The gate on the plan's trial, training and held-out data: 1080 episodes, twice
+python -m mahoraga gate
+# Or on other data
+python -m mahoraga gate --split trial --commands 20 --epochs 1 --category people
+
+# A small real slice, with the key in the environment
+OPENAI_API_KEY=... python -m mahoraga run --arms A,B --commands 5
+
+# Metrics M1 to M10 and the paired comparison, as JSON
+python -m mahoraga report --log-dir <the run's directory>
+```
+
+The defaults are `deepseek/deepseek-v4.1-flash:nitro`, through OpenRouter at
+`https://openrouter.ai/api/v1`, with the key in `OPENAI_API_KEY`. Other flags are
+`--epochs`, `--split`, `--category`, `--model`, `--base-url`, `--temperature`,
+`--seed`, `--max-samples`, `--log-dir`, `--no-bwrap` and `--home`.
+
+The plan's R2 is then `run --arms induct --split train --commands 300`, followed by
+`run --arms A,B,C,C2,D --split heldout --commands 160 --epochs 3`.
+
 ## Provisional decisions
 
 | # | Decision | Pick |
@@ -241,3 +355,21 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
 - `FakeRobot` is one class, so its `ctx` holds the same object four times.
 - `format_tool_error` answers a bug with `INTERNAL` rather than re-raising it,
   so one bad tool does not end a run.
+- `BUNDLES` are stand-ins, because the team has no reviewed bundles yet. Until it
+  does, arm D says nothing about curated skills.
+- Only callability separates C2 from C. Both use `run_script`, on the same scripts.
+- `induct` is one more arm, because induction has to run through something.
+- Shelf functions run as a separate first feed in the script's session, not as text
+  before it. They pass the same driver, and the script keeps its own line numbers.
+  A save also type-checks each definition standing alone.
+- Four people templates are out: `guideClothPrsFromBeacToBeac`,
+  `greetClothDscInRm`, `countClothPrsInRoom` and `meetNameAtLocThenFindInRm`.
+- `FakeRobot` has no follow verb and its people do not move, so follow and guide
+  are checked from the robot's trail. What a line says about "the time" is not
+  checked, and a relative move does not change the trail's place.
+- The world builder renames the operator and takes them out of every pose and
+  gesture, so no command's selector can match them.
+- M9 counts refused calls, since an escape would not show in a log. The bwrap
+  tests are what stand behind it.
+- There is no secondary template-chain set, no frozen paraphrases, no
+  pre-registration file and no flag registering `run_script` in the runtime.

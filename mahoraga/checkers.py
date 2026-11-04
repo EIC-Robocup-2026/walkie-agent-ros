@@ -1,0 +1,208 @@
+"""Ground truth: whether an episode did what its command asked, from FakeRobot snapshots.
+
+Only the harness reads these. Object commands are checked on the final world
+state, and answers against the world as it started. FakeRobot's people do not
+move and it has no follow verb, so a people command is checked on the trail of
+successful calls: looked in the right room, said something there, went to the
+destination. What a line about "the time" says cannot be checked at all.
+"""
+
+import re
+from collections.abc import Callable, Iterable, Mapping
+from typing import Any
+
+from mahoraga.worlds import OPERATOR, at_source, object_matches, person_matches
+
+Snapshot = Mapping[str, Any]
+Step = tuple[str, Mapping[str, Any], str, str]  # verb, args, place and room when it ran
+Seen = Callable[[str, str], bool]
+
+# Each measure is unique per kind in the fake arena, so a comparison has one answer.
+MEASURES = {
+    "biggest": ("size_cm", max),
+    "largest": ("size_cm", max),
+    "smallest": ("size_cm", min),
+    "heaviest": ("weight_g", max),
+    "lightest": ("weight_g", min),
+    "thinnest": ("thickness_cm", min),
+}
+_NUMBER_WORDS = "zero one two three four five six seven eight nine ten eleven twelve".split()
+_FILLER = {"person", "their", "to", "the", "arm"}
+
+
+def check(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
+    """Whether the episode from `start` to `end` carried out `spec`, and why or why not."""
+    return _CHECKERS[spec["kind"]](spec, start, end)
+
+
+def _trail(start: Snapshot, end: Snapshot) -> list[Step]:
+    """Each successful call, with where the robot was. A relative move counts as staying put."""
+    at = start["at"]
+    steps = []
+    for call in end["calls"]:
+        if call["error"] is None:
+            if call["verb"] == "base.go_to":
+                at = call["args"]["place"].strip().lower()
+            steps.append((call["verb"], call["args"], at, start["places"][at]["room"]))
+    return steps
+
+
+def _after_look(trail: list[Step], verb: str, seen: Seen) -> list[Step] | None:
+    """The steps after the first `verb` from where `seen` holds, or None if that never happened."""
+    for index, (step_verb, _, at, room) in enumerate(trail):
+        if step_verb == verb and seen(at, room):
+            return trail[index + 1 :]
+    return None
+
+
+def _said(steps: list[Step] | None, room: str | None = None) -> list[str]:
+    """The lines spoken in `steps`, in `room` if given."""
+    return [
+        args["text"]
+        for verb, args, _, step_room in steps or []
+        if verb == "speech.say" and room in (None, step_room)
+    ]
+
+
+def _sees_place(start: Snapshot, place: str) -> Seen:
+    room = start["places"][place]["room"]
+    return lambda at, _: at in (place, room)
+
+
+def _in_room(room: str) -> Seen:
+    return lambda _, step_room: step_room == room
+
+
+def _objects_at(start: Snapshot, place: str, category: str | None) -> list[Mapping[str, Any]]:
+    return [
+        item
+        for item in start["objects"].values()
+        if item["at"] == place and object_matches(item, category)
+    ]
+
+
+def _numbers(line: str) -> set[int]:
+    words = re.findall(r"[a-z0-9]+", line.lower())
+    return {int(word) for word in words if word.isdigit()} | {
+        _NUMBER_WORDS.index(word) for word in words if word in _NUMBER_WORDS
+    }
+
+
+def _answered_number(lines: Iterable[str], count: int) -> tuple[bool, str]:
+    """The last line that holds a number decides, so an earlier remark cannot pass as the answer."""
+    with_numbers = [line for line in lines if _numbers(line)]
+    if not with_numbers:
+        return False, f"No number was said after looking. Expected {count}."
+    return count in _numbers(with_numbers[-1]), f"Expected {count}. Said: {with_numbers[-1]!r}."
+
+
+def _check_moved(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
+    dest = spec["dest"]
+    picked = {args["object_id"] for verb, args, _, _ in _trail(start, end) if verb == "arms.pick"}
+    for object_id in sorted(picked):
+        item = start["objects"].get(object_id)
+        if item is None or not object_matches(item, spec["want"]):
+            continue
+        if not at_source(start["places"], item["at"], spec["source"]):
+            continue
+        at = end["objects"][object_id]["at"]
+        if (
+            (dest["to"] == "operator" and at == OPERATOR)
+            or (dest["to"] == "place" and at == dest["place"])
+            or (
+                dest["to"] == "person"
+                and at != OPERATOR
+                and at in end["people"]
+                and person_matches(end["people"][at], dest)
+            )
+        ):
+            return True, f"{object_id} reached {at}."
+    return False, f"No {spec['want']} from {spec['source']} was picked and delivered to {dest}."
+
+
+def _check_count_objects(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
+    count = len(_objects_at(start, spec["place"], spec["category"]))
+    after = _after_look(_trail(start, end), "vision.objects", _sees_place(start, spec["place"]))
+    return _answered_number(_said(after), count)
+
+
+def _spoken(line: str) -> str:
+    return line.replace("_", " ").lower()
+
+
+def _check_best(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
+    field, pick = MEASURES[spec["comparison"]]
+    items = _objects_at(start, spec["place"], spec["category"])
+    best = pick(items, key=lambda item: item[field])["name"]
+    after = _after_look(_trail(start, end), "vision.objects", _sees_place(start, spec["place"]))
+    naming = [line for line in _said(after) if any(item["name"] in _spoken(line) for item in items)]
+    if not naming:
+        return False, f"No line named an object after looking. Expected {best}."
+    return best in _spoken(naming[-1]), f"Expected {best}. Said: {naming[-1]!r}."
+
+
+def _check_count_people(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
+    selector = {"room": spec["room"], "description": spec["description"]}
+    count = sum(
+        1
+        for person, who in start["people"].items()
+        if person != OPERATOR and person_matches(who, selector)
+    )
+    after = _after_look(_trail(start, end), "vision.people", _in_room(spec["room"]))
+    return _answered_number(_said(after), count)
+
+
+def _info_tokens(start: Snapshot, room: str, info: str) -> set[str]:
+    """The words that must be said to report `info`, of the one other person in `room`."""
+    who = next(w for person, w in start["people"].items() if person != OPERATOR and w["room"] == room)
+    return set(re.findall(r"[a-z]+", who[info].lower())) - _FILLER
+
+
+def _reports(lines: Iterable[str], tokens: set[str]) -> bool:
+    return any(tokens <= set(re.findall(r"[a-z]+", line.lower())) for line in lines)
+
+
+def _check_person_info(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
+    tokens = _info_tokens(start, spec["room"], spec["info"])
+    after = _after_look(_trail(start, end), "vision.people", _in_room(spec["room"]))
+    return _reports(_said(after), tokens), f"Expected {sorted(tokens)} in a line after looking."
+
+
+def _check_relay(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
+    tokens = _info_tokens(start, spec["room"], spec["info"])
+    room, to_room = spec["room"], spec["to_room"]
+    after = _after_look(_trail(start, end), "vision.people", _in_room(room))
+    if to_room != room:
+        after = _after_look(after or [], "vision.people", _in_room(to_room))
+    return _reports(_said(after, to_room), tokens), f"Expected {sorted(tokens)} said in {to_room}."
+
+
+def _check_talk(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
+    room = spec["person"]["room"]
+    after = _after_look(_trail(start, end), "vision.people", _in_room(room))
+    return bool(_said(after, room)), f"Expected a look, then a line, in {room}."
+
+
+def _check_escort(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
+    room, dest = spec["person"]["room"], spec["dest"]
+    after = _after_look(_trail(start, end), "vision.people", _in_room(room))
+    if after is None:
+        return False, f"Never looked for the person in {room}."
+    if spec["greet"] and not _said(after, room):
+        return False, f"Never greeted the person in {room}."
+    if dest is None:
+        return True, "Found the person."
+    is_room = start["places"][dest]["room"] == dest
+    return (end["room"] if is_room else end["at"]) == dest, f"Expected to end at {dest}."
+
+
+_CHECKERS = {
+    "move_object": _check_moved,
+    "count_objects": _check_count_objects,
+    "best_object": _check_best,
+    "count_people": _check_count_people,
+    "person_info": _check_person_info,
+    "relay_info": _check_relay,
+    "talk": _check_talk,
+    "escort": _check_escort,
+}

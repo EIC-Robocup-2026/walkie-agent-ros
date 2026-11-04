@@ -384,6 +384,16 @@ apart: the seed ranges differ, and `commands("heldout", ...)` skips any
 sentence in the standard 300-command training set. A training run longer than that
 gets no such promise.
 
+An episode that errors, such as on a provider failure, gets no second attempt: a
+retry would replay the shelf's ledger and lose the failed attempt's usage. A transient
+provider error is retried inside the model call instead, up to three times with
+backoff, so it costs no attempt. An episode that still errors, or never ran, stays in
+M1 as a failure, and the usage it logged counts towards tokens and cost. Rounds, wall
+time and the script metrics cover every episode logged. Any such episode sets the
+arm's `complete` to false, and that of each comparison with the arm. So does a
+comparison whose arms ran different commands. `report` then gives a plain `warning`,
+which is null only if every arm is complete.
+
 ## Runtime
 
 `walkie_agent.runtime` is `create_agent` plus a small stack of middlewares, the

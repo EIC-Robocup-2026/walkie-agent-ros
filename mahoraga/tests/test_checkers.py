@@ -322,6 +322,15 @@ def test_escort_needs_the_look_then_the_destination():
     assert not episode(ESCORT, world(), *look)[0]
     assert not episode(ESCORT, world(), ("go_to", "sofa"))[0]
     assert not episode(ESCORT, world(), *look, ("go_to", "tv"))[0]
+    assert not episode(ESCORT, world(), ("go_to", "bar"), ("people", "Nobody"), ("go_to", "sofa"))[0]
+    assert not episode(ESCORT, world(), ("go_to", "shelf"), ("people", "Jane"), ("go_to", "sofa"))[0]
+
+
+def test_escort_from_the_place_it_goes_to_needs_no_second_move():
+    spec = {**ESCORT, "dest": "bar"}
+
+    assert episode(spec, world(), ("go_to", "bar"), ("people", "Jane"))[0]
+    assert not episode(spec, world(), ("go_to", "bar"), ("people", "Nobody"))[0]
 
 
 def test_escort_to_a_room_accepts_any_place_in_it():

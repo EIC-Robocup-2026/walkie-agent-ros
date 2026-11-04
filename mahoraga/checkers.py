@@ -29,6 +29,7 @@ MEASURES = {
 }
 _NUMBER_WORDS = "zero one two three four five six seven eight nine ten eleven twelve".split()
 _FILLER = {"person", "their", "to", "the", "arm"}
+_MOVES = {"base.go_to", "base.move_relative"}
 
 
 def check(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
@@ -171,23 +172,53 @@ def _check_relay(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tup
     return _reports(_said(after, to_room), tokens), f"Expected {sorted(tokens)} said in {to_room}."
 
 
+def _is_at(start: Snapshot, call: Call, place: str) -> bool:
+    """Whether a call ended at `place`, or anywhere in it if `place` is a room."""
+    if start["places"][place]["room"] == place:
+        return call["room"] == place
+    return call["at"] == place
+
+
+def _after_finding(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> list[Call] | None:
+    """The calls after a lookup at the requested place returned the requested person, or None."""
+    wanted = {
+        person
+        for person, who in start["people"].items()
+        if person != OPERATOR and person_matches(who, spec["person"])
+    }
+
+    def found(call: Call) -> bool:
+        return _is_at(start, call, spec["place"]) and bool(wanted & set(call.get("returned", ())))
+
+    return _after_look(_done(end), "vision.people", found)
+
+
 def _check_talk(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
     room = spec["person"]["room"]
-    after = _after_look(_done(end), "vision.people", _in_room(room))
-    return bool(_said(after, room)), f"Expected a look, then a line, in {room}."
+    after = _after_finding(spec, start, end)
+    if after is None:
+        return False, f"No lookup at {spec['place']} returned {spec['person']}."
+    return bool(_said(after, room)), f"Expected a line in {room} after finding the person."
 
 
 def _check_escort(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
     room, dest = spec["person"]["room"], spec["dest"]
-    after = _after_look(_done(end), "vision.people", _in_room(room))
+    after = _after_finding(spec, start, end)
     if after is None:
-        return False, f"Never looked for the person in {room}."
-    if spec["greet"] and not _said(after, room):
-        return False, f"Never greeted the person in {room}."
+        return False, f"No lookup at {spec['place']} returned {spec['person']}."
+    if spec["greet"]:
+        lines = (i for i, call in enumerate(after) if call["verb"] == "speech.say" and call["room"] == room)
+        greeted = next(lines, None)
+        if greeted is None:
+            return False, f"Never greeted the person in {room}."
+        after = after[greeted + 1 :]
     if dest is None:
         return True, "Found the person."
-    is_room = start["places"][dest]["room"] == dest
-    return (end["room"] if is_room else end["at"]) == dest, f"Expected to end at {dest}."
+    # The robot is already there when the destination is the named origin or holds it.
+    if at_source(start["places"], spec["place"], dest):
+        return True, f"Found the person at {spec['place']}, which is at {dest}."
+    reached = any(call["verb"] in _MOVES and _is_at(start, call, dest) for call in after)
+    return reached, f"Expected to reach {dest} after finding the person."
 
 
 _CHECKERS = {

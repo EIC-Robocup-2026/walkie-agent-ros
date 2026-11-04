@@ -64,7 +64,7 @@ def no_tracing(monkeypatch):
 
 @pytest.fixture
 def locations():
-    return load_locations(PROJECT_ROOT / "config" / "locations.toml")
+    return load_locations(PROJECT_ROOT / "tests" / "fixtures" / "locations.toml")
 
 
 @pytest.fixture

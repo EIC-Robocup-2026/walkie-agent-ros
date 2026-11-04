@@ -1,6 +1,15 @@
+import pytest
+
 from conftest import PROJECT_ROOT
-from walkie_agent.locations import load_locations
-from walkie_agent.tools import ListLocationsTool
+from walkie_agent.atomics import list_places
+from walkie_agent.capabilities.fake import FakeRobot
+from walkie_agent.locations import Location, load_locations
+
+
+def write(tmp_path, text):
+    path = tmp_path / "locations.toml"
+    path.write_text(text)
+    return path
 
 
 def test_load_locations_reads_all_entries(locations):
@@ -11,10 +20,13 @@ def test_load_locations_reads_all_entries(locations):
 
 
 def test_load_locations_defaults_yaw_and_description(tmp_path):
-    path = tmp_path / "locations.toml"
-    path.write_text("[locations.door]\nx = 1\ny = 2\n")
-    door = load_locations(path)["door"]
+    door = load_locations(write(tmp_path, "[locations.door]\nx = 1\ny = 2\n"))["door"]
     assert (door.x, door.y, door.yaw, door.description) == (1.0, 2.0, 0.0, "")
+    assert isinstance(door.x, float)
+
+
+def test_location_stays_a_positional_dataclass():
+    assert Location("door", 1.0, 2.0, 0.5, "The door.").description == "The door."
 
 
 def test_sim_locations_fit_the_blank_map():
@@ -26,7 +38,64 @@ def test_sim_locations_fit_the_blank_map():
         assert loc.description, loc.name
 
 
-def test_list_locations_tool_lists_names_and_descriptions(locations):
-    output = ListLocationsTool(locations=locations).invoke({})
-    assert "- kitchen: Kitchen counter." in output
-    assert output.count("\n") == len(locations) - 1
+def test_production_locations_ship_empty():
+    # A place written here is where the robot really drives, so none are invented.
+    assert load_locations(PROJECT_ROOT / "config" / "locations.toml") == {}
+
+
+def test_a_file_with_no_locations_table_means_no_places(tmp_path):
+    assert load_locations(write(tmp_path, "")) == {}
+
+
+@pytest.mark.parametrize(
+    ("text", "error"),
+    [
+        ('title = "x"\n', "title: Extra inputs"),
+        ("locations = 3\n", "locations: Input should be a valid dictionary"),
+        ("[locations]\ndoor = 3\n", "locations.door: Input should be a valid dictionary"),
+        ("[locations.door]\nx = 1\ny = 2\nz = 3\n", "locations.door.z: Extra inputs"),
+        ("[locations.door]\ny = 2\n", "locations.door.x: Field required"),
+        ("[locations.door]\nx = 1\n", "locations.door.y: Field required"),
+        ("[locations.door]\nx = true\ny = 2\n", "locations.door.x"),
+        ('[locations.door]\nx = "1"\ny = 2\n', "locations.door.x"),
+        ("[locations.door]\nx = 1\ny = false\n", "locations.door.y"),
+        ('[locations.door]\nx = 1\ny = 2\nyaw = "0"\n', "locations.door.yaw"),
+        ("[locations.door]\nx = nan\ny = 2\n", "not a finite number"),
+        ("[locations.door]\nx = 1\ny = inf\n", "not a finite number"),
+        ("[locations.door]\nx = 1\ny = 2\nyaw = -inf\n", "not a finite number"),
+        ("[locations.door]\nx = 1e999\ny = 2\n", "not a finite number"),
+        (f"[locations.door]\nx = 1{'0' * 400}\ny = 2\n", "too large"),
+        ("[locations.door]\nx = 1\ny = 2\ndescription = 3\n", "locations.door.description"),
+        ('[locations.""]\nx = 1\ny = 2\n', "blank"),
+        ('[locations."  "]\nx = 1\ny = 2\n', "blank"),
+        ("[locations.Kitchen]\nx = 1\ny = 2\n", "must be written 'kitchen'"),
+        ('[locations." kitchen"]\nx = 1\ny = 2\n', "must be written 'kitchen'"),
+        ('[locations."kitchen "]\nx = 1\ny = 2\n', "must be written 'kitchen'"),
+        # The first of two spellings of one place is the one that fails.
+        (
+            "[locations.Kitchen]\nx = 1\ny = 2\n[locations.kitchen]\nx = 3\ny = 4\n",
+            "must be written 'kitchen'",
+        ),
+        ("[locations.door\n", "locations.toml"),
+    ],
+)
+def test_a_broken_file_is_refused_with_its_path_and_reason(tmp_path, text, error):
+    path = write(tmp_path, text)
+    with pytest.raises(ValueError, match=error) as caught:
+        load_locations(path)
+    message = str(caught.value)
+    assert str(path) in message
+    assert "\n" not in message
+
+
+def test_a_name_may_hold_inner_spaces(tmp_path):
+    places = load_locations(write(tmp_path, '[locations."dining table"]\nx = 1\ny = 2\n'))
+    assert list(places) == ["dining table"]
+
+
+def test_list_places_atomic_lists_names_and_descriptions():
+    robot = FakeRobot()
+    listed = list_places(robot.ctx)
+    assert {entry["name"] for entry in listed} == set(robot.places())
+    assert all(set(entry) == {"name", "description"} for entry in listed)
+    assert all(entry["description"] for entry in listed)

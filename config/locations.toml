@@ -1,27 +1,20 @@
-# Named places Walkie can navigate to, in the `map` frame.
-# x, y in meters; yaw in radians (0 = facing +x).
-# `description` is shown to the LLM, so write it for a reader who cannot see the map.
+# Named places Walkie can navigate to, in the `map` frame of the robot's own map.
+#
+# This file ships empty on purpose. A place written here is where the robot will
+# really drive, so add one only after measuring it on the map in use, for example
+# by reading the robot's map pose while it stands there.
+#
+# [locations.kitchen]
+# x = 3.5                                 # meters, required
+# y = 1.2                                 # meters, required
+# yaw = 1.57                              # radians, 0 faces +x; optional, default 0
+# description = "The kitchen counter."    # optional, shown to the LLM, so write it
+#                                         # for a reader who cannot see the map
+#
+# The name is the table's key. Write it trimmed and in lowercase, because lookups
+# ignore case. Any other name, an unknown key, or a coordinate that is not a finite
+# number stops the agent at startup.
+#
+# config/locations.sim.toml holds the test points for the blank simulation map.
 
-[locations.start]
-x = 0.0
-y = 0.0
-yaw = 0.0
-description = "Starting point near the arena entrance."
-
-[locations.kitchen]
-x = 3.5
-y = 1.2
-yaw = 1.57
-description = "Kitchen counter. Drinks and snacks are usually here."
-
-[locations.living_room]
-x = -2.0
-y = 2.5
-yaw = 3.14
-description = "Living room with the sofa and coffee table. Guests usually sit here."
-
-[locations.bedroom]
-x = -3.0
-y = -2.0
-yaw = -1.57
-description = "Bedroom. The bed and a wardrobe are here."
+[locations]

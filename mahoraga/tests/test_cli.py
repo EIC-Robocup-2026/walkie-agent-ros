@@ -6,6 +6,7 @@ import pytest
 
 import mahoraga.__main__ as cli
 from mahoraga import home
+from mahoraga.commands import commands
 
 
 @pytest.mark.parametrize(
@@ -43,6 +44,15 @@ def test_bad_arguments_are_refused_before_an_arm_starts(gated, capsys, monkeypat
     assert cli.main(["run", "--arms", arms, "--commands", commands]) == 2
 
     assert message in capsys.readouterr().err
+
+
+def test_a_missing_key_is_refused_before_an_arm_starts(gated, capsys, monkeypatch):
+    gated(commands("trial", 1))
+    monkeypatch.setattr("mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
+
+    assert cli.main(["run", "--arms", "A", "--commands", "1"]) == 2
+
+    assert "OPENAI_API_KEY" in capsys.readouterr().err
 
 
 def test_run_passes_its_arguments_on(monkeypatch):

@@ -6,6 +6,7 @@ temperature, seed and retries come from the eval's config, and each arm shares t
 """
 
 import contextlib
+import os
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -101,11 +102,14 @@ def resolve_model(model: str | Model, base_url: str | None = None) -> str | Mode
 
     Inspect's "openai" provider takes a name it does not know for a new GPT model
     and drops the temperature, so every arm would run at the provider's default.
-    The key stays in OPENAI_API_KEY: only the variable's name is passed. An Inspect
-    model, or an id of its mock provider, passes through.
+    The key stays in OPENAI_API_KEY: only the variable's name is passed, and a
+    missing key raises ValueError. An Inspect model, or an id of its mock provider,
+    passes through.
     """
     if not isinstance(model, str) or model.startswith("mockllm/"):
         return model
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise ValueError(f"Set OPENAI_API_KEY in the environment to run {model}.")
     return get_model(
         f"openai-api/{_SERVICE}/{model}",
         base_url=base_url,
@@ -142,6 +146,7 @@ def run_episodes(
         require_arm(arm)
     records = generated_commands(split, commands, category)
     require_gate(records, epochs)
+    resolved = resolve_model(model, base_url)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     target = Path(log_dir) if log_dir else home() / "runs" / stamp
     logs: list[EvalLog] = []
@@ -151,7 +156,7 @@ def run_episodes(
         for arm in arms:
             logs += inspect_eval(
                 gpsr_task(arm, records, epochs=epochs, pool=pool, shelf_root=shelf_root),
-                model=resolve_model(model, base_url),
+                model=resolved,
                 log_dir=str(target),
                 log_format="eval",
                 display="none",

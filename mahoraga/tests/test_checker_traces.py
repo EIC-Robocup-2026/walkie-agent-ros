@@ -343,3 +343,145 @@ def test_a_relative_move_into_the_destination_room_reaches_it():
         trace(f, start, spec)
 
         assert check(spec, start, robot.snapshot())[0] is expected
+
+
+# What counts as the answer (M5).
+
+DISHES_ON_BAR = 13  # "tell me how many dishes there are on the bar": one
+LARGEST_FRUIT_ON_BAR = 8  # "tell me what is the largest fruit on the bar": banana
+POSE_AT_BAR = 265  # "tell me the pose of the person at the bar": sitting
+EVERY_NUMBER = "There are 99, not zero one two three four five six seven eight nine ten eleven twelve."
+
+
+def test_every_number_at_once_after_an_empty_look_fails():
+    def empty_objects_look(f, _start, _spec):
+        f["go_to"]("bar")
+        f["find_objects"]("does not exist")
+        f["say"](EVERY_NUMBER)
+
+    def empty_people_look(f, _start, _spec):
+        f["go_to"]("living room")
+        f["find_people"]("does not exist")
+        f["say"](EVERY_NUMBER)
+
+    assert not _run(DISHES_ON_BAR, empty_objects_look)[0]
+    assert not _run(SEATED_IN_LIVING_ROOM, empty_people_look)[0]
+
+
+def test_every_number_at_once_after_a_real_look_fails():
+    def real_look(f, _start, _spec):
+        f["go_to"]("bar")
+        assert f["find_objects"]("dish")
+        f["say"](EVERY_NUMBER)
+
+    ok, why = _run(DISHES_ON_BAR, real_look)
+
+    assert not ok, why
+
+
+def test_the_right_number_after_an_empty_look_fails():
+    def guesses(f, _start, _spec):
+        f["go_to"]("bar")
+        assert f["find_objects"]("does not exist") == []
+        f["say"]("1")
+
+    ok, why = _run(DISHES_ON_BAR, guesses)
+
+    assert not ok, why
+
+
+def test_the_right_number_before_the_look_fails():
+    def answers_first(f, _start, _spec):
+        f["say"]("1")
+        f["go_to"]("bar")
+        f["find_objects"]()
+
+    ok, why = _run(DISHES_ON_BAR, answers_first)
+
+    assert not ok, why
+
+
+def test_the_right_number_followed_by_an_unrelated_number_passes():
+    def adds_a_remark(f, _start, _spec):
+        f["go_to"]("bar")
+        f["say"](f"There are {len(f['find_objects']('dish'))} dish items.")
+        f["say"]("Task 99 is complete.")
+
+    ok, why = _run(DISHES_ON_BAR, adds_a_remark)
+
+    assert ok, why
+
+
+def test_listing_every_object_while_denying_them_fails():
+    def denies_all(f, _start, _spec):
+        f["go_to"]("bar")
+        names = [item["name"] for item in f["find_objects"]()]
+        assert "banana" in names
+        f["say"]("None of these is the answer: " + ", ".join(names))
+
+    ok, why = _run(LARGEST_FRUIT_ON_BAR, denies_all)
+
+    assert not ok, why
+
+
+def test_the_largest_fruit_said_alone_passes_and_a_smaller_one_fails():
+    def says(line):
+        def trace(f, _start, _spec):
+            f["go_to"]("bar")
+            f["find_objects"]("fruit")
+            f["say"](line)
+
+        return trace
+
+    assert _run(LARGEST_FRUIT_ON_BAR, says("The banana."))[0]
+    assert not _run(LARGEST_FRUIT_ON_BAR, says("The apple."))[0]
+
+
+def test_a_seated_person_is_sitting():
+    def paraphrases(f, _start, _spec):
+        f["go_to"]("kitchen room")
+        f["find_people"]()
+        f["say"]("They are seated.")
+
+    ok, why = _run(POSE_AT_BAR, paraphrases)
+
+    assert ok, why
+
+
+def test_a_correction_to_a_value_that_is_no_candidate_is_a_known_limit():
+    """The rule settles this on the first answer, which is right, so the wrong correction passes."""
+
+    def corrects_itself(f, _start, _spec):
+        f["go_to"]("kitchen room")
+        f["find_people"]()
+        f["say"]("The answer is sitting person")
+        f["say"]("Correction: the answer is definitely ZZZ, not sitting person.")
+
+    ok, why = _run(POSE_AT_BAR, corrects_itself)
+
+    assert ok, why
+
+
+def test_a_denial_of_the_one_right_candidate_is_a_known_limit():
+    """Negation is not parsed, so a line that names only the right value counts as asserting it."""
+
+    def denies_it(f, _start, _spec):
+        f["go_to"]("bar")
+        f["find_objects"]("fruit")
+        f["say"]("It is not the banana.")
+
+    ok, why = _run(LARGEST_FRUIT_ON_BAR, denies_it)
+
+    assert ok, why
+
+
+def test_a_true_line_with_a_second_number_is_a_known_limit():
+    """The rule cannot tell a remark from a second answer inside one line, so this fails."""
+
+    def adds_a_number_in_the_line(f, _start, _spec):
+        f["go_to"]("bar")
+        f["say"](f"I took 3 seconds and found {len(f['find_objects']('dish'))}.")
+
+    ok, why = _run(DISHES_ON_BAR, adds_a_number_in_the_line)
+
+    assert not ok, why

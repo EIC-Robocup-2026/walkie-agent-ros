@@ -5,7 +5,7 @@ import pytest
 from mahoraga.checkers import MEASURES, check
 from mahoraga.commands import commands, generator
 from mahoraga.worlds import OPERATOR, build_world, world_seed
-from walkie_agent.capabilities.fake import OBJECTS, FakeRobot
+from walkie_agent.capabilities.fake import GESTURES, OBJECTS, POSES, FakeRobot
 from walkie_agent.errors import StepError
 
 
@@ -176,10 +176,41 @@ def test_count_objects_needs_a_look_before_the_answer():
     assert not episode(COUNT, world(TWO_FRUITS), ("go_to", "bar"), ("objects", "fruit"), ("say", "There are 2."))[0]
 
 
-def test_count_objects_takes_the_last_number_said():
-    ok, _ = episode(COUNT, world(TWO_FRUITS), ("go_to", "shelf"), ("objects", ""), ("say", "I see 2."), ("say", "No, 5."))
+def test_count_objects_takes_the_first_number_said_after_the_look():
+    look = (("go_to", "shelf"), ("objects", ""))
 
-    assert not ok
+    assert not episode(COUNT, world(TWO_FRUITS), *look, ("say", "I see 5."), ("say", "No, 2."))[0]
+    assert episode(COUNT, world(TWO_FRUITS), *look, ("say", "I see 2."), ("say", "Task 99 is complete."))[0]
+
+
+def test_count_objects_judges_the_line_after_the_last_look_that_showed_them():
+    look = (("go_to", "shelf"), ("objects", "fruit"))
+
+    assert episode(COUNT, world(TWO_FRUITS), *look, ("say", "5"), *look, ("say", "2"))[0]
+    assert not episode(COUNT, world(TWO_FRUITS), *look, ("say", "2"), *look, ("say", "5"))[0]
+    assert not episode(COUNT, world(TWO_FRUITS), *look, ("say", "2"), *look)[0]
+
+
+def test_a_later_look_at_something_else_needs_no_second_answer():
+    look = (("go_to", "shelf"), ("objects", "fruit"))
+
+    assert episode(COUNT, world(TWO_FRUITS), *look, ("say", "2"), ("objects", "mug"))[0]
+    assert episode(COUNT, world(TWO_FRUITS), *look, ("objects", "mug"), ("say", "2"))[0]
+
+
+def test_count_objects_needs_a_look_that_returned_all_it_counts():
+    go = ("go_to", "shelf")
+
+    assert not episode(COUNT, world(TWO_FRUITS), go, ("objects", "nothing"), ("say", "2"))[0]
+    assert not episode(COUNT, world(TWO_FRUITS), go, ("objects", "apple"), ("say", "2"))[0]
+    assert episode(COUNT, world(TWO_FRUITS), go, ("objects", "apple"), ("objects", "banana"), ("say", "2"))[0]
+
+
+def test_count_objects_refuses_a_line_that_asserts_more_than_one_number():
+    look = (("go_to", "shelf"), ("objects", ""))
+
+    assert not episode(COUNT, world(TWO_FRUITS), *look, ("say", "There are 2, or maybe 3."))[0]
+    assert not episode(COUNT, world(TWO_FRUITS), *look, ("say", "Either one or two."))[0]
 
 
 def test_count_objects_accepts_a_look_from_the_room():
@@ -217,6 +248,33 @@ def test_best_object_reads_two_word_names_with_or_without_the_underscore():
 
     assert episode(_best("biggest"), built, *steps, ("say", "The red_plate."))[0]
     assert episode(_best("biggest"), built, *steps, ("say", "The Red Plate."))[0]
+
+
+def test_best_object_refuses_a_line_that_names_more_than_one_object_there():
+    look = (("go_to", "shelf"), ("objects", ""))
+
+    assert not episode(_best("biggest"), world(TWO_FRUITS), *look, ("say", "The banana or the apple."))[0]
+    assert not episode(_best("biggest", "fruit"), world(TWO_FRUITS), *look, ("say", "The banana, not the mug."))[0]
+
+
+def test_best_object_ignores_a_name_that_is_not_at_that_place():
+    look = (("go_to", "shelf"), ("objects", ""))
+
+    assert episode(_best("biggest"), world(TWO_FRUITS), *look, ("say", "The orange is on the bar."), ("say", "The banana."))[0]
+
+
+def test_best_object_reads_whole_words_only():
+    look = (("go_to", "shelf"), ("objects", ""))
+
+    assert not episode(_best("smallest"), world(TWO_FRUITS), *look, ("say", "A pineapple."))[0]
+    assert episode(_best("smallest"), world(TWO_FRUITS), *look, ("say", "The apples."))[0]
+
+
+def test_best_object_needs_a_look_that_returned_all_it_compares():
+    go = ("go_to", "shelf")
+
+    assert not episode(_best("biggest", "fruit"), world(TWO_FRUITS), go, ("objects", "banana"), ("say", "The banana."))[0]
+    assert episode(_best("biggest", "fruit"), world(TWO_FRUITS), go, ("objects", "fruit"), ("say", "The banana."))[0]
 
 
 def test_every_comparison_the_generator_can_draw_has_a_measure():
@@ -270,6 +328,94 @@ def test_person_info_fails_without_a_look_in_that_room():
     spec = {"kind": "person_info", "info": "name", "room": "kitchen room"}
 
     assert not episode(spec, world(), ("people", ""), ("say", "Jane"))[0]
+
+
+def test_person_info_fails_after_a_look_that_did_not_return_the_person():
+    spec = {"kind": "person_info", "info": "name", "room": "kitchen room"}
+
+    assert not episode(spec, world(), ("go_to", "kitchen room"), ("people", "Nobody"), ("say", "Jane"))[0]
+
+
+@pytest.mark.parametrize("pose", POSES)
+def test_person_info_accepts_each_pose_as_the_fake_spells_it(pose):
+    built = world(people=_people(a=("kitchen room", "Jane", {"pose": pose})))
+    spec = {"kind": "person_info", "info": "pose", "room": "kitchen room"}
+
+    assert episode(spec, built, ("go_to", "kitchen room"), ("people", ""), ("say", pose))[0]
+
+
+@pytest.mark.parametrize("gesture", GESTURES)
+def test_person_info_accepts_each_gesture_as_the_fake_spells_it(gesture):
+    built = world(people=_people(a=("kitchen room", "Jane", {"gesture": gesture})))
+    spec = {"kind": "person_info", "info": "gesture", "room": "kitchen room"}
+
+    assert episode(spec, built, ("go_to", "kitchen room"), ("people", ""), ("say", gesture))[0]
+
+
+@pytest.mark.parametrize(
+    ("pose", "line", "passes"),
+    [
+        ("sitting person", "They are seated.", True),
+        ("sitting person", "She sits on the sofa.", True),
+        ("standing person", "They are upright on their feet.", True),
+        ("standing person", "He stands by the table.", True),
+        ("lying person", "They are reclined horizontally.", True),
+        ("lying person", "They lie on the floor.", True),
+        ("sitting person", "They are upright.", False),
+        ("standing person", "They are seated.", False),
+        ("lying person", "They are standing.", False),
+        ("sitting person", "Sitting, standing or lying.", False),
+        ("sitting person", "Either seated or upright.", False),
+    ],
+)
+def test_person_info_accepts_an_ordinary_way_to_say_the_pose(pose, line, passes):
+    built = world(people=_people(a=("kitchen room", "Jane", {"pose": pose})))
+    spec = {"kind": "person_info", "info": "pose", "room": "kitchen room"}
+
+    ok, _ = episode(spec, built, ("go_to", "kitchen room"), ("people", ""), ("say", line))
+
+    assert ok is passes
+
+
+@pytest.mark.parametrize(
+    ("gesture", "line", "passes"),
+    [
+        ("person raising their left arm", "Their left arm is raised.", True),
+        ("person raising their right arm", "She lifts her right arm.", True),
+        ("person pointing to the left", "He points left.", True),
+        ("person pointing to the right", "Pointing right.", True),
+        ("waving person", "They wave.", True),
+        ("person raising their left arm", "Their left arm points at me.", False),
+        ("person pointing to the left", "Raising the left arm.", False),
+        ("waving person", "Either waving or pointing left.", False),
+    ],
+)
+def test_person_info_accepts_an_ordinary_way_to_say_the_gesture(gesture, line, passes):
+    built = world(people=_people(a=("kitchen room", "Jane", {"gesture": gesture})))
+    spec = {"kind": "person_info", "info": "gesture", "room": "kitchen room"}
+
+    ok, _ = episode(spec, built, ("go_to", "kitchen room"), ("people", ""), ("say", line))
+
+    assert ok is passes
+
+
+def test_person_info_takes_the_first_line_that_names_a_known_value():
+    spec = {"kind": "person_info", "info": "name", "room": "kitchen room"}
+    look = (("go_to", "kitchen room"), ("people", ""))
+
+    assert episode(spec, world(), *look, ("say", "I found someone."), ("say", "It is Jane."))[0]
+    assert not episode(spec, world(), *look, ("say", "It is Axel."), ("say", "No, it is Jane."))[0]
+    assert not episode(spec, world(), *look, ("say", "Jane or Robin."))[0]
+    assert episode(spec, world(), *look, ("say", "Janet's friend Jane."))[0]
+
+
+def test_person_info_for_a_name_reads_a_name_the_arena_data_does_not_hold():
+    built = world(people=_people(a=("kitchen room", "Zed", {})))
+    spec = {"kind": "person_info", "info": "name", "room": "kitchen room"}
+    look = (("go_to", "kitchen room"), ("people", ""))
+
+    assert episode(spec, built, *look, ("say", "It is Zed."))[0]
+    assert not episode(spec, built, *look, ("say", "It is Jane."))[0]
 
 
 def test_person_info_for_a_two_word_gesture_needs_both_words():

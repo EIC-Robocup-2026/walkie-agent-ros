@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from mahoraga.worlds import OPERATOR, at_source, object_matches, person_matches
+from walkie_agent.capabilities.fake import NAMES
 
 Snapshot = Mapping[str, Any]
 Call = Mapping[str, Any]
@@ -28,8 +29,27 @@ MEASURES = {
     "thinnest": ("thickness_cm", min),
 }
 _NUMBER_WORDS = "zero one two three four five six seven eight nine ten eleven twelve".split()
-_FILLER = {"person", "their", "to", "the", "arm"}
 _MOVES = {"base.go_to", "base.move_relative"}
+_RAISING = {"raising", "raises", "raise", "raised", "lifting", "lifts", "lift", "lifted"}
+_POINTING = {"pointing", "points", "point", "pointed"}
+# How ordinary speech says each pose and gesture. A line says a value when it holds
+# a word from each of the value's groups.
+_INFO_WORDS = {
+    "pose": {
+        "sitting person": [{"sitting", "sits", "sit", "seated"}],
+        "standing person": [{"standing", "stands", "stand", "upright"}],
+        "lying person": [
+            {"lying", "lies", "lie", "laying", "reclining", "reclined", "horizontal", "horizontally"}
+        ],
+    },
+    "gesture": {
+        "waving person": [{"waving", "waves", "wave", "waved"}],
+        "person raising their left arm": [_RAISING, {"left"}],
+        "person raising their right arm": [_RAISING, {"right"}],
+        "person pointing to the left": [_POINTING, {"left"}],
+        "person pointing to the right": [_POINTING, {"right"}],
+    },
+}
 
 
 def check(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
@@ -50,6 +70,24 @@ def _after_look(calls: list[Call], verb: str, seen: Seen) -> list[Call] | None:
     return None
 
 
+def _after_last_look(calls: list[Call], verb: str, seen: Seen, needed: set[str]) -> list[Call] | None:
+    """The calls after the last qualifying `verb` where `seen` holds, or None if there was none.
+
+    A look qualifies if it returned any of `needed` and all of it has been returned by
+    then, so a later look at something else is not looking again. With nothing needed,
+    any look there qualifies.
+    """
+    shown: set[str] = set()
+    after = None
+    for index, call in enumerate(calls):
+        if call["verb"] == verb and seen(call):
+            returned = set(call.get("returned", ()))
+            shown |= returned
+            if needed <= shown and (returned & needed or not needed):
+                after = calls[index + 1 :]
+    return after
+
+
 def _said(calls: list[Call] | None, room: str | None = None) -> list[str]:
     """The lines spoken in `calls`, in `room` if given."""
     return [
@@ -68,12 +106,20 @@ def _in_room(room: str) -> Seen:
     return lambda call: call["room"] == room
 
 
-def _objects_at(start: Snapshot, place: str, category: str | None) -> list[Mapping[str, Any]]:
-    return [
-        item
-        for item in start["objects"].values()
+def _objects_at(start: Snapshot, place: str, category: str | None) -> dict[str, Mapping[str, Any]]:
+    return {
+        object_id: item
+        for object_id, item in start["objects"].items()
         if item["at"] == place and object_matches(item, category)
-    ]
+    }
+
+
+def _people_matching(start: Snapshot, selector: Mapping[str, str]) -> set[str]:
+    return {
+        person
+        for person, who in start["people"].items()
+        if person != OPERATOR and person_matches(who, selector)
+    }
 
 
 def _numbers(line: str) -> set[int]:
@@ -83,12 +129,36 @@ def _numbers(line: str) -> set[int]:
     }
 
 
-def _answered_number(lines: Iterable[str], count: int) -> tuple[bool, str]:
-    """The last line that holds a number decides, so an earlier remark cannot pass as the answer."""
-    with_numbers = [line for line in lines if _numbers(line)]
-    if not with_numbers:
-        return False, f"No number was said after looking. Expected {count}."
-    return count in _numbers(with_numbers[-1]), f"Expected {count}. Said: {with_numbers[-1]!r}."
+def _named(names: Iterable[str], line: str) -> set[str]:
+    """Which of `names` a line says as whole words, in any case, with or without an underscore."""
+    spoken = line.replace("_", " ").lower()
+    return {name for name in names if re.search(rf"\b{re.escape(name.lower())}s?\b", spoken)}
+
+
+def _info_said(start: Snapshot, info: str, line: str) -> set[str]:
+    """Which known values of `info` a line says. Anything else in it is not a candidate."""
+    if info == "name":
+        others = (who["name"] for person, who in start["people"].items() if person != OPERATOR)
+        return _named({*NAMES, *others}, line)
+    words = set(re.findall(r"[a-z]+", line.lower()))
+    return {
+        value
+        for value, groups in _INFO_WORDS[info].items()
+        if all(words & group for group in groups)
+    }
+
+
+def _first_answer(lines: Iterable[str], candidates: Callable[[str], set], right: Any) -> tuple[bool, str]:
+    """The first line that mentions a candidate decides: it must assert `right` and no other.
+
+    Later lines go unread, so a closing remark cannot undo the answer. Nor can a
+    correction: a robot that wants to change its answer has to look again first.
+    """
+    for line in lines:
+        said = candidates(line)
+        if said:
+            return said == {right}, f"Expected {right}. Said: {line!r}."
+    return False, f"No answer was said after a look that showed it. Expected {right}."
 
 
 def _check_moved(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
@@ -116,60 +186,52 @@ def _check_moved(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tup
 
 
 def _check_count_objects(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
-    count = len(_objects_at(start, spec["place"], spec["category"]))
-    after = _after_look(_done(end), "vision.objects", _sees_place(start, spec["place"]))
-    return _answered_number(_said(after), count)
-
-
-def _spoken(line: str) -> str:
-    return line.replace("_", " ").lower()
+    place = spec["place"]
+    items = _objects_at(start, place, spec["category"])
+    after = _after_last_look(_done(end), "vision.objects", _sees_place(start, place), set(items))
+    return _first_answer(_said(after), _numbers, len(items))
 
 
 def _check_best(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
     field, pick = MEASURES[spec["comparison"]]
-    items = _objects_at(start, spec["place"], spec["category"])
-    best = pick(items, key=lambda item: item[field])["name"]
-    after = _after_look(_done(end), "vision.objects", _sees_place(start, spec["place"]))
-    naming = [line for line in _said(after) if any(item["name"] in _spoken(line) for item in items)]
-    if not naming:
-        return False, f"No line named an object after looking. Expected {best}."
-    return best in _spoken(naming[-1]), f"Expected {best}. Said: {naming[-1]!r}."
+    place = spec["place"]
+    items = _objects_at(start, place, spec["category"])
+    best = pick(items.values(), key=lambda item: item[field])["name"]
+    known = {item["name"] for item in _objects_at(start, place, None).values()}
+    after = _after_last_look(_done(end), "vision.objects", _sees_place(start, place), set(items))
+    return _first_answer(_said(after), lambda line: _named(known, line), best)
 
 
 def _check_count_people(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
-    selector = {"room": spec["room"], "description": spec["description"]}
-    count = sum(
-        1
+    room = spec["room"]
+    counted = _people_matching(start, {"room": room, "description": spec["description"]})
+    after = _after_last_look(_done(end), "vision.people", _in_room(room), counted)
+    return _first_answer(_said(after), _numbers, len(counted))
+
+
+def _only_other(start: Snapshot, room: str) -> tuple[str, Mapping[str, Any]]:
+    """The one person besides the operator that the world builder leaves in `room`."""
+    return next(
+        (person, who)
         for person, who in start["people"].items()
-        if person != OPERATOR and person_matches(who, selector)
+        if person != OPERATOR and who["room"] == room
     )
-    after = _after_look(_done(end), "vision.people", _in_room(spec["room"]))
-    return _answered_number(_said(after), count)
-
-
-def _info_tokens(start: Snapshot, room: str, info: str) -> set[str]:
-    """The words that must be said to report `info`, of the one other person in `room`."""
-    who = next(w for person, w in start["people"].items() if person != OPERATOR and w["room"] == room)
-    return set(re.findall(r"[a-z]+", who[info].lower())) - _FILLER
-
-
-def _reports(lines: Iterable[str], tokens: set[str]) -> bool:
-    return any(tokens <= set(re.findall(r"[a-z]+", line.lower())) for line in lines)
 
 
 def _check_person_info(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
-    tokens = _info_tokens(start, spec["room"], spec["info"])
-    after = _after_look(_done(end), "vision.people", _in_room(spec["room"]))
-    return _reports(_said(after), tokens), f"Expected {sorted(tokens)} in a line after looking."
+    room, info = spec["room"], spec["info"]
+    person, who = _only_other(start, room)
+    after = _after_last_look(_done(end), "vision.people", _in_room(room), {person})
+    return _first_answer(_said(after), lambda line: _info_said(start, info, line), who[info])
 
 
 def _check_relay(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
-    tokens = _info_tokens(start, spec["room"], spec["info"])
-    room, to_room = spec["room"], spec["to_room"]
-    after = _after_look(_done(end), "vision.people", _in_room(room))
+    room, to_room, info = spec["room"], spec["to_room"], spec["info"]
+    person, who = _only_other(start, room)
+    after = _after_last_look(_done(end), "vision.people", _in_room(room), {person})
     if to_room != room:
         after = _after_look(after or [], "vision.people", _in_room(to_room))
-    return _reports(_said(after, to_room), tokens), f"Expected {sorted(tokens)} said in {to_room}."
+    return _first_answer(_said(after, to_room), lambda line: _info_said(start, info, line), who[info])
 
 
 def _is_at(start: Snapshot, call: Call, place: str) -> bool:
@@ -181,11 +243,7 @@ def _is_at(start: Snapshot, call: Call, place: str) -> bool:
 
 def _after_finding(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> list[Call] | None:
     """The calls after a lookup at the requested place returned the requested person, or None."""
-    wanted = {
-        person
-        for person, who in start["people"].items()
-        if person != OPERATOR and person_matches(who, spec["person"])
-    }
+    wanted = _people_matching(start, spec["person"])
 
     def found(call: Call) -> bool:
         return _is_at(start, call, spec["place"]) and bool(wanted & set(call.get("returned", ())))

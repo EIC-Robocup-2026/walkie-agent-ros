@@ -326,13 +326,12 @@ def test_close_before_start_cleans_up_and_repeats_safely(build, nav):
 def test_close_stops_at_a_run_that_has_not_ended(build, nav, monkeypatch):
     built = build()
     built.app.start()
-    subscribed = [s for s in built.node.subscriptions if s.topic != "/voice_commands"]
     monkeypatch.setattr(built.app.runner, "shutdown", lambda timeout=None: False)
 
     assert built.app.close(0.0) is False
 
     assert built.app.ctx.cancel.cancelled
-    assert built.node.destroyed == subscribed, "only the input has closed"
+    assert built.node.destroyed == [], "a destroy can end the spin thread that a goal still needs"
     assert nav[0].destroyed == 0
     assert built.app.unresolved() == ["The agent's current run has not ended."]
 
@@ -688,6 +687,8 @@ def test_shutdown_orders_runner_goal_drain_connector_context(cli, monkeypatch):
         client = cli.nav[0]
         client.log = events  # one timeline for the client's events and everything else
         client.on_send = send  # the signal arrives while the goal waits for its answer
+        close_ingress = app.bridge.close_ingress
+        app.bridge.close_ingress = lambda: (events.append("ingress closed"), close_ingress())
         cli.connectors[0].node.subscriptions[1].callback(HRIMessage(text="Go to the kitchen."))
         cli.app = app
 
@@ -697,12 +698,13 @@ def test_shutdown_orders_runner_goal_drain_connector_context(cli, monkeypatch):
     timeline = events[events.index("started") :]
     expected = [
         "send",
-        "destroy /from_human",
+        "ingress closed",
         "runner joined",
         "cancel",
         "terminal",
         "destroy",
         "destroy /to_human",
+        "destroy /from_human",
         "destroy /walkie/console",
         "destroy /walkie/todos",
         "connector.shutdown",
@@ -796,9 +798,7 @@ def test_unresolved_shutdown_keeps_executor_alive(cli, monkeypatch, caplog):
             # Only the goal is left: the latch holds, and ROS is all still there.
             assert self.ctx.cancel.cancelled
             assert client.destroyed == 0
-            destroyed = topics(cli.connectors[0].node.destroyed)
-            assert "/from_human" in destroyed
-            assert "/walkie/console" not in destroyed and "/to_human" not in destroyed
+            assert cli.connectors[0].node.destroyed == []
             assert "connector.shutdown" not in events and "try_shutdown" not in events
         return finished
 

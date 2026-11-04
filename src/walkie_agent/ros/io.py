@@ -59,7 +59,7 @@ class RosBridge:
 
     The publishers exist from the start, so the Runner's first list has somewhere to
     go. `open` subscribes, `close_ingress` refuses further input, and `close`, last of
-    all, destroys the publishers. Each is safe to repeat.
+    all, destroys the endpoints. Each is safe to repeat.
     """
 
     def __init__(
@@ -107,19 +107,23 @@ class RosBridge:
                 self._subscriptions.append(subscription)
 
     def close_ingress(self) -> None:
-        """Ignore all further input, also from a callback that is already on its way."""
+        """Ignore all further input, also from a callback that is already on its way.
+
+        The subscriptions stay until close(). Destroying one while the executor builds its
+        wait set can raise in rclpy's spin thread and end it, and the cancel of a goal that
+        is still driving needs that thread to hear Nav2.
+        """
         self._ingress_closed.set()
-        with self._lock:
-            subscriptions, self._subscriptions = self._subscriptions, []
-        self._destroy(self._node.destroy_subscription, subscriptions)
 
     def close(self) -> None:
-        """Close the input too, then destroy the publishers. Later listeners publish nothing."""
+        """Close the input too, then destroy the endpoints. Later listeners publish nothing."""
         self.close_ingress()
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+            subscriptions, self._subscriptions = self._subscriptions, []
+        self._destroy(self._node.destroy_subscription, subscriptions)
         self._destroy(self._node.destroy_publisher, (self._console, self._todos))
 
     @staticmethod

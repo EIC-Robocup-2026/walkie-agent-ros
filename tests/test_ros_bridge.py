@@ -415,7 +415,7 @@ def test_closed_ingress_ignores_late_callbacks(serve):
     idle(app)
 
     app.bridge.close_ingress()
-    assert node.destroyed == subscribed
+    assert node.destroyed == [], "a destroy can end the spin thread that a goal still needs"
 
     callbacks["/from_human"](HRIMessage(text="Late."))
     callbacks["/from_human"](HRIMessage(text="stop"))
@@ -431,7 +431,7 @@ def test_closed_ingress_ignores_late_callbacks(serve):
     assert not set(node.publishers) & set(node.destroyed)
 
     app.bridge.close()
-    assert set(node.publishers) <= set(node.destroyed)
+    assert set(subscribed) | set(node.publishers) <= set(node.destroyed)
     count = len(node.destroyed)
     published = len(lists(app.connector))
     app.bridge.on_reply("Too late.")

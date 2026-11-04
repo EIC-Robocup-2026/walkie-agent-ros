@@ -298,9 +298,16 @@ clocks, random ids and the log's location. The result lands in `<home>/gate/`.
 
 `require_gate(records, epochs)` raises `GateError` unless passing results for the
 current `code_digest()` cover a digest of every (command, epoch, world) requested.
-The code digest covers the files `gate._digested_files()` lists, so changing a
-checker, the driver or `fake.py` means running the gate again. `gpsr_task` and
-`run_episodes` both call it. Arms, the report and the CLI are not digested.
+A result counts only if `passed` is true, `failures` is empty, its two pass digests
+are equal, and both logs exist and still hash as the gate recorded. This catches a
+stale, partial or hand-edited result made by mistake. It is no security boundary:
+nothing is signed. `gpsr_task` and `run_episodes` both call it.
+
+The code digest covers each file's repository path and content, for the files
+`gate._digested_files()` lists: every `mahoraga/*.py` except `report.py` and
+`__main__.py`, the data files, `errors.py`, `adapter.py`, `locations.py`, the
+capabilities and atomics packages, and `pixi.lock`. So an edit to any of them,
+related to the oracle or not, means running the gate again, which takes about a minute.
 
 ### Running it
 

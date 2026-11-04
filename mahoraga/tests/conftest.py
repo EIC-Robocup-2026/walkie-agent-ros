@@ -6,7 +6,7 @@ import pytest
 
 from mahoraga import home
 from mahoraga.driver import ScriptRunner, allow_list
-from mahoraga.gate import code_digest, pair_digests
+from mahoraga.gate import _file_hash, code_digest, pair_digests
 from mahoraga.sandbox import open_pool
 from walkie_agent.atomics import GPSR
 from walkie_agent.capabilities.fake import FakeRobot
@@ -29,13 +29,30 @@ def pool():
 
 @pytest.fixture
 def gated():
-    """Record a passing gate for some data, for tests about what runs after the gate."""
+    """Record a whole, passing gate for some data, for tests about what runs after the gate."""
 
     def record(records, epochs=1):
-        path = home() / "gate" / f"gate-{code_digest()}-fixture.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        pairs = sorted(pair_digests(records, epochs))
-        path.write_text(json.dumps({"passed": True, "code_digest": code_digest(), "pairs": pairs}))
+        root = home() / "gate"
+        path = root / f"gate-{code_digest()}-fixture.json"
+        root.mkdir(parents=True, exist_ok=True)
+        # Not named .eval: a report test may read tmp_path, which holds this home, for logs.
+        logs = [root / "fixture-1.log", root / "fixture-2.log"]
+        for log in logs:
+            log.write_text(log.name)
+        path.write_text(
+            json.dumps(
+                {
+                    "passed": True,
+                    "code_digest": code_digest(),
+                    "digests": ["same", "same"],
+                    "failures": [],
+                    "logs": [str(log) for log in logs],
+                    "log_hashes": [_file_hash(log) for log in logs],
+                    "pairs": sorted(pair_digests(records, epochs)),
+                }
+            )
+        )
+        return path
 
     return record
 

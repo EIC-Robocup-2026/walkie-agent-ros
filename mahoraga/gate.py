@@ -4,8 +4,8 @@ A gate run plays the oracle's scripts through the same driver, world builder and
 scorer an arm uses, twice, into `.eval` logs. It passes when both logs read back
 complete, every sample scored 1.0, and the two are equal once the fields that
 differ between any two runs are removed (VOLATILE). The result goes under the
-Mahoraga home, with a digest of each (command, epoch, world) it covered and a
-digest of the code it covered. require_gate() refuses anything else.
+Mahoraga home, with a digest of each (command, epoch, world) it covered, a digest
+of the code it covered and a hash of each log. require_gate() refuses anything else.
 """
 
 import asyncio
@@ -23,7 +23,6 @@ from inspect_ai.solver import Generate, Solver, TaskState, solver
 from pydantic_monty import Monty
 
 import walkie_agent.atomics as atomics
-import walkie_agent.capabilities.fake as fake
 from mahoraga import home
 from mahoraga.commands import DATA_DIR, commands
 from mahoraga.driver import ScriptRunner, allow_list
@@ -57,6 +56,9 @@ VOLATILE = frozenset(
 # (split, commands, epochs): the sizes of the plan's R1 trial, induction and held-out set.
 STANDARD_DATA = (("trial", 100, 3), ("train", 300, 1), ("heldout", 160, 3))
 _MODEL = "mockllm/model"
+_REPO = Path(__file__).resolve().parents[1]
+# These run after every episode has ended, so an edit to them cannot change an oracle pass.
+_NOT_DIGESTED = frozenset({"report.py", "__main__.py"})
 
 
 class GateError(RuntimeError):
@@ -76,31 +78,42 @@ class GateResult:
     code_digest: str
     digests: list[str] = field(default_factory=list)
     logs: list[str] = field(default_factory=list)
+    log_hashes: list[str] = field(default_factory=list)
     failures: list[str] = field(default_factory=list)
     pairs: list[str] = field(default_factory=list)
     path: str = ""
 
 
 def _digested_files() -> list[Path]:
-    package = Path(__file__).parent
-    own = ["commands", "worlds", "checkers", "oracle", "driver", "sandbox", "tasks", "gate"]
+    package = Path(__file__).resolve().parent
+    walkie = Path(atomics.__file__).resolve().parents[1]
     return sorted(
         [
-            *(package / f"{name}.py" for name in own),
-            *(path for path in DATA_DIR.rglob("*") if path.is_file()),
-            Path(fake.__file__),
-            *Path(atomics.__file__).parent.glob("*.py"),
+            *(path for path in package.glob("*.py") if path.name not in _NOT_DIGESTED),
+            *(path.resolve() for path in DATA_DIR.rglob("*") if path.is_file()),
+            *(walkie / name for name in ("errors.py", "adapter.py", "locations.py")),
+            *(walkie / "capabilities").glob("*.py"),
+            *(walkie / "atomics").glob("*.py"),
+            _REPO / "pixi.lock",
         ]
     )
 
 
 def code_digest() -> str:
-    """A digest of everything an oracle pass depends on, so an edit to any of it stales the gate."""
+    """A digest of everything an oracle pass depends on, so an edit to any of it stales the gate.
+
+    Each file counts by its repository path and its content, so two files with one
+    name stay apart. A broad list costs a rerun of about a minute after an unrelated edit.
+    """
     digest = hashlib.sha256()
     for path in _digested_files():
-        digest.update(path.name.encode())
-        digest.update(path.read_bytes())
+        digest.update(path.relative_to(_REPO).as_posix().encode() + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()[:16]
+
+
+def _file_hash(path: str | Path) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def pair_digests(records: Iterable[Mapping[str, Any]], epochs: int) -> set[str]:
@@ -240,6 +253,7 @@ def run_gate(
             )[0]
             back = read_eval_log(log.location)
             result.logs.append(str(log.location))
+            result.log_hashes.append(_file_hash(log.location))
             result.failures += _failures_of(back, expected)
             data.append(canonical(back))
             result.digests.append(_digest(data[-1]))
@@ -263,14 +277,37 @@ def run_standard_gate(*, category: str = "mixed", max_samples: int = 8, sandbox:
     ]
 
 
+def _pairs_of(path: Path, code: str) -> set[str]:
+    """The pairs a result on disk covers, which are none unless it is a whole, passing gate for `code`.
+
+    Its two passes must agree and its two logs must still hash as recorded. This
+    catches a stale, partial or hand-edited file made by mistake. It is no security
+    boundary: whoever can write the home can rewrite a log and its hash together.
+    """
+    try:
+        result = json.loads(path.read_text())
+        first, second = result["digests"]
+        logs = result["logs"]
+        hashes = result["log_hashes"]
+        whole = (
+            result["passed"] is True
+            and result["code_digest"] == code
+            and result["failures"] == []
+            and first == second
+            and len(logs) == len(hashes) == 2
+            and all(_file_hash(log) == kept for log, kept in zip(logs, hashes, strict=True))
+        )
+        return set(result["pairs"]) if whole else set()
+    except (KeyError, TypeError, ValueError, OSError):
+        return set()
+
+
 def require_gate(records: Iterable[Mapping[str, Any]], epochs: int) -> None:
-    """Raise GateError unless passing gate results, for this code, cover this data."""
+    """Raise GateError unless whole, passing gate results, for this code, cover this data."""
     code = code_digest()
     covered: set[str] = set()
     for path in (home() / "gate").glob(f"gate-{code}-*.json"):
-        result = json.loads(path.read_text())
-        if result["passed"] and result["code_digest"] == code:
-            covered |= set(result["pairs"])
+        covered |= _pairs_of(path, code)
     missing = len(pair_digests(records, epochs) - covered)
     if missing:
         raise GateError(

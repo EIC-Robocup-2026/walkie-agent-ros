@@ -14,6 +14,8 @@ import pytest
 os.environ["RMW_IMPLEMENTATION"] = "rmw_fastrtps_cpp"
 # Keep test traffic on this machine and off any domain a real robot might use.
 os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
+# A test must never pick up a developer's API keys, even through code that calls load_dotenv.
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 
 from walkie_agent.locations import load_locations  # noqa: E402
 

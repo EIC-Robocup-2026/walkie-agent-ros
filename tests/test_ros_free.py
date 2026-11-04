@@ -122,6 +122,15 @@ def test_no_code_uses_a_removed_class():
     assert _mentions(_files_under("src", "mahoraga", "scripts"), REMOVED_NAMES) == []
 
 
+def test_tests_cannot_read_a_dotenv_file(tmp_path, monkeypatch):
+    dotenv = pytest.importorskip("dotenv")
+    secrets = tmp_path / ".env"
+    secrets.write_text("WALKIE_TEST_SECRET=leaked\n")
+    monkeypatch.delenv("WALKIE_TEST_SECRET", raising=False)
+    assert dotenv.load_dotenv(secrets) is False
+    assert "WALKIE_TEST_SECRET" not in os.environ
+
+
 def test_the_sweep_would_catch_a_removed_module(tmp_path):
     bad = tmp_path / "bad.py"
     bad.write_text("from walkie_agent.graph import x\nfrom walkie_agent import tools, errors\n")

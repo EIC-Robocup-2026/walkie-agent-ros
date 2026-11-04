@@ -63,10 +63,14 @@ def script_record(code: str, result: ScriptResult) -> dict[str, Any]:
 
 
 def _proven(scripts: Sequence[Mapping[str, Any]]) -> dict[str, str]:
-    """The function versions that returned in an episode, and that nothing raised through in it."""
-    returned = {version for script in scripts for version in script["returned"].items()}
+    """Per name, the last version that returned in an episode and that nothing raised through in it."""
     raised = {version for script in scripts for version in script["raised"].items()}
-    return dict(sorted(returned - raised))
+    proven: dict[str, str] = {}
+    for script in scripts:
+        for name, sha in script["returned"].items():
+            if (name, sha) not in raised:
+                proven[name] = sha
+    return proven
 
 
 def _how_it_ended_badly(state: TaskState) -> str | None:
@@ -90,9 +94,9 @@ def _how_it_ended_badly(state: TaskState) -> str | None:
 def ground_truth(shelf: Shelf | None = None) -> Scorer:
     """Score from the snapshots and how the episode ended.
 
-    A success marks each function version that ran and returned in it as verified.
-    A function it saved or loaded and never ran earns nothing, and neither does one
-    that raised, even if its caller caught that.
+    A success marks, per function name, the last version that ran and returned in it
+    as verified. A function it saved or loaded and never ran earns nothing, and neither
+    does a version that raised, even if its caller caught that.
     """
 
     @scorer(metrics=[mean()], name=SCORER)

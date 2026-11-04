@@ -15,6 +15,7 @@ from mahoraga.gym import gpsr_task, run_episodes
 from mahoraga.oracle import oracle_script
 from mahoraga.report import arm_metrics
 from mahoraga.shelf import Shelf
+from mahoraga.tasks import _proven
 from walkie_agent.capabilities.fake import FakeRobot
 
 MOCK = "mockllm/model"
@@ -321,6 +322,49 @@ def test_a_function_that_raised_once_is_not_verified_by_another_call_that_return
     assert sample.store["scripts"][0]["saved"] == ["reach"]
     assert Shelf().counts()["reach"]["verified"] == 0
     assert Shelf(frozen=True).names() == []
+
+
+# Each pair runs in both orders, so one order has the later version's sha sort first.
+@pytest.mark.parametrize(("first", "last"), [(2, 3), (3, 2)])
+def test_the_version_last_run_in_an_episode_is_verified_in_either_hash_order(gated, first, last):
+    record = _first("talk", "train", greet=False)
+    versioned = "def versioned() -> int:\n    return {}\n\nversioned()\n"
+
+    _, sample = _induct(
+        gated,
+        record,
+        ("run_script", {"code": versioned.format(first), "save": ["versioned"]}),
+        ("run_script", {"code": versioned.format(last) + _talk_to(record["spec"], 'say("Hello.")'), "save": ["versioned"]}),
+    )
+
+    assert sample.scores["ground_truth"].value == 1.0
+    assert Shelf().counts()["versioned"] == {"saved": 2, "run": 0, "fail": 0, "verified": 1}
+    assert Shelf(frozen=True).names() == ["versioned"]
+    assert f"return {last}" in Shelf(frozen=True).examples()
+
+
+@pytest.mark.parametrize(
+    ("scripts", "proven"),
+    [
+        # The later version stays, whichever sha sorts first.
+        ([({"f": "aaa"}, {}), ({"f": "fff"}, {})], {"f": "fff"}),
+        ([({"f": "fff"}, {}), ({"f": "aaa"}, {})], {"f": "aaa"}),
+        # A later version that raised is out, even though it also returned.
+        ([({"f": "aaa"}, {}), ({"f": "fff"}, {"f": "fff"})], {"f": "aaa"}),
+        ([({"f": "fff"}, {}), ({"f": "aaa"}, {"f": "aaa"})], {"f": "fff"}),
+        # A raise in any later script takes back an earlier return of that version.
+        ([({"f": "aaa"}, {}), ({"f": "fff"}, {}), ({}, {"f": "fff"})], {"f": "aaa"}),
+        ([({"f": "fff"}, {}), ({"f": "aaa"}, {}), ({}, {"f": "aaa"})], {"f": "fff"}),
+        ([({"f": "aaa"}, {}), ({}, {"f": "aaa"})], {}),
+        # A return to an earlier version makes that one the last.
+        ([({"f": "aaa"}, {}), ({"f": "fff"}, {}), ({"f": "aaa"}, {})], {"f": "aaa"}),
+        ([({"f": "fff"}, {}), ({"f": "aaa"}, {}), ({"f": "fff"}, {})], {"f": "fff"}),
+        # Names do not affect each other.
+        ([({"f": "fff", "g": "aaa"}, {}), ({"f": "aaa"}, {"g": "aaa"})], {"f": "aaa"}),
+    ],
+)
+def test_proven_keeps_each_names_last_version_that_returned_and_never_raised(scripts, proven):
+    assert _proven([{"returned": returned, "raised": raised} for returned, raised in scripts]) == proven
 
 
 def test_a_shelf_name_in_dead_code_is_no_hit_and_earns_nothing(gated):

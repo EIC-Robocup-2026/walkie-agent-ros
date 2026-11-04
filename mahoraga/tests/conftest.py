@@ -1,8 +1,12 @@
 """Fixtures for Mahoraga's own suite, which never loads tests/conftest.py or ROS."""
 
+import json
+
 import pytest
 
+from mahoraga import home
 from mahoraga.driver import ScriptRunner, allow_list
+from mahoraga.gate import code_digest, pair_digests
 from mahoraga.sandbox import open_pool
 from walkie_agent.atomics import GPSR
 from walkie_agent.capabilities.fake import FakeRobot
@@ -21,6 +25,19 @@ def isolated_home(tmp_path, monkeypatch):
 def pool():
     with open_pool(max_processes=2) as shared:
         yield shared
+
+
+@pytest.fixture
+def gated():
+    """Record a passing gate for some data, for tests about what runs after the gate."""
+
+    def record(records, epochs=1):
+        path = home() / "gate" / f"gate-{code_digest()}-fixture.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pairs = sorted(pair_digests(records, epochs))
+        path.write_text(json.dumps({"passed": True, "code_digest": code_digest(), "pairs": pairs}))
+
+    return record
 
 
 @pytest.fixture

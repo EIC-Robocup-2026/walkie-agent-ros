@@ -11,7 +11,7 @@ from inspect_ai.model import ModelOutput, ModelUsage, get_model
 
 from mahoraga.arms import ARMS, INDUCT, PROMPT, ArmSetup
 from mahoraga.commands import commands
-from mahoraga.gym import run_episodes
+from mahoraga.gym import gpsr_task, run_episodes
 from mahoraga.oracle import oracle_script
 from mahoraga.report import arm_metrics
 from mahoraga.shelf import Shelf
@@ -21,17 +21,17 @@ MOCK = "mockllm/model"
 SPEAK = 'def speak_up():\n    """Say hello."""\n    say("Hello.")\n'
 
 
-def _first(kind, **fields):
-    for record in commands("trial", 200):
+def _first(kind, split="trial", **fields):
+    for record in commands(split, 200):
         spec = record["spec"]
         if spec["kind"] == kind and all(spec[key] == value for key, value in fields.items()):
             return record
     raise AssertionError(f"No {kind} in the first 200 commands.")
 
 
-def _index(record):
-    """The n of commands("trial", n) that ends with `record`."""
-    return [r["seed"] for r in commands("trial", 200)].index(record["seed"]) + 1
+def _index(record, split="trial"):
+    """The n of commands(split, n) that ends with `record`."""
+    return [r["seed"] for r in commands(split, 200)].index(record["seed"]) + 1
 
 
 def _done():
@@ -49,12 +49,16 @@ def _mock(record, *calls):
     return get_model(MOCK, custom_outputs=reply, memoize=False)
 
 
-def _run(gated, arm, record, *calls, **kwargs):
-    n = _index(record)
-    gated(commands("trial", n))
-    log = run_episodes([arm], n, model=_mock(record, *calls), max_samples=1, **kwargs)[0]
+def _run(gated, arm, record, *calls, split="trial", **kwargs):
+    n = _index(record, split)
+    gated(commands(split, n))
+    log = run_episodes([arm], n, split=split, model=_mock(record, *calls), max_samples=1, **kwargs)[0]
     assert log.status == "success", log.error
     return log, next(sample for sample in log.samples if sample.id == record["seed"])
+
+
+def _induct(gated, record, *calls):
+    return _run(gated, INDUCT, record, *calls, split="train")
 
 
 def _verified_shelf():
@@ -188,11 +192,10 @@ def test_arm_d_gets_atomics_and_bundles(gated):
 
 
 def test_the_induction_arm_saves_and_the_harness_verifies(gated):
-    record = _first("talk", greet=False)
-    spec = record["spec"]
-    code = f"{SPEAK}\ngo_to({json.dumps(spec['place'])})\nfind_people()\nspeak_up()"
+    record = _first("talk", "train", greet=False)
+    code = SPEAK + _talk_to(record["spec"], "speak_up()")
 
-    _, sample = _run(gated, INDUCT, record, ("run_script", {"code": code, "save": ["speak_up"]}))
+    _, sample = _induct(gated, record, ("run_script", {"code": code, "save": ["speak_up"]}))
 
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"][0]["saved"] == ["speak_up"]
@@ -200,9 +203,9 @@ def test_the_induction_arm_saves_and_the_harness_verifies(gated):
 
 
 def test_a_failed_episode_verifies_nothing(gated):
-    record = _first("move_object")
+    record = _first("move_object", "train")
 
-    _, sample = _run(gated, INDUCT, record, ("run_script", {"code": SPEAK + "speak_up()", "save": ["speak_up"]}))
+    _, sample = _induct(gated, record, ("run_script", {"code": SPEAK + "speak_up()", "save": ["speak_up"]}))
 
     assert sample.scores["ground_truth"].value == 0.0
     assert sample.store["scripts"][0]["saved"] == ["speak_up"]
@@ -213,11 +216,57 @@ def _talk_to(spec, then):
     return f"go_to({json.dumps(spec['place'])})\nfind_people()\n{then}\n"
 
 
+@pytest.mark.parametrize("split", ["trial", "heldout"])
+def test_induction_is_refused_off_the_train_split(gated, monkeypatch, split):
+    gated(commands(split, 1))
+    monkeypatch.setattr("mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
+
+    with pytest.raises(ValueError, match="only on the train split"):
+        run_episodes([INDUCT], 1, split=split, model=MOCK)
+
+
+@pytest.mark.parametrize("arms", [[INDUCT, "C"], ["C", INDUCT], ["A", INDUCT]])
+def test_induction_is_refused_beside_another_arm(gated, monkeypatch, arms):
+    gated(commands("train", 1))
+    monkeypatch.setattr("mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
+
+    with pytest.raises(ValueError, match="alone"):
+        run_episodes(arms, 1, split="train", model=MOCK)
+
+
+@pytest.mark.parametrize("split", ["trial", "heldout"])
+def test_a_task_for_induction_takes_only_training_commands(gated, pool, split):
+    records = commands(split, 1)
+    gated(records)
+
+    with pytest.raises(ValueError, match="train split"):
+        gpsr_task(INDUCT, records, pool=pool)
+
+
+def test_the_plans_flow_trains_first_then_evaluates_held_out_on_the_frozen_shelf(gated):
+    trained = _first("talk", "train", greet=False)
+    _induct(gated, trained, ("run_script", {"code": SPEAK + _talk_to(trained["spec"], "speak_up()"), "save": ["speak_up"]}))
+    assert Shelf(frozen=True).names() == ["speak_up"]
+
+    target = _first("talk", "heldout", greet=False)
+    log, sample = _run(
+        gated,
+        "C",
+        target,
+        ("run_script", {"code": _talk_to(target["spec"], "speak_up()")}),
+        split="heldout",
+    )
+
+    assert sample.scores["ground_truth"].value == 1.0
+    assert sample.store["scripts"][0]["shelf_used"] == ["speak_up"]
+    assert log.eval.metadata["shelf_digest"] == Shelf(frozen=True).digest()
+
+
 def test_a_function_saved_but_never_run_is_not_verified(gated):
-    record = _first("move_object")
+    record = _first("move_object", "train")
     code = f'def untested_bad() -> str:\n    return go_to("does not exist")\n\n{oracle_script(record["spec"])}'
 
-    _, sample = _run(gated, INDUCT, record, ("run_script", {"code": code, "save": ["untested_bad"]}))
+    _, sample = _induct(gated, record, ("run_script", {"code": code, "save": ["untested_bad"]}))
 
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"][0]["saved"] == ["untested_bad"]
@@ -226,11 +275,10 @@ def test_a_function_saved_but_never_run_is_not_verified(gated):
 
 
 def test_a_function_saved_in_one_script_and_run_in_the_next_is_verified(gated):
-    record = _first("talk", greet=False)
+    record = _first("talk", "train", greet=False)
 
-    _, sample = _run(
+    _, sample = _induct(
         gated,
-        INDUCT,
         record,
         ("run_script", {"code": SPEAK, "save": ["speak_up"]}),
         ("run_script", {"code": _talk_to(record["spec"], "speak_up()")}),
@@ -242,12 +290,11 @@ def test_a_function_saved_in_one_script_and_run_in_the_next_is_verified(gated):
 
 
 def test_a_rewrite_that_never_ran_earns_nothing_from_the_version_that_did(gated):
-    record = _first("talk", greet=False)
+    record = _first("talk", "train", greet=False)
     rewrite = 'def speak_up():\n    """Say goodbye."""\n    say("Goodbye.")\n'
 
-    _, sample = _run(
+    _, sample = _induct(
         gated,
-        INDUCT,
         record,
         ("run_script", {"code": SPEAK + _talk_to(record["spec"], "speak_up()"), "save": ["speak_up"]}),
         ("run_script", {"code": rewrite, "save": ["speak_up"]}),
@@ -260,7 +307,7 @@ def test_a_rewrite_that_never_ran_earns_nothing_from_the_version_that_did(gated)
 
 
 def test_a_function_that_raised_once_is_not_verified_by_another_call_that_returned(gated):
-    record = _first("talk", greet=False)
+    record = _first("talk", "train", greet=False)
     spec = record["spec"]
     code = (
         "def reach(place: str) -> str:\n    return go_to(place)\n\n"
@@ -268,7 +315,7 @@ def test_a_function_that_raised_once_is_not_verified_by_another_call_that_return
         f"reach({json.dumps(spec['place'])})\nfind_people()\nsay(\"Hello.\")\n"
     )
 
-    _, sample = _run(gated, INDUCT, record, ("run_script", {"code": code, "save": ["reach"]}))
+    _, sample = _induct(gated, record, ("run_script", {"code": code, "save": ["reach"]}))
 
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"][0]["saved"] == ["reach"]

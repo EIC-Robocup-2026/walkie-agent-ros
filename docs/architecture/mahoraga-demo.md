@@ -314,6 +314,11 @@ run has no evidence, so it earns nothing.
 | `D` | The per-step tools plus `BUNDLES` |
 | `induct` | `run_script` with `save`, on a writable shelf, for training only |
 
+`induct` runs alone and only on the train split. `run_episodes` and the CLI refuse
+anything else with a `ValueError`, and `gpsr_task` refuses it for commands outside
+that split, because a later arm's frozen shelf would then hold answers to the
+commands it is measured on.
+
 All arms share the prompt, the atomics and the eval's model, temperature and seed.
 One (command, epoch) is one seeded world, the same for every arm.
 
@@ -373,8 +378,9 @@ The defaults are `deepseek/deepseek-v4.1-flash:nitro`, through OpenRouter at
 `--seed`, `--max-samples`, `--log-dir`, `--no-bwrap` and `--home`.
 
 The plan's R2 is then `run --arms induct --split train --commands 300`, followed by
-`run --arms A,B,C,C2,D --split heldout --commands 160 --epochs 3`. Generation keeps
-the splits apart: the seed ranges differ, and `commands("heldout", ...)` skips any
+`run --arms A,B,C,C2,D --split heldout --commands 160 --epochs 3`. These are two runs
+on purpose, and each arm's shelf freezes as it starts. Generation keeps the splits
+apart: the seed ranges differ, and `commands("heldout", ...)` skips any
 sentence in the standard 300-command training set. A training run longer than that
 gets no such promise.
 

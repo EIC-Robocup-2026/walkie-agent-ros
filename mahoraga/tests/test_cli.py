@@ -46,6 +46,24 @@ def test_bad_arguments_are_refused_before_an_arm_starts(gated, capsys, monkeypat
     assert message in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    ("arms", "split", "message"),
+    [
+        ("induct", "trial", "only on the train split"),
+        ("induct", "heldout", "only on the train split"),
+        ("induct,C", "train", "alone"),
+        ("C,induct", "heldout", "alone"),
+    ],
+)
+def test_induction_off_the_train_split_or_beside_an_arm_is_refused(gated, capsys, monkeypatch, arms, split, message):
+    gated(commands(split, 1))
+    monkeypatch.setattr("mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
+
+    assert cli.main(["run", "--arms", arms, "--commands", "1", "--split", split]) == 2
+
+    assert message in capsys.readouterr().err
+
+
 def test_a_missing_key_is_refused_before_an_arm_starts(gated, capsys, monkeypatch):
     gated(commands("trial", 1))
     monkeypatch.setattr("mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))

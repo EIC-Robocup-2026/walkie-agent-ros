@@ -286,7 +286,6 @@ because it needs the atomics above:
 
 ```toml title="config/task_templates.toml"
 [templates.hri]
-keywords = ["hri", "receptionist", "guests"]
 task = """
 Receive two guests, one at a time, at the door. Learn each guest's name and
 favourite drink, guide them to the living room and offer a free seat. Then

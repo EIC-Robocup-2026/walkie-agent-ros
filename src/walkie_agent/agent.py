@@ -22,7 +22,7 @@ from std_msgs.msg import Empty, String
 
 from walkie_agent.graph import ToolSet, build_walkie_graph
 from walkie_agent.locations import Location
-from walkie_agent.tasks import TaskTemplate, match_template, parse_task_message
+from walkie_agent.tasks import TaskTemplate, parse_task_message
 from walkie_agent.todo import TodoItem, TodoList, console_line
 from walkie_agent.tools import build_walkie_tools
 from walkie_agent.whoami import build_system_prompt
@@ -97,9 +97,7 @@ class WalkieAgent(LangChainAgent):
       the task ends. Only reset(), or an utterance that is just "stop" or
       "never mind", interrupts a task. _run_agent checks the interrupt
       between graph steps, so a running tool call finishes first.
-    - submit() sends a task with a seeded todo list (ADR-0041). A message
-      without a seed that starts while no todo item is open, and contains a
-      template's keyword, starts with the template's task and todos.
+    - submit() sends a task with a seeded todo list (ADR-0041).
     - subscribe_task() takes seeded tasks from the operator's task topic,
       and publish_todos() publishes the list on a latched topic. Every status
       change also goes to the target connectors as one console line.
@@ -340,17 +338,7 @@ class WalkieAgent(LangChainAgent):
         # A finished list does not carry into the next task.
         if not self.todos.is_empty and not self.todos.open_ids():
             self.todos.clear()
-        # With items open, the message belongs to the current task. The check
-        # runs here, when the message starts, and not when it arrives: a task
-        # queued before it may still open or finish items.
-        if self.todos.open_ids():
-            return text
-        template = match_template(text, self.templates)
-        if template is None:
-            return text
-        self.logger.info(f"The message matches task template '{template.name}'.")
-        self.todos.seed(template.todos, "seed")
-        return template.prompt(text)
+        return text
 
     def _submit_task_message(self, data: str, topic: str) -> None:
         # Runs in the connector's executor, where an exception would end the

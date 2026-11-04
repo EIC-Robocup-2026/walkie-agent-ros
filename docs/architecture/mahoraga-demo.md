@@ -4,8 +4,9 @@ A prototype, on branch `feat/mahoraga-demo`, of the layered agent that the
 Mahoraga agent plan proposes. The competition agent and Mahoraga share its
 ROS-free foundation, so the same atomics run on the robot, in unit tests and
 in the fake-world gym. It sits beside main's agent, whose `agent.py`,
-`graph.py`, `todo.py`, `tasks.py` and `tools/` stay unchanged until a later
-slice replaces them. This page is the contract those slices follow.
+`graph.py`, `todo.py` and `tools/` stay unchanged until a later slice replaces
+them. `tasks.py` has already moved to templates by name only, for both agents.
+This page is the contract those slices follow.
 
 !!! warning "Prototype"
     Nothing here has run against a real model, in MuJoCo or on the robot.
@@ -22,13 +23,13 @@ Each layer calls only the layer below it. Mahoraga reaches layer 3 only.
 | 3. Error type | `walkie_agent/errors.py` | This one |
 | 3. Atomics and tool sets | `walkie_agent/atomics/` | This one |
 | 4. Adapter to LangChain tools | `walkie_agent/adapter.py` | This one |
-| 5. `create_agent`, middlewares, Runner | `walkie_agent/runtime/` | Later |
+| 5. `create_agent`, middlewares, Runner | `walkie_agent/runtime/` | [Built, unused](#runtime) |
 | 1 to 2. rclpy glue, ROS-backed verbs | `walkie_agent/ros/` | Later |
 | 6. `run_script`, shelf, gym | `mahoraga/`, with its own pixi environment | [Built](#mahoraga), fake world only |
 
-`errors`, `capabilities`, `atomics` and `adapter` never import rclpy, rai,
-rai_interfaces or any ROS message. `tests/test_ros_free.py` checks this in a
-fresh interpreter.
+`errors`, `capabilities`, `atomics`, `adapter` and `runtime` never import
+rclpy, rai, rai_interfaces or any ROS message. `tests/test_ros_free.py` checks
+this in a fresh interpreter.
 
 ## Errors
 
@@ -330,6 +331,119 @@ The defaults are `deepseek/deepseek-v4.1-flash:nitro`, through OpenRouter at
 The plan's R2 is then `run --arms induct --split train --commands 300`, followed by
 `run --arms A,B,C,C2,D --split heldout --commands 160 --epochs 3`.
 
+## Runtime
+
+`walkie_agent.runtime` is `create_agent` plus a small stack of middlewares, the
+todo list and a Runner. Tools come from `as_tools` over a `Ctx`, errors go through
+`tool_error_middleware`, and `ctx.cancel` is the only cancel signal. Nothing starts
+it yet: the cutover slice adds `walkie_agent/ros/` and a new `main.py`.
+
+```python
+# walkie_agent.runtime
+def load_config(path="config.toml") -> dict: ...
+def agent_settings(config) -> dict: ...  # run_limit and deadline_s, from the optional [agent]
+def build_model(config, role="complex_model") -> BaseChatModel: ...
+def build_fallback(config) -> BaseChatModel | None: ...  # needs fallback_vendor and fallback_model
+def build_callbacks(config) -> list[BaseCallbackHandler]: ...  # Langfuse, when enabled
+
+def build_agent(model, ctx, *, tools=DEFAULT, run_limit=25, deadline_s=60.0, on_todos=None,
+                fallback=None, tool_log=None, checkpointer=None,
+                system_prompt=SYSTEM_PROMPT) -> CompiledStateGraph: ...
+def build_middleware(ctx, *, run_limit, deadline_s, on_todos=None, fallback=None,
+                     tool_log=None) -> list[AgentMiddleware]: ...
+
+class ToolLog(AgentMiddleware):  # one JSON line per tool call
+    def __init__(self, path): ...
+    def write(self, **record) -> None: ...
+
+class Session:  # one checkpointer thread and one Langfuse session
+    thread_id: str
+    def config(self, callbacks=()) -> dict: ...  # ainvoke's config, with max_concurrency=1
+
+class Runner:  # every method is safe from any thread, and only queues work
+    session: Session
+    def __init__(self, agent, ctx, *, on_todos=None, on_reply=None, callbacks=(),
+                 tool_log=None): ...
+    def start(self) -> None: ...
+    def hear(self, text) -> None: ...  # a bare stop stops, and anything else is a task
+    def submit(self, text, todos=None, source="seed") -> None: ...  # raises on a bad seed
+    def stop(self, text="stop") -> None: ...
+    def reset(self) -> None: ...
+    def wait_idle(self, timeout=None) -> bool: ...
+    def shutdown(self, timeout=None) -> bool: ...  # later use raises RuntimeError
+
+def is_stop_utterance(text) -> bool: ...
+def parse_seed(items, source="seed") -> list[dict]: ...  # raises TodoRejected
+def render(items) -> str: ...  # the <todos> reminder
+def public(items) -> list[dict]: ...  # items without their private ledger keys
+def console_line(item) -> str: ...
+```
+
+Wiring, as the cutover slice will do it:
+
+```python
+config = load_config()
+log = ToolLog("logs/tools.jsonl")
+agent = build_agent(build_model(config), ctx, on_todos=publish, tool_log=log,
+                    fallback=build_fallback(config), **agent_settings(config))
+runner = Runner(agent, ctx, on_todos=publish, on_reply=print, tool_log=log,
+                callbacks=build_callbacks(config))
+runner.start()
+runner.hear("Go to the sofa.")
+```
+
+`on_todos(items, changed)` gets public copies, and `changed` holds the items whose
+status changed. Both listeners run on the Runner's thread and must not block. The
+model gets two tools beyond `tools`: `update_todos(ops)` and
+`wait_for_person(question)`. The warning at more than 20 bound tools counts them.
+
+### The middleware order
+
+`build_middleware` has the one order that works, and `tests/test_runtime.py` pins it.
+`after_model` hooks run in reverse list order, and a jump skips the ones still to run.
+
+| Middleware | Guards |
+| --- | --- |
+| `ToolLog`, when configured | Logs every answer, refusals included |
+| `StopLatch` | Once the token is set: no model call, and every tool call refused |
+| `SerialGuard` | A failed call or a question skips the later calls of its message; only the first `update_todos` of a message runs |
+| `WalkieTodos` | The list, the reminder, the completion gate and the two tools |
+| `EndAfterQuestion` | Ends the run after a successful question |
+| `RepairHistory` | Answers calls left open by an earlier run and calls with unreadable arguments |
+| `ModelCallLimitMiddleware` | Counts every model call, since nothing later in the list can jump past it |
+| `ModelFallbackMiddleware`, when configured | No fallback is configured by default (decision 19) |
+| `Deadline` | `asyncio.timeout` around each model attempt |
+| `tool_error_middleware()` | Innermost, so the ledger sees errors as results |
+
+### Behaviour the runtime promises
+
+- **Tool calls.** The calls of one message run one at a time, in order. That rests on
+  `max_concurrency=1`, which is observed behaviour of the installed versions and not
+  documented, so rerun `tests/test_runtime.py` on any dependency update.
+- **Stop.** A bare stop sets the token at once, which ends a drive through the verb and
+  refuses every remaining call of the run. It drops queued tasks but not a queued
+  reset. The Runner speaks `STOP_LINE` once through `ctx.speech.say` and logs it. A
+  later graph pass with no model call cancels the open steps and clears a waiting
+  question. The token stays set until the next task starts. A compound such as "stop
+  and come here" is an ordinary task, so it queues behind the active run.
+- **Reset.** It cancels and drops the queue. After the active run has finished, it
+  deletes the thread, starts a new session and publishes an empty list. A hung LLM call
+  can delay this by up to the deadline.
+- **Shutdown.** It cancels, drops the queue, and waits for the active run and any stop
+  line. It returns False if the thread outlives `timeout`.
+- **Failure.** An exception or a timeout ends that task only. The Runner logs it and
+  sends `FAILURE_LINE` to `on_reply`, and the next task runs on the same checkpoint.
+- **Deadline.** It is cooperative: `asyncio.timeout` around the awaited call, which
+  blocking code on the loop delays. It ends the client's wait, and does not prove the
+  provider stopped computing.
+- **Todo evidence.** Tools add entries to an append-only ledger and never write the
+  list. One successful result completes one step. Refused and skipped calls are not in
+  the ledger.
+
+`config.toml` may add an `[agent]` table with `run_limit`, `deadline_s`,
+`fallback_vendor` and `fallback_model`. The defaults of 25 calls and 60 s are
+provisional until real runs measure them.
+
 ## Provisional decisions
 
 | # | Decision | Pick |
@@ -373,3 +487,12 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
   tests are what stand behind it.
 - There is no secondary template-chain set, no frozen paraphrases, no
   pre-registration file and no flag registering `run_script` in the runtime.
+- The plan's target for what replaces `agent.py`, `graph.py`, `todo.py`, `tasks.py`
+  and `tools/todos.py` is about 575 own lines, against 1,111 today. It measures 1,074:
+  995 in `runtime/` and 79 in `tasks.py`. The decided fixes and the op-based todo list,
+  455 lines against the plan's 175, cost more than the estimate.
+- The stop's list update is a graph pass with a `stopping` input key rather than
+  `aupdate_state`, so it keeps the same order as a task in the Runner's queue.
+- The stop line is spoken at once rather than after the active run, which may be a
+  hung LLM call. Each `stop()` speaks once, so the speech verb must tolerate it
+  overlapping another `say`.

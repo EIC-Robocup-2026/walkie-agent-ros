@@ -1,13 +1,10 @@
 # Task templates: fixed tasks whose todo list is written in advance (ADR-0041).
 # This file ships with no templates, so nothing is seeded by default.
 #
-# A template is picked in one of two ways:
-# - An utterance contains one of its keywords as whole words, in any case,
-#   while no todo item is open. The first matching template in this file wins.
-#   The LLM gets the utterance, a blank line, then the template's task.
-# - The operator names it on /walkie/task: {"task": "...", "template": "tour"}.
+# A template is picked only by name, by the operator on /walkie/task:
+# {"task": "...", "template": "tour"}. The LLM gets the task, a blank line, then
+# the template's task. Speech never starts a template.
 #
-# keywords  optional list of words or phrases; without it, only the operator picks it
 # task      instructions for the LLM, sent after the person's request
 # todos     the steps: a string, or a table with content and optionally
 #           active_form (the "-ing" line for the console) and requires_tool
@@ -17,7 +14,6 @@
 # remove the "# " in front of each of its lines.
 #
 # [templates.tour]
-# keywords = ["house tour", "show me around"]
 # task = """
 # Give the person a short tour. At each place, say in one sentence what is
 # there. Then come back to the start.

@@ -378,8 +378,16 @@ something else is not looking again.
 
 A candidate is a number for a count, the name of any object at that place for
 `best_object`, and a known value of the attribute for `person_info` and
-`relay_info`. Ordinary equivalents count for pose and gesture, so "seated" says
-sitting.
+`relay_info`.
+
+A number is read as a whole token. "1.0" is 1, while "1.1", "-1" and "twenty-one"
+are numbers of their own that no small count equals, and "3rd" is no number. Number
+words run to nineteen, the tens and "hundred", so "thirty dishes" is a wrong answer
+and not a line to skip. "single" means 1, and "couple" and "pair" mean 2.
+
+Ordinary equivalents count for pose and gesture, so "seated" says sitting. A raised
+arm also needs an arm or a hand in the line, so "raising their right leg" does not
+say it. Pointing and waving need no body part.
 
 Known limits, each pinned by a test or stated here because reading more would mean
 parsing language:
@@ -390,6 +398,8 @@ parsing language:
 - A true line with a second number or candidate fails, such as "There are two, one
   apple and one banana" or "The banana is bigger than the apple". "One" counts as a
   number even as a pronoun.
+- A bare article is not a count, so "There is a dish" fails. Reading "a" as one would
+  make "on a bar" a second number.
 - A look again at the same things needs an answer after it, even if an earlier
   answer was right.
 - A shortened name such as "the plate" for "red plate" is not a candidate.
@@ -463,9 +473,14 @@ up to three more times with backoff, so a provider that stays down sees up to tw
 requests per model call. An episode that still errors, or never ran, stays in
 M1 as a failure, and the usage it logged counts towards tokens and cost. Rounds, wall
 time and the script metrics cover every episode logged. Any such episode sets the
-arm's `complete` to false, and that of each comparison with the arm. So does a
-comparison whose arms ran different commands. `report` then gives a plain `warning`,
-which is null only if every arm is complete.
+arm's `complete` to false, and that of each comparison with the arm. `report` then
+gives a plain `warning`, which is null only if every arm is complete.
+
+A comparison's own `complete` is also false when its arms were scheduled different
+(command, epoch) pairs, or when one sample id holds different command text in the two
+logs. A world's seed follows from (command, epoch), so the same pairs mean the same
+worlds. A log with no `sample_ids` still schedules `dataset.samples` times its epochs,
+so an episode it lost counts as never run.
 
 ## Runtime
 

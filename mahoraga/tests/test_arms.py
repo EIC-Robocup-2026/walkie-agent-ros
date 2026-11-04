@@ -614,12 +614,17 @@ def _run_on_the_fake_provider(gated, monkeypatch, *, failures=0):
         server.server_close()
 
 
-def test_a_transient_provider_error_is_retried_inside_the_model_call(gated, monkeypatch):
-    """With no sample retry, the model's own retries are what a 500 meets. Inspect waits about 3 s."""
-    log = _run_on_the_fake_provider(gated, monkeypatch, failures=1)
+@pytest.mark.parametrize("failures", [1, 3], ids=["the_client_retries", "inspect_retries_past_the_client"])
+def test_a_transient_provider_error_is_retried_inside_the_model_call(gated, monkeypatch, failures):
+    """With no sample retry, these are what a 500 meets.
+
+    The OpenAI client makes three requests per attempt of Inspect's model call, so a
+    fourth request means Inspect retried, which takes it about 3 s of backoff.
+    """
+    log = _run_on_the_fake_provider(gated, monkeypatch, failures=failures)
 
     sample = log.samples[0]
-    assert len(_FakeProvider.seen) == 2
+    assert len(_FakeProvider.seen) == failures + 1
     assert sample.error is None
     assert not sample.error_retries
     assert "ground_truth" in sample.scores

@@ -24,7 +24,7 @@ from pydantic_monty import Monty
 
 import walkie_agent.atomics as atomics
 from mahoraga import home
-from mahoraga.commands import DATA_DIR, commands
+from mahoraga.commands import DATA_DIR, TRAIN_COMMANDS, commands
 from mahoraga.driver import ScriptRunner, allow_list
 from mahoraga.oracle import oracle_script
 from mahoraga.sandbox import open_pool
@@ -54,7 +54,7 @@ VOLATILE = frozenset(
     }
 )
 # (split, commands, epochs): the sizes of the plan's R1 trial, induction and held-out set.
-STANDARD_DATA = (("trial", 100, 3), ("train", 300, 1), ("heldout", 160, 3))
+STANDARD_DATA = (("trial", 100, 3), ("train", TRAIN_COMMANDS, 1), ("heldout", 160, 3))
 _MODEL = "mockllm/model"
 _REPO = Path(__file__).resolve().parents[1]
 # These run after every episode has ended, so an edit to them cannot change an oracle pass.

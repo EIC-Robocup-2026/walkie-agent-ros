@@ -341,7 +341,10 @@ The defaults are `deepseek/deepseek-v4.1-flash:nitro`, through OpenRouter at
 `--seed`, `--max-samples`, `--log-dir`, `--no-bwrap` and `--home`.
 
 The plan's R2 is then `run --arms induct --split train --commands 300`, followed by
-`run --arms A,B,C,C2,D --split heldout --commands 160 --epochs 3`.
+`run --arms A,B,C,C2,D --split heldout --commands 160 --epochs 3`. Generation keeps
+the splits apart: the seed ranges differ, and `commands("heldout", ...)` skips any
+sentence in the standard 300-command training set. A training run longer than that
+gets no such promise.
 
 ## Runtime
 

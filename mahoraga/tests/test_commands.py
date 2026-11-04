@@ -9,6 +9,7 @@ import pytest
 from mahoraga.commands import (
     CATEGORIES,
     SPLITS,
+    TRAIN_COMMANDS,
     UNSUPPORTED,
     commands,
     generator,
@@ -254,6 +255,21 @@ def test_the_splits_share_no_command():
     assert {r["seed"] for r in trial}.isdisjoint(r["seed"] for r in train)
     assert {r["seed"] for r in train}.isdisjoint(r["seed"] for r in heldout)
     assert min(r["seed"] for r in heldout) >= SPLITS["heldout"]
+
+
+@pytest.mark.parametrize("category", CATEGORIES)
+def test_the_held_out_split_has_no_sentence_of_the_standard_training_set(category):
+    standard = {record["text"] for record in commands("train", TRAIN_COMMANDS)}
+    trained = standard | {record["text"] for record in commands("train", TRAIN_COMMANDS, category)}
+
+    assert trained.isdisjoint(record["text"] for record in commands("heldout", 160, category))
+
+
+def test_the_held_out_split_repeats_and_a_larger_n_extends_a_smaller_one():
+    small = commands("heldout", 40)
+
+    assert commands("heldout", 40) == small
+    assert commands("heldout", 80)[:40] == small
 
 
 def test_the_mix_keeps_both_groups():

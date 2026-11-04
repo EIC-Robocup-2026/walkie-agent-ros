@@ -30,6 +30,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from pydantic import BaseModel, Field, field_validator
 
+from walkie_agent.capabilities import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.runtime.middleware import (
     ToolHandler,
@@ -344,16 +345,18 @@ class _Draft:
 class WalkieTodos(AgentMiddleware):
     """Keeps the list in state, reminds the LLM of it and supplies its two tools.
 
-    `say` speaks a question and raises StepError on failure. `on_todos(items,
-    changed)` hears every change, as public copies; `changed` holds the items whose
-    status changed. It runs on the runtime's thread, so it must not block, and if it
-    raises the failure is logged and the list is unaffected.
+    `cancel` is the stop token, which the two tools check before they do anything.
+    `say` speaks a question and raises StepError on failure. `on_todos(items, changed)`
+    hears every change, as public copies; `changed` holds the items whose status
+    changed. It runs on the runtime's thread, so it must not block, and if it raises
+    the failure is logged and the list is unaffected.
     """
 
     state_schema = TodoState
 
     def __init__(
         self,
+        cancel: CancelToken,
         say: Callable[[str], None],
         on_todos: Callable[[list[dict[str, Any]], list[dict[str, Any]]], None] | None = None,
     ) -> None:
@@ -365,7 +368,9 @@ class WalkieTodos(AgentMiddleware):
         self._batch_owner: str | None = None
         self._batch: list[dict[str, Any]] = []
 
-        def update_todos(
+        # Async so that it runs on the loop, the thread on_todos is promised. A sync
+        # tool would run in an executor thread under ainvoke.
+        async def update_todos(
             ops: Annotated[
                 list[TodoOp],
                 Field(
@@ -383,6 +388,7 @@ class WalkieTodos(AgentMiddleware):
             Only one item can be in progress at a time. Seeded steps cannot be reworded
             or removed. Put all changes in one call.
             """
+            cancel.check("update_todos")
             old = runtime.state.get("todos") or []
             draft = _Draft(old, runtime.state.get("next_id", 1), self._ledger(runtime.state))
             try:
@@ -413,6 +419,7 @@ class WalkieTodos(AgentMiddleware):
             example to learn which object they mean. Your turn ends, and the answer
             arrives as the next message.
             """
+            cancel.check("wait_for_person")
             question = _one_line(question)
             say(question)
             answer = ToolMessage(
@@ -421,7 +428,7 @@ class WalkieTodos(AgentMiddleware):
             return Command(update={"question": question, "messages": [answer]})
 
         self.tools = [
-            StructuredTool.from_function(update_todos),
+            StructuredTool.from_function(coroutine=update_todos),
             StructuredTool.from_function(wait_for_person),
         ]
 

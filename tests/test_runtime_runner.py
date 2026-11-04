@@ -7,6 +7,7 @@ would. The claim tags are explained in tests/test_runtime.py.
 import asyncio
 import json
 import logging
+import threading
 import time
 
 import pytest
@@ -298,6 +299,84 @@ def test_a_stop_line_that_cannot_be_spoken_is_logged_and_the_stop_still_holds(se
     assert robot.cancel.cancelled
 
 
+def test_a_stop_line_is_logged_under_the_session_it_was_heard_in(serve, tmp_path):
+    class SlowStopLine(FakeRobot):
+        speaking, release = threading.Event(), threading.Event()
+
+        def say(self, text, **kwargs):
+            self.speaking.set()
+            assert self.release.wait(5)
+            super().say(text, **kwargs)
+
+    log = ToolLog(tmp_path / "tools.jsonl")
+    stack = serve(robot=SlowStopLine(), tool_log=log)
+    heard_in = stack.runner.session.thread_id
+    stack.runner.stop()
+    assert stack.robot.speaking.wait(5)
+    stack.runner.reset()
+    wait_until(lambda: stack.runner.session.thread_id != heard_in)
+    stack.robot.release.set()
+    idle(stack)
+    assert [r["session"] for r in log_records(log)] == [heard_in]
+
+
+class PauseBeforeTool(BaseCallbackHandler):
+    """Holds a tool after StopLatch has looked at the token and before the tool's body runs."""
+
+    def __init__(self, name):
+        self.name = name
+        self.entered, self.release = threading.Event(), threading.Event()
+
+    def on_tool_start(self, serialized, input_str, **kwargs):
+        if serialized.get("name") == self.name:
+            self.entered.set()
+            assert self.release.wait(5)
+
+
+@pytest.mark.parametrize(
+    "late",
+    [
+        call("say", {"text": "The task succeeded."}, "late"),
+        call("list_places", {}, "late"),
+        call("wait_for_person", {"question": "Which?"}, "late"),
+        todo_call(update("t1", status="completed"), call_id="late"),
+    ],
+    ids=["say", "read", "question", "update_todos"],
+)
+def test_a_stop_that_lands_just_before_a_tool_body_still_stops_the_tool(serve, late):
+    pause = PauseBeforeTool(late["name"])
+    stack = serve(ai(late), DONE, callbacks=[pause])
+    stack.runner.submit("Go.", todos=["Open step"])
+    assert pause.entered.wait(5)
+    stack.runner.stop()
+    wait_until(lambda: stack.robot.said == [STOP_LINE])
+    pause.release.set()
+    idle(stack)
+
+    assert stack.robot.said == [STOP_LINE]
+    assert stack.answer("late").status == "error"
+    assert stack.answer("late").content.startswith("CANCELLED:")
+    assert stack.statuses() == ["cancelled"]
+    assert not stack.state.get("question")
+    assert len(stack.model.received) == 1
+
+
+def test_both_todo_listeners_run_on_the_runner_s_thread():
+    heard = []
+
+    def listen(items, changed):
+        heard.append((threading.current_thread().name, [i["status"] for i in items]))
+
+    stack = make_stack(ai(todo_call(update("t1", status="completed"))), DONE, on_todos=listen)
+    runner = Runner(stack.agent, stack.robot.ctx, on_todos=listen)
+    runner.start()
+    runner.submit("Go.", todos=["Step"])
+    assert runner.wait_idle(10)
+    assert runner.shutdown(10)
+    assert (runner._thread.name, ["completed"]) in heard
+    assert {thread for thread, _ in heard} == {runner._thread.name}
+
+
 def test_a_bare_stop_cancels_the_open_steps_with_no_model_call(serve):
     # test_graph.py:897 changed: a stop while idle is no longer an ordinary message (decision 6).
     first = ai(todo_call(update("t1", status="completed")), call("say", {"text": "Hi"}, "s"))
@@ -581,6 +660,25 @@ def test_shutdown_lets_a_stop_line_finish(serve):
     stack.runner.stop()
     assert stack.runner.shutdown(5)
     assert stack.robot.said == [STOP_LINE]
+
+
+@pytest.mark.parametrize("late", ["stop", "reset", "submit"])
+def test_a_call_that_lands_during_a_shutdown_is_refused_and_the_thread_still_ends(serve, late):
+    release = threading.Event()
+
+    async def hold(_messages):
+        while not release.is_set():
+            await asyncio.sleep(0.005)
+        return DONE
+
+    stack = serve(hold)
+    stack.runner.submit("First.")
+    wait_until(lambda: stack.model.received)
+    assert not stack.runner.shutdown(0)
+    with pytest.raises(RuntimeError, match="has shut down"):
+        getattr(stack.runner, late)(*(["Late."] if late == "submit" else []))
+    release.set()
+    assert stack.runner.shutdown(5)
 
 
 def test_shutdown_before_start():

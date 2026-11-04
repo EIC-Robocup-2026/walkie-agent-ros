@@ -93,7 +93,7 @@ def build_middleware(
         *([tool_log] if tool_log else []),
         StopLatch(ctx.cancel),
         SerialGuard(),
-        WalkieTodos(ctx.speech.say, on_todos),
+        WalkieTodos(ctx.cancel, ctx.speech.say, on_todos),
         EndAfterQuestion(),
         RepairHistory(),
         ModelCallLimitMiddleware(run_limit=run_limit, exit_behavior="end"),

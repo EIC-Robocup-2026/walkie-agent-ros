@@ -142,6 +142,7 @@ class Runner:
         """
         seed = None if todos is None else parse_seed(todos, source)
         with self._lock:
+            self._require_open()
             self._enqueue(_Task(text, seed))
 
     def stop(self, text: str = "stop") -> None:
@@ -151,10 +152,12 @@ class Runner:
         list changes after that run, in a graph pass that makes no model call.
         """
         with self._lock:
+            self._require_open()
             self.ctx.cancel.cancel()
             self._queue = deque(item for item in self._queue if isinstance(item, _Reset))
             self._enqueue(_Stop(text))
-            self._loop.call_soon_threadsafe(self._speak_stop_line, text)
+            # The session is read now: a queued reset can replace it before the line ends.
+            self._loop.call_soon_threadsafe(self._speak_stop_line, text, self.session.thread_id)
 
     def reset(self) -> None:
         """Forget everything: cancel, drop the queue, then a new session after the active run.
@@ -163,6 +166,7 @@ class Runner:
         have finished, which a hung LLM call can delay by up to the deadline.
         """
         with self._lock:
+            self._require_open()
             self.ctx.cancel.cancel()
             self._queue.clear()
             self._enqueue(_Reset())
@@ -175,28 +179,31 @@ class Runner:
         """Cancel, drop the queue, and wait for the active run and the stop line to end.
 
         Returns False if the thread is still running after `timeout`. It is a daemon
-        thread, so it cannot keep the process alive. Using the Runner later raises.
+        thread, so it cannot keep the process alive. Using the Runner later raises, and
+        calling this again waits again.
         """
         with self._lock:
-            if self._closed:
-                return not self._thread.is_alive()
-            self.ctx.cancel.cancel()
-            self._queue.clear()
-            if not self._thread.ident:
+            if not self._closed:
                 self._closed = True
-                self._loop.close()
-                return True
-            self._enqueue(_Shutdown())
-            self._closed = True
-        self._thread.join(timeout)
+                self.ctx.cancel.cancel()
+                self._queue.clear()
+                if self._thread.ident:
+                    self._enqueue(_Shutdown())
+                else:
+                    self._loop.close()
+        if self._thread.ident:
+            self._thread.join(timeout)
         return not self._thread.is_alive()
 
     # -- The loop thread -------------------------------------------------------
 
-    def _enqueue(self, item: Any) -> None:
-        """Add to the queue and wake the worker. Call with the lock held."""
+    def _require_open(self) -> None:
+        """Call with the lock held, before any change: the queue holds the shutdown's item."""
         if self._closed:
             raise RuntimeError("The Runner has shut down.")
+
+    def _enqueue(self, item: Any) -> None:
+        """Add to the queue and wake the worker. Call with the lock held."""
         self._queue.append(item)
         self._idle.clear()
         self._loop.call_soon_threadsafe(self._wake.set)
@@ -260,12 +267,12 @@ class Runner:
             if isinstance(last, AIMessage) and not last.tool_calls and last.content:
                 self._call(self._on_reply, last.text)
 
-    def _speak_stop_line(self, text: str) -> None:
-        task = self._loop.create_task(self._say_stop_line(text))
+    def _speak_stop_line(self, text: str, session: str) -> None:
+        task = self._loop.create_task(self._say_stop_line(text, session))
         self._speaking.add(task)
         task.add_done_callback(self._speaking.discard)
 
-    async def _say_stop_line(self, text: str) -> None:
+    async def _say_stop_line(self, text: str, session: str) -> None:
         """Speak in a thread, since it blocks, and log it: no tool call covers this line."""
         status = "success"
         try:
@@ -276,7 +283,7 @@ class Runner:
         logger.info("Heard %r, so the robot stopped and said %r (%s).", text, STOP_LINE, status)
         if self._tool_log is not None:
             self._tool_log.write(
-                session=self.session.thread_id,
+                session=session,
                 tool="stop_line",
                 args={"heard": text},
                 status=status,

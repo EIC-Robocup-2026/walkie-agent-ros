@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from runtime_harness import add, ai, call, drive, make_stack, remove, todo_call, update
 
+from walkie_agent.capabilities import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.runtime.todos import (
     TodoOp,
@@ -520,7 +521,7 @@ def test_a_new_seed_resets_the_windows():
 
 def test_only_the_first_update_todos_call_in_a_message_is_applied():
     # test_graph.py:518; R8g changed: the spike refused both, now only the duplicate is
-    # refused, and it skips nothing: the drive after it still runs.
+    # refused. It counts as a failed call, so the drive after it does not run.
     stack = make_stack(
         ai(todo_call(add("Say hello"), call_id="u1"), todo_call(add("Say goodbye"), call_id="u2"), drive("d1")),
         DONE,
@@ -535,8 +536,10 @@ def test_only_the_first_update_todos_call_in_a_message_is_applied():
         "Only one update_todos call per message is accepted, so this one was not applied. "
         "Put all ops in one call."
     )
-    assert stack.answer("d1").status == "success"
-    assert stack.verbs() == ["base.go_to"]
+    assert stack.answer("d1").content == (
+        "Not run: update_todos failed earlier in this message. Decide again."
+    )
+    assert stack.verbs() == []
 
 
 # -- The reminder and the gate ---------------------------------------------------
@@ -807,7 +810,7 @@ def test_console_lines(status, line):
 
 def test_the_tool_schemas_are_flat_and_hide_the_injected_runtime():
     # Schema: on the final tools, including the injected argument
-    update_todos, wait_for_person = WalkieTodos(lambda text: None).tools
+    update_todos, wait_for_person = WalkieTodos(CancelToken(), lambda text: None).tools
     openai = [convert_to_openai_tool(tool) for tool in (update_todos, wait_for_person)]
     blob = json.dumps(openai)
     assert not any(word in blob for word in ('"anyOf"', '"oneOf"', '"allOf"', '"$ref"', "runtime"))

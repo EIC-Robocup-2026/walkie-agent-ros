@@ -406,7 +406,7 @@ model gets two tools beyond `tools`: `update_todos(ops)` and
 | --- | --- |
 | `ToolLog`, when configured | Logs every answer, refusals included |
 | `StopLatch` | Once the token is set: no model call, and every tool call refused |
-| `SerialGuard` | A failed call or a question skips the later calls of its message; only the first `update_todos` of a message runs |
+| `SerialGuard` | A failed call or a question skips the later calls of its message; only the first `update_todos` of a message runs, and a refused copy counts as a failed call |
 | `WalkieTodos` | The list, the reminder, the completion gate and the two tools |
 | `EndAfterQuestion` | Ends the run after a successful question |
 | `RepairHistory` | Answers calls left open by an earlier run and calls with unreadable arguments |
@@ -421,16 +421,20 @@ model gets two tools beyond `tools`: `update_todos(ops)` and
   `max_concurrency=1`, which is observed behaviour of the installed versions and not
   documented, so rerun `tests/test_runtime.py` on any dependency update.
 - **Stop.** A bare stop sets the token at once, which ends a drive through the verb and
-  refuses every remaining call of the run. It drops queued tasks but not a queued
-  reset. The Runner speaks `STOP_LINE` once through `ctx.speech.say` and logs it. A
-  later graph pass with no model call cancels the open steps and clears a waiting
-  question. The token stays set until the next task starts. A compound such as "stop
-  and come here" is an ordinary task, so it queues behind the active run.
+  refuses every remaining call of the run. `StopLatch` refuses a call before it is
+  dispatched. `as_tool`, `bind` and the two todo tools check the token again when the
+  body starts, for a stop that lands in between. A `say` already speaking is not cut
+  off. It drops queued tasks but not a queued reset. The Runner speaks `STOP_LINE` once
+  through `ctx.speech.say` and logs it under the session it was heard in. A later graph
+  pass with no model call cancels the open steps and clears a waiting question. The
+  token stays set until the next task starts. A compound such as "stop and come here"
+  is an ordinary task, so it queues behind the active run.
 - **Reset.** It cancels and drops the queue. After the active run has finished, it
   deletes the thread, starts a new session and publishes an empty list. A hung LLM call
   can delay this by up to the deadline.
 - **Shutdown.** It cancels, drops the queue, and waits for the active run and any stop
-  line. It returns False if the thread outlives `timeout`.
+  line. It returns False if the thread outlives `timeout`, and calling it again waits
+  again. From the moment it starts, `submit`, `stop` and `reset` raise.
 - **Failure.** An exception or a timeout ends that task only. The Runner logs it and
   sends `FAILURE_LINE` to `on_reply`, and the next task runs on the same checkpoint.
 - **Deadline.** It is cooperative: `asyncio.timeout` around the awaited call, which

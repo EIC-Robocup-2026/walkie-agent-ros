@@ -106,7 +106,9 @@ class StopLatch(AgentMiddleware):
     """Ends the run once a stop has set the token: no more model calls, and no more tools.
 
     It refuses every call, not only motion, so the calls of an LLM reply that
-    was on its way when the stop came cannot say or record anything false.
+    was on its way when the stop came cannot say or record anything false. A stop can
+    still land after this look and before the tool's body runs, so the adapter and the
+    todo tools look at the token again there.
     """
 
     def __init__(self, cancel: CancelToken) -> None:
@@ -128,7 +130,7 @@ class SerialGuard(AgentMiddleware):
 
     A failed call skips the later ones, because they were planned on it working.
     A question skips them too, because they must wait for the answer. And only
-    the first update_todos runs, but its refused copies skip nothing. These
+    the first update_todos runs: a refused copy is a failed call like any other. These
     answers go out of this wrapper, so they never reach the todo ledger.
     """
 
@@ -142,8 +144,9 @@ class SerialGuard(AgentMiddleware):
             return refusal(request, self._blocked[1])
         updates = [c["id"] for c in owner.tool_calls if c["name"] == "update_todos"]
         if call["name"] == "update_todos" and updates[0] != call["id"]:
-            return refusal(request, ONE_UPDATE_TODOS)
-        result = await handler(request)
+            result = refusal(request, ONE_UPDATE_TODOS)
+        else:
+            result = await handler(request)
         message = tool_result(result, call["id"])
         if message is not None and message.status == "error":
             reason = f"Not run: {call['name']} failed earlier in this message. Decide again."

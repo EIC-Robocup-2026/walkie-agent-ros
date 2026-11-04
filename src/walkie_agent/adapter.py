@@ -1,6 +1,8 @@
 """The one adapter from an atomic to what calls it: a LangChain tool or a plain callable.
 
-Both shapes hide ctx, so neither the LLM nor a Monty script can see or pass it.
+Both shapes hide ctx, so neither the LLM nor a Monty script can see or pass it,
+and both refuse to start once a stop has set ctx.cancel. The stop line itself calls
+the speech verb directly, so it is exempt.
 All tool errors reach the model through ToolErrorMiddleware and
 format_tool_error. Argument validation errors do not: ToolNode answers those
 before the middleware runs.
@@ -96,6 +98,7 @@ def _without_ctx(
 
     @functools.wraps(fn)
     def call(*args: Any, **kwargs: Any) -> Any:
+        ctx.cancel.check(fn.__name__)
         return finish(fn(ctx, *args, **kwargs))
 
     # inspect.signature stops at __signature__, and langchain_core reads

@@ -9,9 +9,9 @@ import pytest
 import mahoraga.driver as driver
 from mahoraga.driver import Budgets, ScriptRunner
 from mahoraga.evidence import Watch
-from mahoraga.shelf import Shelf
+from mahoraga.shelf import Shelf, top_level_defs
 
-VALUE = "def value() -> int:\n    return 1\n"
+VALUE ="def value() -> int:\n    return 1\n"
 BAD = 'def bad() -> str:\n    return go_to("garage")\n'
 OUTER = "def outer() -> str:\n    return bad()\n"
 CATCHES = 'def catches() -> str:\n    try:\n        return bad()\n    except RuntimeError:\n        return "caught"\n'
@@ -317,6 +317,106 @@ def test_a_token_read_from_an_error_forges_no_evidence(run, forge, name):
     assert result.saved == ["mine"]
     assert result.shelf_used == []
     assert result.returned == {}
+
+
+# A default is evaluated in the shelf's feed, before the loader's shadows exist. That feed
+# defines functions in sorted order, so `take` comes after a saved `set`, which literal_eval
+# would let a default call.
+_EVAL_IN_A_DEFAULT = [
+    "def take(code: str, evaluate=eval):\n    return evaluate(code)\n",
+    "def take(code: str, *, evaluate=eval):\n    return evaluate(code)\n",
+    "def take(code: str, box=[eval]):\n    return box[0](code)\n",
+    "def set():\n    return eval\n\ndef take(code: str, evaluate=set()):\n    return evaluate(code)\n",
+    "def set():\n    return eval\n\ndef take(code: str, box=(set(),)):\n    return box[0](code)\n",
+]
+
+
+def _attempt(line):
+    """A line under a catch, so the run goes on if `take` never reached the shelf.
+
+    `nothing` keeps the ignore comment in use whether or not `take` exists, because the
+    type check refuses an unused one.
+    """
+    return f"try:\n    {line}; nothing  # type: ignore\nexcept Exception:\n    pass\n"
+
+
+@pytest.mark.parametrize("definition", _EVAL_IN_A_DEFAULT)
+def test_a_default_keeps_no_real_eval_to_forge_evidence_with(run, shelf, definition):
+    run(definition, save=list(top_level_defs(definition)))
+    forge = _attempt("take(tag + '_in')['value'] = 1") + _attempt("take(tag + '_out')['value'] = 1")
+
+    result = run(_READ_THE_TOKEN + forge + _NEVER_RUNS, save=["mine"])
+
+    assert result.ok, result.error
+    assert result.returned == {}
+    assert "take" not in shelf.names()
+
+
+@pytest.mark.parametrize("definition", _EVAL_IN_A_DEFAULT)
+def test_a_default_keeps_no_real_eval_to_erase_a_raise_with(run, shelf, definition):
+    run(definition, save=list(top_level_defs(definition)))
+    caught = "try:\n    bad()\nexcept RuntimeError:\n    pass\n"
+    erase = _attempt("take(tag + '_in').pop('bad')") + _attempt("take(tag + '_out').pop('bad', None)")
+
+    result = run(_READ_THE_TOKEN + caught + erase + "\ndef mine() -> int:\n    return 3\n\n1", save=["mine"])
+
+    assert result.ok, result.error
+    assert result.shelf_raised == ["bad"]
+    assert result.raised["bad"] == shelf.versions()["bad"]
+
+
+def test_a_helper_in_a_default_is_refused_and_the_rewrite_around_it_is_counted(pool, tmp_path, fns):
+    shelf = Shelf(tmp_path / "other")
+    runner = ScriptRunner(pool, shelf=shelf)
+    helper = "def helper(place: str) -> str:\n    return go_to(place)\n\n"
+    guarded = "def uses(place: str{}) -> int:\n    try:\n        {}(place)\n    except RuntimeError:\n        pass\n    return 7\n\n"
+
+    in_a_default = runner.run(helper + guarded.format(", fn=helper", "fn") + 'uses("shelf")', fns, save=["helper", "uses"])
+
+    assert in_a_default.ok, in_a_default.error
+    assert in_a_default.saved == ["helper"]
+    assert "literal" in in_a_default.refused["uses"]
+
+    assert runner.run(guarded.format("", "helper"), fns, save=["uses"]).saved == ["uses"]
+
+    result = runner.run('uses("does not exist")', fns)
+
+    assert (result.ok, result.output) == (True, 7), result.error
+    assert (result.shelf_used, result.shelf_raised) == (["helper", "uses"], ["helper"])
+    assert result.raised == {"helper": shelf.versions()["helper"]}
+
+
+_SHADOWED = ["locals", "eval", "exec"]
+
+
+@pytest.mark.parametrize("name", _SHADOWED)
+def test_a_name_the_loader_defines_is_never_watched(name):
+    code = f"def {name}() -> int:\n    return 73\n\n{name}()"
+
+    watch = Watch(code, {"value": "sha"}, [name])
+
+    assert watch.own_versions == {}
+    assert watch.code == code
+    assert watch.stubs == ""
+
+
+@pytest.mark.parametrize("name", _SHADOWED)
+def test_a_name_the_loader_defines_runs_as_written_and_is_neither_saved_nor_credited(run, shelf, name):
+    result = run(f"def {name}() -> int:\n    return 73\n\n{name}()", save=[name])
+
+    assert (result.ok, result.output) == (True, 73), result.error
+    assert result.saved == []
+    assert "built-in" in result.refused[name]
+    assert result.returned == {}
+    assert name not in shelf.names()
+
+
+@pytest.mark.parametrize("name", _SHADOWED)
+def test_a_script_may_define_a_name_the_loader_defines_for_its_own_use(run, shelf, name):
+    result = run(f"def {name}() -> int:\n    return 73\n\nvalue()\n{name}()")
+
+    assert (result.ok, result.output) == (True, 73), result.error
+    assert result.returned == {"value": shelf.versions()["value"]}
 
 
 def test_locals_shows_nothing_hidden(run):

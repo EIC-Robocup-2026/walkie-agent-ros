@@ -33,24 +33,37 @@ MEASURES = {
     "lightest": ("weight_g", min),
     "thinnest": ("thickness_cm", min),
 }
-_NUMBER_WORDS = "zero one two three four five six seven eight nine ten eleven twelve".split()
+# Generated counts are small, so a word past twelve is a wrong answer, but still an answer.
+_NUMBER_WORDS = dict(
+    zip(
+        "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen "
+        "fifteen sixteen seventeen eighteen nineteen".split(),
+        range(20),
+    ),
+    twenty=20, thirty=30, forty=40, fifty=50, sixty=60, seventy=70, eighty=80, ninety=90, hundred=100,
+    single=1, couple=2, pair=2,
+)
 _MOVES = {"base.go_to", "base.move_relative"}
-_RAISING = {"raising", "raises", "raise", "raised", "lifting", "lifts", "lift", "lifted"}
-_POINTING = {"pointing", "points", "point", "pointed"}
+_RAISING = {"raising", "raises", "raise", "raised", "lifting", "lifts", "lift", "lifted", "up", "aloft", "high"}
+_POINTING = {"pointing", "points", "point", "pointed", "indicating", "indicates", "indicate", "gesturing", "gestures"}
+_ARM = {"arm", "arms", "hand", "hands"}
 # How ordinary speech says each pose and gesture. A line says a value when it holds
 # a word from each of the value's groups.
 _INFO_WORDS = {
     "pose": {
-        "sitting person": [{"sitting", "sits", "sit", "seated"}],
-        "standing person": [{"standing", "stands", "stand", "upright"}],
+        "sitting person": [{"sitting", "sits", "sit", "seated", "sat"}],
+        "standing person": [{"standing", "stands", "stand", "upright", "feet"}],
         "lying person": [
-            {"lying", "lies", "lie", "laying", "reclining", "reclined", "horizontal", "horizontally"}
+            {
+                "lying", "lies", "lie", "laying", "reclining", "reclined",
+                "horizontal", "horizontally", "stretched", "prone", "supine",
+            }
         ],
     },
     "gesture": {
         "waving person": [{"waving", "waves", "wave", "waved"}],
-        "person raising their left arm": [_RAISING, {"left"}],
-        "person raising their right arm": [_RAISING, {"right"}],
+        "person raising their left arm": [_RAISING, {"left"}, _ARM],
+        "person raising their right arm": [_RAISING, {"right"}, _ARM],
         "person pointing to the left": [_POINTING, {"left"}],
         "person pointing to the right": [_POINTING, {"right"}],
     },
@@ -127,11 +140,21 @@ def _people_matching(start: Snapshot, selector: Mapping[str, str]) -> set[str]:
     }
 
 
-def _numbers(line: str) -> set[int]:
-    words = re.findall(r"[a-z0-9]+", line.lower())
-    return {int(word) for word in words if word.isdigit()} | {
-        _NUMBER_WORDS.index(word) for word in words if word in _NUMBER_WORDS
-    }
+def _numbers(line: str) -> set[float | str]:
+    """The numbers a line says, each token read whole: "1.0" is 1, "-1" is -1 and "3rd" is none.
+
+    A compound of numbers stays as its text, which no count equals, so "twenty-one" is
+    a wrong answer, and neither a "one" nor no answer at all.
+    """
+    said: set[float | str] = set()
+    for token in re.findall(r"-?\d+\.\d+|-?\w+(?:-\w+)*", line.lower()):
+        if re.fullmatch(r"-?\d+(?:\.\d+)?", token):
+            said.add(float(token))
+        elif token in _NUMBER_WORDS:
+            said.add(_NUMBER_WORDS[token])
+        elif all(part in _NUMBER_WORDS or part.isdigit() for part in token.split("-")):
+            said.add(token)
+    return said
 
 
 def _named(names: Iterable[str], line: str) -> set[str]:

@@ -299,15 +299,34 @@ it may save, and counts entries and normal returns inside the worker:
 | Verified | Returned, never raised in that episode, and the episode scored 1 | The `verified` event |
 
 Each event carries the sha of the source that ran, so a rewrite starts with nothing.
-A function saved but never run stays unverified, so it stays off a frozen shelf. So
-does a verified function that names a saved function which never ran, because it
-could not stand alone without it. A definition the script bound more than once, or
-one that is not in `save`, goes unwatched and earns nothing, and a script's own
-definition is no use of the shelf.
+If an episode ran several versions of one name, only the last that returned and never
+raised is verified. A function saved but never run stays unverified, so it stays off
+a frozen shelf. So does a verified function that names a saved function which never
+ran, because it could not stand alone without it. A definition the script bound more
+than once, or one that is not in `save`, goes unwatched and earns nothing, and a
+script's own definition is no use of the shelf.
 
 The counters' names carry a random token per run, and a script that loads or saves
 a function gets `locals`, `eval` and `exec` shadowed, so it cannot name or reach
-them. That holds against a careless or clever model, and it is no security boundary.
+them.
+
+The shelf's source feeds before the loader, because a wrapper needs the function it
+stands in for. A parameter default on a saved function is evaluated in that feed,
+before the shadows and wrappers exist. So `evaluate=eval` would keep the real `eval`,
+which can forge or erase counters, and `fn=helper` would keep a helper whose runs and
+raises nobody counts. `Shelf.save` therefore refuses a function with a default that is
+not a literal, such as a name, call, lambda or attribute, and tells the model why. A
+function that needs another one names it in its body instead, where the lookup happens
+at run time and finds the wrapper. `Shelf.save` also refuses the names `locals`, `eval`
+and `exec`, and they are never watched, because the loader defines them itself and a
+wrapper would give its replacement the source's sha. A script may still define such a
+name for its own use. Decorators are refused too, and Monty does not evaluate
+annotations, so no other part of a saved definition runs in that feed.
+
+With those rules the counters hold against a careless or clever model, and they are
+no security boundary. The rules apply when a function is saved, so a shelf written
+before they existed is not rechecked.
+
 Two limits come with it. A wrapper adds a frame, so recursion through a watched
 function reaches the depth limit in half the calls. If the counters cannot be read,
 after a worker crash or a script that keeps running well past its wall budget, the
@@ -365,8 +384,16 @@ something else is not looking again.
 
 A candidate is a number for a count, the name of any object at that place for
 `best_object`, and a known value of the attribute for `person_info` and
-`relay_info`. Ordinary equivalents count for pose and gesture, so "seated" says
-sitting.
+`relay_info`.
+
+A number is read as a whole token. "1.0" is 1, while "1.1", "-1" and "twenty-one"
+are numbers of their own that no small count equals, and "3rd" is no number. Number
+words run to nineteen, the tens and "hundred", so "thirty dishes" is a wrong answer
+and not a line to skip. "single" means 1, and "couple" and "pair" mean 2.
+
+Ordinary equivalents count for pose and gesture, so "seated" says sitting. A raised
+arm also needs an arm or a hand in the line, so "raising their right leg" does not
+say it. Pointing and waving need no body part.
 
 Known limits, each pinned by a test or stated here because reading more would mean
 parsing language:
@@ -377,6 +404,8 @@ parsing language:
 - A true line with a second number or candidate fails, such as "There are two, one
   apple and one banana" or "The banana is bigger than the apple". "One" counts as a
   number even as a pronoun.
+- A bare article is not a count, so "There is a dish" fails. Reading "a" as one would
+  make "on a bar" a second number.
 - A look again at the same things needs an answer after it, even if an earlier
   answer was right.
 - A shortened name such as "the plate" for "red plate" is not a candidate.
@@ -452,9 +481,14 @@ same way, because a completion that runs away would otherwise spend the episode'
 300 s limit and fail it. An episode that still errors, or never ran, stays in
 M1 as a failure, and the usage it logged counts towards tokens and cost. Rounds, wall
 time and the script metrics cover every episode logged. Any such episode sets the
-arm's `complete` to false, and that of each comparison with the arm. So does a
-comparison whose arms ran different commands. `report` then gives a plain `warning`,
-which is null only if every arm is complete.
+arm's `complete` to false, and that of each comparison with the arm. `report` then
+gives a plain `warning`, which is null only if every arm is complete.
+
+A comparison's own `complete` is also false when its arms were scheduled different
+(command, epoch) pairs, or when one sample id holds different command text in the two
+logs. A world's seed follows from (command, epoch), so the same pairs mean the same
+worlds. A log with no `sample_ids` still schedules `dataset.samples` times its epochs,
+so an episode it lost counts as never run.
 
 ## Runtime
 

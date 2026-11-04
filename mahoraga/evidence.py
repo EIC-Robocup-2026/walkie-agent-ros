@@ -15,6 +15,13 @@ reach the counters: their names carry a random token per run, so no source writt
 beforehand can name them. A script may read the token from a caught error, but
 `locals`, `eval` and `exec` are shadowed here, Monty has no `del` to unshadow them,
 and it refuses `globals`, `vars` and the like, so text cannot become a name.
+
+The shelf's source feeds before the loader, because a wrapper needs the function it
+stands in for. So a parameter default on a saved function is evaluated before the
+shadows and wrappers exist: `evaluate=eval` would keep the real eval, and `fn=helper`
+a helper no wrapper counts. Shelf.save therefore takes only literal defaults, and only
+a function whose name the loader does not define. Nothing else in a saved definition
+runs in that feed: decorators are refused too, and Monty does not evaluate annotations.
 This holds against a careless or clever model. It is not a security boundary.
 
 If the counters cannot be read, as after a worker crash, the run has no evidence, so
@@ -32,7 +39,7 @@ from typing import Any
 
 from pydantic_monty import CollectString, MontyError
 
-from mahoraga.shelf import definition_source, header, source_sha, top_level_defs
+from mahoraga.shelf import SHADOWED, definition_source, header, source_sha, top_level_defs
 
 _logger = logging.getLogger(__name__)
 
@@ -90,9 +97,14 @@ def _watchable(code: str, save: Collection[str], reserved: Collection[str]) -> d
     """The definitions in `save` a wrapper can stand in for: bound once, on a line that reads `def name`.
 
     Anything else could rebind the name past the wrapper. It simply goes unwatched,
-    so its run earns no evidence.
+    so its run earns no evidence. A name the loader defines itself goes unwatched as
+    well, because a wrapper under it would give the loader's replacement the source's sha.
     """
-    defs = {name: node for name, node in top_level_defs(code).items() if name in save and name not in reserved}
+    defs = {
+        name: node
+        for name, node in top_level_defs(code).items()
+        if name in save and name not in reserved and name not in SHADOWED
+    }
     if not defs:
         return {}
     bound: Counter[str] = Counter()

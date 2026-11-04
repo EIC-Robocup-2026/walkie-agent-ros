@@ -6,7 +6,8 @@ failure, and the usage an errored one logged counts towards tokens and cost. Rou
 wall time and the script metrics cover every episode logged. Such an episode marks
 its arm and each comparison with that arm as incomplete, and the report says so. A
 command missing from either arm drops out of their comparison, which is then
-incomplete too.
+incomplete too. So is a comparison whose arms were scheduled different epochs of a
+command, or hold different text under one sample id.
 """
 
 import math
@@ -42,10 +43,20 @@ def _was_scored(sample: EvalSample) -> bool:
 
 
 def _scheduled(log: EvalLog) -> dict[tuple[Any, int], float]:
-    """Each (command, epoch) the run was given, with its score. One with no score has 0."""
+    """Each (command, epoch) the run was given, with its score. One with no score has 0.
+
+    A log without sample ids still says how many commands it was given. Each one it never
+    logged gets a stand-in id unique to the log, so it stays a failure and pairs with nothing.
+    """
+    logged = log.samples or []
+    commands = log.eval.dataset.sample_ids
+    if not commands:
+        commands = list(dict.fromkeys(sample.id for sample in logged))
+        unlogged = (log.eval.dataset.samples or 0) - len(commands)
+        commands += [f"{log.eval.eval_id}:unlogged:{n}" for n in range(unlogged)]
     epochs = range(1, (log.eval.config.epochs or 1) + 1)
-    values = {(command, epoch): 0.0 for command in log.eval.dataset.sample_ids or [] for epoch in epochs}
-    for sample in log.samples or []:
+    values = {(command, epoch): 0.0 for command in commands for epoch in epochs}
+    for sample in logged:
         values[sample.id, sample.epoch] = float(sample.scores[SCORER].value) if _was_scored(sample) else 0.0
     return values
 
@@ -161,6 +172,17 @@ def compare(
     }
 
 
+def _same_commands(baseline: EvalLog, other: EvalLog) -> bool:
+    """Whether two arms were scheduled the same (command, epoch) pairs under the same text.
+
+    A world's seed follows from (command, epoch), so the same pairs mean the same worlds.
+    """
+    if set(_scheduled(baseline)) != set(_scheduled(other)):
+        return False
+    text = {sample.id: sample.input for sample in baseline.samples or []}
+    return all(text.get(sample.id, sample.input) == sample.input for sample in other.samples or [])
+
+
 def report(log_dir: str | Path, *, baseline: str = "A", shelf_root: str | Path | None = None) -> dict[str, Any]:
     """Every arm's metrics under `log_dir`, and each arm against the baseline.
 
@@ -180,7 +202,9 @@ def report(log_dir: str | Path, *, baseline: str = "A", shelf_root: str | Path |
         "against_baseline": {
             arm: {
                 **compare(scores[baseline], score),
-                "complete": arms[baseline]["complete"] and arms[arm]["complete"] and set(scores[baseline]) == set(score),
+                "complete": (
+                    arms[baseline]["complete"] and arms[arm]["complete"] and _same_commands(runs[baseline], runs[arm])
+                ),
             }
             for arm, score in scores.items()
             if baseline in scores and arm != baseline

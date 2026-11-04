@@ -839,6 +839,70 @@ def test_a_true_line_with_a_second_number_is_a_known_limit():
     assert not ok, why
 
 
+def _looks_at_the_dishes_then_says(line):
+    def trace(f, _start, _spec):
+        f["go_to"]("bar")
+        assert len(f["find_objects"]("dish")) == 1
+        f["say"](line)
+
+    return trace
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "There is 1 dish on the bar.",
+        "There are 1.0 dishes on the bar.",
+        "There is a single dish on the bar.",
+        "There is one dish on a bar.",
+    ],
+)
+def test_one_dish_said_as_a_whole_number_passes(line):
+    ok, why = _run(DISHES_ON_BAR, _looks_at_the_dishes_then_says(line))
+
+    assert ok, why
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "There are twenty-one dishes on the bar.",
+        "There are -1 dishes on the bar.",
+        "There are 1.1 dishes on the bar.",
+        "There are thirty dishes on the bar.",
+    ],
+)
+def test_a_number_that_only_contains_the_right_one_fails(line):
+    ok, why = _run(DISHES_ON_BAR, _looks_at_the_dishes_then_says(line))
+
+    assert not ok, why
+
+
+def test_a_bare_article_is_not_a_count_is_a_known_limit():
+    """Reading "a" as one would make the "a" in "on a bar" a second number, so this fails."""
+    ok, why = _run(DISHES_ON_BAR, _looks_at_the_dishes_then_says("There is a dish on the bar."))
+
+    assert not ok, why
+
+
+BIGGEST_DISH_ON_SHELF = 59  # "tell me what is the biggest dish on the shelf": red plate
+
+
+def test_a_name_split_by_a_clause_is_the_shortened_name_known_limit():
+    """Only "plate" is said as a name here, and the checker reads no clause to find the colour."""
+
+    def says(line):
+        def trace(f, _start, _spec):
+            f["go_to"]("shelf")
+            f["find_objects"]("dish")
+            f["say"](line)
+
+        return trace
+
+    assert _run(BIGGEST_DISH_ON_SHELF, says("The red plate is the biggest."))[0]
+    assert not _run(BIGGEST_DISH_ON_SHELF, says("The plate that is red is the biggest."))[0]
+
+
 # Relaying whatever the order (M12).
 
 NAME_TO_TV = 2  # "tell the name of the person at the table to the person at the tv": Jane

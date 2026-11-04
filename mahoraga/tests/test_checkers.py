@@ -171,6 +171,72 @@ def test_count_objects_reads_the_number(line, passes):
     assert ok is passes
 
 
+ONE_FRUIT = [("apple_1", "apple", "shelf"), ("mug_1", "mug", "shelf")]
+
+
+@pytest.mark.parametrize(
+    ("fruits", "line", "passes"),
+    [
+        (ONE_FRUIT, "There is 1 fruit.", True),
+        (ONE_FRUIT, "There are 1.0 fruits.", True),
+        (TWO_FRUITS, "There are 2.0 fruits.", True),
+        (ONE_FRUIT, "There are 1.1 fruits.", False),
+        (ONE_FRUIT, "There are -1 fruits.", False),
+        (ONE_FRUIT, "There are 21 fruits.", False),
+        (ONE_FRUIT, "There are twenty-one fruits.", False),
+        (TWO_FRUITS, "There are thirty-two fruits.", False),
+        (ONE_FRUIT, "There are thirteen fruits.", False),
+        (ONE_FRUIT, "There are thirty fruits.", False),
+        (ONE_FRUIT, "There are a hundred fruits.", False),
+        (ONE_FRUIT, "There is a single fruit.", True),
+        (TWO_FRUITS, "There are a couple of fruits.", True),
+        (TWO_FRUITS, "There is a pair of fruits.", True),
+        (TWO_FRUITS, "There is a single fruit.", False),
+        (ONE_FRUIT, "There are a couple of fruits.", False),
+        (ONE_FRUIT, "There is a pair of fruits.", False),
+    ],
+)
+def test_count_objects_reads_each_number_as_a_whole_token(fruits, line, passes):
+    ok, _ = episode(COUNT, world(fruits), ("go_to", "shelf"), ("objects", "fruit"), ("say", line))
+
+    assert ok is passes
+
+
+@pytest.mark.parametrize(
+    "wrong",
+    [
+        "There are twenty-one fruits.",
+        "There are 1-2 fruits.",
+        "There are thirty fruits.",
+        "There are nineteen fruits.",
+        "There are a hundred fruits.",
+        "There are -1 fruits.",
+        "There are 1.1 fruits.",
+    ],
+)
+def test_a_number_no_count_equals_is_still_the_answer(wrong):
+    """It is a candidate that fails, so the right count on a later line cannot rescue it."""
+    look = (("go_to", "shelf"), ("objects", "fruit"))
+
+    assert not episode(COUNT, world(ONE_FRUIT), *look, ("say", wrong), ("say", "1"))[0]
+
+
+@pytest.mark.parametrize(
+    "remark",
+    [
+        "I checked the 3rd shelf.",
+        "I checked the 1st shelf.",
+        "I saw apple_1 here.",
+        "I saw a two-handled mug.",
+    ],
+)
+def test_a_word_that_only_holds_a_number_is_no_answer(remark):
+    """"3rd" is not 3, so the count on the next line decides."""
+    look = (("go_to", "shelf"), ("objects", "fruit"))
+
+    assert episode(COUNT, world(TWO_FRUITS), *look, ("say", remark), ("say", "2"))[0]
+
+
 def test_count_objects_needs_a_look_before_the_answer():
     assert not episode(COUNT, world(TWO_FRUITS), ("say", "There are 2."))[0]
     assert not episode(COUNT, world(TWO_FRUITS), ("go_to", "bar"), ("objects", "fruit"), ("say", "There are 2."))[0]
@@ -402,6 +468,15 @@ def test_person_info_accepts_each_gesture_as_the_fake_spells_it(gesture):
         ("standing person", "He stands by the table.", True),
         ("lying person", "They are reclined horizontally.", True),
         ("lying person", "They lie on the floor.", True),
+        ("sitting person", "They are sat down.", True),
+        ("sitting person", "They are sitting up.", True),
+        ("standing person", "The person is on their feet.", True),
+        ("lying person", "They are stretched out on the floor.", True),
+        ("lying person", "The person is prone.", True),
+        ("lying person", "The person is supine.", True),
+        ("standing person", "They are sat down.", False),
+        ("sitting person", "The person is on their feet.", False),
+        ("standing person", "The person is prone.", False),
         ("sitting person", "They are upright.", False),
         ("standing person", "They are seated.", False),
         ("lying person", "They are standing.", False),
@@ -426,6 +501,21 @@ def test_person_info_accepts_an_ordinary_way_to_say_the_pose(pose, line, passes)
         ("person pointing to the left", "He points left.", True),
         ("person pointing to the right", "Pointing right.", True),
         ("waving person", "They wave.", True),
+        ("person raising their right arm", "Their right arm is up.", True),
+        ("person raising their left arm", "They have their left hand up.", True),
+        ("person raising their left arm", "They are holding their left arm aloft.", True),
+        ("person raising their right arm", "They hold their right hand high.", True),
+        ("person pointing to the left", "They are indicating something to their left.", True),
+        ("person pointing to the right", "She indicates the right.", True),
+        ("person pointing to the left", "They indicate left.", True),
+        ("person pointing to the right", "He is gesturing to the right.", True),
+        ("person pointing to the left", "He gestures left.", True),
+        ("waving person", "They are on their feet, waving.", True),
+        ("person raising their right arm", "The person is raising their right leg.", False),
+        ("person raising their left arm", "Their left leg is up.", False),
+        ("person raising their right arm", "Raising to the right.", False),
+        ("person raising their right arm", "Their left arm is up.", False),
+        ("person pointing to the left", "Their left arm is up.", False),
         ("person raising their left arm", "Their left arm points at me.", False),
         ("person pointing to the left", "Raising the left arm.", False),
         ("waving person", "Either waving or pointing left.", False),

@@ -106,6 +106,7 @@ nav:
       - architecture/index.md
       - The Agent: architecture/agent.md
       - Mahoraga Demo Prototype: architecture/mahoraga-demo.md
+      - Mahoraga Demo Decisions: architecture/mahoraga-demo-decisions.md
       - Arm Manipulation (Proposed): architecture/manipulation.md
       - Perception (Proposed): architecture/perception.md
       - HRI Task (Proposed): architecture/hri.md

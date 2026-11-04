@@ -234,20 +234,11 @@ def test_missing_server_is_unavailable_and_bounded():
     assert rig.client.goals == []
     assert rig.client.ready_polls > 0
 
-    # The default two seconds of discovery yield to a shorter overall timeout.
-    clients = []
-
-    def factory(*args, **kwargs):
-        clients.append(FakeActionClient(*args, **kwargs))
-        clients[-1].ready = False
-        return clients[-1]
-
-    base = RosBase(FakeConnector(), PLACES, CancelToken(), client_factory=factory)
-    began = time.monotonic()
-    with pytest.raises(StepError) as raised:
-        base.go_to("kitchen", timeout_s=0.05)
-    assert raised.value.code is ErrorCode.UNAVAILABLE
-    assert time.monotonic() - began < 1.5
+    # Discovery yields to a shorter overall timeout. Its own budget would outlast the watchdog.
+    rig = Rig()
+    rig.client.ready = False
+    error = Background(rig.base.go_to, "kitchen", timeout_s=0.5).step_error()
+    assert error.code is ErrorCode.UNAVAILABLE
 
     # A failure of ROS itself during discovery is the same answer, at once.
     def gone():

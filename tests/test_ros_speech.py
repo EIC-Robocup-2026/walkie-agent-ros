@@ -2,7 +2,6 @@
 
 import math
 import threading
-import time
 
 import pytest
 from rai_interfaces.msg import HRIMessage
@@ -63,14 +62,10 @@ def test_say_missing_listener_is_unavailable():
     assert "/to_human" in raised.value.message
     assert publisher.published == []
 
-    # The default two seconds of discovery yield to a shorter timeout of the call.
-    wrapper, connector = speech()
+    # Discovery yields to a shorter timeout of the call. Its own budget would outlast the watchdog.
+    wrapper, connector = speech(discovery_s=10 * WATCHDOG_S)
     endpoints(connector)[0].subscribers = 0
-    began = time.monotonic()
-    with pytest.raises(StepError) as raised:
-        wrapper.say("hello", timeout_s=0.05)
-    assert raised.value.code is ErrorCode.UNAVAILABLE
-    assert time.monotonic() - began < 1.5
+    assert Background(wrapper.say, "hello", timeout_s=0.05).step_error().code is ErrorCode.UNAVAILABLE
 
 
 @pytest.mark.parametrize("text", ["", "   \n", None, 5, ["hello"]])

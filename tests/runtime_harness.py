@@ -6,6 +6,7 @@ call. No network, no ROS.
 
 import asyncio
 import copy
+import inspect
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -24,9 +25,9 @@ from walkie_agent.runtime.todos import parse_seed
 class ScriptedModel(BaseChatModel):
     """Plays `script` in order, then `then`. An entry is a message, a callable or an exception.
 
-    A callable gets the messages sent and returns the reply. Each copy from
-    bind_tools shares the call log, as a real model's would. `_generate` raises, to
-    prove nothing takes the sync path.
+    A callable, sync or async, gets the messages sent and returns the reply. Each copy
+    from bind_tools shares the call log, as a real model's would. `_generate` raises,
+    to prove nothing takes the sync path.
     """
 
     script: list[Any] = Field(default_factory=list)
@@ -61,6 +62,8 @@ class ScriptedModel(BaseChatModel):
         if isinstance(entry, Exception):
             raise entry
         reply = entry(messages) if callable(entry) else entry
+        if inspect.isawaitable(reply):
+            reply = await reply
         if reply is None:
             raise AssertionError(f"Model call {index + 1} was not in the script.")
         # add_messages replaces a message whose id it already holds, so a repeated
@@ -135,10 +138,13 @@ class Stack:
     agent: Any
     published: list[tuple[list[dict[str, Any]], list[dict[str, Any]]]] = field(default_factory=list)
     thread_id: str = "test-thread"
+    runner: Any = None
+    replies: list[str] = field(default_factory=list)
 
     @property
     def config(self) -> dict[str, Any]:
-        return {"configurable": {"thread_id": self.thread_id}, "max_concurrency": 1}
+        thread_id = self.runner.session.thread_id if self.runner else self.thread_id
+        return {"configurable": {"thread_id": thread_id}, "max_concurrency": 1}
 
     def run(
         self, text: str = "Do it.", todos: Any = None, source: str = "seed", **inputs: Any

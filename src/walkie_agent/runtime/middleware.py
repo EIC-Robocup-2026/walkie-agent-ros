@@ -1,7 +1,7 @@
 """The small create_agent middlewares of the runtime, each guarding one failure.
 
 The order of the list matters and is pinned in `build_middleware`, in
-walkie_agent.runtime.runner. Tool wrappers need `awrap_tool_call` and model
+walkie_agent.runtime.agent. Tool wrappers need `awrap_tool_call` and model
 wrappers `awrap_model_call`, because the Runner only uses `ainvoke`. Node hooks
 may stay sync: langgraph runs them inline on the loop, so they must not block.
 """

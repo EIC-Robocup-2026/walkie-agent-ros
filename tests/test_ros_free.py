@@ -56,6 +56,8 @@ def test_importing_every_new_module_loads_no_ros():
         "walkie_agent.runtime",
         "walkie_agent.runtime.agent",
         "walkie_agent.runtime.middleware",
+        "walkie_agent.runtime.model",
+        "walkie_agent.runtime.runner",
         "walkie_agent.runtime.todos",
     } <= set(files)
     assert all(Path(file).is_relative_to(SRC) for file in files.values())

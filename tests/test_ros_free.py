@@ -16,9 +16,9 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 
 IMPORT_EVERY_NEW_MODULE = """
 import importlib, json, pkgutil, sys
-import walkie_agent.atomics, walkie_agent.capabilities
+import walkie_agent.atomics, walkie_agent.capabilities, walkie_agent.runtime
 names = ["walkie_agent.errors", "walkie_agent.adapter"]
-for package in (walkie_agent.capabilities, walkie_agent.atomics):
+for package in (walkie_agent.capabilities, walkie_agent.atomics, walkie_agent.runtime):
     names.append(package.__name__)
     names += [found.name for found in pkgutil.iter_modules(package.__path__, package.__name__ + ".")]
 files = {name: importlib.import_module(name).__file__ for name in names}
@@ -53,6 +53,10 @@ def test_importing_every_new_module_loads_no_ros():
         "walkie_agent.atomics.speech",
         "walkie_agent.atomics.perception",
         "walkie_agent.atomics.manipulation",
+        "walkie_agent.runtime",
+        "walkie_agent.runtime.agent",
+        "walkie_agent.runtime.middleware",
+        "walkie_agent.runtime.todos",
     } <= set(files)
     assert all(Path(file).is_relative_to(SRC) for file in files.values())
 

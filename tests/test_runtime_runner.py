@@ -311,9 +311,14 @@ def test_a_stop_line_is_logged_under_the_session_it_was_heard_in(serve, tmp_path
     log = ToolLog(tmp_path / "tools.jsonl")
     stack = serve(robot=SlowStopLine(), tool_log=log)
     heard_in = stack.runner.session.thread_id
+    # The loop waits until both are queued. Once its queue is empty it waits for the line,
+    # so a reset that arrived only then would run after the line, and this would hang.
+    queued = threading.Event()
+    stack.runner._loop.call_soon_threadsafe(queued.wait, 5)
     stack.runner.stop()
-    assert stack.robot.speaking.wait(5)
     stack.runner.reset()
+    queued.set()
+    assert stack.robot.speaking.wait(5)
     wait_until(lambda: stack.runner.session.thread_id != heard_in)
     stack.robot.release.set()
     idle(stack)

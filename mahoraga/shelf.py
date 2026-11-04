@@ -1,0 +1,201 @@
+"""The script shelf: saved functions outside git, with a ledger of how they fared.
+
+One `<name>.py` per function, plus `ledger.jsonl` with saved, run, fail and
+verified events. A script's run saves into a writable shelf. Only the harness
+calls mark_verified, after the ground-truth scorer. A frozen shelf fixes its
+callable set at construction, to the functions verified by then, and takes no
+more definitions, while it keeps counting runs for the report.
+"""
+
+import ast
+import hashlib
+import json
+import os
+import tempfile
+import threading
+import time
+from collections.abc import Callable, Collection, Iterable, Sequence
+from pathlib import Path
+from typing import Any
+
+from mahoraga import home
+
+LEDGER = "ledger.jsonl"
+
+
+def _sha(source: str) -> str:
+    return hashlib.sha256(source.encode()).hexdigest()[:16]
+
+
+def _names_in(code: str) -> set[str]:
+    """Every bare name in `code`. Broken code has none, so Monty reports the syntax error."""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return set()
+    return {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+
+
+def _top_level_defs(code: str) -> dict[str, ast.FunctionDef]:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return {}
+    return {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+
+
+class Shelf:
+    """Saved functions under `root`, by default the shelf/ directory of mahoraga.home()."""
+
+    def __init__(self, root: str | Path | None = None, *, frozen: bool = False) -> None:
+        self.root = Path(root).expanduser().resolve() if root else home() / "shelf"
+        home(self.root)
+        self.frozen = frozen
+        self._ledger = self.root / LEDGER
+        self._lock = threading.Lock()
+        self._frozen_sources = self._verified_sources() if frozen else None
+
+    def names(self) -> list[str]:
+        """The functions a script may call, sorted."""
+        return sorted(self._sources())
+
+    def digest(self) -> str:
+        """Identifies the callable set, for the log of a run on a frozen shelf."""
+        return _sha(json.dumps(self._sources(), sort_keys=True))
+
+    def source_for(self, code: str) -> tuple[str, list[str]]:
+        """The shelf functions `code` names, transitively, as source to run first, and their names.
+
+        A name the script defines itself is the script's own. A shelf function
+        is plain source, so its atomic calls pass the same driver as the script's.
+        """
+        sources = self._sources()
+        own = set(_top_level_defs(code))
+        used: set[str] = set()
+        todo = [code]
+        while todo:
+            for name in _names_in(todo.pop()):
+                if name in sources and name not in used and name not in own:
+                    used.add(name)
+                    todo.append(sources[name])
+        names = sorted(used)
+        return "\n".join(sources[name] for name in names), names
+
+    def save(
+        self,
+        code: str,
+        names: Sequence[str],
+        *,
+        reserved: Collection[str] = (),
+        check: Callable[[str], str | None] = lambda source: None,
+    ) -> tuple[list[str], dict[str, str]]:
+        """Keep the named top-level definitions of a script that succeeded.
+
+        Returns the names saved and, by name, why others were refused. `reserved`
+        holds the allow-list's names, which a definition must not shadow. `check`
+        gets the source together and returns why it cannot stand alone, if so.
+        """
+        if self.frozen:
+            return [], {name: "The shelf is frozen." for name in names}
+        defs = _top_level_defs(code)
+        chosen: dict[str, str] = {}
+        refused: dict[str, str] = {}
+        for name in names:
+            node = defs.get(name)
+            if node is None:
+                refused[name] = "No top-level function has this name."
+            elif name in reserved:
+                refused[name] = "This name belongs to a built-in function."
+            elif node.decorator_list:
+                refused[name] = "A decorated function cannot be saved."
+            else:
+                chosen[name] = ast.get_source_segment(code, node) + "\n"
+        problem = check("\n".join(chosen.values())) if chosen else None
+        if problem:
+            return [], {**refused, **{name: problem for name in chosen}}
+        self.root.mkdir(parents=True, exist_ok=True)
+        for name, source in chosen.items():
+            _write_atomically(self.root / f"{name}.py", source)
+            self._log("saved", name, source)
+        return sorted(chosen), refused
+
+    def record_run(self, names: Iterable[str], ok: bool) -> None:
+        """One run or fail event per shelf function a script used."""
+        sources = self._sources()
+        for name in names:
+            self._log("run" if ok else "fail", name, sources[name])
+
+    def mark_verified(self, names: Iterable[str]) -> None:
+        """For the harness only, after the ground-truth scorer passed an episode that used `names`."""
+        sources = self._all_sources()
+        for name in names:
+            if name in sources:
+                self._log("verified", name, sources[name])
+
+    def counts(self) -> dict[str, dict[str, int]]:
+        """Saved, run, fail and verified counts per function.
+
+        `saved` counts every version, which is the churn. The rest count the
+        version on the shelf now, because a rewrite earned none of the old runs.
+        """
+        current = {name: _sha(source) for name, source in self._all_sources().items()}
+        counts = {
+            name: {"saved": 0, "run": 0, "fail": 0, "verified": 0} for name in current
+        }
+        for event in self._events():
+            name = event["name"]
+            if name in counts and (event["event"] == "saved" or event["sha"] == current[name]):
+                counts[name][event["event"]] += 1
+        return counts
+
+    def describe(self) -> str:
+        """Each callable function's definition line and docstring, for a prompt."""
+        return "\n\n".join(_header(source) for source in self._sources().values())
+
+    def examples(self) -> str:
+        """The full source of each function, for a prompt that shows them as examples."""
+        return "\n".join(self._sources().values())
+
+    def _sources(self) -> dict[str, str]:
+        return self._all_sources() if self._frozen_sources is None else self._frozen_sources
+
+    def _all_sources(self) -> dict[str, str]:
+        if not self.root.is_dir():
+            return {}
+        return {path.stem: path.read_text() for path in sorted(self.root.glob("*.py"))}
+
+    def _verified_sources(self) -> dict[str, str]:
+        counts = self.counts()
+        return {
+            name: source
+            for name, source in self._all_sources().items()
+            if counts[name]["verified"] > 0
+        }
+
+    def _events(self) -> list[dict[str, Any]]:
+        if not self._ledger.exists():
+            return []
+        return [json.loads(line) for line in self._ledger.read_text().splitlines()]
+
+    def _log(self, event: str, name: str, source: str) -> None:
+        line = json.dumps({"ts": time.time(), "event": event, "name": name, "sha": _sha(source)})
+        with self._lock:
+            self.root.mkdir(parents=True, exist_ok=True)
+            with self._ledger.open("a") as ledger:
+                ledger.write(line + "\n")
+
+
+def _header(source: str) -> str:
+    """A definition with its body cut down to the docstring."""
+    node = ast.parse(source).body[0]
+    doc = ast.get_docstring(node)
+    node.body = [ast.Expr(ast.Constant(doc if doc else ...))]
+    return ast.unparse(node)
+
+
+def _write_atomically(path: Path, text: str) -> None:
+    """Replace `path` in one step, so a concurrent reader sees the old file or the new one."""
+    handle, scratch = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    with os.fdopen(handle, "w") as out:
+        out.write(text)
+    os.replace(scratch, path)

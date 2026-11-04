@@ -556,8 +556,9 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
 - Four people templates are out: `guideClothPrsFromBeacToBeac`,
   `greetClothDscInRm`, `countClothPrsInRoom` and `meetNameAtLocThenFindInRm`.
 - `FakeRobot` has no follow verb and its people do not move, so follow and guide
-  are checked from the robot's trail. What a line says about "the time" is not
-  checked, and a relative move does not change the trail's place.
+  are checked from the robot's call records. What a line says about "the time" is
+  not checked. A relative move counts for what it really did, since each record
+  says where the robot was.
 - The world builder renames the operator and takes them out of every pose and
   gesture, so no command's selector can match them.
 - M9 counts refused calls, since an escape would not show in a log. The bwrap

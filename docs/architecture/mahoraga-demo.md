@@ -130,7 +130,8 @@ class FakeRobot:  # implements Base, Speech, Vision and Arms
     calls: list[dict[str, Any]]   # {"verb": "base.go_to", "args": {...}, "error": None or a code}
     said: list[str]
     faults: dict[str, StepError]  # verb name -> the error every call to it raises
-    def snapshot(self) -> dict[str, Any]: ...  # JSON-able state for checkers
+    def snapshot(self) -> dict[str, Any]: ...  # JSON-able copy for checkers: at, room, pose,
+                                               # holding, places, objects, people, said, calls
 
 def chula_pat14_6(seed: int = 0) -> dict[str, Any]  # a seeded world description
 ```

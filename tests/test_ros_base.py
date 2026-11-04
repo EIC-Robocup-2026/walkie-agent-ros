@@ -613,9 +613,10 @@ def test_stop_never_raises():
 def test_stop_before_send_sends_nothing():
     rig = Rig()
     rig.stop()
-    with pytest.raises(StepError) as raised:
-        rig.base.go_to("kitchen")
-    assert raised.value.code is ErrorCode.CANCELLED
+    for place in ("kitchen", "garage"):
+        with pytest.raises(StepError) as raised:
+            rig.base.go_to(place)
+        assert raised.value.code is ErrorCode.CANCELLED
     with pytest.raises(StepError) as raised:
         rig.base.move_relative(forward_m=1.0)
     assert raised.value.code is ErrorCode.CANCELLED
@@ -791,13 +792,36 @@ def test_acceptance_with_the_token_set_cancels_at_once():
     assert rig.client.handles[0].cancel_asks == 1
 
 
-def test_stop_then_reset_still_ends_the_waiting_verb():
-    # The verb may never see the token set. The mark on its record ends the wait anyway.
-    rig = Rig()
-    verb, handle = send_and_drive(rig)
+@pytest.mark.parametrize(
+    ("the_wait", "accepted_at_send"),
+    [(2, False), (3, True)],
+    ids=["during_acceptance", "during_the_drive"],
+)
+def test_stop_then_reset_still_ends_the_waiting_verb(the_wait, accepted_at_send):
+    # A reset can come before the verb's next poll, so the verb may never see the token set.
+    # This token never shows as set, which leaves only the mark on the record to end the wait.
+    token = SpyToken()
+    token.cancel = lambda: None
+    rig = Rig(token=token)
+    if accepted_at_send:
+        rig.client.on_send = rig.client.accept
+
+    # The waits of a drive come in order: discovery, acceptance, and then the result.
+    waits = []
+    reached = threading.Event()
+
+    def count_the_waits():
+        waits.append(1)
+        if len(waits) == the_wait:
+            reached.set()
+
+    token.on_wait = count_the_waits
+    verb = Background(rig.base.go_to, "kitchen")
+    assert reached.wait(WATCHDOG_S)
     rig.stop()
-    rig.token.reset()
     assert verb.step_error().code is ErrorCode.CANCELLED
+
+    handle = rig.client.handles[0] if accepted_at_send else rig.accept()
     assert handle.cancel_asks == 1
     rig.assert_gate_held()
     bounded(handle.finish)

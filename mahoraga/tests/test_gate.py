@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 import pytest
-from inspect_ai.log import read_eval_log
+from inspect_ai.event import SampleLimitEvent
+from inspect_ai.log import EvalSampleLimit, read_eval_log
 
 import mahoraga.gate as gate
 import mahoraga.gym as gym
@@ -61,6 +62,42 @@ def test_a_checker_that_fails_fails_the_gate(monkeypatch):
     records = commands("trial", 2)
     with pytest.raises(GateError):
         require_gate(records, 1)
+
+
+def test_an_oracle_that_ends_in_an_error_fails_the_gate(monkeypatch):
+    real = gate.oracle_script
+    monkeypatch.setattr(gate, "oracle_script", lambda spec: f"{real(spec)}\n1 / 0")
+
+    result = run_gate(split="trial", n=2, epochs=1, max_samples=2)
+
+    assert not result.passed
+    assert any("did not run to completion" in failure for failure in result.failures)
+    with pytest.raises(GateError):
+        require_gate(commands("trial", 2), 1)
+
+
+def test_the_gate_checks_each_script_and_each_limit_itself():
+    """The oracle plays one script, so the scorer alone would pass an earlier failure it recovered from."""
+    result = run_gate(split="trial", n=1, epochs=1, max_samples=1)
+    good = read_eval_log(result.logs[0])
+    assert gate._failures_of(good, 1) == []
+
+    failed_first = good.model_copy(deep=True)
+    scripts = failed_first.samples[0].store["scripts"]
+    scripts.insert(0, {**scripts[0], "ok": False})
+    assert any("did not run to completion" in failure for failure in gate._failures_of(failed_first, 1))
+
+    no_script = good.model_copy(deep=True)
+    no_script.samples[0].store["scripts"] = []
+    assert any("did not run to completion" in failure for failure in gate._failures_of(no_script, 1))
+
+    limited = good.model_copy(deep=True)
+    limited.samples[0].limit = EvalSampleLimit(type="time", limit=1)
+    assert any("a limit ended it" in failure for failure in gate._failures_of(limited, 1))
+
+    limit_event = good.model_copy(deep=True)
+    limit_event.samples[0].events.append(SampleLimitEvent(type="token", limit=1, message="Over."))
+    assert any("a limit ended it" in failure for failure in gate._failures_of(limit_event, 1))
 
 
 def test_two_runs_that_differ_fail_the_gate(monkeypatch):

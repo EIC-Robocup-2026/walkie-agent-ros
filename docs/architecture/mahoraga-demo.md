@@ -291,6 +291,11 @@ then. Only the scorer calls `mark_verified`, after a success.
 All arms share the prompt, the atomics and the eval's model, temperature and seed.
 One (command, epoch) is one seeded world, the same for every arm.
 
+An episode scores 1 only if its checker passes, no limit ended it (rounds, tokens or
+time), and on a script arm its last script ran to completion. So work done before a
+script is cut off, or before a limit, does not count. An earlier failed script the
+agent recovered from stays allowed.
+
 ### The oracle gate
 
 An LLM arm refuses to start until the oracle has scored 100% twice with identical
@@ -299,7 +304,8 @@ logs, for the same code and the same data.
 `run_gate` plays the oracle's scripts through the same driver, world builder and
 scorer an arm uses, twice, into `.eval` logs. It reads both back and compares them
 as JSON, with samples in a fixed order and without the fields in `gate.VOLATILE`:
-clocks, random ids and the log's location. The result lands in `<home>/gate/`.
+clocks, random ids and the log's location. A pass also needs every oracle script to
+have run to completion and no limit event. The result lands in `<home>/gate/`.
 
 `require_gate(records, epochs)` raises `GateError` unless passing results for the
 current `code_digest()` cover a digest of every (command, epoch, world) requested.

@@ -1,12 +1,13 @@
 """Each arm runs once on Inspect's mock model, through the same gate, driver and scorer."""
 
 import json
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 
 import pytest
 from inspect_ai.log import resolve_sample_attachments
-from inspect_ai.model import ModelOutput, get_model
+from inspect_ai.model import ModelOutput, ModelUsage, get_model
 
 from mahoraga.arms import ARMS, INDUCT, PROMPT, ArmSetup
 from mahoraga.commands import commands
@@ -273,6 +274,116 @@ def test_an_episode_that_never_stops_is_ended_and_scored(gated, monkeypatch):
     sample = log.samples[0]
     assert sample.store["out_of_rounds"] is True
     assert sample.scores["ground_truth"].value == 0.0
+
+
+@pytest.mark.parametrize(("ending", "phase"), [("while True:\n    pass", "budget"), ("1 / 0", "runtime")])
+def test_a_last_script_cut_off_after_the_work_scores_zero(gated, ending, phase):
+    record = _first("move_object")
+    code = f"{oracle_script(record['spec'])}\n{ending}"
+
+    _, sample = _run(gated, "B", record, ("run_script", {"code": code}))
+
+    assert sample.store["scripts"][-1]["phase"] == phase
+    assert sample.scores["ground_truth"].value == 0.0
+    assert "did not run to completion" in sample.scores["ground_truth"].explanation
+
+
+def test_a_failed_script_the_agent_recovered_from_still_counts(gated):
+    record = _first("move_object")
+
+    _, sample = _run(
+        gated,
+        "B",
+        record,
+        ("run_script", {"code": "1 / 0"}),
+        ("run_script", {"code": oracle_script(record["spec"])}),
+    )
+
+    assert [script["ok"] for script in sample.store["scripts"]] == [False, True]
+    assert sample.scores["ground_truth"].value == 1.0
+
+
+def test_a_failed_script_after_the_work_was_done_scores_zero(gated):
+    record = _first("move_object")
+
+    _, sample = _run(
+        gated,
+        "B",
+        record,
+        ("run_script", {"code": oracle_script(record["spec"])}),
+        ("run_script", {"code": "1 / 0"}),
+    )
+
+    assert [script["ok"] for script in sample.store["scripts"]] == [True, False]
+    assert sample.scores["ground_truth"].value == 0.0
+
+
+def _after_the_work(record, then):
+    """A model that does the whole job in one script, then answers each later call with `then()`."""
+
+    def reply(messages, *_):
+        asked = next(message.text for message in messages if message.role == "user")
+        if asked != record["text"]:
+            return _done()
+        if any(message.role == "tool" for message in messages):
+            return then()
+        return ModelOutput.for_tool_call(MOCK, "run_script", {"code": oracle_script(record["spec"])})
+
+    return get_model(MOCK, custom_outputs=reply, memoize=False)
+
+
+def _sample_of(gated, record, model):
+    n = _index(record)
+    gated(commands("trial", n))
+    log = run_episodes(["B"], n, model=model, max_samples=1)[0]
+    return next(sample for sample in log.samples if sample.id == record["seed"])
+
+
+def test_running_out_of_rounds_after_the_work_scores_zero(gated, monkeypatch):
+    record = _first("move_object")
+    monkeypatch.setattr("mahoraga.gym.MAX_ROUNDS", 3)
+
+    sample = _sample_of(
+        gated,
+        record,
+        _after_the_work(record, lambda: ModelOutput.for_tool_call(MOCK, "run_script", {"code": 'say("still going")'})),
+    )
+
+    assert sample.store["out_of_rounds"] is True
+    assert sample.store["scripts"][-1]["ok"]
+    assert sample.scores["ground_truth"].value == 0.0
+    assert "out of rounds" in sample.scores["ground_truth"].explanation
+
+
+def test_the_token_limit_after_the_work_scores_zero(gated):
+    record = _first("move_object")
+
+    def over_the_limit():
+        output = _done()
+        output.usage = ModelUsage(input_tokens=250_000, output_tokens=1, total_tokens=250_001)
+        return output
+
+    sample = _sample_of(gated, record, _after_the_work(record, over_the_limit))
+
+    assert sample.limit.type == "token"
+    assert sample.store["scripts"][-1]["ok"]
+    assert sample.scores["ground_truth"].value == 0.0
+    assert "A limit ended the episode" in sample.scores["ground_truth"].explanation
+
+
+def test_the_time_limit_after_the_work_scores_zero(gated, monkeypatch):
+    record = _first("move_object")
+    monkeypatch.setattr("mahoraga.gym._TIME_LIMIT_S", 1)
+
+    def too_slow():
+        time.sleep(1.1)
+        return _done()
+
+    sample = _sample_of(gated, record, _after_the_work(record, too_slow))
+
+    assert sample.limit.type == "time"
+    assert sample.scores["ground_truth"].value == 0.0
+    assert "A limit ended the episode" in sample.scores["ground_truth"].explanation
 
 
 def test_a_provider_error_ends_the_sample_after_one_attempt(gated):

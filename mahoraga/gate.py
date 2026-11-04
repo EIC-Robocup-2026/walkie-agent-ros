@@ -2,10 +2,11 @@
 
 A gate run plays the oracle's scripts through the same driver, world builder and
 scorer an arm uses, twice, into `.eval` logs. It passes when both logs read back
-complete, every sample scored 1.0, and the two are equal once the fields that
-differ between any two runs are removed (VOLATILE). The result goes under the
-Mahoraga home, with a digest of each (command, epoch, world) it covered, a digest
-of the code it covered and a hash of each log. require_gate() refuses anything else.
+complete, every sample scored 1.0 with every script run to completion and no limit
+hit, and the two are equal once the fields that differ between any two runs are
+removed (VOLATILE). The result goes under the Mahoraga home, with a digest of each
+(command, epoch, world) it covered, a digest of the code it covered and a hash of
+each log. require_gate() refuses anything else.
 """
 
 import asyncio
@@ -216,10 +217,16 @@ def _failures_of(log: EvalLog, expected: int) -> list[str]:
     if len(samples) != expected:
         failures.append(f"The log has {len(samples)} samples, not {expected}.")
     for sample in samples:
+        name = f"Sample {sample.id} epoch {sample.epoch}"
         score = (sample.scores or {}).get(SCORER)
         if sample.error is not None or score is None or score.value != 1.0:
             why = sample.error.message if sample.error else (score.explanation if score else "unscored")
-            failures.append(f"Sample {sample.id} epoch {sample.epoch}: {why}")
+            failures.append(f"{name}: {why}")
+        if sample.limit is not None or any(event.event == "sample_limit" for event in sample.events):
+            failures.append(f"{name}: a limit ended it.")
+        scripts = sample.store.get("scripts") or []
+        if not scripts or not all(script["ok"] for script in scripts):
+            failures.append(f"{name}: an oracle script did not run to completion.")
     return failures
 
 

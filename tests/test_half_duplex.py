@@ -32,6 +32,8 @@ from walkie_agent.half_duplex import (
     HalfDuplexTextToSpeechAgent,
 )
 
+pytestmark = pytest.mark.usefixtures("ros")
+
 CONFIG = Path(__file__).resolve().parent.parent / "config.toml"
 # One microphone block, as voice.py configures it.
 SAMPLE = np.zeros((1280, 1), dtype=np.int16)

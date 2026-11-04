@@ -226,12 +226,26 @@ def _check_person_info(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) 
 
 
 def _check_relay(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
+    """Learn from the source, know the recipient and be with them, in whichever order, then say it."""
     room, to_room, info = spec["room"], spec["to_room"], spec["info"]
+    calls = _done(end)
     person, who = _only_other(start, room)
-    after = _after_last_look(_done(end), "vision.people", _in_room(room), {person})
-    if to_room != room:
-        after = _after_look(after or [], "vision.people", _in_room(to_room))
-    return _first_answer(_said(after, to_room), lambda line: _info_said(start, info, line), who[info])
+    learned = _after_last_look(calls, "vision.people", _in_room(room), {person})
+    recipients = {
+        other
+        for other, them in start["people"].items()
+        if other != OPERATOR and them["room"] == to_room
+    }
+
+    def knows_recipient(call: Call) -> bool:
+        return call["room"] == to_room and bool(recipients & set(call.get("returned", ())))
+
+    met = _after_look(calls, "vision.people", knows_recipient)
+    if learned is None or met is None:
+        return False, f"Expected a look that returned someone in each of {room} and {to_room}."
+    # Both are tails of the calls, so the shorter one comes after both looks.
+    after_both = min(learned, met, key=len)
+    return _first_answer(_said(after_both, to_room), lambda line: _info_said(start, info, line), who[info])
 
 
 def _is_at(start: Snapshot, call: Call, place: str) -> bool:

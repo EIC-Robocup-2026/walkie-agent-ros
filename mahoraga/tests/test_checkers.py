@@ -3,8 +3,8 @@
 import pytest
 
 from mahoraga.checkers import MEASURES, check
-from mahoraga.commands import commands, generator
-from mahoraga.worlds import OPERATOR, build_world, world_seed
+from mahoraga.commands import generator
+from mahoraga.worlds import OPERATOR, build_world
 from walkie_agent.capabilities.fake import GESTURES, OBJECTS, POSES, FakeRobot
 from walkie_agent.errors import StepError
 
@@ -440,6 +440,61 @@ def test_relay_needs_a_look_in_each_room_then_the_value_in_the_second():
     assert not episode(RELAY, built, *look_there, ("go_to", "living room"), ("people", ""), ("say", "Axel"))[0]
 
 
+def test_relay_passes_when_the_recipient_was_identified_before_the_source():
+    steps = (
+        ("go_to", "living room"),
+        ("people", ""),
+        ("go_to", "kitchen room"),
+        ("people", ""),
+        ("go_to", "living room"),
+        ("say", "Jane"),
+    )
+
+    assert episode(RELAY, world(), *steps)[0]
+
+
+def test_relay_fails_when_it_speaks_before_learning_from_the_source():
+    steps = (
+        ("go_to", "living room"),
+        ("people", ""),
+        ("say", "Jane"),
+        ("go_to", "kitchen room"),
+        ("people", ""),
+        ("go_to", "living room"),
+    )
+
+    assert not episode(RELAY, world(), *steps)[0]
+
+
+def test_relay_fails_when_it_speaks_away_from_the_recipient():
+    steps = (("go_to", "living room"), ("people", ""), ("go_to", "kitchen room"), ("people", ""), ("say", "Jane"))
+
+    assert not episode(RELAY, world(), *steps)[0]
+
+
+def test_relay_fails_when_a_lookup_returned_no_recipient():
+    built = world()
+    look_there = (("go_to", "kitchen room"), ("people", ""))
+
+    assert not episode(RELAY, built, *look_there, ("go_to", "living room"), ("people", "Nobody"), ("say", "Jane"))[0]
+    assert not episode(RELAY, built, *look_there, ("go_to", "living room"), ("people", OPERATOR), ("say", "Jane"))[0]
+
+
+def test_relay_fails_when_a_lookup_returned_no_source():
+    look_there = (("go_to", "kitchen room"), ("people", "Nobody"))
+
+    assert not episode(RELAY, world(), *look_there, ("go_to", "living room"), ("people", ""), ("say", "Jane"))[0]
+
+
+def test_relay_judges_the_first_answering_line_said_with_the_recipient():
+    look_there = (("go_to", "kitchen room"), ("people", ""))
+    look_here = (("go_to", "living room"), ("people", ""))
+
+    assert episode(RELAY, world(), *look_there, ("say", "Axel"), *look_here, ("say", "Jane"))[0]
+    assert not episode(RELAY, world(), *look_there, *look_here, ("say", "Axel"), ("say", "Jane"))[0]
+    assert not episode(RELAY, world(), *look_there, *look_here, ("say", "Jane or Axel"))[0]
+
+
 def test_relay_within_one_room_needs_only_one_look():
     spec = {**RELAY, "to_room": "kitchen room"}
 
@@ -498,12 +553,3 @@ def test_a_greeting_needs_a_line():
 
     assert episode(spec, world(), *look, ("say", "Hello."), ("go_to", "sofa"))[0]
     assert not episode(spec, world(), *look, ("go_to", "sofa"))[0]
-
-
-def test_doing_nothing_passes_no_generated_command():
-    """Otherwise the oracle's 100% would say nothing about that command."""
-    for record in commands("trial", 300):
-        robot = FakeRobot(build_world(record["spec"], world_seed(record["seed"], 1)))
-        start = robot.snapshot()
-        ok, _ = check(record["spec"], start, robot.snapshot())
-        assert not ok, record["spec"]

@@ -50,9 +50,9 @@ pixi run build-ros2
 This clones `rai_interfaces` and walkie-database into `ros2_ws/src/`, at the
 commits pinned in `ros2_ws.repos`, and builds the two message packages with
 colcon. Pixi loads the result automatically every time you use `pixi run`
-or `pixi shell`. Run it again only if `ros2_ws.repos` changes. The
-walkie-database pin must match the database node you run, or the agent's
-memory requests are never answered
+or `pixi shell`. Run it again only if `ros2_ws.repos` changes. No agent tool
+reads walkie-database today, but the pin and the message package stay for a
+later slice
 ([ADR-0035](architecture/decisions/0035-memory-through-walkie-database.md)).
 
 Every `pixi run` and `pixi shell` here uses the Zenoh middleware
@@ -92,8 +92,8 @@ OPENAI_API_KEY=sk-or-v1-...
 ```
 
 !!! info "Why is an OpenRouter key called `OPENAI_API_KEY`?"
-RAI talks to OpenRouter through its `openai` vendor, because OpenRouter
-uses the same API as OpenAI. The model and URL are set in `config.toml`.
+    The agent talks to OpenRouter through the `openai` vendor, because OpenRouter
+    uses the same API as OpenAI. The model and URL are set in `config.toml`.
 
 The Langfuse keys in `.env.example` are optional. `pixi run langfuse-setup`
 fills them in for you, see [Local Langfuse](setup/04-langfuse.md).
@@ -101,16 +101,30 @@ fills them in for you, see [Local Langfuse](setup/04-langfuse.md).
 ## 5. Run the tests
 
 ```bash
-pixi run test
+pixi run --frozen test
 ```
 
-The tests run real ROS 2 nodes with a fake robot and a scripted LLM, so they
-need no API key and no hardware. They switch to the Fast DDS middleware
-themselves, so they need no Zenoh router either
-([ADR-0019](architecture/decisions/0019-test-fakes-fast-dds.md)). All tests
-should pass.
+`--frozen` uses `pixi.lock` as it is, so the command cannot change your environment.
+
+The tests use a scripted LLM, so they need no API key and no hardware. Most import no
+ROS at all. Some run real rclpy and RAI's real connector against a fake robot, on a
+random domain. They switch to the Fast DDS middleware themselves, so they need no Zenoh
+router either ([ADR-0019](architecture/decisions/0019-test-fakes-fast-dds.md)). All tests
+should pass. The runnable examples on the [Learn the Agent](learn/index.md) pages run
+here too.
+
+A pass says the code matches its tests. It does not say that the robot works, because
+nothing in the suite touches real Nav2, a simulator or hardware.
+
+!!! warning "In a second Git worktree"
+    A worktree that borrows another checkout's environment imports that checkout's code.
+    Set `PYTHONPATH=$PWD/src` there, or the tests silently run the other code.
 
 ## 6. Run the agent with the fake robot
+
+!!! warning "This calls your real model"
+    The next steps need the API key from step 4, and they spend tokens. For a run with no
+    real model and no sound, use the [silent demo](#run-a-silent-demo).
 
 Open four terminals in the project folder. Zenoh nodes find each other
 through a router, so start that first.
@@ -128,8 +142,12 @@ that router. A node that finds no router logs
 pixi run fake-walkie
 ```
 
+`config/locations.toml` ships empty, because a place written there is where the robot
+really drives. So use the invented places in the test fixture: start, kitchen,
+living_room and bedroom.
+
 ```bash title="Terminal 3: the agent"
-pixi run agent
+pixi run agent --locations tests/fixtures/locations.toml
 ```
 
 ```bash title="Terminal 4: read the agent's text replies"
@@ -143,21 +161,70 @@ pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
   "{text: 'Please go to the kitchen and say hi when you get there.'}"
 ```
 
-The agent's log in terminal 3 shows each tool call. Terminal 2 logs what the
-robot says, for example `[Walkie says] Hi everyone! I have arrived in the
-kitchen.`, and terminal 4 shows the agent's final text reply.
+To log each tool call as one JSON line, add `--tool-log logs/tools.jsonl` in terminal 3.
+Terminal 2 logs what the robot says, for example `[Walkie says] Hi everyone! I have
+arrived in the kitchen.`, and terminal 4 shows the agent's final text reply.
+
+The `default` tool set has `list_places`, `go_to`, `move_relative`, `say`,
+`find_objects`, `object_info` and `find_people`. The agent also has `update_todos` and
+`wait_for_person`. `--tool-set gpsr` and `--tool-set hri` pick the other fixed sets.
+`find_objects`, `object_info` and `find_people` answer `UNAVAILABLE`, because live vision
+is not connected. In the `gpsr` set, `pick`, `place_on` and `hand_over` answer
+`UNAVAILABLE` as well.
 
 | Topic             | Direction  | What it carries                                                          |
 | ----------------- | ---------- | ------------------------------------------------------------------------ |
-| `/from_human`     | to agent   | Tasks, typed or from speech recognition (`rai_interfaces/msg/HRIMessage`) |
+| `/from_human`     | to agent   | Tasks or a bare stop, typed or from speech recognition, text only (`rai_interfaces/msg/HRIMessage`) |
 | `/to_human`       | from agent | What the robot says out loud, for text-to-speech (`HRIMessage`)          |
 | `/walkie/console` | from agent | The agent's text replies and a line per todo status change, for the operator (`HRIMessage`) |
-| `/walkie/task`    | to agent   | A task with its steps, or with a template, as JSON (`std_msgs/msg/String`) |
+| `/walkie/task`    | to agent   | A task with its steps, or with a template name, as JSON (`std_msgs/msg/String`) |
 | `/walkie/todos`   | from agent | The todo list as JSON, kept for late readers (`std_msgs/msg/String`)     |
-| `/walkie/reset`   | to agent   | Makes the agent forget the conversation (`std_msgs/msg/Empty`)           |
+| `/walkie/reset`   | to agent   | Cancels the task and forgets the conversation (`std_msgs/msg/Empty`)     |
 | `/voice_commands` | voice      | Pause/stop speech playback (`std_msgs/msg/String`), see [Voice](setup/07-voice.md) |
 
-The places the robot can go are listed in `config/locations.toml`.
+To stop, publish a bare `stop` on `/from_human`. Walkie cancels the task and its goal at
+once and says "Okay, stopping.", even when idle.
+
+The places come from the file that `--locations` names. A place name must be written
+trimmed and in lowercase. Any other form stops the agent at startup, and lookups ignore
+case.
+
+### Run a silent demo
+
+`tests/ros_demo.py` runs the assembled agent with a scripted model and a fake robot. It
+needs no API key and plays no sound. `unshare -Urn` starts a shell in a new network with
+only a loopback interface, so nothing in it can reach a live ROS graph. The demo refuses
+to run on any other network. Its Zenoh router listens on its own port, 7499.
+
+```bash title="One terminal, from the project folder"
+mkdir -p /tmp/walkie-demo
+unshare -Urn bash --noprofile --norc <<'SH'
+set -euo pipefail
+ip link set lo up
+export ROS_DOMAIN_ID=77 ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST
+export PYTHON_DOTENV_DISABLED=1 LANGSMITH_TRACING=false LANGCHAIN_TRACING_V2=false
+unset ZENOH_SESSION_CONFIG_URI ZENOH_ROUTER_CONFIG_URI
+common='scouting/multicast/enabled=false;transport/shared_memory/enabled=false'
+router_cfg="listen/endpoints=[\"tcp/127.0.0.1:7499\"];connect/endpoints=[];$common"
+node_cfg="connect/endpoints=[\"tcp/127.0.0.1:7499\"];$common"
+setsid pixi run --frozen env RMW_IMPLEMENTATION=rmw_zenoh_cpp \
+  ZENOH_CONFIG_OVERRIDE="$router_cfg" ros2 run rmw_zenoh_cpp rmw_zenohd \
+  > /tmp/walkie-demo/router.log 2>&1 &
+router=$!
+trap 'kill -INT -- -"$router" 2>/dev/null || true; sleep 2; kill -KILL -- -"$router" 2>/dev/null || true' EXIT
+pixi run --frozen env RMW_IMPLEMENTATION=rmw_zenoh_cpp \
+  ZENOH_CONFIG_OVERRIDE="$node_cfg" python tests/ros_demo.py --robot fake \
+  --tool-set hri --locations tests/fixtures/locations.toml \
+  --report /tmp/walkie-demo/report.json
+SH
+```
+
+It prints `PASS` and the report's path, and exits 0 only if every assertion in the report
+passed. Leave Zenoh's gossip scouting on: with `scouting/gossip/enabled=false`, two
+processes on this router do not discover each other.
+
+This proves that the parts are wired together on a real rmw_zenoh transport. The robot
+in it is still a fake, so it says nothing about Nav2, TF on hardware or stop latency.
 
 ### Give the agent its steps
 
@@ -189,44 +256,23 @@ restarting it:
 pixi run ros2 topic pub --once /walkie/reset std_msgs/msg/Empty
 ```
 
-This also drops any tasks still waiting in line, and stops the current task.
-A tool that is already running (for example, driving to the kitchen) finishes
-first. In Langfuse, each conversation shows up as its own **session**.
+This drops any tasks still waiting in line, and cancels the current task and its goal.
+The list and the history are cleared once the active run has ended, so a hung LLM call
+can delay that up to the deadline. In Langfuse, each conversation shows up as its own
+**session**.
 
-### Ask Walkie's memory
+### Walkie's memory is not connected
 
-The fake robot has no memory. The `find_objects` tool asks the
-walkie-database node where objects were last seen, through the
-`/walkie_database/find_objects` service. Without that node, the tool tells
-the agent that memory is unavailable, and the other tools still work.
-
-To try it, set up walkie-database with its
-[Getting Started](https://eic-robocup-2026.github.io/walkie-database/getting-started/),
-and check out the commit pinned in this project's `ros2_ws.repos`. A new
-`data/walkie.db` has no objects yet, so write the sample house to
-`data/demo.db` and run the node on it:
-
-```bash title="walkie-database, terminal 5: the database node"
-pixi run db-seed
-pixi run db-node --ros-args -p db_path:=data/demo.db -p map_id:=demo-house
-```
-
-The node searches only the map named by `map_id`. The sample house's map is
-`demo-house`. On the robot, `map_id` is the id of the map the robot uses. If
-`map_id` is empty, every search fails and the agent is told why. The node
-must use the same router and the same `ROS_DOMAIN_ID` as the agent.
-
-Then ask the agent:
-
-```bash
-pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
-  "{text: 'Where is my cup?'}"
-```
-
-The agent's log shows a `find_objects` call for `cup`, which finds the two
-cups in the sample house's kitchen.
+The old tool that read remembered objects from walkie-database is retired. `find_objects`
+now means a live view, and it answers `UNAVAILABLE`, because a remembered row is not a
+current view. A real backend is a later slice
+([ADR-0052](architecture/decisions/0052-capability-verbs-and-backends.md)).
 
 ### Drive walkie-ros's simulation instead
+
+!!! warning "Not yet run with this runtime"
+    Nobody has run the new runtime against the simulator. Follow these steps as a recipe
+    to try, and expect to find problems. It also calls your real model.
 
 walkie-ros has a MuJoCo simulation of Walkie with Nav2 on a blank map
 ([ADR-0030](architecture/decisions/0030-mujoco-sim-first.md)). Its Pixi
@@ -255,9 +301,8 @@ Then, in this project, start the agent.
 pixi run agent-sim
 ```
 
-If `move_relative` answers that no node publishes `/tf`, the agent and the
-simulation are on different domains or routers. Check `echo $ROS_DOMAIN_ID`
-in each terminal.
+If a move answers that no node publishes `/tf`, the agent and the simulation are on
+different domains or routers. Check `echo $ROS_DOMAIN_ID` in each terminal.
 
 ```bash title="Terminal 4: send a task"
 pixi run ros2 action list   # should show /navigate_to_pose
@@ -268,6 +313,14 @@ pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
 `agent-sim` uses the simulation's clock and the test points in
 `config/locations.sim.toml` (start, ahead, left, corner). The map frame is
 the robot's start pose, so all points are relative to where it started.
+
+Those points belong to the **blank map** only. walkie-ros also has a world of the real
+lab room, `chula_pat14_6`, launched with `world:=chula_pat14_6`. The points in
+`config/locations.sim.toml` are not waypoints in that world, and no Chula place list
+exists here. `tests/ros_demo.py --robot external` could report on a run against that world
+with no real model, but that run has not happened. Even when it does, it can prove
+navigation and the runtime only: that launch has no vision or text-to-speech, and vision
+and arms are unavailable in the agent. So it cannot prove the full HRI task.
 
 ## 7. Open the docs locally
 
@@ -284,6 +337,10 @@ you edit a file in `docs/`. Press ++ctrl+c++ to stop.
   a web UI.
 - [Voice](setup/07-voice.md): talk to the agent with a microphone and hear
   it through a speaker.
+- [Learn the Agent](learn/index.md): how the runtime works, with examples you
+  can run.
+- [The Agent](architecture/agent.md): the layers, the exact topics, and what
+  has and has not been proven.
 - [Setup Log](setup/index.md): how this repository was built, one step at a
   time.
 - [Writing Docs](setup/02-documentation.md#writing-a-new-page): how to add

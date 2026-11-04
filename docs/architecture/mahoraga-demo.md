@@ -297,15 +297,34 @@ it may save, and counts entries and normal returns inside the worker:
 | Verified | Returned, never raised in that episode, and the episode scored 1 | The `verified` event |
 
 Each event carries the sha of the source that ran, so a rewrite starts with nothing.
-A function saved but never run stays unverified, so it stays off a frozen shelf. So
-does a verified function that names a saved function which never ran, because it
-could not stand alone without it. A definition the script bound more than once, or
-one that is not in `save`, goes unwatched and earns nothing, and a script's own
-definition is no use of the shelf.
+If an episode ran several versions of one name, only the last that returned and never
+raised is verified. A function saved but never run stays unverified, so it stays off
+a frozen shelf. So does a verified function that names a saved function which never
+ran, because it could not stand alone without it. A definition the script bound more
+than once, or one that is not in `save`, goes unwatched and earns nothing, and a
+script's own definition is no use of the shelf.
 
 The counters' names carry a random token per run, and a script that loads or saves
 a function gets `locals`, `eval` and `exec` shadowed, so it cannot name or reach
-them. That holds against a careless or clever model, and it is no security boundary.
+them.
+
+The shelf's source feeds before the loader, because a wrapper needs the function it
+stands in for. A parameter default on a saved function is evaluated in that feed,
+before the shadows and wrappers exist. So `evaluate=eval` would keep the real `eval`,
+which can forge or erase counters, and `fn=helper` would keep a helper whose runs and
+raises nobody counts. `Shelf.save` therefore refuses a function with a default that is
+not a literal, such as a name, call, lambda or attribute, and tells the model why. A
+function that needs another one names it in its body instead, where the lookup happens
+at run time and finds the wrapper. `Shelf.save` also refuses the names `locals`, `eval`
+and `exec`, and they are never watched, because the loader defines them itself and a
+wrapper would give its replacement the source's sha. A script may still define such a
+name for its own use. Decorators are refused too, and Monty does not evaluate
+annotations, so no other part of a saved definition runs in that feed.
+
+With those rules the counters hold against a careless or clever model, and they are
+no security boundary. The rules apply when a function is saved, so a shelf written
+before they existed is not rechecked.
+
 Two limits come with it. A wrapper adds a frame, so recursion through a watched
 function reaches the depth limit in half the calls. If the counters cannot be read,
 after a worker crash or a script that keeps running well past its wall budget, the

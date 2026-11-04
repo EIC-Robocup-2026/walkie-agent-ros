@@ -110,13 +110,58 @@ These came up while building those fixes.
 | M27 | `_numbers` reads whole tokens with a regex and a word table. "1.0" is 1, "1.1" and "-1" are their own values, a hyphenated compound such as "twenty-one" is a candidate no count equals, number words run to nineteen, the tens and "hundred", and "3rd" is no number. "single" means 1, and "couple" and "pair" mean 2. Pose and gesture gain ordinary words such as "sat", "feet", "prone", "up", "aloft" and "indicating", and a raised arm now needs an arm or a hand in the line. | Recheck findings R5, R6 and R7. The tokenizer read a part of a number as the answer, so "twenty-one" and "-1" passed for 1 while "1.0" failed. Common correct phrasings scored 0, and "raising their right leg" passed as the arm gesture. | The limit that remains: "There is a dish" still fails, because reading "a" as one would make "on a bar" a second number. This is no number parser, so a word past the table goes unread: "two thousand" reads as 2 and "a dozen" as no answer. "couple" is loose for some speakers, and "feet" makes "sitting with their feet up" name two poses and fail. | Delegated |
 | M28 | A comparison's `complete` also needs equal scheduled (command, epoch) sets and, for each id logged in both arms, the same `sample.input`. When `sample_ids` is missing, a log schedules `dataset.samples` times its epochs. | Recheck findings R8 and R9. Comparing command ids alone called one epoch against three complete, and accepted changed text under one id. A log without ids saw only the episodes it kept, so a lost one left the denominator and the arm read as complete. | A partial rerun with a different `--epochs` in one log directory now reads incomplete, and `compare` still averages by command. A command a log without ids never logged gets a stand-in id unique to that log, so it counts as a failure in M1 and pairs with nothing. Text is compared only over logged samples, so an id one arm never logged goes unchecked. `warning` stays null when only a comparison is incomplete. | Delegated |
 | M29 | Each model attempt in the gym has 30 s, then it is abandoned and retried. `run_limit` stays 25 and `deadline_s` stays 60. | 5 of 1750 model calls ran away. One wrote 131072 tokens in 275 s, most of the first shelf build's output, and the other 4 had not finished when their episode reached its 300 s limit, which fails an episode through no fault of its answer. Inspect's `timeout` only stops further retries. The longest normal call took 13 s and the longest episode 15 calls. | Abandoned attempts may still be billed by the provider, and Inspect's usage does not count them. Both limits are measured only on the fake world, on a fast model, so a slower model needs a higher attempt limit. | Delegated |
+| M30 | A `talk` command that asks for a fact gets a source and a check: a clock and team facts on `ctx`, the same in the fake world and on the robot, and a checker that compares the line for those topics. "Something about yourself" stays unchecked. To build after the ROS merge, which is changing the same capability files. | Third run: 4 of 30 held-out and 8 of 30 training commands ask for a fact that nothing supplies. Every arm invented one ("It is 3 o'clock"), and in A, B and D the line "What day is tomorrow?", which reads the command back as a question, passed. The robot has no clock either, so it would state a made-up time. The hunt for a clock also caused the longest failure of the run. | Keeping the documented limit leaves about 13% of held-out commands free in every arm and the robot inventing answers. The cost is one more capability, a new function in every arm's prompt, and a gate rerun. Runs before this are not comparable on these commands. | Delegated, not built |
+| M31 | A later look with no answer after it no longer discards an earlier answer. The checker judges the last look that a line naming a candidate follows. To build with M30. | Third run, training command 100030: the model said the right answer, "chips bag", then looked again without speaking and scored 0. The limit was documented, and a real model has now hit it. | A right answer, a look and a wrong answer still fails, and a wrong answer, a look and a right answer still passes. Only a right answer followed by a silent look changes. | Delegated, not built |
 
 ### Small real-model runs
 
-Both ran `deepseek/deepseek-v4.1-flash:nitro` on 30 held-out commands, one epoch each,
-in the fake world, on 2026-11-05. These are checks that the pipeline works, not the
-planned comparison. No difference between arms is significant (McNemar p = 1.0 in each
-pair), and success is near the ceiling, so it cannot separate arms at this size.
+All three ran `deepseek/deepseek-v4.1-flash:nitro` on 30 held-out commands, one epoch
+each, in the fake world, on 2026-11-05. These are checks that the pipeline works, not
+the planned comparison. No difference between arms is significant (McNemar p is 0.5 or
+higher in each pair), and success is near the ceiling, so it cannot separate arms at
+this size. Tokens per success leave out cached input.
+
+Third run, after M25 to M29. Shelf: 23 functions from 30 training commands, with 27 of
+30 training episodes passing, which cost $0.050. The held-out arms cost $0.058.
+
+| Arm | Success | Mean rounds | Longest episode | Tokens per success | Shelf used |
+|---|---|---|---|---|---|
+| A | 30/30 | 7.0 | 13 | 2417 | n/a |
+| B | 29/30 | 4.2 | 7 | 2041 | n/a |
+| C | 28/30 | 5.2 | 22 | 3975 | 30% of episodes |
+| C2 | 30/30 | 3.4 | 6 | 2182 | as examples |
+| D | 30/30 | 6.2 | 13 | 2252 | n/a |
+
+What the third run showed:
+
+- `200001`, in C: "tell the time", with no clock in the world. B and C2 made up a time
+  and passed. C guessed function names such as `tell_time` and `clock` through `eval`,
+  and the runner refused 60 of those calls as unknown names. They are 60 of the 61
+  refused calls in M9, and the other is the `import_stubs` call that `import inspect`
+  makes. Then 7 attempts were abandoned at 30 s, about 210 s of the 300 s limit, and the
+  episode ended with nothing said. The log cannot show whether those attempts were
+  runaway completions or provider stalls. Retries of the same requests finished in 3 to
+  6 s. M30 addresses it.
+- `200020`, in B and C: the same fair failure as the second run.
+- M8 is 4 of 9 shelf episodes. A shelf function raised in `200001`, `200003` and
+  `200017`, because `tell_day_of_month(room, description, day)` was passed a number and
+  `say` takes text, and in `200016`, because `throw_object_in_trash` picks up the object
+  and the model already held it. The other three recovered. `Shelf.describe` gives C
+  each definition line and docstring, and none of the 23 functions has a docstring or a
+  type annotation, so C cannot see either problem from its prompt. C2 reads whole
+  scripts.
+- M29 held. `200017` in D, lost to an unfinished call in the second run, passed here
+  after 2 abandoned attempts. Across the run 11 attempts were abandoned, against 899
+  completed calls.
+- Training `100021`: `throw_object_in_trash` searched the room, so the apple did not
+  come from the shelf the command named. This is a fair failure.
+- Training `100030`: a false failure, which M31 addresses.
+- Training `100031`: "follow them" names no destination. The model followed the person
+  to three places and kept checking, until 205K tokens passed the 200K limit. 143K of
+  those were cached input, which counts toward the limit.
+
+In both runs with a real shelf, C took more rounds and more tokens than C2, which holds
+the same scripts as examples. Two small runs are a direction to test, not a result.
 
 Second run, after M24. Shelf: 22 functions from 30 training commands, which cost
 $0.023.

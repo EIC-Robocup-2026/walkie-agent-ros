@@ -1,8 +1,15 @@
 # HRI Task (Proposed)
 
-!!! note "Status: Proposed"
-    Nothing on this page is built yet. It is the design for team review. Each
-    of the [open questions](#open-questions) says what it blocks.
+!!! note "Status: Proposed, with the runtime underneath it built"
+    This page is the design for team review. Each of the
+    [open questions](#open-questions) says what it blocks.
+
+    The runtime, the todo list, `wait_for_person`, `go_to` and `say` are built, and have run
+    on fakes only. The `hri` tool set binds `find_people`, which answers `UNAVAILABLE` on the
+    robot. The people, seat, gaze and arm atomics below do not exist. So **this task cannot
+    run end to end today**, in simulation or on the robot.
+
+    HRI input is text only. A message with an image or audio payload is refused.
 
 The HRI task (RoboCup@Home 2026 rulebook, section 5.1) is the first task
 the [self-evolving agent](self-evolving-agent.md) will run end to end. It
@@ -87,7 +94,7 @@ recognizing people (2×−200), an alternative input such as a keyboard
 
 ```mermaid
 flowchart TB
-    start(["Start pose in the living room"]) --> door["navigate_to_location('door')"]
+    start(["Start pose in the living room"]) --> door["go_to('door')"]
     door --> find["find_people()<br/>pick the largest person"]
     find --> look["look_at(guest)<br/>the gaze loop starts"]
     look --> ask["wait_for_person: name<br/>wait_for_person: drink"]
@@ -95,8 +102,8 @@ flowchart TB
     mem --> second{"Is this the<br/>second guest?"}
     second -->|"yes"| bag["Take the bag:<br/>receive pose, wait_for_person,<br/>close, carry pose"]
     second -->|"no"| guide
-    bag --> guide["speak('Please follow me')<br/>navigate_to_location(<br/>'living_room')"]
-    guide --> seats["find_seats()<br/>look_at(free seat), speak"]
+    bag --> guide["say('Please follow me')<br/>go_to(<br/>'living_room')"]
+    guide --> seats["find_seats()<br/>look_at(free seat), say"]
     seats --> more{"Second guest<br/>still to come?"}
     more -->|"yes"| door
     more -->|"no"| intro["find_people()<br/>recognize_person(all)<br/>per guest: look_at(guest),<br/>say the other's name, drink"]
@@ -110,7 +117,7 @@ flowchart TB
   `config/locations.toml`, set on the setup days. It never drives to a
   person, so `localize_person` and a person's depth stay off the path
   ([Perception question 1](perception.md#open-questions)).
-- **`wait_for_person` ends the turn,** and the guest's answer starts the
+- **`wait_for_person` ends the run,** and the guest's answer starts the
   next one. The gaze loop keeps running in between.
 
 ## Atomics
@@ -123,11 +130,11 @@ flowchart TB
 | `find_seats()` | P | New | Seat handles, left to right, each `free` or `taken` |
 | `look_at(target)` | N | New ([ADR-0051](decisions/0051-agent-side-gaze-loop.md)) | Starts the gaze loop on a person, or turns to a seat and holds. Returns at once |
 | `stop_looking()` | N | New | Stops the gaze loop |
-| `wait_for_person(question)` | — | Phase 1, a core tool | Speaks, marks the todo item waiting and ends the turn |
+| `wait_for_person(question)` | — | Built | Speaks, marks the todo item waiting and ends the run. Tested with a scripted model on fakes |
 | `move_arm_to_pose(pose, arm)` | M | As on [Manipulation](manipulation.md#tools), with two new poses | Moves the left arm to `receive` or `carry`, and checks the joints |
 | `set_gripper(arm, state)` | M | As on [Manipulation](manipulation.md#tools) | Opens or closes the left gripper. After a close, says whether it holds something |
 
-`navigate_to_location` and `speak` exist today. `refind_person` is not
+`go_to` and `say` exist today. `refind_person` is not
 needed: the gaze loop follows the track, and the face is matched again at
 the introductions.
 
@@ -181,13 +188,13 @@ The second guest's bag is taken at the door, right after
 the robot there, and the arm is back in a travel-safe pose before the robot
 drives.
 
-1. **Warn.** `speak("I will hold out my hand for your bag.")`. The system
+1. **Warn.** `say("I will hold out my hand for your bag.")`. The system
    prompt already says to tell people before moving the arms.
 2. **Hold out the hand.** `set_gripper("left", "open")`, then
    `move_arm_to_pose("receive", "left")`.
 3. **Wait for the guest.** `wait_for_person("Please hang your bag on my
    hand, and tell me when it is there.")` ends the turn.
-4. **Close.** In the next turn, `speak("Thank you. I will close my hand
+4. **Close.** In the next turn, `say("Thank you. I will close my hand
    now.")`, then `set_gripper("left", "close")`, which says whether the
    gripper holds something.
 5. **Carry.** `move_arm_to_pose("carry", "left")`, then guide the guest as
@@ -281,8 +288,11 @@ flowchart TB
 
 A template in `config/task_templates.toml` seeds the todo list
 ([ADR-0041](decisions/0041-todo-list-and-seeding.md)). The format is on
-[The Agent](agent.md#task-templates). The template is not in the file yet,
-because it needs the atomics above:
+[The Agent](agent.md#task-templates). An operator starts it by exact name, with
+`{"task": "...", "template": "hri"}` on `/walkie/task`. Nothing matches keywords
+([ADR-0069](decisions/0069-task-templates-by-name.md)). The template is not in the file
+yet, because it needs the atomics above. A template whose `requires_tool` lies outside the
+tool set stops startup:
 
 ```toml title="config/task_templates.toml"
 [templates.hri]
@@ -318,13 +328,17 @@ traces once the bundle runtime exists.
 What blocks the slice, across the three repositories. A dashed box is new
 work this page or [Perception](perception.md) asks for.
 
+The silent demo, `tests/ros_demo.py --robot fake --tool-set hri`, is not an HRI run. It is
+driving and speech with a scripted model on a fake robot. It proves nothing about guests,
+seats, gaze or arms.
+
 The sim run:
 
 ```mermaid
 flowchart TB
     di["<b>walkie-database</b><br/>People services:<br/>interface agreed"]:::proposed
     a0["<b>walkie-agent-ros</b><br/>Pin walkie_vision_msgs"]
-    p1["<b>walkie-agent-ros</b><br/>Phase 1: host, todos,<br/>wait_for_person"]
+    p1["<b>walkie-agent-ros</b><br/>Built: runtime, todos,<br/>wait_for_person"]
     a1["<b>walkie-agent-ros</b><br/>HRI and arm<br/>atomics on mocks"]:::proposed
     g["<b>walkie-agent-ros</b><br/>Gaze loop"]:::proposed
     s["<b>walkie-agent-ros</b><br/>oracle_perception:<br/>guests, seats, bag"]:::proposed
@@ -383,6 +397,10 @@ flowchart LR
   ([Perception question 2](perception.md#open-questions)).
 
 ## In simulation
+
+Nothing in this section has run, and the runtime has not run in the simulator at all.
+The Chula recipe in [Getting Started](../getting-started.md) launches navigation and
+physics. It starts no HRI vision and no TTS. `oracle_perception` does not exist yet.
 
 `oracle_perception` gets HRI scenarios
 ([Perception](perception.md#in-simulation)):

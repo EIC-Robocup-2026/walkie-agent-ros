@@ -1,8 +1,13 @@
 # Arm Manipulation (Proposed)
 
 !!! note "Status: Proposed"
-    Nothing on this page is built yet. It is the design for team review. Most
-    of the [open questions](#open-questions) say which phase they block.
+    The motion and semantic skills on this page are not built. It is the design for team
+    review. Most of the [open questions](#open-questions) say which phase they block.
+
+    What exists today is small. The arm verbs are on `ctx`. On the robot, `UnavailableArms`
+    answers `UNAVAILABLE` for every one of them. `FakeRobot` has `pick`, `place_on` and
+    `hand_over`, so the `gpsr` tool set can be tested without arms. Nothing has moved an arm.
+    This page's `navigate_to_location` is the older name of today's `go_to`.
 
 Walkie has two 7-DOF OpenArm arms with grippers, on a lift. walkie-ros runs
 MoveIt and `bimanual_commander`, which plan and execute arm motion. This page
@@ -417,10 +422,14 @@ flowchart LR
 
 ### Typed arm atomics
 
-Each atomic is one file in `src/walkie_agent/tools/atomic/`, with a `META`,
+Each atomic would be one file in `src/walkie_agent/atomics/`, with a `META`,
 typed `Args` and `Out`, and a `run(ctx, args)` function
 ([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). A bundle can
 wire only typed fields, never sentences, so this refactor comes first.
+
+The atomics built so far are plain typed functions
+([ADR-0060](decisions/0060-atomic-tools-and-adapter.md)). That shape and this one
+are not reconciled yet.
 `move_arm_to_pose` and `get_arm_state` are bound every turn. The other three
 are reached through `find_tools`, and `run_skill` usually through a preset
 ([What the agent sees each turn](self-evolving-agent.md#what-the-agent-sees-each-turn)).
@@ -486,7 +495,7 @@ contracts:
 ### Presets that move the arms
 
 Presets are human-reviewed bundles in
-`src/walkie_agent/tools/bundled_preset/`. All four are bound every turn.
+`src/walkie_agent/bundled_preset/` (proposed). All four would be in the tool set.
 
 | Preset                  | Arguments                       | Steps                                                                     |
 | ----------------------- | ------------------------------- | ------------------------------------------------------------------------- |
@@ -626,17 +635,17 @@ from the spoken request to the hand-over.
 
 | Piece                                                            | Repository       | Location                                             |
 | ---------------------------------------------------------------- | ---------------- | ---------------------------------------------------- |
-| Arm atomics, one file per tool                                   | walkie-agent-ros | `src/walkie_agent/tools/atomic/` (new)               |
-| Presets `find_object_in_view`, `pick_object`, `pickup_object_in_view`, `hand_over` | walkie-agent-ros | `src/walkie_agent/tools/bundled_preset/` (new) |
+| Arm atomics, one file per tool                                   | walkie-agent-ros | `src/walkie_agent/atomics/` (new)                    |
+| Presets `find_object_in_view`, `pick_object`, `pickup_object_in_view`, `hand_over` | walkie-agent-ros | `src/walkie_agent/bundled_preset/` (new) |
 | Typed results, `StepError`, the bundle runner and its runtime stow | walkie-agent-ros | `src/walkie_agent/toolbox/types.py`, `src/walkie_agent/toolbox/runner.py` (new) |
-| The navigation arm check                                         | walkie-agent-ros | `src/walkie_agent/tools/navigation.py` (changed)     |
+| The navigation arm check                                         | walkie-agent-ros | `src/walkie_agent/ros/base.py`, `src/walkie_agent/atomics/navigation.py` (changed) |
 | MotionSupervisor                                                 | walkie-agent-ros | `src/walkie_agent/motion.py` (new)                   |
 | Named poses, robot-model snapshot and its generator              | walkie-agent-ros | `config/arm_poses.toml`, `config/robot_model.toml`, a script in `scripts/` (new) |
 | Never-list of arm, gripper, head and lift controllers            | walkie-agent-ros | `config/access_levels.toml` (new)                    |
 | Protocol mocks: `MockArmBackend`, `MockSkillServer`, `FakeScene` | walkie-agent-ros | `src/walkie_agent/sim/mock_arm.py`, `mock_skill.py`, `fake_scene.py` (new) |
 | ROS-level fake skill server for the sim harvest                  | walkie-agent-ros | `src/walkie_agent/sim/fake_skill_server.py` (new)    |
 | Fake commander (real-backends track)                             | walkie-agent-ros | a new file in `src/walkie_agent/sim/`                |
-| Arm summary for the LLM                                          | walkie-agent-ros | `whoami/documentation/arms.md` (new)                 |
+| Arm summary for the LLM                                          | walkie-agent-ros | `robot.md`, edited when arms connect                 |
 | `my_robot_interfaces`, including future skill interfaces         | walkie-ros       | `manipulate/my_robot_interfaces`, pinned here        |
 | Commander, MoveIt, SRDF, joint limits                            | walkie-ros       | `manipulate/` (unchanged in phases 0 and 1)          |
 | Controllers, lift node, Nav2, URDF                               | walkie-ros       | `bringup/`, `navigation/`, `description/`            |

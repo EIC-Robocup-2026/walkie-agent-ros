@@ -4,6 +4,12 @@
     Nothing on this page is built yet. It is the design for team review. Each
     of the [open questions](#open-questions) says what it blocks.
 
+    Today `find_objects` is a live-view atomic, and on the robot it answers `UNAVAILABLE`,
+    as does `find_people`. The old tool that read remembered rows is retired. Where this page
+    describes a memory stage named `find_objects`, read it as a proposed tool that needs its
+    own name. A remembered row is never presented as a current view
+    ([The Agent](agent.md#tools)).
+
 walkie-vision runs the robot's vision models, and walkie-database
 remembers what they saw
 ([ADR-0034](decisions/0034-vision-models-in-walkie-vision.md)). This page

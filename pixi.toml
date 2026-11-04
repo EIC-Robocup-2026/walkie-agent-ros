@@ -223,5 +223,31 @@ mkdocs = ">=1.6,<2"
 [feature.docs.activation.env]
 RMW_IMPLEMENTATION = "rmw_zenoh_cpp"
 
+# The Mahoraga research gym (docs/architecture/mahoraga-demo.md). It leaves out
+# the default feature, so it has no ROS, RAI or activation script, and it has
+# its own solve group because inspect-ai needs fsspec<=2026.6.0. walkie-agent's
+# pyproject lists no dependencies, so RAI does not come along with it.
+[feature.mahoraga.dependencies]
+python = "3.12.*"
+pytest = "*"
+
+[feature.mahoraga.pypi-dependencies]
+inspect-ai = "==0.3.287"
+pydantic-monty = "==1.4.0"
+langchain = "==1.4.4"
+langchain-core = "==1.6.9"
+langchain-openai = "==1.7.0"
+langgraph = "==1.2.14"
+walkie-agent = { path = ".", editable = true }
+# The official GPSR generator. It has no licence file, so it stays a pinned
+# dependency: neither its code nor its data may be copied into this repository.
+robocupathome-generator = { git = "https://github.com/RoboCupAtHome/CommandGenerator", rev = "fa8b9adf52" }
+
+# PYTHONPATH replaces whatever a ROS-sourced shell exported, and puts the
+# top-level mahoraga package on the path.
+[feature.mahoraga.activation.env]
+PYTHONPATH = "$PIXI_PROJECT_ROOT"
+
 [environments]
 docs = { features = ["docs"], no-default-feature = true }
+mahoraga = { features = ["mahoraga"], no-default-feature = true, solve-group = "mahoraga" }

@@ -1,146 +1,156 @@
 # Asking a Question
 
-`wait_for_person` lets the agent pause a task to ask the person something,
-and pick the same step up again when the answer comes. It speaks the
-question, marks the current step `waiting`, and ends the run. The answer
-arrives later as an ordinary message, and the step goes back to
-`in_progress`.
+When the agent can't go on without an answer, it calls `wait_for_person(question)` instead
+of `say`. A successful question ends the run, and the answer arrives as the next task. It
+then resumes the waiting step, exactly once.
 
 ## What the tool does
 
-The system prompt tells the LLM to call `wait_for_person` instead of `speak`
-when it cannot go on without an answer. `WaitForPersonTool` in
-`src/walkie_agent/tools/todos.py` holds the task's `TodoList` and a
-`speak_tool`, the same `speak` tool that the LLM calls. Its `_run` takes
-three steps:
+`WalkieTodos` supplies the tool, next to `update_todos`. It does four things, in order:
 
-1. It speaks with `speak_tool.invoke({"text": question})`.
-2. If the result does not start with `"Said:"`, it raises `ToolException`.
-   The list does not change, because nobody heard the question.
-3. Otherwise it calls `todos.set_waiting(question)` and returns
-   `"Asked: <question>"`.
-
-The fake `speak` below returns what the real `SpeakTool` returns on success,
-and plays nothing.
+1. It checks the cancel token. A stop refuses the question.
+2. It makes the question one trimmed line, so it can't break the rendered list.
+3. It calls `ctx.speech.say`, which returns `None` once the line is published, or raises
+   `StepError`. So `Asked:` means the line was sent, and not that anyone heard it. There is
+   no playback acknowledgement.
+4. It answers `Asked: ...`, and sets `question` in the state.
 
 ```pycon
->>> from langchain_core.tools import tool
->>> from walkie_agent.todo import TodoList
->>> from walkie_agent.tools.todos import WaitForPersonTool
->>> @tool
-... def speak(text: str) -> str:
-...     """Say something out loud."""
-...     return f"Said: {text}"
+>>> import asyncio
+>>> from langchain_core.language_models import BaseChatModel
+>>> from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+>>> from langchain_core.outputs import ChatGeneration, ChatResult
+>>> from walkie_agent.capabilities.fake import FakeRobot
+>>> from walkie_agent.errors import ErrorCode, StepError
+>>> from walkie_agent.runtime import Session, build_agent, parse_seed, render
+>>> class Scripted(BaseChatModel):
+...     script: list
+...     seen: list = []
+...     @property
+...     def _llm_type(self):
+...         return "scripted"
+...     def bind_tools(self, tools, **kwargs):
+...         return self
+...     def _generate(self, *args, **kwargs):
+...         raise NotImplementedError("The runtime only uses the async path.")
+...     async def _agenerate(self, messages, *args, **kwargs):
+...         self.seen.append(list(messages))
+...         reply = self.script.pop(0).model_copy(update={"id": None})
+...         return ChatResult(generations=[ChatGeneration(message=reply)])
 ...
->>> todos = TodoList()
->>> todos.seed(["Go to the kitchen", "Find the cup", "Come back and tell the person"])
->>> print(todos.apply([
-...     {"op": "update", "id": "t1", "status": "completed"},
-...     {"op": "update", "id": "t2", "status": "in_progress"},
-... ]))
-Updated: t1 → completed, t2 → in_progress. Open: t2, t3.
->>> ask = WaitForPersonTool(todos=todos, speak_tool=speak)
->>> ask.invoke({"question": "Is yours the red cup or the blue one?"})
-'Asked: Is yours the red cup or the blue one?'
->>> print(todos.render())
-<todos>
-[x] t1 Go to the kitchen
-[?] t2 Find the cup  waiting: "Is yours the red cup or the blue one?"
-[ ] t3 Come back and tell the person
-</todos>
+>>> def call(name, call_id, **args):
+...     return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+...
+>>> def ai(*calls, text=""):
+...     return AIMessage(text, tool_calls=list(calls))
+...
+>>> def answers(result):
+...     return [m.content for m in result["messages"] if isinstance(m, ToolMessage)]
+...
+>>> start = call("update_todos", "u1", ops=[{"op": "update", "id": "t1", "status": "in_progress"}])
+>>> ask = call("wait_for_person", "q1", question="Which   mug\ndo you mean?")
+>>> model, robot = Scripted(script=[ai(start), ai(ask)]), FakeRobot()
+>>> agent = build_agent(model, robot.ctx)
+>>> config = Session().config()
+>>> payload = {"messages": [HumanMessage("Fetch the mug.")], "todo_seed": parse_seed(["Fetch the mug"])}
+>>> result = asyncio.run(agent.ainvoke(payload, config))
+>>> answers(result)[-1]
+'Asked: Which mug do you mean?'
+>>> robot.said
+['Which mug do you mean?']
+>>> len(model.seen)
+2
 
 ```
 
-`set_waiting` only marks the item that is `in_progress`. With none, the list
-does not change, but the question was spoken, so the tool still returns
-`"Asked: ..."`. No `update_todos` op may set `waiting` itself.
-
-## The answer resumes the step
-
-The answer is the next message the person sends. When it starts,
-`WalkieAgent._prepare_todos` calls `todos.resume_waiting()` for any message
-without a seed. That puts the waiting item back `in_progress` and clears its
-question.
-
-```pycon
->>> todos.resume_waiting()
->>> print(todos.render())
-<todos>
-[x] t1 Go to the kitchen
-[>] t2 Find the cup
-[ ] t3 Come back and tell the person
-</todos>
-
-```
-
-`resume_waiting` keeps the item's ledger window, because the answer continues
-the same attempt, so a failure from before the question still counts. An op
-that sets `in_progress` starts a new window instead (see
-[The Rules: Ledger and Window](todo-rules.md)). A seeded message skips
-`resume_waiting` and replaces the whole list.
+The model was not called again after the question. That's the whole point of the tool.
 
 ## The graph ends the run
 
-The tool only marks the item; ending the turn is the graph's job.
-`route_after_tools` in `src/walkie_agent/graph.py` returns `END` when
-`_person_was_asked` finds a `success` result of `wait_for_person` for the
-last AI message. Any other result goes back to `llm`, so a failed question
-lets the LLM go on.
-
-```mermaid
-flowchart LR
-    llm -->|tool calls| tools
-    tools -->|wait_for_person succeeded| done([end of run])
-    tools -->|otherwise| llm
-    llm -->|no tool calls, items open, none waiting| gate
-    gate --> llm
-```
-
-An AI message can hold more calls after the question. `WalkieToolRunner`
-answers each of them with `AFTER_QUESTION` instead of running it. A drive
-before the answer would act on a guess, and give the waiting item evidence
-it has not earned.
-
-Here the LLM, after hearing "the red one", asks a second question and tries
-to drive in the same message. RAI's `ToolRunner` logs each call to stderr, so
-expect a few log lines around the output.
+`EndAfterQuestion.before_model` sees `question` in the state and jumps to the end. Just
+before that, `WalkieTodos.before_model` folds the step in progress into `waiting`. So the
+list changes at one boundary, not in the tool:
 
 ```pycon
->>> from langchain_core.messages import AIMessage
->>> from walkie_agent.graph import ToolSet, WalkieToolRunner, _person_was_asked
->>> @tool
-... def navigate_to_location(location: str) -> str:
-...     """Drive to a named place."""
-...     return f"Arrived at {location}."
-...
->>> runner = WalkieToolRunner(ToolSet([speak, navigate_to_location, ask]), todos)
->>> reply = AIMessage(content="", tool_calls=[
-...     {"name": "wait_for_person", "args": {"question": "Shall I bring it to you?"}, "id": "c1"},
-...     {"name": "navigate_to_location", "args": {"location": "start"}, "id": "c2"},
-... ])
->>> state = {"messages": [reply]}
->>> _ = runner.invoke(state)
->>> for result in state["messages"][1:]:
-...     print(result.tool_call_id, result.status, "|", result.content)
-...
-c1 success | Asked: Shall I bring it to you?
-c2 error | Not run: you asked the person a question, so the task stopped to wait for the answer. Call it again after the answer if it is still needed.
->>> _person_was_asked(state["messages"])
-True
+>>> print(render(result["todos"]))
+<todos>
+[?] t1 Fetch the mug  waiting: "Which mug do you mean?"
+</todos>
 
 ```
 
-The skipped call is not a tool failure, so the error ledger never hears of
-it. The completion gate also stays shut while an item waits:
-`route_after_llm` picks `gate` only when `todos.has_waiting()` is false. In
-the agent, `route_after_tools` has usually ended the run already, so this is
-a second guard against pushing the LLM to guess instead of waiting.
+The other calls of that message don't run, because they must wait for the answer:
+
+```pycon
+>>> robot = FakeRobot()
+>>> script = [ai(call("wait_for_person", "q1", question="Which one?"), call("go_to", "c1", place="sofa"))]
+>>> agent = build_agent(Scripted(script=script), robot.ctx)
+>>> done = asyncio.run(agent.ainvoke({"messages": [HumanMessage("Fetch it.")]}, Session().config()))
+>>> answers(done)
+['Asked: Which one?', 'Not run: you asked the person a question, so the task stopped to wait for the answer. Call it again after the answer if it is still needed.']
+>>> [entry["verb"] for entry in robot.calls]
+['speech.say']
+
+```
+
+Only a successful question ends the run. If the line can't be sent, the model gets the error
+and decides again, and the run goes on. That's why the tool has no `return_direct`, which
+would end the run whatever the status:
+
+```pycon
+>>> robot = FakeRobot()
+>>> robot.faults["speech.say"] = StepError(ErrorCode.UNAVAILABLE, "Nothing listens.")
+>>> script = [ai(call("wait_for_person", "q1", question="Which one?")), ai(text="I cannot ask.")]
+>>> model = Scripted(script=script)
+>>> done = asyncio.run(build_agent(model, robot.ctx).ainvoke({"messages": [HumanMessage("Fetch it.")]}, Session().config()))
+>>> answers(done)
+['UNAVAILABLE: Nothing listens.']
+>>> len(model.seen), done.get("question")
+(2, None)
+
+```
+
+## The answer resumes the step
+
+The next task's text is the answer. `before_agent` sees the pending `question`, and sets the
+waiting step back to `in_progress`. It keeps the step's window and the task's gate budget,
+because this is the same attempt. Then it clears `question`:
+
+```pycon
+>>> finish = call("update_todos", "u2", ops=[{"op": "update", "id": "t1", "status": "completed"}])
+>>> first = Scripted(script=[ai(start), ai(ask), ai(finish), ai(text="Got it.")])
+>>> agent = build_agent(first, FakeRobot().ctx)
+>>> config = Session().config()
+>>> _ = asyncio.run(agent.ainvoke(payload, config))
+>>> resumed = asyncio.run(agent.ainvoke({"messages": [HumanMessage("The red one.")]}, config))
+>>> print(first.seen[2][-1].content)
+<todos>
+[>] t1 Fetch the mug
+</todos>
+>>> first.seen[2][-2].content
+'The red one.'
+
+```
+
+It resumes exactly once. The question is gone now, so the next message has nothing to answer.
+It's a new task, and it starts with an empty list:
+
+```pycon
+>>> resumed.get("question") is None
+True
+>>> first.script.append(ai(text="Hello."))
+>>> after = asyncio.run(agent.ainvoke({"messages": [HumanMessage("Something else.")]}, config))
+>>> after["todos"]
+[]
+
+```
+
+A seed wins over a pending question, since the operator started a new task.
+`test_a_seed_wins_over_a_pending_question` shows that.
 
 !!! example "Try it"
-    Make a `speak` tool that returns `"Nothing was said."`, give it to a
-    `WaitForPersonTool`, and run a question through a `WalkieToolRunner`
-    while an item is `in_progress`. Then try to mark that item `completed`.
-    A failed question goes into the ledger like any failed tool, so predict
-    the refusal before you read it.
+    Read `test_a_waiting_question_does_not_make_the_next_task_look_like_its_answer` in
+    `tests/test_runtime_runner.py`. A reset or a stop between question and answer changes
+    what the next message means. How?
 
 Previous: [The Rules: Ledger and Window](todo-rules.md) · Next: [Queue, Stop, Reset and Repair](queue-stop-reset.md)

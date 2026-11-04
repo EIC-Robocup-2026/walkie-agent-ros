@@ -137,10 +137,6 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
     assert len(_mentions([bad], REMOVED)) == 2
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="The docs stage rewrites these pages next, and removes this mark when it is done.",
-)
 def test_no_docs_page_names_a_removed_module():
     # Decision records keep their history, so their bodies may name old modules.
     pages = [

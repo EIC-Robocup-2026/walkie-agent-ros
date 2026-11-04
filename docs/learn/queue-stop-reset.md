@@ -1,25 +1,21 @@
 # Queue, Stop, Reset and Repair
 
-A message that arrives during a task waits its turn, and only a bare "stop",
-a bare "never mind" or a reset interrupts the task. Around that queue, the
-agent survives its own errors and repairs the history before every LLM call.
-Most of these rules exist because the robot is physical: a drive cannot be
-undone, and a venue is noisy.
+A message that arrives during a task waits its turn. Only a bare "stop", a bare "never
+mind" or a reset interrupts the task. Around that queue, the agent survives its own errors
+and repairs the history. Most of these rules exist because the robot is physical: a drive
+can't be undone, and a venue is noisy.
+
+Everything here runs on a scripted model and `FakeRobot`. Stop latency on the robot has not
+been measured.
 
 ## The queue and "stop"
 
-`WalkieAgent` passes `new_message_behavior="queue"` to RAI's `LangChainAgent`.
-Both `__call__`, which RAI calls for every utterance, and `submit` go through
-`_enqueue`, and `_run_agent` takes one message per task, oldest first. A
-message's seed waits in `_seeds`, keyed by `id(msg)` and stored under the
-same `_buffer_lock`, so a reset can never separate the two.
-
-`is_stop_utterance` decides what counts as a stop. It lowercases the text,
-trims spaces and `. , ! ?` from both ends, and collapses inner spaces. The
-result must be exactly `stop`, `never mind` or `nevermind`.
+`Runner.hear` takes an utterance from any thread. `is_stop_utterance` decides what counts
+as a stop. It lowercases the text, trims spaces and `. , ! ?` from both ends, and collapses
+inner spaces. The result must be exactly `stop`, `never mind` or `nevermind`:
 
 ```pycon
->>> from walkie_agent.agent import is_stop_utterance
+>>> from walkie_agent.runtime import is_stop_utterance
 >>> for text in ["Stop.", "  NEVER   mind! ", "nevermind?", "Walkie, stop", "stop the music", "never-mind"]:
 ...     print(repr(text), is_stop_utterance(text))
 ...
@@ -32,118 +28,236 @@ result must be exactly `stop`, `never mind` or `nevermind`.
 
 ```
 
-A stop counts only while a task runs. `_enqueue` then drops the older queued
-messages and their seeds, keeps the stop itself queued, and sets
-`_interrupt_event`. While the agent is idle, "stop" is an ordinary message.
+Anything else is a task, and it waits in the queue. Overheard booth speech can't cancel a
+drive that way. A correction like "stop and come here" goes to the LLM as the next task.
 
-```mermaid
-sequenceDiagram
-    participant P as Person
-    participant Q as Queue
-    participant A as _run_agent
-    P->>Q: "Go to the kitchen."
-    Q->>A: taken, and the interrupt is cleared
-    A->>A: graph runs, the drive starts
-    P->>Q: "Then say hi." (waits)
-    P->>Q: "Stop."
-    Note over Q: "Then say hi." dropped, "Stop." kept, interrupt set
-    A->>A: drive finishes, the loop sees the interrupt and breaks
-    Q->>A: "Stop." taken as the next task
-    A->>A: LLM cancels the open steps with a note and speaks
+The setup is the usual scripted model, plus a `Held` version that waits on an event, so the
+page can do something while a model call is in flight:
+
+```pycon
+>>> import asyncio, threading
+>>> from typing import Any
+>>> from langchain_core.language_models import BaseChatModel
+>>> from langchain_core.messages import AIMessage, ToolMessage
+>>> from langchain_core.outputs import ChatGeneration, ChatResult
+>>> from walkie_agent.capabilities.fake import FakeRobot
+>>> from walkie_agent.runtime import Runner, build_agent
+>>> class Scripted(BaseChatModel):
+...     script: list
+...     seen: list = []
+...     @property
+...     def _llm_type(self):
+...         return "scripted"
+...     def bind_tools(self, tools, **kwargs):
+...         return self
+...     def _generate(self, *args, **kwargs):
+...         raise NotImplementedError("The runtime only uses the async path.")
+...     async def _agenerate(self, messages, *args, **kwargs):
+...         self.seen.append(list(messages))
+...         reply = self.script.pop(0)
+...         if isinstance(reply, Exception):
+...             raise reply
+...         return ChatResult(generations=[ChatGeneration(message=reply.model_copy(update={"id": None}))])
+...
+>>> class Held(Scripted):
+...     entered: Any = None
+...     release: Any = None
+...     async def _agenerate(self, messages, *args, **kwargs):
+...         self.entered.set()
+...         await asyncio.to_thread(self.release.wait, 5)
+...         return await super()._agenerate(messages, *args, **kwargs)
+...
+>>> def call(name, call_id, **args):
+...     return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+...
+>>> def setup(model):
+...     robot, replies = FakeRobot(), []
+...     runner = Runner(build_agent(model, robot.ctx), robot.ctx, on_reply=replies.append)
+...     runner.start()
+...     return robot, runner, replies
+...
+>>> robot, runner, replies = setup(Scripted(script=[AIMessage("First."), AIMessage("Second.")]))
+>>> runner.hear("Do one thing.")
+>>> runner.hear("Do another.")
+>>> runner.wait_idle(5)
+True
+>>> replies
+['First.', 'Second.']
+>>> runner.shutdown(5)
+True
+
 ```
 
-The loop in `_run_agent` checks the interrupt between graph steps, so a
-running drive finishes first. If the stop lands during the LLM call, its tool
-calls never run, and the history repair below answers them.
+Now a stop that lands while the model is thinking, with another task queued. A stop does
+four things:
+
+1. It sets `ctx.cancel` at once, on the caller's thread. A drive that a verb is waiting on
+   ends through this token.
+2. It drops the queued tasks. A queued reset stays.
+3. It speaks `Okay, stopping.` right away, on a worker thread. The line doesn't wait for a
+   hung LLM call.
+4. It queues a `stopping` graph pass, which cancels the open steps and makes no model call.
+
+```pycon
+>>> entered, release = threading.Event(), threading.Event()
+>>> go = AIMessage("", tool_calls=[call("go_to", "c1", place="sofa")])
+>>> model = Held(script=[go], entered=entered, release=release)
+>>> robot, runner, replies = setup(model)
+>>> runner.submit("Go to the sofa.", todos=["Go to the sofa"])
+>>> entered.wait(5)
+True
+>>> runner.hear("Then say hi.")
+>>> runner.hear("Stop.")
+>>> robot.ctx.cancel.cancelled
+True
+>>> release.set()
+>>> runner.wait_idle(5)
+True
+>>> robot.said
+['Okay, stopping.']
+>>> [entry["verb"] for entry in robot.calls if entry["verb"] == "base.go_to"]
+[]
+>>> len(model.seen)
+1
+
+```
+
+The model's reply was on its way when the stop came, and its drive never ran. "Then say
+hi." never reached the model. The list and the history show what happened:
+
+```pycon
+>>> state = runner.agent.get_state(runner.session.config()).values
+>>> [(item["status"], item["note"]) for item in state["todos"]]
+[('cancelled', 'Stopped by the person.')]
+>>> [m.content for m in state["messages"] if isinstance(m, ToolMessage)]
+['Not run: the person said stop, so the task ended.']
+>>> state["messages"][-1].content
+'Okay, stopping.'
+
+```
+
+The latch holds until the next task is taken. Then the token resets, and that task runs as
+usual:
+
+```pycon
+>>> model.script.append(AIMessage("Back at it."))
+>>> runner.hear("Hello again.")
+>>> runner.wait_idle(5)
+True
+>>> robot.ctx.cancel.cancelled, replies
+(False, ['Back at it.'])
+
+```
+
+A bare stop works when nothing is running too. It speaks and makes no model call:
+
+```pycon
+>>> calls = len(model.seen)
+>>> runner.hear("never mind")
+>>> runner.wait_idle(5)
+True
+>>> robot.said, len(model.seen) == calls
+(['Okay, stopping.', 'Okay, stopping.'], True)
+
+```
 
 ## Reset, stop() and errors
 
-| Event | What happens at once | What the agent thread does next |
-| --- | --- | --- |
-| `reset()`, or `std_msgs/Empty` on `/walkie/reset` | Under `_buffer_lock`: clears the queue and `_seeds`, sets `_reset_requested` and the interrupt | At the top of the next `_run_agent`: clears the history and the todo list, which publishes `[]`, and starts a new Langfuse session |
-| `stop()` | Under `_buffer_lock`: sets `_stop_event` and the interrupt, then calls RAI's `stop()`, which joins the thread | Starts no new run, because taking a message checks `_stop_event` |
-| An LLM or graph error | `_run_agent` catches any `Exception`, including LangGraph's error at `RECURSION_LIMIT` | Logs it and serves the next message |
+`reset` forgets everything. It cancels, drops the queue, deletes the checkpoint thread after
+the active run ends, starts a new session and publishes an empty list. The active run ends
+first, because deleting a thread under a running checkpoint would race. A hung LLM call can
+delay it by up to the deadline, and a stop line in flight by up to the say timeout.
 
-The lock in `stop()` closes a race. A starting run clears the interrupt under
-that lock, so without it an interrupt set in between would be lost, and a
-whole task would run before the thread stopped. Taking a message also checks
-`_reset_requested`, so a message sent after a reset never runs on the old
-history.
+```pycon
+>>> before = runner.session.thread_id
+>>> runner.reset()
+>>> runner.wait_idle(5)
+True
+>>> runner.session.thread_id != before
+True
+>>> runner.agent.get_state(runner.session.config()).values
+{}
+>>> runner.shutdown(5)
+True
 
-```bash
-pixi run ros2 topic pub --once /walkie/reset std_msgs/msg/Empty
+```
+
+A failed task doesn't end the worker. Python logs the traceback, so you'll see it in your
+terminal, and the operator's console gets one fixed line. The next task runs on the same
+checkpoint:
+
+```pycon
+>>> robot, runner, replies = setup(Scripted(script=[RuntimeError("The provider broke."), AIMessage("Fine now.")]))
+>>> runner.hear("Try this.")
+>>> runner.hear("Try again.")
+>>> runner.wait_idle(5)
+True
+>>> replies
+['The task failed with an error, so I stopped working on it.', 'Fine now.']
+
+```
+
+After `shutdown`, the Runner refuses more work, so a late caller gets a loud error:
+
+```pycon
+>>> runner.shutdown(5)
+True
+>>> runner.hear("One more.")
+Traceback (most recent call last):
+    ...
+RuntimeError: The Runner has shut down.
+
 ```
 
 ## History repair
 
-An interrupted turn can leave an AI message whose tool calls have no
-`ToolMessage`. OpenAI-compatible endpoints reject that history on the next
-call. So `repair_history` in `src/walkie_agent/graph.py` runs at the start
-of every `llm` node, and answers each missing call with an `error` result.
+An OpenAI-compatible endpoint rejects a history where a tool call has no answer. A run that
+fails or is cancelled can leave one, so `RepairHistory.before_agent` answers each with
+`Interrupted before it ran.` It doesn't run the call. That drive might be stale by now.
+
+A call whose arguments didn't parse never reaches the tools node, since LangChain files it
+under `invalid_tool_calls`. `RepairHistory.after_model` answers those, and the model can
+try again:
 
 ```pycon
->>> from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
->>> from walkie_agent.graph import INTERRUPTED, repair_history
->>> history = [
-...     HumanMessage("Go to the kitchen and say hi."),
-...     AIMessage(content="", tool_calls=[
-...         {"name": "navigate_to_location", "args": {"location": "kitchen"}, "id": "c1"},
-...         {"name": "speak", "args": {"text": "Hi!"}, "id": "c2"},
-...     ]),
-...     HumanMessage("Stop."),
-... ]
->>> repair_history(history)
-2
->>> [type(m).__name__ for m in history]
-['HumanMessage', 'AIMessage', 'ToolMessage', 'ToolMessage', 'HumanMessage']
->>> print(history[2].tool_call_id, history[2].status, history[2].content)
-c1 error Interrupted before it ran.
->>> history[3].content == INTERRUPTED
-True
->>> repair_history(history)
-0
+>>> from langchain_core.messages import HumanMessage
+>>> from walkie_agent.runtime import Session
+>>> bad = {"name": "go_to", "args": '{"place": ', "id": "c1", "error": "Bad JSON", "type": "invalid_tool_call"}
+>>> model = Scripted(script=[AIMessage("", invalid_tool_calls=[bad]), AIMessage("Sorry.")])
+>>> robot = FakeRobot()
+>>> result = asyncio.run(build_agent(model, robot.ctx).ainvoke({"messages": [HumanMessage("Go.")]}, Session().config()))
+>>> [m.content for m in result["messages"] if isinstance(m, ToolMessage)]
+['The arguments were not a valid JSON object, so the call did not run.']
+>>> robot.calls
+[]
 
 ```
 
-Each answer goes at the end of the block of tool messages right after its AI
-message, before anything that follows. A call whose arguments were not valid
-JSON gets `UNREADABLE_ARGUMENTS` instead of `INTERRUPTED`.
-
 ## One update_todos per message
 
-If one AI message holds several `update_todos` calls, `WalkieToolRunner` runs
-only the first. Each call applies on its own, so a model that splits its ops
-would get a half-applied plan. The others get `ONE_UPDATE_TODOS`.
+A message can hold several calls, and they run in order. Only the first `update_todos` of a
+message runs. A second one is a failed call like any other, so it skips what comes after it:
 
 ```pycon
->>> from walkie_agent.graph import ToolSet, WalkieToolRunner
->>> from walkie_agent.todo import TodoList
->>> from walkie_agent.tools.todos import UpdateTodosTool
->>> todos = TodoList()
->>> runner = WalkieToolRunner(ToolSet([UpdateTodosTool(todos=todos)]), todos)
->>> split = AIMessage(content="", tool_calls=[
-...     {"name": "update_todos", "args": {"ops": [{"op": "add", "content": "Go to the kitchen"}]}, "id": "u1"},
-...     {"name": "update_todos", "args": {"ops": [{"op": "add", "content": "Say hi"}]}, "id": "u2"},
-... ])
->>> state = {"messages": [split]}
->>> _ = runner.invoke(state)
->>> for result in state["messages"][1:]:
-...     print(result.tool_call_id, result.status, "|", result.content)
+>>> first = call("update_todos", "u1", ops=[{"op": "add", "content": "One"}])
+>>> second = call("update_todos", "u2", ops=[{"op": "add", "content": "Two"}])
+>>> model = Scripted(script=[AIMessage("", tool_calls=[first, second, call("say", "c1", text="Hi.")]), AIMessage("", tool_calls=[call("update_todos", "u3", ops=[{"op": "update", "id": "t1", "status": "cancelled", "note": "Done with it."}])]), AIMessage("Done.")])
+>>> robot = FakeRobot()
+>>> result = asyncio.run(build_agent(model, robot.ctx).ainvoke({"messages": [HumanMessage("Go.")]}, Session().config()))
+>>> for message in result["messages"]:
+...     if isinstance(message, ToolMessage) and message.tool_call_id in ("u1", "u2", "c1"):
+...         print(message.tool_call_id, message.content)
 ...
-u1 success | Added: t1. Open: t1.
-u2 error | Only one update_todos call per message is accepted, so this one was not applied. Put all ops in one call.
->>> print(todos.render())
-<todos>
-[ ] t1 Go to the kitchen
-</todos>
+u1 Added: t1. Open: t1.
+u2 Only one update_todos call per message is accepted, so this one was not applied. Put all ops in one call.
+c1 Not run: update_todos failed earlier in this message. Decide again.
+>>> robot.said
+[]
 
 ```
 
 !!! example "Try it"
-    Give `repair_history` an `AIMessage` with
-    `invalid_tool_calls=[{"name": "navigate_to_location", "args": '{"location": kitchen', "id": "c3", "error": None}]`
-    and no tool messages after it. Print the answer it inserts, then read
-    `route_after_llm` in `src/walkie_agent/graph.py` to see why such a reply
-    goes straight back to `llm`.
+    Read `test_a_broken_run_is_repaired_and_its_stale_drive_stays_unrun` in
+    `tests/test_runtime.py`. Why does repair answer the call and not run it?
 
 Previous: [Asking a Question](asking-questions.md) · Next: [Seeding a Task](seeding.md)

@@ -1,156 +1,149 @@
-# RAI Runs It, We Own the Graph
+# RAI's Connector, Our Runtime
 
-RAI's `LangChainAgent` runs the Walkie agent, but the graph it runs is
-Walkie's own. RAI owns the thread, the message buffer and the connectors.
-Walkie owns the graph, from `build_walkie_graph` in `src/walkie_agent/graph.py`,
-and the body of the run loop.
+RAI connects Walkie to ROS, and runs the voice stack. It no longer hosts the agent. The
+agent is LangChain's `create_agent` with Walkie's middlewares, on a thread that Walkie's
+Runner owns. This split is why most of the agent can be tested with no ROS installed.
 
 ## The two layers
 
-The runner is `LangChainAgent` in `rai/agents/langchain/agent.py`. It owns a
-thread, a message deque guarded by `_buffer_lock`, and three events:
-`_interrupt_event`, `_agent_ready_event` and `_stop_event`. RAI calls
-`__call__(msg)` for every utterance, which appends it to the deque.
+| Layer | Whose | What it does | Files |
+| ----- | ----- | ------------ | ----- |
+| Connector | RAI | Owns the ROS node and its executor, topics and actions | Used by `src/walkie_agent/ros/` and `main.py` |
+| Voice | RAI's `rai_s2s` | Microphone, speech recognition, text to speech | Used by `src/walkie_agent/voice.py` and `half_duplex.py` |
+| Graph | LangChain | The model and tools loop, and the checkpoint | `create_agent`, called in `runtime/agent.py` |
+| Runtime | Walkie | The middlewares, the todo list and the Runner | `src/walkie_agent/runtime/` |
+| Tools | Walkie | Plain typed functions over `ctx`, and the fixed tool sets | `src/walkie_agent/atomics/` |
+| Verbs | Walkie | `ctx.base`, `ctx.speech` and the rest, with their guards, and `FakeRobot` | `src/walkie_agent/capabilities/` |
+| ROS wrappers | Walkie | The verbs over ROS, and the operator's topics | `src/walkie_agent/ros/` |
 
-The thread's `_run_loop` calls `_run_agent` over and over. Each call takes
-messages from the deque, appends one `HumanMessage` to `state["messages"]`
-and streams the graph. Between graph steps it checks `_interrupt_event` and
-breaks out if it is set.
-
-```mermaid
-flowchart LR
-    hri["HRI connector<br/>/from_human"] --> call
-    subgraph runner["RAI: LangChainAgent"]
-        call["__call__(msg)"] --> buffer["message deque"]
-        buffer --> loop["_run_loop, _run_agent"]
-    end
-    loop -- "stream(state)" --> nodes["Walkie's graph:<br/>llm, tools, gate"]
-    nodes -- "LLM replies" --> console["/walkie/console"]
-```
-
-## RAI's graph
-
-Before phase 1, the graph came from RAI's `ReActAgent`. Its `__init__` only
-calls `create_react_runnable(llm, tools, system_prompt)` and hands the result
-to `LangChainAgent`.
-
-That graph has two nodes, `llm` and `tools`. LangGraph's stock
-`tools_condition` goes to `tools` when the reply has tool calls and ends the
-run otherwise; `tools` always goes back to `llm`. The tools are bound once,
-while `create_react_runnable` builds the graph.
-
-`ReActAgent` never passes `new_message_behavior`, so the old agent ran with
-RAI's default:
+The first thing to check is the claim itself. This reads each file's imports, without
+running it:
 
 ```pycon
->>> import inspect
->>> from rai.agents.langchain import LangChainAgent, ReActAgent
->>> inspect.signature(LangChainAgent.__init__).parameters["new_message_behavior"].default
-'interrupt_keep_last'
->>> "new_message_behavior" in inspect.signature(ReActAgent.__init__).parameters
-False
+>>> import ast, pathlib
+>>> import walkie_agent
+>>> root = pathlib.Path(walkie_agent.__file__).parent
+>>> ROS_NAMES = {"rai", "rai_interfaces", "rai_s2s", "rclpy"}
+>>> def ros_imports(path):
+...     names = set()
+...     for node in ast.walk(ast.parse(path.read_text())):
+...         if isinstance(node, ast.Import):
+...             names |= {alias.name.split(".")[0] for alias in node.names}
+...         elif isinstance(node, ast.ImportFrom) and node.module:
+...             names.add(node.module.split(".")[0])
+...     return sorted(names & ROS_NAMES)
+...
+>>> for layer in ["capabilities", "atomics", "runtime"]:
+...     print(layer, [name for path in sorted((root / layer).glob("*.py")) for name in ros_imports(path)])
+...
+capabilities []
+atomics []
+runtime []
+>>> ros_imports(root / "adapter.py"), ros_imports(root / "tasks.py")
+([], [])
 
 ```
 
-## Why Walkie owns the graph
-
-Walkie needs more on every LLM call than RAI's graph gives: the tools bound
-at that moment, the todo list as a reminder, a history with no unanswered
-tool calls, and routes for the `gate` and `wait_for_person`. None of that
-fits through `ReActAgent`'s constructor
-([ADR-0038](../architecture/decisions/0038-own-graph-per-turn-binding.md)).
-
-So `build_walkie_graph` builds its own `StateGraph` on RAI's parts: the state
-type `ReActAgentState`, `ToolRunner` and the tracing helper
-`invoke_llm_with_tracing`. The biggest visible difference is when tools are
-bound. A fake chat model that records each `bind_tools` call shows it:
+And the other side of the line:
 
 ```pycon
->>> from langchain_core.language_models.fake_chat_models import FakeListChatModel
->>> from langchain_core.messages import HumanMessage
->>> from langchain_core.tools import tool
->>> from rai.agents.langchain.core import create_react_runnable
->>> from walkie_agent.graph import ToolSet, build_walkie_graph
->>> from walkie_agent.todo import TodoList
->>> class CountingLLM(FakeListChatModel):
-...     binds: list[list[str]] = []
+>>> ros_imports(root / "main.py")
+['rai', 'rclpy']
+>>> ros_imports(root / "ros" / "base.py")
+['rai', 'rclpy']
+>>> ros_imports(root / "voice.py")
+['rai', 'rai_s2s']
+
+```
+
+`tests/test_ros_free.py` holds the same line with a stronger check. It imports every module
+of those layers in a fresh interpreter, and fails if any ROS module got loaded.
+
+## What RAI still does
+
+- **The connector.** `main.py` creates one `ROS2Connector`. It owns the node and spins its
+  executor. `RosBase`, `RosSpeech` and `RosBridge` make their clients, publishers and
+  subscriptions on that node.
+- **The messages.** `rai_interfaces/msg/HRIMessage` is what `/from_human` and `/to_human`
+  carry.
+- **Voice.** `voice-asr` and `voice-tts` are separate processes. They use RAI's speech
+  agents, and `voice.py` runs them with RAI's `AgentRunner`. That is the one place where
+  an RAI agent host remains. Those agents do no LLM work.
+
+## Why the runtime left RAI's agent host
+
+Walkie used to subclass RAI's `LangChainAgent`, and copied parts of its private loop to
+queue messages and interrupt a run. Every RAI upgrade could break that without a warning.
+
+`create_agent` offers named hooks for the same work. So the rules became small middlewares,
+which need no private member ([ADR-0061](../architecture/decisions/0061-create-agent-runtime-and-cancellation.md)).
+One assumption is left. A message's tool calls run one at a time because of
+`max_concurrency=1`, which is observed behaviour and not documented.
+`tests/test_runtime.py` pins it, so rerun that file on any dependency update.
+
+## What the Runner owns
+
+The Runner is one thread with one asyncio loop, named `walkie-runtime`. It takes one queued
+task at a time. Only this thread touches the agent and its checkpoint.
+
+| Thread | Who owns it | What runs there |
+| ------ | ----------- | ---------------- |
+| ROS executor | RAI's connector | Topic callbacks, which only queue work on the Runner and return |
+| `walkie-runtime` | The Runner | The graph, the middlewares, `update_todos` and the listeners |
+| Worker threads | asyncio | Atomics, which are sync tools under `ainvoke`, and the stop line |
+
+Here is the Runner with a scripted model and a fake robot. The model plays its replies in
+order, and the block defines it once, so the page needs no LLM key:
+
+```pycon
+>>> import threading
+>>> from langchain_core.language_models import BaseChatModel
+>>> from langchain_core.messages import AIMessage
+>>> from langchain_core.outputs import ChatGeneration, ChatResult
+>>> from walkie_agent.capabilities.fake import FakeRobot
+>>> from walkie_agent.runtime import Runner, build_agent
+>>> class Scripted(BaseChatModel):
+...     script: list
+...     seen: list = []
+...     @property
+...     def _llm_type(self):
+...         return "scripted"
 ...     def bind_tools(self, tools, **kwargs):
-...         self.binds.append([t.name for t in tools])
 ...         return self
+...     def _generate(self, *args, **kwargs):
+...         raise NotImplementedError("The runtime only uses the async path.")
+...     async def _agenerate(self, messages, *args, **kwargs):
+...         self.seen.append(list(messages))
+...         reply = self.script.pop(0).model_copy(update={"id": None})
+...         return ChatResult(generations=[ChatGeneration(message=reply)])
 ...
->>> @tool
-... def speak(text: str) -> str:
-...     """Say something out loud."""
-...     return "Said."
+>>> robot = FakeRobot()
+>>> threads = {"caller": threading.current_thread().name}
+>>> def on_reply(text):
+...     threads["on_reply"] = threading.current_thread().name
 ...
->>> @tool
-... def wave() -> str:
-...     """Wave at the person."""
-...     return "Waved."
-...
->>> rai_llm = CountingLLM(responses=["Hello."])
->>> rai_graph = create_react_runnable(rai_llm, [speak])
->>> rai_llm.binds
-[['speak']]
->>> walkie_llm = CountingLLM(responses=["Hello."])
->>> toolset = ToolSet([speak])
->>> walkie_graph = build_walkie_graph(walkie_llm, toolset, TodoList())
->>> walkie_llm.binds
-[]
->>> state = {"messages": [HumanMessage("Hi")]}
->>> result = walkie_graph.invoke(state)
->>> toolset.add(wave)
->>> state["messages"].append(HumanMessage("Wave at me"))
->>> result = walkie_graph.invoke(state)
->>> walkie_llm.binds
-[['speak'], ['speak', 'wave']]
+>>> agent = build_agent(Scripted(script=[AIMessage("Hello.")]), robot.ctx)
+>>> runner = Runner(agent, robot.ctx, on_reply=on_reply)
+>>> runner.start()
+>>> runner.submit("Hi.")
+>>> runner.wait_idle(5)
+True
+>>> threads["on_reply"]
+'walkie-runtime'
+>>> runner.shutdown(5)
+True
 
 ```
 
-RAI's graph bound `speak` once, before any message arrived. Walkie's `llm`
-node binds `toolset.visible()` on every call, so `wave` is bound at once.
+`submit` returned at once, on the caller's thread. That's the point of the design. A ROS
+callback must not wait for an LLM, or it blocks everything else on that executor.
 
-## What the agent class owns
-
-`WalkieAgent` in `src/walkie_agent/agent.py` subclasses `LangChainAgent` and
-passes it the graph. Besides the graph, it owns the parts below;
-[The Agent](../architecture/agent.md) lists every component.
-
-- **One shared `TodoList`.** `create_walkie_agent` passes the same object to
-  the todo tools and to the graph.
-- **A live `ToolSet`.** A thread-safe map of tools by name, read on every
-  LLM call.
-- **A queue instead of interrupts.** With `new_message_behavior="queue"`,
-  utterances wait their turn, oldest first. Only `reset()`, or an utterance
-  that is just "stop" or "never mind", interrupts a task.
-- **Its own `__call__` and `_run_agent`.** Both replace RAI's, so a seed
-  travels with its message and an error does not end the thread. `stop()`
-  sets its events under the buffer lock, then calls RAI's `stop()`.
-- **`RECURSION_LIMIT = 100`.** LangGraph ends a run with an error after
-  100 graph steps, about 50 tool rounds.
-
-Everything else, such as `run()` and the thread's `_run_loop`, is inherited:
-
-```pycon
->>> from walkie_agent.agent import WalkieAgent
->>> [cls.__name__ for cls in WalkieAgent.__mro__]
-['WalkieAgent', 'LangChainAgent', 'BaseAgent', 'ABC', 'object']
->>> walkie_attrs, rai_attrs = vars(WalkieAgent), vars(LangChainAgent)
->>> [name for name in walkie_attrs if name in rai_attrs and callable(walkie_attrs[name])]
-['__init__', '__call__', 'stop', '_run_agent']
->>> agent = WalkieAgent(target_connectors={}, llm=FakeListChatModel(responses=["Done."]))
->>> agent.new_message_behavior
-'queue'
->>> agent.agent.config["recursion_limit"]
-100
-
-```
+The price is that a listener such as `on_reply` runs on the Runner's thread, so it must not
+block. [Watching Progress](watching-progress.md) comes back to this.
 
 !!! example "Try it"
-    Read RAI's `_run_agent` in
-    `.pixi/envs/default/lib/python3.12/site-packages/rai/agents/langchain/agent.py`
-    next to `WalkieAgent._run_agent` in `src/walkie_agent/agent.py`. Find
-    what Walkie's version adds: the pending reset at the top, the seed taken
-    with the message, and the `except Exception` around the stream.
+    Run `ros_imports(root / "ros" / "policy.py")`. This file holds the check that refuses
+    forbidden topic names. Then read `assemble` in `src/walkie_agent/main.py`, and find
+    where the verbs on `ctx` are built for the robot.
 
-Previous: [Learn the Agent](index.md) · Next: [What Changed from the Old Agent](old-vs-new.md)
+Previous: [Learn the Agent](index.md) · Next: [The Graph: create_agent and Middleware](the-graph.md)

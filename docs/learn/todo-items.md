@@ -1,158 +1,176 @@
 # Todo Items and Ops
 
-The todo list is a list of `TodoItem` steps that the LLM changes with
-`TodoOp` edits and reads back as a `<todos>` reminder on every LLM call. All
-of it lives in `src/walkie_agent/todo.py`, which imports no ROS, so you can
-try it in a plain Python shell. The rules that refuse a bad edit come on the
-next page.
+The todo list is plain data in the graph state, so a checkpoint holds it. The LLM changes it
+through one tool, `update_todos`, by sending a list of flat ops. Everything here is in
+`src/walkie_agent/runtime/todos.py`, and it needs no ROS and no LLM.
 
-## TodoItem
+## Items
 
-Each step of the current task is one `TodoItem`, a pydantic model.
-
-| Field | Meaning |
-| --- | --- |
-| `id` | `t1`, `t2` and so on, assigned by the list and stable for the whole task |
-| `content` | The step, such as "Go to the kitchen" |
-| `active_form` | Its "-ing" line for the console, such as "Going to the kitchen"; defaults to `content` |
-| `status` | `pending`, `in_progress`, `waiting`, `completed`, `failed` or `cancelled` |
-| `note` | Why the step failed, was cancelled, or is done despite a tool failure |
-| `source` | `agent` when the LLM added it; `seed` or `operator` when it was seeded |
-| `locked` | `True` for seeded items: status and note may change, wording may not |
-| `requires_tool` | A tool that must succeed before the item can complete |
-| `evidence` | Call ids of the successful tool calls made while the item was active |
-| `question` | The question asked while the item is `waiting` |
-
-`TodoList.apply` takes a list of ops. Each op is a `TodoOp` or a plain dict,
-the shape the LLM's JSON arguments arrive in. `to_json()` gives the JSON
-array that `/walkie/todos` publishes.
+An item is a plain dict, not a class, because the checkpoint stores it. `parse_seed` makes
+one, and it shows every key:
 
 ```pycon
->>> from walkie_agent.todo import TodoList, TodoOp, TodoRejected
->>> todos = TodoList()
->>> todos.apply([
-...     TodoOp(op="add", content="Go to the kitchen",
-...            active_form="Going to the kitchen", status="in_progress"),
-...     {"op": "add", "content": "Find the cup"},
-...     {"op": "add", "content": "Come back and tell the person"},
-... ])
-'Added: t1, t2, t3. Open: t1, t2, t3.'
->>> import json
->>> t2 = json.loads(todos.to_json())[1]
->>> t2["active_form"], t2["source"], t2["locked"]
-('Find the cup', 'agent', False)
+>>> from pprint import pprint
+>>> from walkie_agent.runtime import console_line, parse_seed, public, render
+>>> item = parse_seed([{"content": "Go to the shelf", "active_form": "Going to the shelf", "requires_tool": "go_to"}])[0]
+>>> pprint(item, sort_dicts=False)
+{'id': 't1',
+ 'content': 'Go to the shelf',
+ 'active_form': 'Going to the shelf',
+ 'status': 'pending',
+ 'note': '',
+ 'source': 'seed',
+ 'locked': True,
+ 'requires_tool': 'go_to',
+ 'evidence': [],
+ 'question': '',
+ 'used': []}
+
+```
+
+| Key | What it means |
+| --- | -------------- |
+| `id` | `t1`, `t2`, and so on. The list assigns it, and doesn't reuse it within a task |
+| `content`, `active_form` | The step, and its "-ing" line for the console |
+| `status`, `note` | Where it stands, and why it failed or was cancelled |
+| `source`, `locked` | Who wrote it. A seeded step is locked, so its wording stays |
+| `requires_tool`, `evidence` | The tool that must succeed, and the call that did |
+| `question` | What the step is waiting on |
+
+Three more keys are private: `added`, `since` and `used`. They hold positions in the error
+ledger, as the [next page](todo-rules.md) explains. A seed gets the first two when it's
+applied. `public` removes them, so they never reach the LLM or `/walkie/todos`:
+
+```pycon
+>>> sorted(public([item])[0])
+['active_form', 'content', 'evidence', 'id', 'locked', 'note', 'question', 'requires_tool', 'source', 'status']
 
 ```
 
 ## Statuses and markers
 
-`render()` shows each status as a short marker, so a small model can scan the
-list at a glance. Pending, in-progress and waiting items are open.
-
-| Marker | Status | Open | Set by |
-| --- | --- | --- | --- |
-| `[ ]` | `pending` | Yes | A new item, or an op |
-| `[>]` | `in_progress` | Yes | An op, or `resume_waiting` when an answer arrives |
-| `[?]` | `waiting` | Yes | Only `wait_for_person`, through `set_waiting` |
-| `[x]` | `completed` | No | An op, after the ledger checks pass |
-| `[!]` | `failed` | No | An op with a note |
-| `[-]` | `cancelled` | No | An op with a note |
-
-One call can finish t1 and start t2. Here `set_waiting` stands in for
-`wait_for_person`, which [Asking a Question](asking-questions.md) covers.
+A step moves between six statuses, and each has a marker in the reminder:
 
 ```pycon
->>> todos.apply([
-...     {"op": "update", "id": "t1", "status": "completed"},
-...     {"op": "update", "id": "t2", "status": "in_progress"},
-... ])
-'Updated: t1 → completed, t2 → in_progress. Open: t2, t3.'
->>> todos.set_waiting("Is yours the red cup or the blue one?")
-'t2'
->>> print(todos.render())
-<todos>
-[x] t1 Go to the kitchen
-[?] t2 Find the cup  waiting: "Is yours the red cup or the blue one?"
-[ ] t3 Come back and tell the person
-</todos>
+>>> steps = [
+...     {**item, "id": f"t{n}", "status": status, "requires_tool": ""}
+...     for n, status in enumerate(["pending", "in_progress", "waiting", "completed", "failed", "cancelled"], 1)
+... ]
+>>> for line in render(steps).splitlines()[1:-1]:
+...     print(line)
+...
+[ ] t1 Go to the shelf
+[>] t2 Go to the shelf
+[?] t3 Go to the shelf  waiting: ""
+[x] t4 Go to the shelf
+[!] t5 Go to the shelf
+[-] t6 Go to the shelf
 
 ```
 
-## TodoOp: one flat shape for every op
+The LLM can set five of them. Only a successful `wait_for_person` sets `waiting`.
 
-Every op has the same fields: `op` (`add`, `update` or `remove`), `id`,
-`content`, `active_form`, `status`, `note` and `after`. An empty string means
-"not given". A union of three op types, or `Optional` fields, would become
-`anyOf` in the tool schema, which Gemini and small Ollama models handle
-poorly ([ADR-0041](../architecture/decisions/0041-todo-list-and-seeding.md)).
+## TodoOp: one flat shape
 
-The list also cleans each op before checking it. A validator on `TodoOp`
-reads `null` as `""`, and `_parse_op` squashes every text field to one trimmed
-line and lowercases the status. A newline in a note cannot break the list.
+`TodoOp` becomes the schema of `update_todos`. Every op has the same flat fields:
 
 ```pycon
->>> todos.resume_waiting()
->>> todos.apply([
-...     {"op": "update", "id": "t2", "status": "Failed", "content": None,
-...      "note": "No red cup\n   in the kitchen"},
-...     {"op": "update", "id": "t3", "status": "cancelled",
-...      "note": "The person came to the kitchen"},
-... ])
-'Updated: t2 → failed, t3 → cancelled. Open: none.'
->>> print(todos.render())
-<todos>
-[x] t1 Go to the kitchen
-[!] t2 Find the cup  note: "No red cup in the kitchen"
-[-] t3 Come back and tell the person  note: "The person came to the kitchen"
-</todos>
->>> try:
-...     todos.apply([{"op": "finish", "id": "t1"}])
-... except TodoRejected as e:
-...     print(e)
-An op is malformed at 'op': Input should be 'add', 'update' or 'remove'.
+>>> from walkie_agent.runtime.todos import TodoOp
+>>> sorted(TodoOp.model_json_schema()["properties"])
+['active_form', 'after', 'content', 'id', 'note', 'op', 'status']
+>>> TodoOp.model_json_schema()["properties"]["status"]["type"]
+'string'
+
+```
+
+The obvious design is a union of three op classes, with optional fields. That becomes
+`anyOf` in the schema, and Gemini function declarations and small Ollama models handle
+`anyOf` poorly. So each field is a plain string where empty means "not given", and the code
+checks the rest. Some models fill unused fields with null, and text can hold line breaks:
+
+```pycon
+>>> op = TodoOp(op="add", content="  Go to\nthe   shelf ", status=None)
+>>> repr(op.content), repr(op.status)
+("'Go to the shelf'", "''")
 
 ```
 
 ## What the LLM gets back
 
-A good call returns one sentence: what was added, updated and removed, then
-the open ids. An update that keeps the status shows the id without an arrow.
-A bad call raises `TodoRejected`, a `ValueError` whose message tells the LLM
-what to do instead.
-
-`UpdateTodosTool` in `src/walkie_agent/tools/todos.py` wraps `apply` for the
-LLM. On a refusal it raises `ToolException` and adds "None of the changes were
-applied.", because `apply` is all or nothing. RAI's `ToolRunner` turns the
-exception into a `ToolMessage` with status `error`.
+`_Draft` is the working copy that one `update_todos` call edits. It's private, but it's the
+simplest way to see the rules. `attempt` here prints its answer:
 
 ```pycon
->>> from langchain_core.tools import ToolException
->>> from walkie_agent.tools.todos import UpdateTodosTool
->>> tool = UpdateTodosTool(todos=todos)
->>> tool.invoke({"ops": [{"op": "add", "content": "Say goodbye", "after": "t1"}]})
-'Added: t4. Open: t4.'
->>> tool.invoke({"ops": [{"op": "update", "id": "t4", "note": "Wave as well"}]})
-'Updated: t4. Open: t4.'
->>> try:
-...     tool.invoke({"ops": [{"op": "update", "id": "t4", "status": "failed"}]})
-... except ToolException as e:
-...     print(e)
-Marking t4 failed needs a note that says why. None of the changes were applied.
+>>> from walkie_agent.runtime import TodoRejected
+>>> from walkie_agent.runtime.todos import _Draft
+>>> def attempt(items, *ops, next_id=1, ledger=()):
+...     draft = _Draft(items, next_id, list(ledger))
+...     try:
+...         print(draft.apply([TodoOp(**op) for op in ops]))
+...     except TodoRejected as error:
+...         print("Refused:", error)
+...     return draft
+...
+>>> draft = attempt([], {"op": "add", "content": "Go to the shelf", "status": "in_progress"}, {"op": "add", "content": "Say hello"})
+Added: t1, t2. Open: t1, t2.
+>>> items, next_id = draft.items, draft.next_id
+>>> draft = attempt(items, {"op": "update", "id": "t1", "status": "completed"}, {"op": "add", "content": "Come back"}, next_id=next_id)
+Added: t3. Updated: t1 → completed. Open: t2, t3.
 
 ```
 
+The sentence is short on purpose. The LLM needs the ids and what's still open.
+
+A call is all or nothing. Here the first op is fine and the second breaks a rule, so
+neither applies. `_Draft` works on a deep copy, so the old list is untouched:
+
+```pycon
+>>> draft = attempt(items, {"op": "update", "id": "t1", "status": "completed"}, {"op": "update", "id": "t2", "status": "failed"}, next_id=next_id)
+Refused: Marking t2 failed needs a note that says why.
+>>> [item["status"] for item in items]
+['in_progress', 'pending']
+
+```
+
+The tool turns that refusal into `REFUSED: ... None of the changes were applied.`
+The new list goes into the graph state only through the `Command` that a successful
+call returns, because a checkpoint must never see half an edit.
+
 ## The reminder
 
-Before each LLM call, the `llm` node in `src/walkie_agent/graph.py` appends
-`render()` as one `HumanMessage` after the history. It is a human message
-because some providers reject a system message that is not the first one. It
-goes on the outgoing list only, so it is never saved in `state["messages"]`.
-An empty list renders as `''`, and then no reminder is sent.
+Before each LLM call, `render` writes the list as a message after the history. It's a
+`HumanMessage`, because some providers reject a system message that is not the first. It's
+sent and never saved, so old copies can't pile up in the history or go stale. An empty list
+sends nothing:
+
+```pycon
+>>> print(render(items))
+<todos>
+[>] t1 Go to the shelf
+[ ] t2 Say hello
+</todos>
+>>> render([])
+''
+
+```
+
+`test_every_call_gets_the_current_list_and_it_is_never_saved` proves both halves on the
+real stack.
+
+The console gets a different line, written by `console_line`. It's blank for a pending step,
+and uses the "-ing" line for a step in progress:
+
+```pycon
+>>> for one in items:
+...     print(repr(console_line(one)))
+...
+'t1: Go to the shelf'
+''
+
+```
 
 !!! example "Try it"
-    Continue the session above. Reword t1 and t4 with update ops that set only
-    `content`, then print `active_form` for each item in `todos.snapshot()`.
-    Only t4's `active_form` follows the new wording. Find the line in
-    `_Draft._update` in `src/walkie_agent/todo.py` that decides this.
+    Pass `{"op": "update", "id": "t2", "status": "waiting"}` to `attempt`, with `items`.
+    Then pass `{"op": "update", "id": "t2"}`. Each refusal says what to do instead.
 
 Previous: [One Task, Start to Finish](one-task.md) · Next: [The Rules: Ledger and Window](todo-rules.md)

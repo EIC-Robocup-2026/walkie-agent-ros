@@ -188,7 +188,9 @@ def test_delivering_an_object_from_the_wrong_source_fails():
 
 
 def test_delivering_to_the_wrong_place_fails():
-    seed, object_id, at = _first_move_with(lambda _spec, matches, at_source: matches and at_source)
+    seed, object_id, at = _first_move_with(
+        lambda spec, matches, at_source: matches and at_source and spec["dest"]["to"] == "place"
+    )
 
     def wrong_place(f, _start, spec):
         _fetch(f, object_id, at)

@@ -1,17 +1,15 @@
 # Mahoraga Demo Prototype
 
 A prototype, on branch `feat/mahoraga-demo`, of the layered agent that the
-Mahoraga agent plan proposes. Its ROS-free foundation is shared by the
-competition agent and Mahoraga, so the same atomics run on the robot, in unit
-tests and in the fake-world gym. It is built beside main's agent, whose
-`agent.py`, `graph.py`, `todo.py`, `tasks.py` and `tools/` stay unchanged
-until a later slice replaces them. This page is the interface contract that
-those later slices follow.
+Mahoraga agent plan proposes. The competition agent and Mahoraga share its
+ROS-free foundation, so the same atomics run on the robot, in unit tests and
+in the fake-world gym. It sits beside main's agent, whose `agent.py`,
+`graph.py`, `todo.py`, `tasks.py` and `tools/` stay unchanged until a later
+slice replaces them. This page is the contract those slices follow.
 
 !!! warning "Prototype"
-    Nothing here has run against a real model, in MuJoCo or on the robot,
-    and nothing on the robot uses it yet. Every choice below is a
-    provisional pick of the plan's recommended option.
+    Nothing here has run against a real model, in MuJoCo or on the robot.
+    Every choice below is a provisional pick of the plan's recommended option.
 
 ## Layer map
 
@@ -44,8 +42,8 @@ class StepError(Exception):
     message: str  # one plain sentence for the LLM; str(error) is "CODE: message"
 ```
 
-Verbs and atomics raise only `StepError`. Anything else that escapes a tool
-is a bug, and reaches the model as `INTERNAL`.
+Verbs and atomics raise only `StepError`. Anything else that escapes a tool is
+a bug.
 
 ## Capability verbs
 
@@ -73,18 +71,13 @@ class Arms(Protocol):  # each returns the id of the object picked, placed or han
     def place_on(self, place: str, *, timeout_s: float = 60.0) -> str: ...
     def hand_over(self, person_id: str, *, timeout_s: float = 60.0) -> str: ...
 
-@dataclass(frozen=True)
-class Ctx:
-    cancel: CancelToken
-    base: Base
-    speech: Speech
-    vision: Vision
-    arms: Arms = UnavailableArms()  # raises UNAVAILABLE until the arm commander client exists
+Ctx(cancel: CancelToken, base: Base, speech: Speech, vision: Vision,  # frozen dataclass
+    arms: Arms = UnavailableArms())  # UnavailableArms raises UNAVAILABLE on every verb
 ```
 
 A query of `""` matches everything. Otherwise it matches an object's name,
 category or plural category, or a person's name, pose or gesture, ignoring
-case. The arm verbs are fake-only in this prototype.
+case. The arm verbs are fake-only until the arm commander client exists.
 
 ### Guards live in the verbs
 
@@ -107,14 +100,12 @@ class CancelToken:
                  *, poll_s: float = 0.02) -> None: ...  # CANCELLED or TIMEOUT
 ```
 
-- There is no velocity verb. The base moves only to a named place or by a
-  bounded relative move.
+- There is no velocity verb, only named places and bounded relative moves.
 - Every wait is bounded and goes through `CancelToken.wait_for`, so a stop
   ends it within `poll_s`.
-- Base, vision and arm verbs call `ctx.cancel.check` before they start, so a
-  set token latches motion until the runtime resets it.
-- `Speech.say` does not check the token, so a bare "stop" can answer with
-  its fixed line while motion stays latched (decision 6).
+- Base, vision and arm verbs check the token before they start, so a set token
+  latches them until the runtime resets it. `Speech.say` does not, so a bare
+  "stop" can answer with its fixed line (decision 6).
 - A ROS-backed verb cancels its own goal when a wait ends in `CANCELLED` or
   `TIMEOUT`, then raises.
 
@@ -136,8 +127,7 @@ class FakeRobot:  # implements Base, Speech, Vision and Arms
 def chula_pat14_6(seed: int = 0) -> dict[str, Any]  # a seeded world description
 ```
 
-A world description is JSON-able, so the gym can build, store and compare
-it:
+A world description is JSON-able, so the gym can build, store and compare it:
 
 ```python
 {"places": {"shelf": {"x": 2.487, "y": -6.409, "yaw": -1.57, "room": "kitchen room"}},
@@ -149,22 +139,23 @@ it:
 ```
 
 A place whose `room` is its own name is a room. An object's `at` is a place,
-`"robot"` while held, or the id of the person who received it. The robot
-sees what is at its place, or at every place in its room while it stands at
-the room itself, and the people in its room. `world=None` builds
-`chula_pat14_6(seed)`, and `drive_s` makes each drive take real seconds.
+`"robot"` while held, or the id of the person who received it. The robot sees
+what is at its place, or at every place in its room while it stands at the room
+itself, and the people in its room. `world=None` builds `chula_pat14_6(seed)`,
+and `drive_s` makes each drive take real seconds.
+
 Places and rooms come from walkie-ros `origin/feat/chula-pat14-6-simulation`
 (`simulation/mujoco/worlds/chula_pat14_6/authoring/source/30_16102026_ChulaPat14_6_world.toml`).
-The `trash` and `instruction point` places, six extra objects, all sizes and
-weights, and the people are invented (decision 26). A builder that seeds a
-feasible world for one generated command belongs to the gym.
+The `trash` and `instruction point` places, six objects, all measures and the
+people are invented (decision 26). A builder that seeds a feasible world for
+one generated command belongs to the gym.
 
 ## Atomics
 
-Plain typed functions over `ctx` in `walkie_agent.atomics`. The LLM reads
-their Google-style docstrings. They return JSON-able values and raise
-`StepError`. Describe the return value in the summary paragraphs: LangChain
-drops a `Returns:` section from the tool description.
+Plain typed functions over `ctx` in `walkie_agent.atomics`. They return
+JSON-able values and raise `StepError`. The LLM reads their Google-style
+docstrings. Describe the return value in the summary paragraphs, because
+LangChain drops a `Returns:` section from the tool description.
 
 ```python
 def list_places(ctx: Ctx) -> list[dict[str, str]]
@@ -194,19 +185,18 @@ def format_tool_error(exc: Exception, request: ToolCallRequest) -> str
 def tool_error_middleware() -> ToolErrorMiddleware
 ```
 
-`bind` returns a plain callable with `ctx` bound, for the Monty driver. It
-keeps the name, the docstring and the signature without `ctx`. `as_tool`
-passes it to `StructuredTool.from_function(parse_docstring=True,
-error_on_invalid_docstring=True)`, refuses a parameter with no description,
-and sends a non-string result as JSON text, so an empty list reads `[]`
-rather than an empty message. `as_tools` refuses duplicate names.
+`bind` returns a plain callable for the Monty driver, with the atomic's name,
+docstring, signature without `ctx` and raw return value. `as_tool` builds
+`StructuredTool.from_function(parse_docstring=True,
+error_on_invalid_docstring=True)` over the same wrapper, raises `ValueError` for
+a parameter with no description, and sends a non-string result as JSON text, so
+an empty list reads `[]` rather than an empty message.
 
 `ToolErrorMiddleware(on_error=None, *, aon_error=None, tools=None)` ships in
-langchain 1.4.4 under `langchain.agents.middleware`. `on_error(exc,
-request)` returns an error `ToolMessage`'s content, or `None` to re-raise.
-`ToolNode` answers argument validation errors before it. `format_tool_error`
-gives `"CODE: message"` for a `StepError` and `"INTERNAL: <tool> failed with
-<ExceptionType>."` for anything else, which keeps internal detail out.
+langchain 1.4.4 under `langchain.agents.middleware` and serves the sync and
+async paths. `ToolNode` answers argument validation errors before it.
+`format_tool_error` gives `"CODE: message"` for a `StepError`. Anything else
+logs its traceback and gives `"INTERNAL: <tool> failed with <ExceptionType>."`.
 
 ## Provisional decisions
 
@@ -231,3 +221,5 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
 - `ctx.base.pose()` replaces `ctx.pose`, and `ctx.base.places()` lets
   `list_places` replace main's `list_locations`.
 - `FakeRobot` is one class, so its `ctx` holds the same object four times.
+- `format_tool_error` answers a bug with `INTERNAL` rather than re-raising it,
+  so one bad tool does not end a run.

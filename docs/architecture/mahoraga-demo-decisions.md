@@ -55,6 +55,23 @@ Numbers refer to "Decisions owed" in the Mahoraga Agent Plan.
 | R5 | A `say` already speaking is not cut off, so the stop line can overlap it. The real speech verb must allow this. | Interrupting playback belongs to the speech layer. | Two voices can overlap briefly on the robot. | Delegated |
 | R6 | The runtime is async only. | The runner owns one event loop. | Concurrent Runners sharing one compiled graph, and a sync route, are not certified. | Delegated |
 
+## ROS wiring
+
+These settle the forks in the ROS wiring brief.
+
+| ID | Decision | Why | Alternative and consequence | Status |
+| --- | --- | --- | --- | --- |
+| W1 | `vision.objects` and `vision.people` raise `UNAVAILABLE` in the first ROS slice, and the old remembered-object tool is retired. A real vision backend follows once the walkie-vision contract lands. | A remembered row is not what the camera sees now, and an empty list would claim a view that never happened. | Keeping remembered search as its own capability adds code now. Until the backend lands, the HRI demo cannot find people. | Delegated |
+| W2 | HRI input is text only. A message carrying images or audio is logged and refused. | `Runner.hear` takes text, and dropping a payload silently would hide the loss. | Extending the runner's input contract keeps multimodal input, at the cost of new tests before the cutover. | Delegated |
+| W3 | If shutdown cannot settle, keep the executor alive and ingress closed, retry within bounds and report what is unresolved. A second signal forces the exit. | Destroying ROS under a live worker removes the only route to cancel a goal. | A timed forced exit is simpler but can leave the robot driving with no cancel route. This is not an emergency stop. | Delegated |
+| W4 | Mark obsolete code assumptions in the larger proposals, and record exact partial supersessions. Do not withdraw whole proposals. | Whole withdrawal is wider than this slice. | The docs stay longer than the plan's target for now. | Delegated |
+| W5 | Place names are stored as trimmed lowercase keys. Other forms and duplicates are refused at load, and lookup ignores case. Production places stay empty, and the invented places move to test fixtures. | Places must come from a reviewed map, which is decision 18. | The agent has nowhere to go by name on a real map until someone fills that file. | Delegated |
+| W6 | `say` returns once the message is published. | RAI's TTS gives no playback acknowledgement. | A successful `say` does not mean the words were heard. | Delegated |
+| W7 | Keep RAI's connector, `rai-core`, `rai-s2s` and both voice entry points. Remove RAI's agent host from `main` only. | `voice.py` still uses `AgentRunner`. | RAI's OpenCV pin stays, so Zenoh is still built from source. | Delegated |
+| W8 | A static `robot.md` replaces the generated whoami tree. | The agent needs a description, not a vector index. | There is no document search tool. | Delegated |
+| W9 | New ADRs take 0052, 0060, 0061, 0062, 0067, 0068 and 0069. Eleven learn pages stay, and `old-vs-new` goes. | The plan reserves 0053 to 0059, and shrinking the learn pages further is a later editorial cut. | The learn section stays longer than the plan's six pages. | Delegated |
+| W10 | Build this slice on `feat/mahoraga-demo-ros` from `3e345f2`, in parallel with the Mahoraga fixes. | The two touch almost no shared files. | Both need merging, and the gate reruns after, because `pixi.lock` is in its digest. | Delegated |
+
 ## Mahoraga measurement and checkers
 
 These settle the 2026-11-04 review findings of the same number.

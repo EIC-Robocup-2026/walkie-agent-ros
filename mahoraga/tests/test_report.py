@@ -153,14 +153,17 @@ def test_an_errored_epoch_stays_in_the_denominator_and_its_usage_counts(gated):
     assert metrics["complete"] is False
 
 
-def test_an_errored_episode_still_counts_in_the_script_metrics(gated):
-    _, log = _one_success_two_errors(gated)
+def test_an_errored_episode_still_counts_in_the_script_metrics_and_rounds(gated):
+    gated(commands("trial", 1))
+    code = 'open("/etc/passwd")  # type: ignore'
 
+    log = run_episodes(["B"], 1, model=_errors_after_its_script(code), max_samples=1)[0]
+
+    assert log.samples[0].error is not None
     metrics = arm_metrics(log)
-
-    assert metrics["M5_first_try_type_check"] == 1.0
-    assert metrics["M7_shelf_hit"] == 0.0
-    assert metrics["M2_rounds"] == pytest.approx(2.0)
+    assert metrics["M2_rounds"] == 2
+    assert metrics["M6_ok_after_one_repair"] == 0.0
+    assert metrics["M9_refused_calls"] == 1
 
 
 def test_an_episode_that_never_ran_counts_as_a_failure(gated):
@@ -221,13 +224,14 @@ def test_the_report_says_plainly_when_a_comparison_is_incomplete(gated, tmp_path
 
 
 def test_a_comparison_over_different_commands_is_not_complete(gated, tmp_path):
-    records = commands("trial", 2)
-    gated(records)
-    run_episodes(["A"], 2, model=_mock(), max_samples=1, log_dir=tmp_path)
-    run_episodes(["B"], 1, model=_mock(), max_samples=1, log_dir=tmp_path)
+    gated(commands("trial", 2))
+    done = get_model(MOCK, custom_outputs=lambda *_: ModelOutput.from_content(MOCK, "Done."), memoize=False)
+    run_episodes(["A"], 2, model=done, max_samples=1, log_dir=tmp_path)
+    run_episodes(["B"], 1, model=done, max_samples=1, log_dir=tmp_path)
 
     result = report(tmp_path)
 
+    assert result["arms"]["A"]["complete"] is True
     assert result["arms"]["B"]["complete"] is True
     assert result["against_baseline"]["B"]["commands"] == 1
     assert result["against_baseline"]["B"]["complete"] is False

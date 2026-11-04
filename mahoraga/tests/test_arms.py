@@ -407,6 +407,7 @@ def test_the_eval_config_reaches_every_model_call(gated):
     assert event.config.temperature == 0.3
     assert event.config.seed == 11
     assert event.config.parallel_tool_calls is False
+    assert event.config.max_retries == 3
 
 
 def test_an_episode_that_never_stops_is_ended_and_scored(gated, monkeypatch):

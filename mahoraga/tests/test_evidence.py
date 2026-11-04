@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 import mahoraga.driver as driver
-from mahoraga.driver import ScriptRunner
+from mahoraga.driver import Budgets, ScriptRunner
 from mahoraga.evidence import Watch
 from mahoraga.shelf import Shelf
 
@@ -223,6 +223,16 @@ def test_a_script_that_ends_after_the_refusal_still_fails_the_budget(to_shelf, c
     assert to_shelf.run(code, clocked).phase == "budget"
 
 
+def test_a_script_that_spins_past_its_feed_is_a_budget_and_keeps_its_evidence(pool, shelf, fns):
+    runner = ScriptRunner(pool, shelf=shelf, budgets=Budgets(feed_s=0.2))
+
+    result = runner.run("value()\nwhile True:\n    pass", fns)
+
+    assert result.phase == "budget", result.error
+    assert result.returned == {"value": shelf.versions()["value"]}
+    assert ScriptRunner(pool, shelf=shelf).run("value()", fns).ok
+
+
 def test_counters_that_cannot_be_read_leave_no_evidence(run, monkeypatch):
     def refuses(*args, **kwargs):
         raise RuntimeError("monty worker protocol error")
@@ -269,10 +279,17 @@ def test_a_script_cannot_reach_the_counters(run, code):
 
 
 def test_a_name_guessed_for_a_counter_reaches_nothing(run):
-    result = run('_h0000000000000000_in["value"] = 5  # type: ignore\n1')
+    code = (
+        '_h0000000000000000_in["value"] = 5  # type: ignore\n'
+        '_h0000000000000000_out["value"] = 5  # type: ignore\n'
+        "if False:\n    value()\n1"
+    )
+
+    result = run(code)
 
     assert result.phase == "runtime", result.error
     assert result.returned == {}
+    assert result.shelf_used == []
 
 
 # The token does reach the script in a caught error. What it must not do is turn into a name.
@@ -310,11 +327,18 @@ def test_locals_shows_nothing_hidden(run):
 
 
 def test_nothing_hidden_reaches_the_ledger_or_the_print(run):
-    result = run("print(value)\nvalue()\nprint(locals())")
+    code = (
+        "try:\n    mine()\nexcept Exception as error:\n    print(error)\n"
+        "print(value)\nvalue()\nprint(locals())\n\n"
+        "def mine() -> int:\n    return 3\n"
+    )
+
+    result = run(code, save=["mine"])
 
     assert result.ok, result.error
+    assert "mine is not allowed" in result.printed
     assert not HIDDEN.search(result.printed)
-    assert not HIDDEN.search(str(result.calls))
+    assert result.calls == [{"tool": "mine", "status": "denied"}]
 
 
 def test_a_run_with_nothing_to_watch_has_no_loader(pool, fns, tmp_path):

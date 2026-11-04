@@ -1,6 +1,7 @@
 """The metrics read what the logs hold, and the paired statistics hold on known inputs."""
 
 import pytest
+from inspect_ai.log import write_eval_log
 from inspect_ai.model import ModelOutput, ModelUsage, get_model
 
 from mahoraga.commands import commands
@@ -8,6 +9,7 @@ from mahoraga.gym import run_episodes
 from mahoraga.oracle import oracle_script
 from mahoraga.report import arm_metrics, by_command, compare, mcnemar_p, read_runs, report, shelf_metrics
 from mahoraga.shelf import Shelf
+from mahoraga.tasks import SCORER
 
 MOCK = "mockllm/model"
 
@@ -235,6 +237,94 @@ def test_a_comparison_over_different_commands_is_not_complete(gated, tmp_path):
     assert result["arms"]["B"]["complete"] is True
     assert result["against_baseline"]["B"]["commands"] == 1
     assert result["against_baseline"]["B"]["complete"] is False
+
+
+def _says_done():
+    return get_model(MOCK, custom_outputs=lambda *_: ModelOutput.from_content(MOCK, "Done."), memoize=False)
+
+
+def test_a_comparison_over_different_epochs_is_not_complete(gated, tmp_path):
+    gated(commands("trial", 1), 3)
+    run_episodes(["A"], 1, model=_says_done(), max_samples=1, log_dir=tmp_path)
+    run_episodes(["B"], 1, epochs=3, model=_says_done(), max_samples=1, log_dir=tmp_path)
+
+    result = report(tmp_path)
+
+    assert result["arms"]["A"]["complete"] is True
+    assert result["arms"]["B"]["complete"] is True
+    assert result["against_baseline"]["B"]["commands"] == 1
+    assert result["against_baseline"]["B"]["complete"] is False
+
+
+def test_a_comparison_over_the_same_epochs_is_complete(gated, tmp_path):
+    gated(commands("trial", 1), 2)
+    run_episodes(["A"], 1, epochs=2, model=_says_done(), max_samples=1, log_dir=tmp_path)
+    run_episodes(["B"], 1, epochs=2, model=_says_done(), max_samples=1, log_dir=tmp_path)
+
+    assert report(tmp_path)["against_baseline"]["B"]["complete"] is True
+
+
+def test_a_comparison_of_one_id_with_different_text_is_not_complete(gated, tmp_path):
+    gated(commands("trial", 1))
+    run_episodes(["A"], 1, model=_says_done(), max_samples=1, log_dir=tmp_path)
+    other = run_episodes(["B"], 1, model=_says_done(), max_samples=1, log_dir=tmp_path)[0]
+    assert report(tmp_path)["against_baseline"]["B"]["complete"] is True
+
+    other.samples[0].input = "An entirely different command."
+    write_eval_log(other)
+
+    result = report(tmp_path)
+
+    assert result["arms"]["A"]["complete"] is True
+    assert result["arms"]["B"]["complete"] is True
+    assert result["against_baseline"]["B"]["commands"] == 1
+    assert result["against_baseline"]["B"]["complete"] is False
+
+
+def _one_of_six_logged_without_ids(gated):
+    """A real run of two commands over three epochs, cut down to one passing episode and no ids."""
+    records = commands("trial", 2)
+    gated(records, 3)
+    log = run_episodes(
+        ["B"], 2, epochs=3, model=_always_runs(oracle_script(records[0]["spec"])), max_samples=1
+    )[0]
+    seed = records[0]["seed"]
+    log.samples = [sample for sample in log.samples if (sample.id, sample.epoch) == (seed, 1)]
+    assert float(log.samples[0].scores[SCORER].value) == 1.0
+    log.eval.dataset.sample_ids = None
+    return seed, log
+
+
+def test_a_log_without_ids_still_schedules_every_episode(gated):
+    seed, log = _one_of_six_logged_without_ids(gated)
+
+    metrics = arm_metrics(log)
+
+    assert log.status == "success"
+    assert (metrics["episodes"], metrics["errored"], metrics["never_ran"]) == (6, 0, 5)
+    assert metrics["complete"] is False
+    assert by_command(log)[seed] == pytest.approx(1 / 3)
+    assert metrics["M1_success"] == pytest.approx(1 / 6)
+
+
+def test_a_log_without_ids_that_lost_nothing_is_complete(gated):
+    records = commands("trial", 2)
+    gated(records, 2)
+    log = run_episodes(["A"], 2, epochs=2, model=_says_done(), max_samples=1)[0]
+    log.eval.dataset.sample_ids = None
+
+    metrics = arm_metrics(log)
+
+    assert (metrics["episodes"], metrics["never_ran"]) == (4, 0)
+    assert metrics["complete"] is True
+
+
+def test_commands_lost_from_two_logs_without_ids_pair_with_nothing(gated):
+    _, log = _one_of_six_logged_without_ids(gated)
+    other = log.model_copy(deep=True)
+    other.eval.eval_id = "another-eval"
+
+    assert compare(by_command(log), by_command(other))["commands"] == 1
 
 
 def test_by_command_means_the_epochs(gated):

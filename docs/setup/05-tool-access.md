@@ -59,7 +59,7 @@ pixi run test
 
 `tests/test_ros_base.py` and `tests/test_ros_speech.py` build the verbs on fake ROS
 objects and try forbidden names. `tests/test_ros_integration.py` runs the assembled
-agent on real rclpy against a fake robot, and checks which endpoints it creates.
+agent on real rclpy against a fake robot, and checks that closing it removes its topics.
 
 None of this has run on the robot's own graph.
 

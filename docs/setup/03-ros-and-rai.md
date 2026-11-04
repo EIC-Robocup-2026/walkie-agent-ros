@@ -1,13 +1,20 @@
 # 3. Install RAI
 
 **Goal:** install [RAI](https://github.com/RobotecAI/rai) and ROS 2 Jazzy in
-the Pixi workspace, so we can build the Walkie agent on top of RAI.
+the Pixi workspace, so the Walkie agent can use RAI's ROS 2 connector and speech
+agents.
 
 ## Background
 
 - **RAI** is a framework from Robotec.AI for building LLM agents that control
-  ROS 2 robots. It gives us ready-made agents (`ReActAgent`), ROS 2
-  connectors, and tools, so we write less code ourselves.
+  ROS 2 robots. We keep two parts of it: `ROS2Connector`, which owns the agent's
+  node, executor and TF buffer, and `rai_s2s`, which runs the voice nodes. Its
+  messages, such as `HRIMessage`, come along.
+- **The agent does not run on RAI's agent classes.** It runs on LangChain's
+  `create_agent`, with its own runtime and its own model loader
+  ([ADR-0061](../architecture/decisions/0061-create-agent-runtime-and-cancellation.md),
+  [ADR-0062](../architecture/decisions/0062-bounded-model-calls.md)). Only the
+  voice entry points use RAI's `AgentRunner`.
 - ROS comes from **RoboStack** (conda packages). RAI is published on
   **PyPI** as `rai-core`. Pixi installs both into one environment: conda
   packages go under `[dependencies]`, PyPI packages under
@@ -41,12 +48,16 @@ numpy = "<2"        # required by rai-core
 packaging = "<26"   # required by langfuse 3.x, which rai-core uses
 
 [pypi-dependencies]
-rai-core = ">=2.12.1, <2.13"
+rai-core = "==2.12.1"
 ```
 
 ```bash
 pixi install
 ```
+
+The agent's runtime libraries, such as `langchain` and `langgraph`, are direct
+dependencies with exact pins in `pixi.toml`. The agent's behaviour depends on
+theirs, so it does not take them through `rai-core`.
 
 Pixi chooses the conda packages (ROS) first, then fits the PyPI packages
 (RAI) around them. Without the limits, conda picks versions that `rai-core`
@@ -183,8 +194,8 @@ pixi install
 
 ## Step 4: Create `config.toml`
 
-RAI reads its settings from `config.toml` in the folder you start the agent
-in. Create a default one:
+`config.toml` holds the settings, in the folder you start the agent in. It keeps the
+shape of RAI's own config, which started as the output of this command:
 
 ```bash
 pixi run rai-config-init
@@ -194,8 +205,7 @@ It writes settings for every LLM vendor RAI supports. It refuses to
 overwrite an existing file unless you pass `--force`.
 
 We use [OpenRouter](https://openrouter.ai) for the LLM. OpenRouter has the
-same API as OpenAI, so we use RAI's `openai` vendor and change its model and
-URL:
+same API as OpenAI, so we use the `openai` vendor and change its model and URL:
 
 ```toml title="config.toml"
 [vendor]
@@ -204,8 +214,8 @@ complex_model = "openai"
 embeddings_model = "openai"
 
 [openai]
-simple_model = "google/gemini-3-flash-preview"
-complex_model = "google/gemini-3-flash-preview"
+simple_model = "qwen/qwen3.8-27b:nitro"
+complex_model = "deepseek/deepseek-v4.1-flash:nitro"
 embeddings_model = "openai/text-embedding-3-small"
 base_url = "https://openrouter.ai/api/v1"
 ```
@@ -213,20 +223,32 @@ base_url = "https://openrouter.ai/api/v1"
 To try another model, change `complex_model` to any
 [OpenRouter model ID](https://openrouter.ai/models).
 
-We kept these sections from the default file, unchanged, for later:
+The same file has more than one reader:
 
-| Section    | What it is for                                                                                 |
-| ---------- | ---------------------------------------------------------------------------------------------- |
-| `[ollama]` | Local LLMs served by [Ollama](https://ollama.com). Used when a `[vendor]` entry is `"ollama"`. |
-| `[asr]`    | Speech-to-text: microphone, Whisper model, voice detection.                                    |
-| `[tts]`    | Text-to-speech: voice and speaker.                                                             |
+| Section | Who reads it |
+| ------- | ------------ |
+| `[vendor]`, `[openai]`, `[ollama]` | `walkie_agent.runtime.model` reads `complex_model` and `base_url` of the vendor that `[vendor]` names |
+| `[agent]`, optional | `run_limit`, `deadline_s`, `fallback_vendor` and `fallback_model` for the agent. The defaults are provisional, and no fallback is selected |
+| `[tracing.langfuse]` | The agent's Langfuse callback, when `use_langfuse` is true |
+| `[asr]`, `[tts]` | The voice entry points, through `rai_s2s` |
 
-We deleted `[aws]` and `[google]`, because we do not use those vendors. RAI
-uses defaults for missing vendor sections.
+Nothing in this repository reads `simple_model`, `embeddings_model`,
+`[tracing]`'s project or `[tracing.langsmith]`. They stay so the file keeps the shape of
+RAI's config. The embeddings fields were for the retired documentation search
+([ADR-0068](../architecture/decisions/0068-static-robot-description.md)).
+
+We deleted `[aws]` and `[google]`, because we do not use those vendors.
+
+!!! note "Why the agent has its own loader"
+    `get_llm_model` would hide provider options we need. `ChatOllama` silently ignores
+    `timeout` and `max_retries`, and honours only `client_kwargs`. The agent's loader
+    sets the timeout for each provider and turns SDK retries off. These settings and
+    numbers have not met a real provider yet
+    ([ADR-0062](../architecture/decisions/0062-bounded-model-calls.md)).
 
 ### API keys go in `.env`
 
-RAI reads API keys from environment variables, never from `config.toml`.
+The provider SDKs read API keys from environment variables, never from `config.toml`.
 We keep them in a `.env` file, which Git ignores. Add the loader:
 
 ```toml title="pixi.toml"
@@ -354,11 +376,17 @@ cmd = "pytest"
 | Command                | What it does                                                 |
 | ---------------------- | ------------------------------------------------------------ |
 | `pixi run fake-walkie` | A fake robot: Nav2 action, TF and speech topic, no hardware. |
-| `pixi run agent`       | The agent. Reads tasks on `/from_human`.                     |
+| `pixi run agent`       | The agent, from `walkie_agent.main`. Reads tasks on `/from_human` and `/walkie/task`. |
 | `pixi run test`        | All tests, with a scripted LLM, so no API key is needed.     |
 
 `pyproject.toml` turns off the pytest plugins that ROS 2 installs
 (`launch_testing`, `ament_*`), because our tests do not use them.
+
+!!! warning "Editable installs and a second worktree"
+    The editable install points at one checkout. A second Git worktree that borrows
+    another checkout's environment imports that other checkout's code, and its tests
+    pass or fail on the wrong files. Set `PYTHONPATH` to the worktree's `src/` there,
+    and print `walkie_agent.__file__` once to check.
 
 ## Adding a new dependency
 
@@ -381,6 +409,15 @@ After adding a Python package from PyPI, check whether it needs ROS modules
 that are not installed yet, as in
 [Step 3](#step-3-add-the-ros-packages-rai-imports). Then run
 `pixi run test`.
+
+`errors`, `capabilities`, `atomics`, `adapter` and `runtime` must not import rclpy, RAI
+or any ROS message, and `tests/test_ros_free.py` checks that. A package that needs ROS
+belongs behind `walkie_agent/ros/`.
+
+Changing a pin of `langchain`, `langgraph` or `rai-core` can change behaviour without any
+error. Serial tool calls rest on `max_concurrency=1`, which is observed and not
+documented. So run the whole suite after any such change. To check a `rai-core` upgrade,
+see [Read the Code Next](../learn/read-the-code.md#checking-a-rai-core-upgrade).
 
 ## Using ROS GUI tools (rqt)
 

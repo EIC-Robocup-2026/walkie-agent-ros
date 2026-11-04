@@ -13,6 +13,7 @@ from mahoraga.arms import ARMS, INDUCT, PROMPT, ArmSetup
 from mahoraga.commands import commands
 from mahoraga.gym import run_episodes
 from mahoraga.oracle import oracle_script
+from mahoraga.report import arm_metrics
 from mahoraga.shelf import Shelf
 from walkie_agent.capabilities.fake import FakeRobot
 
@@ -59,7 +60,7 @@ def _run(gated, arm, record, *calls, **kwargs):
 def _verified_shelf():
     shelf = Shelf()
     assert shelf.save(SPEAK, ["speak_up"], check=lambda source: None)[0] == ["speak_up"]
-    shelf.mark_verified(["speak_up"])
+    shelf.mark_verified(shelf.versions())
 
 
 def test_arm_a_gets_per_step_tools(gated):
@@ -206,6 +207,104 @@ def test_a_failed_episode_verifies_nothing(gated):
     assert sample.scores["ground_truth"].value == 0.0
     assert sample.store["scripts"][0]["saved"] == ["speak_up"]
     assert "speak_up" not in Shelf(frozen=True).names()
+
+
+def _talk_to(spec, then):
+    return f"go_to({json.dumps(spec['place'])})\nfind_people()\n{then}\n"
+
+
+def test_a_function_saved_but_never_run_is_not_verified(gated):
+    record = _first("move_object")
+    code = f'def untested_bad() -> str:\n    return go_to("does not exist")\n\n{oracle_script(record["spec"])}'
+
+    _, sample = _run(gated, INDUCT, record, ("run_script", {"code": code, "save": ["untested_bad"]}))
+
+    assert sample.scores["ground_truth"].value == 1.0
+    assert sample.store["scripts"][0]["saved"] == ["untested_bad"]
+    assert Shelf().counts()["untested_bad"] == {"saved": 1, "run": 0, "fail": 0, "verified": 0}
+    assert Shelf(frozen=True).names() == []
+
+
+def test_a_function_saved_in_one_script_and_run_in_the_next_is_verified(gated):
+    record = _first("talk", greet=False)
+
+    _, sample = _run(
+        gated,
+        INDUCT,
+        record,
+        ("run_script", {"code": SPEAK, "save": ["speak_up"]}),
+        ("run_script", {"code": _talk_to(record["spec"], "speak_up()")}),
+    )
+
+    assert sample.scores["ground_truth"].value == 1.0
+    assert sample.store["scripts"][1]["shelf_used"] == ["speak_up"]
+    assert Shelf(frozen=True).names() == ["speak_up"]
+
+
+def test_a_rewrite_that_never_ran_earns_nothing_from_the_version_that_did(gated):
+    record = _first("talk", greet=False)
+    rewrite = 'def speak_up():\n    """Say goodbye."""\n    say("Goodbye.")\n'
+
+    _, sample = _run(
+        gated,
+        INDUCT,
+        record,
+        ("run_script", {"code": SPEAK + _talk_to(record["spec"], "speak_up()"), "save": ["speak_up"]}),
+        ("run_script", {"code": rewrite, "save": ["speak_up"]}),
+    )
+
+    assert sample.scores["ground_truth"].value == 1.0
+    assert "Goodbye" in (Shelf().root / "speak_up.py").read_text()
+    assert Shelf().counts()["speak_up"]["verified"] == 0
+    assert Shelf(frozen=True).names() == []
+
+
+def test_a_function_that_raised_once_is_not_verified_by_another_call_that_returned(gated):
+    record = _first("talk", greet=False)
+    spec = record["spec"]
+    code = (
+        "def reach(place: str) -> str:\n    return go_to(place)\n\n"
+        'try:\n    reach("does not exist")\nexcept RuntimeError:\n    pass\n'
+        f"reach({json.dumps(spec['place'])})\nfind_people()\nsay(\"Hello.\")\n"
+    )
+
+    _, sample = _run(gated, INDUCT, record, ("run_script", {"code": code, "save": ["reach"]}))
+
+    assert sample.scores["ground_truth"].value == 1.0
+    assert sample.store["scripts"][0]["saved"] == ["reach"]
+    assert Shelf().counts()["reach"]["verified"] == 0
+    assert Shelf(frozen=True).names() == []
+
+
+def test_a_shelf_name_in_dead_code_is_no_hit_and_earns_nothing(gated):
+    _verified_shelf()
+    record = _first("move_object")
+    code = f"if False:\n    speak_up()\n{oracle_script(record['spec'])}"
+
+    log, sample = _run(gated, "C", record, ("run_script", {"code": code}))
+
+    assert sample.scores["ground_truth"].value == 1.0
+    assert sample.store["scripts"][0]["shelf_used"] == []
+    assert Shelf().counts()["speak_up"] == {"saved": 1, "run": 0, "fail": 0, "verified": 1}
+    assert arm_metrics(log)["M7_shelf_hit"] == 0.0
+
+
+def test_a_shelf_function_that_raised_under_a_catch_is_harmful_and_earns_nothing(gated):
+    shelf = Shelf()
+    bad = 'def bad_move():\n    """Go nowhere."""\n    go_to("does not exist")\n'
+    shelf.save(bad, ["bad_move"], check=lambda source: None)
+    shelf.mark_verified(shelf.versions())
+    record = _first("move_object")
+    code = f"try:\n    bad_move()\nexcept RuntimeError:\n    pass\n{oracle_script(record['spec'])}"
+
+    log, sample = _run(gated, "C", record, ("run_script", {"code": code}))
+
+    assert sample.scores["ground_truth"].value == 1.0
+    assert sample.store["scripts"][0]["shelf_raised"] == ["bad_move"]
+    assert Shelf().counts()["bad_move"]["verified"] == 1
+    metrics = arm_metrics(log)
+    assert metrics["M7_shelf_hit"] == 1.0
+    assert metrics["M8_harmful_reuse"] == 1.0
 
 
 def test_only_the_tool_set_and_the_shelf_text_differ_between_arms(pool):

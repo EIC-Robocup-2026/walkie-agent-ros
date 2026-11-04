@@ -229,6 +229,7 @@ the fake world. MuJoCo validation and promotion are not built.
 | --- | --- |
 | `driver` | `ScriptRunner`, `Budgets`, `ScriptResult`, `allow_list`, `stubs_for`, `describe_functions`, `script_summary` |
 | `shelf` | `Shelf`: saved functions and `ledger.jsonl`, outside git |
+| `evidence` | `Watch`: which functions a run entered, returned from or raised through, from counters in the worker |
 | `sandbox` | `open_pool`, the Monty pool with each worker inside bwrap. It fails closed. |
 | `commands` | `RecordingGenerator`, `parse`, `commands(split, n, category)`, and the arena's names in `data/` |
 | `worlds` | `build_world(spec, seed)`, `world_seed(sample_id, epoch)` |
@@ -276,6 +277,31 @@ sees only `script_summary(result)`.
 tree. A run with `save=[names]` keeps top-level functions only if it succeeds. A
 frozen shelf fixes its callable set when it is built, to the functions verified by
 then. Only the scorer calls `mark_verified`, after a success.
+
+What a function earns comes from what it did at run time, never from its name in a
+script. `evidence.Watch` wraps each shelf function a script loads and each definition
+it may save, and counts entries and normal returns inside the worker:
+
+| Evidence | Means | Feeds |
+| --- | --- | --- |
+| Used | Entered at least once | `shelf_used`, run and fail events, M7 |
+| Raised | Entered more often than it returned: an exception crossed its boundary, even if a caller caught it, or the run ended inside it | `shelf_raised`, M8 |
+| Verified | Returned, never raised in that episode, and the episode scored 1 | The `verified` event |
+
+Each event carries the sha of the source that ran, so a rewrite starts with nothing.
+A function saved but never run stays unverified, so it stays off a frozen shelf. So
+does a verified function that names a saved function which never ran, because it
+could not stand alone without it. A definition the script bound more than once, or
+one that is not in `save`, goes unwatched and earns nothing, and a script's own
+definition is no use of the shelf.
+
+The counters' names carry a random token per run, and a script that loads or saves
+a function gets `locals`, `eval` and `exec` shadowed, so it cannot name or reach
+them. That holds against a careless or clever model, and it is no security boundary.
+Two limits come with it. A wrapper adds a frame, so recursion through a watched
+function reaches the depth limit in half the calls. If the counters cannot be read,
+after a worker crash or a script that keeps running well past its wall budget, the
+run has no evidence, so it earns nothing.
 
 ### Arms
 

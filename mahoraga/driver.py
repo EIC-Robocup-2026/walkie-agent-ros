@@ -17,6 +17,7 @@ How a failed call reaches the script:
 Spending a budget ends the script with an error no script can catch.
 """
 
+import contextlib
 import inspect
 import json
 import logging
@@ -39,6 +40,7 @@ from pydantic_monty import (
     NameLookupSnapshot,
 )
 
+from mahoraga.evidence import Watch
 from walkie_agent.adapter import bind
 from walkie_agent.capabilities import Ctx
 from walkie_agent.errors import ErrorCode, StepError
@@ -66,7 +68,13 @@ class Budgets:
 
 @dataclass
 class ScriptResult:
-    """What one run did. `phase` is ok, type_check, syntax, runtime, budget or crash."""
+    """What one run did. `phase` is ok, type_check, syntax, runtime, budget or crash.
+
+    `shelf_used` and `shelf_raised` name the shelf functions the run entered and
+    those an exception crossed, as evidence.Watch saw at run time. `returned` and
+    `raised` hold the same evidence by name and source sha, for a shelf function or a
+    definition this run saved, which is what the scorer verifies from.
+    """
 
     ok: bool = False
     phase: str = "crash"
@@ -76,6 +84,8 @@ class ScriptResult:
     calls: list[dict[str, Any]] = field(default_factory=list)
     shelf_used: list[str] = field(default_factory=list)
     shelf_raised: list[str] = field(default_factory=list)
+    returned: dict[str, str] = field(default_factory=dict)
+    raised: dict[str, str] = field(default_factory=dict)
     saved: list[str] = field(default_factory=list)
     refused: dict[str, str] = field(default_factory=dict)
 
@@ -135,27 +145,36 @@ class ScriptRunner:
     ) -> ScriptResult:
         """Run `code` with `fns` callable. After a success, keep the definitions named in `save`."""
         result = ScriptResult()
-        prefix = ""
-        if self.shelf is not None:
-            prefix, result.shelf_used = self.shelf.source_for(code)
+        prefix, shelf_versions = self.shelf.source_for(code) if self.shelf is not None else ("", {})
+        may_save = self.shelf is not None and not self.shelf.frozen
+        watch = Watch(code, shelf_versions, save if may_save else (), set(fns))
+
+        def fail(phase: str, error: str) -> None:
+            result.ok, result.phase, result.error = False, phase, _clip(watch.clean(error))
+
         try:
-            self._drive(code, prefix, fns, result)
+            self._drive(prefix, fns, result, watch)
         except MontyTypingError as exc:
-            self._fail(result, "type_check", exc.display())
+            fail("type_check", exc.display())
         except MontySyntaxError as exc:
-            self._fail(result, "syntax", exc.display("type-msg"))
+            fail("syntax", exc.display("type-msg"))
         except MontyRuntimeError as exc:
-            self._fail_runtime(result, exc)
+            fail("budget" if _spent_a_budget(exc) else "runtime", exc.display())
         except MontyCrashedError as exc:
-            self._fail(result, "budget" if exc.timed_out else "crash", str(exc))
+            fail("budget" if exc.timed_out else "crash", str(exc))
         except _WallClockSpent:
-            self._fail(result, "budget", f"TimeoutError: over {self.budgets.wall_s} s of wall clock.")
+            fail("budget", f"TimeoutError: over {self.budgets.wall_s} s of wall clock.")
         except _Unservable as exc:
-            self._fail(result, "runtime", str(exc))
+            fail("runtime", str(exc))
         except (MontyError, TimeoutError) as exc:
-            self._fail(result, "crash", f"{type(exc).__name__}: {exc}")
+            fail("crash", f"{type(exc).__name__}: {exc}")
+        for call in result.calls:
+            call["tool"] = watch.clean(call["tool"])
+        used = {name: sha for name, sha in shelf_versions.items() if name in watch.entered}
+        result.shelf_used = sorted(used)
+        result.shelf_raised = sorted(watch.raised & set(used))
         if self.shelf is not None:
-            self.shelf.record_run(result.shelf_used, result.ok)
+            self.shelf.record_run(used, result.ok)
             if save and result.ok:
                 result.saved, result.refused = self.shelf.save(
                     code,
@@ -167,9 +186,13 @@ class ScriptRunner:
                 result.refused = {name: "The script did not succeed." for name in save}
         elif save:
             result.refused = {name: "This run has no shelf." for name in save}
+        kept = {name: sha for name, sha in watch.own_versions.items() if name in result.saved}
+        kept.update(shelf_versions)
+        result.returned = {name: sha for name, sha in kept.items() if name in watch.returned}
+        result.raised = {name: sha for name, sha in kept.items() if name in watch.raised}
         return result
 
-    def _session(self, fns: Mapping[str, Callable[..., Any]]) -> Any:
+    def _session(self, fns: Mapping[str, Callable[..., Any]], extra_stubs: str = "") -> Any:
         return self.pool.checkout(
             limits={
                 "max_feed_duration_secs": self.budgets.feed_s,
@@ -179,7 +202,7 @@ class ScriptRunner:
                 "max_suspensions": self.budgets.max_calls,
             },
             type_check=True,
-            type_check_stubs=stubs_for(fns),
+            type_check_stubs=stubs_for(fns) + extra_stubs,
             type_check_format="concise",
             # A sleep returns at once, so a script cannot stall its episode.
             os_policy={"sleep": "zero"},
@@ -187,32 +210,57 @@ class ScriptRunner:
 
     def _drive(
         self,
-        code: str,
         prefix: str,
         fns: Mapping[str, Callable[..., Any]],
         result: ScriptResult,
+        watch: Watch,
     ) -> None:
         deadline = time.monotonic() + self.budgets.wall_s
         checked = {name: validate_call(config=_STRICT)(fn) for name, fn in fns.items()}
         printed = CollectString(max_bytes=self.budgets.print_bytes)
         try:
-            with self._session(fns) as session:
-                # A separate feed keeps the script's own line numbers in its
-                # errors. Monty type-checks each feed against the earlier ones.
+            with self._session(fns, watch.stubs) as session:
+                # A separate feed keeps the script's own line numbers in its errors.
+                # Monty type-checks each feed against the earlier ones, and the loader
+                # stays out of that, so a script's calls still check against each
+                # function's real signature.
                 if prefix:
                     session.feed_run(prefix, print_callback=printed)
-                snapshot = session.feed_start(code, print_callback=printed)
-                while not isinstance(snapshot, MontyComplete):
+                if watch.loader:
+                    session.feed_run(watch.loader, print_callback=printed, skip_type_check=True)
+                try:
+                    snapshot = session.feed_start(watch.code, print_callback=printed)
+                    while not isinstance(snapshot, MontyComplete):
+                        if time.monotonic() > deadline:
+                            self._unwind(snapshot)
+                            raise _WallClockSpent
+                        snapshot = self._answer(snapshot, checked, result.calls)
+                    # A last slow call overruns with no suspension left to catch it.
                     if time.monotonic() > deadline:
                         raise _WallClockSpent
-                    snapshot = self._answer(snapshot, checked, result.calls)
-                # A last slow call overruns with no suspension left to catch it.
-                if time.monotonic() > deadline:
-                    raise _WallClockSpent
-                result.ok, result.phase = True, "ok"
-                result.output = _jsonable(snapshot.output, _OUTPUT_CHARS)
+                    result.ok, result.phase = True, "ok"
+                    result.output = _jsonable(snapshot.output, _OUTPUT_CHARS)
+                finally:
+                    watch.read(session)
         finally:
-            result.printed = printed.output
+            result.printed = watch.clean(printed.output)
+
+    def _unwind(self, snapshot: Any) -> None:
+        """Let a script out of wall clock finish, with every further call refused and no host call run.
+
+        The worker takes no other feed while a suspension waits, so this is what keeps
+        the run's counters readable. A script that dawdles past another feed's worth of
+        time, catching the refusals, is left suspended and its evidence is lost.
+        """
+        stop = time.monotonic() + self.budgets.feed_s
+        with contextlib.suppress(MontyError):
+            while time.monotonic() < stop:
+                if isinstance(snapshot, NameLookupSnapshot):
+                    snapshot = snapshot.resume()
+                elif isinstance(snapshot, FunctionSnapshot):
+                    snapshot = snapshot.resume({"exception": TimeoutError("Out of wall clock.")})
+                else:
+                    return
 
     def _answer(
         self,
@@ -266,18 +314,10 @@ class ScriptRunner:
             return _clip(str(exc))
         return None
 
-    @staticmethod
-    def _fail(result: ScriptResult, phase: str, error: str) -> None:
-        result.ok, result.phase, result.error = False, phase, _clip(error)
 
-    def _fail_runtime(self, result: ScriptResult, exc: MontyRuntimeError) -> None:
-        inner = exc.exception()
-        spent = isinstance(inner, TimeoutError | MemoryError | RecursionError) or (
-            "suspension limit" in str(inner)
-        )
-        self._fail(result, "budget" if spent else "runtime", exc.display())
-        frames = {frame.function_name for frame in exc.traceback()}
-        result.shelf_raised = [name for name in result.shelf_used if name in frames]
+def _spent_a_budget(exc: MontyRuntimeError) -> bool:
+    inner = exc.exception()
+    return isinstance(inner, TimeoutError | MemoryError | RecursionError) or "suspension limit" in str(inner)
 
 
 def script_summary(result: ScriptResult) -> dict[str, Any]:

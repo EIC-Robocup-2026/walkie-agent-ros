@@ -55,9 +55,18 @@ def script_record(code: str, result: ScriptResult) -> dict[str, Any]:
         "calls": result.calls,
         "shelf_used": result.shelf_used,
         "shelf_raised": result.shelf_raised,
+        "returned": result.returned,
+        "raised": result.raised,
         "saved": result.saved,
         "refused": result.refused,
     }
+
+
+def _proven(scripts: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """The function versions that returned in an episode, and that nothing raised through in it."""
+    returned = {version for script in scripts for version in script["returned"].items()}
+    raised = {version for script in scripts for version in script["raised"].items()}
+    return dict(sorted(returned - raised))
 
 
 def _how_it_ended_badly(state: TaskState) -> str | None:
@@ -81,7 +90,9 @@ def _how_it_ended_badly(state: TaskState) -> str | None:
 def ground_truth(shelf: Shelf | None = None) -> Scorer:
     """Score from the snapshots and how the episode ended.
 
-    A success marks the shelf functions it used or saved as verified.
+    A success marks each function version that ran and returned in it as verified.
+    A function it saved or loaded and never ran earns nothing, and neither does one
+    that raised, even if its caller caught that.
     """
 
     @scorer(metrics=[mean()], name=SCORER)
@@ -95,10 +106,7 @@ def ground_truth(shelf: Shelf | None = None) -> Scorer:
             if ended_badly:
                 ok, why = False, ended_badly
             if ok and shelf is not None:
-                scripts = state.store.get("scripts", [])
-                shelf.mark_verified(
-                    sorted({name for s in scripts for name in (*s["shelf_used"], *s["saved"])})
-                )
+                shelf.mark_verified(_proven(state.store.get("scripts", [])))
             return Score(
                 value=1.0 if ok else 0.0,
                 explanation=why,

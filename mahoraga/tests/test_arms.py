@@ -275,14 +275,40 @@ def test_an_episode_that_never_stops_is_ended_and_scored(gated, monkeypatch):
     assert sample.scores["ground_truth"].value == 0.0
 
 
+def test_a_provider_error_ends_the_sample_after_one_attempt(gated):
+    """A second attempt would replay the script's ledger events, with its usage dropped from the log."""
+    _verified_shelf()
+    record = _first("talk", greet=False)
+    n = _index(record)
+    gated(commands("trial", n))
+
+    def reply(messages, *_):
+        if any(message.role == "tool" for message in messages):
+            raise ValueError("The provider fell over.")
+        asked = next(message.text for message in messages if message.role == "user")
+        return ModelOutput.for_tool_call(MOCK, "run_script", {"code": "speak_up()"}) if asked == record["text"] else _done()
+
+    log = run_episodes(["C"], n, model=get_model(MOCK, custom_outputs=reply, memoize=False), max_samples=1)[0]
+
+    sample = next(sample for sample in log.samples if sample.id == record["seed"])
+    assert "The provider fell over." in sample.error.message
+    assert not sample.error_retries
+    assert Shelf().counts()["speak_up"]["run"] == 1
+
+
 class _FakeProvider(BaseHTTPRequestHandler):
     seen: list[dict] = []
+    failures: int = 0
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         type(self).seen.append(
             {"path": self.path, "auth": self.headers["Authorization"], "body": body}
         )
+        if type(self).failures > 0:
+            type(self).failures -= 1
+            self.send_error(500)
+            return
         answer = json.dumps(
             {
                 "id": "chatcmpl-1",
@@ -309,16 +335,16 @@ class _FakeProvider(BaseHTTPRequestHandler):
         pass
 
 
-def test_a_model_id_goes_to_the_base_url_with_the_key_from_the_environment(gated, monkeypatch):
-    """The whole route of a real run, against a local stand-in for OpenRouter."""
+def _run_on_the_fake_provider(gated, monkeypatch, *, failures=0):
     server = HTTPServer(("127.0.0.1", 0), _FakeProvider)
     Thread(target=server.serve_forever, daemon=True).start()
     _FakeProvider.seen.clear()
+    _FakeProvider.failures = failures
     monkeypatch.setenv("OPENAI_API_KEY", "fake-key-for-test")
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     gated(commands("trial", 1))
     try:
-        log = run_episodes(
+        return run_episodes(
             ["A"],
             1,
             model="acme/some-model:nitro",
@@ -328,6 +354,22 @@ def test_a_model_id_goes_to_the_base_url_with_the_key_from_the_environment(gated
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_transient_provider_error_is_retried_inside_the_model_call(gated, monkeypatch):
+    """With no sample retry, the model's own retries are what a 500 meets. Inspect waits about 3 s."""
+    log = _run_on_the_fake_provider(gated, monkeypatch, failures=1)
+
+    sample = log.samples[0]
+    assert len(_FakeProvider.seen) == 2
+    assert sample.error is None
+    assert not sample.error_retries
+    assert "ground_truth" in sample.scores
+
+
+def test_a_model_id_goes_to_the_base_url_with_the_key_from_the_environment(gated, monkeypatch):
+    """The whole route of a real run, against a local stand-in for OpenRouter."""
+    log = _run_on_the_fake_provider(gated, monkeypatch)
 
     assert log.status == "success", log.error
     assert log.samples[0].error is None

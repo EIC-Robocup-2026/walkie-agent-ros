@@ -138,7 +138,8 @@ def run_episodes(
 
     Raises GateError before any arm starts unless the gate covers the data, and
     ValueError for an unknown arm or a count below 1. A sample that errors, such as
-    on a provider failure, stays unscored in its log, and the run goes on.
+    on a provider failure past the model's retries, stays unscored in its log with
+    no second attempt, and the run goes on.
     """
     if commands < 1:
         raise ValueError(f"The number of commands must be at least 1, not {commands}.")
@@ -166,7 +167,10 @@ def run_episodes(
                 parallel_tool_calls=False,
                 max_samples=max_samples,
                 fail_on_error=False,
-                retry_on_error=2,
+                # A sample retry would replay the shelf's ledger and drop the failed
+                # attempt's usage. A transient provider error is retried here instead,
+                # by the model call, inside the same attempt.
+                retry_on_error=0,
                 max_retries=3,
                 timeout=120,
                 score_display=False,

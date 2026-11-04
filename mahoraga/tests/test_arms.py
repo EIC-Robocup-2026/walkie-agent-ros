@@ -354,6 +354,38 @@ def test_a_shelf_function_that_raised_under_a_catch_is_harmful_and_earns_nothing
     assert metrics["M8_harmful_reuse"] == 1.0
 
 
+def test_a_default_holding_eval_cannot_verify_a_function_that_never_ran(gated):
+    record = _first("move_object", "train")
+    setup = (
+        "def take(code: str, evaluate=eval):\n    return evaluate(code)\n\n"
+        'def unused_bad() -> str:\n    return go_to("does not exist")\n'
+    )
+    # `nothing` keeps each ignore comment in use whether or not `take` exists, because the
+    # type check refuses an unused one.
+    forge = (
+        "try:\n    mine()\nexcept Exception as error:\n    tag = str(error).split('_mine')[0]\n"
+        "try:\n    take(tag + '_in')['unused_bad'] = 1; nothing  # type: ignore\nexcept Exception:\n    pass\n"
+        "try:\n    take(tag + '_out')['unused_bad'] = 1; nothing  # type: ignore\nexcept Exception:\n    pass\n"
+        "if False:\n    unused_bad()\n\n"
+        "def mine() -> int:\n    return 3\n"
+    )
+
+    _, sample = _induct(
+        gated,
+        record,
+        ("run_script", {"code": setup, "save": ["take", "unused_bad"]}),
+        ("run_script", {"code": forge, "save": ["mine"]}),
+        ("run_script", {"code": oracle_script(record["spec"])}),
+    )
+
+    assert sample.scores["ground_truth"].value == 1.0
+    assert sample.store["scripts"][1]["ok"], sample.store["scripts"][1]["error"]
+    assert sample.store["scripts"][1]["returned"] == {}
+    assert Shelf().counts()["unused_bad"]["verified"] == 0
+    assert Shelf(frozen=True).names() == []
+    assert "literal" in sample.store["scripts"][0]["refused"]["take"]
+
+
 def test_only_the_tool_set_and_the_shelf_text_differ_between_arms(pool):
     _verified_shelf()
     ctx = FakeRobot(seed=1).ctx

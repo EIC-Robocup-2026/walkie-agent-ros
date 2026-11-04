@@ -22,6 +22,8 @@ from typing import Any
 from mahoraga import home
 
 LEDGER = "ledger.jsonl"
+# The loader defines these itself, so a saved function under one could not run as saved.
+SHADOWED = frozenset({"locals", "eval", "exec"})
 
 
 def source_sha(source: str) -> str:
@@ -48,6 +50,23 @@ def top_level_defs(code: str) -> dict[str, ast.FunctionDef]:
 def definition_source(code: str, node: ast.FunctionDef) -> str:
     """A definition's text, as its file on the shelf holds it."""
     return ast.get_source_segment(code, node) + "\n"
+
+
+def _defaults_are_literal(node: ast.FunctionDef) -> bool:
+    """Whether every parameter default is plain data, as evidence's docstring explains.
+
+    A call is refused by hand, because literal_eval accepts `set()`, and in the shelf's
+    feed that would run a saved function named `set`.
+    """
+    # kw_defaults holds None for a keyword-only parameter that has no default.
+    for default in [*node.args.defaults, *filter(None, node.args.kw_defaults)]:
+        if any(isinstance(part, ast.Call) for part in ast.walk(default)):
+            return False
+        try:
+            ast.literal_eval(default)
+        except (ValueError, TypeError):
+            return False
+    return True
 
 
 class Shelf:
@@ -115,10 +134,12 @@ class Shelf:
             node = defs.get(name)
             if node is None:
                 refused[name] = "No top-level function has this name."
-            elif name in reserved:
+            elif name in reserved or name in SHADOWED:
                 refused[name] = "This name belongs to a built-in function."
             elif node.decorator_list:
                 refused[name] = "A decorated function cannot be saved."
+            elif not _defaults_are_literal(node):
+                refused[name] = "A saved function's parameter defaults must be literal values."
             else:
                 chosen[name] = definition_source(code, node)
         problem = check("\n".join(chosen.values())) if chosen else None

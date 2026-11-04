@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 import mahoraga
-from mahoraga.driver import ScriptRunner
+from mahoraga.driver import ScriptRunner, script_summary
 from mahoraga.shelf import Shelf
 
 FETCH = 'def to_shelf() -> str:\n    """Drive to the shelf."""\n    return go_to("shelf")\n\nto_shelf()'
@@ -86,6 +86,92 @@ def test_save_refuses_what_could_not_stand_on_the_shelf(shelf_runner, shelf, fns
     assert result.ok, result.error
     assert result.saved == []
     assert reason in result.refused[name]
+    assert shelf.names() == []
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        "x=helper",
+        "x=eval",
+        "x=len('a')",
+        "x=set()",
+        "x=(1, set())",
+        "x=lambda: 1",
+        "x=str.upper",
+        "x=[eval]",
+        "x=(1, eval)",
+        "x={'key': eval}",
+        "x={[]: 1}",
+        "x=1 + 1",
+        "x, y=eval",
+        "x=1, y=eval",
+        "x=eval, /",
+        "x=1, /, y=eval",
+        "*, x=eval",
+        "*, x, y=eval",
+        "*, x=eval, y",
+        "x=1, *, y=2, z=eval",
+    ],
+)
+def test_save_refuses_a_parameter_default_that_is_not_a_literal(shelf, parameters):
+    saved, refused = shelf.save(f"def kept({parameters}):\n    return 1\n", ["kept"])
+
+    assert saved == []
+    assert "literal" in refused["kept"]
+    assert shelf.names() == []
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        "x=3",
+        "x=-1",
+        "x=1.5",
+        "x='x'",
+        "x=None",
+        "x=True",
+        "x=(1, 2)",
+        "x=[]",
+        "x={}",
+        "x=[1, ('a', None)]",
+        "x, y=1",
+        "x=1, /, y=2",
+        "*, x",
+        "*, x, y=1",
+        "*, x=1, y",
+        "x=1, *, y, z=2",
+    ],
+)
+def test_save_keeps_a_function_whose_defaults_are_all_literal(shelf, parameters):
+    assert shelf.save(f"def kept({parameters}):\n    return 1\n", ["kept"]) == (["kept"], {})
+
+
+def test_a_refused_default_runs_as_written_and_tells_the_model_why(shelf_runner, shelf, fns):
+    code = "def helper() -> int:\n    return 1\n\ndef uses(fn=helper) -> int:\n    return fn()\n\nuses()"
+
+    result = shelf_runner.run(code, fns, save=["helper", "uses"])
+
+    assert (result.ok, result.output) == (True, 1), result.error
+    assert result.saved == ["helper"]
+    assert script_summary(result)["not_saved"] == {"uses": "A saved function's parameter defaults must be literal values."}
+    assert shelf.names() == ["helper"]
+
+
+def test_a_literal_default_still_applies_when_the_function_runs_from_the_shelf(shelf_runner, fns):
+    shelf_runner.run("def offset(n: int = -1, *, by: int = 2) -> int:\n    return n + by\n", fns, save=["offset"])
+
+    result = shelf_runner.run("offset() + offset(3, by=4)", fns)
+
+    assert (result.output, result.shelf_used) == (8, ["offset"]), result.error
+
+
+@pytest.mark.parametrize("name", ["locals", "eval", "exec"])
+def test_save_refuses_a_name_the_loader_defines(shelf, name):
+    saved, refused = shelf.save(f"def {name}() -> int:\n    return 73\n", [name])
+
+    assert saved == []
+    assert "built-in" in refused[name]
     assert shelf.names() == []
 
 

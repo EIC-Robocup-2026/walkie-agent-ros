@@ -27,7 +27,11 @@ def _parser() -> argparse.ArgumentParser:
     gate.add_argument("--no-bwrap", action="store_true", help="Run workers outside bwrap, on a machine without it.")
 
     run = commands.add_parser("run", help="Run N commands of the chosen arms. This calls a real LLM.")
-    run.add_argument("--arms", required=True, help=f"Comma-separated, from {', '.join((*ARMS, INDUCT))}.")
+    run.add_argument(
+        "--arms",
+        required=True,
+        help=f"Comma-separated, from {', '.join(ARMS)}. Or {INDUCT} alone, with --split train.",
+    )
     run.add_argument("--commands", type=int, required=True, help="How many commands. There is no default on purpose.")
     run.add_argument("--epochs", type=int, default=1)
     run.add_argument("--split", choices=SPLITS, default="trial")

@@ -1,7 +1,7 @@
 """The metrics read what the logs hold, and the paired statistics hold on known inputs."""
 
 import pytest
-from inspect_ai.model import ModelOutput, get_model
+from inspect_ai.model import ModelOutput, ModelUsage, get_model
 
 from mahoraga.commands import commands
 from mahoraga.gym import run_episodes
@@ -100,6 +100,141 @@ def test_the_report_compares_arms_by_command(gated, tmp_path):
     assert result["arms"]["B"]["M1_success"] == 1.0
     assert result["against_baseline"]["B"]["diff"] == 1.0
     assert result["against_baseline"]["B"]["commands"] == 1
+    assert result["warning"] is None
+    assert result["against_baseline"]["B"]["complete"] is True
+
+
+def _used(output):
+    output.usage = ModelUsage(input_tokens=100, output_tokens=1, total_tokens=101)
+    return output
+
+
+def _errors_after_its_script(code):
+    """A model that runs `code`, spending tokens, and then fails on every later call."""
+
+    def reply(messages, *_):
+        if any(message.role == "tool" for message in messages):
+            raise ValueError("A harmless injected provider failure.")
+        return _used(ModelOutput.for_tool_call(MOCK, "run_script", {"code": code}))
+
+    return get_model(MOCK, custom_outputs=reply, memoize=False)
+
+
+def _one_success_two_errors(gated):
+    """One command's three epochs. The log is built from real runs, since a mock cannot fail on one epoch only."""
+    record = commands("trial", 1)[0]
+    gated([record])
+    code = oracle_script(record["spec"])
+    good = run_episodes(["B"], 1, model=_mock(("run_script", {"code": code})), max_samples=1)[0]
+    bad = run_episodes(["B"], 1, model=_errors_after_its_script(code), max_samples=1)[0]
+    assert bad.samples[0].error is not None
+    assert bad.samples[0].model_usage
+    log = good.model_copy(deep=True)
+    log.samples = [good.samples[0], bad.samples[0], bad.samples[0].model_copy(deep=True)]
+    for epoch, sample in enumerate(log.samples, 1):
+        sample.epoch = epoch
+    log.eval.config.epochs = 3
+    return record, log
+
+
+def test_an_errored_epoch_stays_in_the_denominator_and_its_usage_counts(gated):
+    record, log = _one_success_two_errors(gated)
+    tokens = sum(u.input_tokens + u.output_tokens for s in log.samples for u in s.model_usage.values())
+    good_tokens = sum(u.input_tokens + u.output_tokens for u in log.samples[0].model_usage.values())
+
+    metrics = arm_metrics(log)
+
+    assert tokens >= good_tokens + 2 * 101
+    assert by_command(log) == {record["seed"]: pytest.approx(1 / 3)}
+    assert (metrics["episodes"], metrics["errored"], metrics["never_ran"]) == (3, 2, 0)
+    assert metrics["M1_success"] == pytest.approx(1 / 3)
+    assert metrics["M3_tokens_in"] + metrics["M3_tokens_out"] == tokens
+    assert metrics["M3_tokens_per_success"] == tokens
+    assert metrics["complete"] is False
+
+
+def test_an_errored_episode_still_counts_in_the_script_metrics_and_rounds(gated):
+    gated(commands("trial", 1))
+    code = 'open("/etc/passwd")  # type: ignore'
+
+    log = run_episodes(["B"], 1, model=_errors_after_its_script(code), max_samples=1)[0]
+
+    assert log.samples[0].error is not None
+    metrics = arm_metrics(log)
+    assert metrics["M2_rounds"] == 2
+    assert metrics["M6_ok_after_one_repair"] == 0.0
+    assert metrics["M9_refused_calls"] == 1
+
+
+def test_an_episode_that_never_ran_counts_as_a_failure(gated):
+    record = commands("trial", 1)[0]
+    gated([record], 2)
+    code = oracle_script(record["spec"])
+    log = run_episodes(
+        ["B"], 1, epochs=2, model=_always_runs(code), max_samples=1
+    )[0]
+    assert by_command(log)[record["seed"]] == 1.0
+    log.samples = log.samples[:1]
+    log.status = "cancelled"
+
+    metrics = arm_metrics(log)
+
+    assert by_command(log)[record["seed"]] == pytest.approx(0.5)
+    assert (metrics["episodes"], metrics["errored"], metrics["never_ran"]) == (2, 0, 1)
+    assert metrics["complete"] is False
+
+
+def _always_runs(code):
+    def reply(messages, *_):
+        if any(message.role == "tool" for message in messages):
+            return ModelOutput.from_content(MOCK, "Done.")
+        return ModelOutput.for_tool_call(MOCK, "run_script", {"code": code})
+
+    return get_model(MOCK, custom_outputs=reply, memoize=False)
+
+
+def test_a_log_that_did_not_end_cleanly_is_not_complete(gated):
+    record = commands("trial", 1)[0]
+    gated([record])
+    log = run_episodes(["B"], 1, model=_always_runs(oracle_script(record["spec"])), max_samples=1)[0]
+    assert arm_metrics(log)["complete"] is True
+
+    log.status = "cancelled"
+
+    assert arm_metrics(log)["complete"] is False
+
+
+def test_the_report_says_plainly_when_a_comparison_is_incomplete(gated, tmp_path):
+    record = commands("trial", 1)[0]
+    gated([record])
+    code = oracle_script(record["spec"])
+    run_episodes(["A"], 1, model=_mock(), max_samples=1, log_dir=tmp_path)
+    run_episodes(["B"], 1, model=_errors_after_its_script(code), max_samples=1, log_dir=tmp_path)
+
+    result = report(tmp_path)
+
+    assert "Incomplete" in result["warning"]
+    assert "B: 1 of 1 errored" in result["warning"]
+    assert result["arms"]["A"]["complete"] is True
+    assert result["arms"]["B"]["complete"] is False
+    assert result["arms"]["B"]["M1_success"] == 0.0
+    assert result["arms"]["B"]["M3_tokens_in"] > 0
+    assert result["against_baseline"]["B"]["complete"] is False
+    assert result["against_baseline"]["B"]["commands"] == 1
+
+
+def test_a_comparison_over_different_commands_is_not_complete(gated, tmp_path):
+    gated(commands("trial", 2))
+    done = get_model(MOCK, custom_outputs=lambda *_: ModelOutput.from_content(MOCK, "Done."), memoize=False)
+    run_episodes(["A"], 2, model=done, max_samples=1, log_dir=tmp_path)
+    run_episodes(["B"], 1, model=done, max_samples=1, log_dir=tmp_path)
+
+    result = report(tmp_path)
+
+    assert result["arms"]["A"]["complete"] is True
+    assert result["arms"]["B"]["complete"] is True
+    assert result["against_baseline"]["B"]["commands"] == 1
+    assert result["against_baseline"]["B"]["complete"] is False
 
 
 def test_by_command_means_the_epochs(gated):

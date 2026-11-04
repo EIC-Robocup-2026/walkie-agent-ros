@@ -26,6 +26,7 @@ Spec kinds, where a person selector is {"room": room, "name": name} or
 import random
 import re
 from collections.abc import Callable, Mapping
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -46,8 +47,11 @@ UNSUPPORTED = frozenset(
         "meetNameAtLocThenFindInRm",
     }
 )
-# Disjoint seed ranges, so no command is both in training and held out.
+# Disjoint seed ranges. Two seeds can still draw one sentence, so commands() also
+# keeps the text of the standard training set out of the held-out split.
 SPLITS = {"trial": 0, "train": 100_000, "heldout": 200_000}
+# The size of the plan's induction run.
+TRAIN_COMMANDS = 300
 # The generator's own names: "" is the competition's mix of both groups.
 CATEGORIES = {"mixed": "", "objects": "objects", "people": "people"}
 
@@ -235,19 +239,29 @@ def generator() -> RecordingGenerator:
     return RecordingGenerator(parse_data(str(DATA_DIR)))
 
 
+@lru_cache
+def _training_texts(category: str) -> frozenset[str]:
+    return frozenset(record["text"] for record in commands("train", TRAIN_COMMANDS, category))
+
+
 def commands(split: str, n: int, category: str = "mixed") -> list[dict[str, Any]]:
     """The first `n` usable commands of a split, each a record plus its spec.
 
     The seed is the sample's id. A larger `n` extends a smaller one, so a small
-    slice's commands are the first ones of the full trial.
+    slice's commands are the first ones of the full trial. The held-out split skips
+    any sentence in the standard training set, of the mix or of `category`, so it
+    tests sentences an induction run on that set never saw. A longer training run
+    than TRAIN_COMMANDS gets no such promise.
     """
     made = generator()
+    held_out = split == "heldout"
+    seen = _training_texts("mixed") | _training_texts(category) if held_out else frozenset()
     found: list[dict[str, Any]] = []
     seed = SPLITS[split]
     while len(found) < n:
         record = made.generate(seed, CATEGORIES[category])
         spec = parse(record)
-        if spec is not None:
+        if spec is not None and record["text"] not in seen:
             found.append({**record, "spec": spec})
         seed += 1
     return found

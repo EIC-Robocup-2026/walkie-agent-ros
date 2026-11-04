@@ -96,8 +96,8 @@ spike_own, the 39 todo checks, all in T unless marked. CHANGED entries say how.
   R8d limit_first overruns (control)  R test_control_with_the_limit_first_gate_calls_overrun_it
   R8e two calls, no channel conflict  test_two_successful_calls_in_one_message_do_not_collide
   R8f control: they overlap otherwise R test_control_without_max_concurrency_calls_overlap
-  R8g CHANGED: only the duplicate update is refused; the first is accepted.
-                                      test_only_the_first_update_todos_call_in_a_message_is_applied
+  R8g CHANGED: only the duplicate update is refused, and it skips the later calls; the
+      first is accepted.              test_only_the_first_update_todos_call_in_a_message_is_applied
   R8h OBSOLETE as a crash reproduction of the old spike; replaced by R8e's no-collision test.
   R8i OBSOLETE as a crash reproduction of the old spike; replaced by R8g's test.
   Schema flat tool schemas            test_the_tool_schemas_are_flat_and_hide_the_injected_runtime
@@ -365,21 +365,26 @@ def test_a_failed_say_goes_back_to_the_model_and_the_next_message_runs():
     assert len(stack.model.received) == 3
 
 
-def test_a_refused_update_todos_skips_later_calls_but_a_duplicate_one_does_not():
+def test_a_refused_or_duplicate_update_todos_skips_later_calls():
     refused = make_stack(ai(todo_call(update("t9", status="pending")), drive("later")), DONE)
     refused.run()
     assert refused.answer("later").content.startswith("Not run: update_todos failed earlier")
     assert refused.verbs() == []
 
     duplicate = make_stack(
-        ai(todo_call(add("One")), todo_call(add("Two"), call_id="u2"), drive("later")),
+        ai(
+            todo_call(add("One")),
+            todo_call(add("Two"), call_id="u2"),
+            call("say", {"text": "Both steps were added."}, "later"),
+        ),
         DONE,
         DONE,
         DONE,
     )
     duplicate.run()
     assert duplicate.answer("u2").status == "error"
-    assert duplicate.answer("later").status == "success"
+    assert duplicate.answer("later").content.startswith("Not run: update_todos failed earlier")
+    assert duplicate.robot.said == []
     assert [i["content"] for i in duplicate.items()] == ["One"]
 
 

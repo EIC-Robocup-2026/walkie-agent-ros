@@ -24,7 +24,8 @@ from langgraph.errors import GraphRecursionError
 from pydantic_monty import Monty
 
 from mahoraga import home
-from mahoraga.arms import SCRIPT_ARMS, ArmSetup, require_arm
+from mahoraga.arms import INDUCT, SCRIPT_ARMS, ArmSetup, require_arm
+from mahoraga.commands import SPLITS
 from mahoraga.commands import commands as generated_commands
 from mahoraga.gate import require_gate
 from mahoraga.sandbox import open_pool
@@ -48,7 +49,13 @@ def gpsr_task(
     pool: Monty | None = None,
     shelf_root: str | None = None,
 ) -> Task:
-    """One arm over `records`. Raises GateError unless the oracle gate covers them."""
+    """One arm over `records`.
+
+    Raises GateError unless the oracle gate covers them, and ValueError for induction
+    on anything but training commands, whose answers a later arm would then be handed.
+    """
+    if arm == INDUCT and not all(SPLITS["train"] <= record["seed"] < SPLITS["heldout"] for record in records):
+        raise ValueError(f"{INDUCT} runs only on commands of the train split.")
     require_gate(records, epochs)
     setup = ArmSetup(arm, pool=pool, shelf_root=shelf_root)
     return Task(
@@ -137,13 +144,20 @@ def run_episodes(
     """Run `commands` commands for each of `arms`, `epochs` times each, and return the logs.
 
     Raises GateError before any arm starts unless the gate covers the data, and
-    ValueError for an unknown arm or a count below 1. A sample that errors, such as
-    on a provider failure, stays unscored in its log, and the run goes on.
+    ValueError for an unknown arm, a count below 1, or induction that is not alone on
+    the train split. So the plan's flow takes two runs: induct on train, which fills
+    the shelf, then the other arms on held-out commands, each from a shelf frozen as
+    it starts. A sample that errors, such as on a provider failure past the model's
+    retries, stays unscored in its log with no second attempt, and the run goes on.
     """
     if commands < 1:
         raise ValueError(f"The number of commands must be at least 1, not {commands}.")
     for arm in arms:
         require_arm(arm)
+    if INDUCT in arms and set(arms) != {INDUCT}:
+        raise ValueError(f"Run {INDUCT} alone, then the other arms from the shelf it leaves.")
+    if INDUCT in arms and split != "train":
+        raise ValueError(f"{INDUCT} runs only on the train split, not {split}.")
     records = generated_commands(split, commands, category)
     require_gate(records, epochs)
     resolved = resolve_model(model, base_url)
@@ -166,7 +180,10 @@ def run_episodes(
                 parallel_tool_calls=False,
                 max_samples=max_samples,
                 fail_on_error=False,
-                retry_on_error=2,
+                # A sample retry would replay the shelf's ledger and drop the failed
+                # attempt's usage. A transient provider error is retried here instead,
+                # by the model call, inside the same attempt.
+                retry_on_error=0,
                 max_retries=3,
                 timeout=120,
                 score_display=False,

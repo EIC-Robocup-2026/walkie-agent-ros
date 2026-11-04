@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from typing import Any
 
 from inspect_ai.dataset import MemoryDataset, Sample
+from inspect_ai.event import SampleLimitEvent
+from inspect_ai.log import transcript
 from inspect_ai.scorer import Score, Scorer, Target, mean, scorer
 from inspect_ai.solver import TaskState
 
@@ -53,13 +55,45 @@ def script_record(code: str, result: ScriptResult) -> dict[str, Any]:
         "calls": result.calls,
         "shelf_used": result.shelf_used,
         "shelf_raised": result.shelf_raised,
+        "returned": result.returned,
+        "raised": result.raised,
         "saved": result.saved,
         "refused": result.refused,
     }
 
 
+def _proven(scripts: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """The function versions that returned in an episode, and that nothing raised through in it."""
+    returned = {version for script in scripts for version in script["returned"].items()}
+    raised = {version for script in scripts for version in script["raised"].items()}
+    return dict(sorted(returned - raised))
+
+
+def _how_it_ended_badly(state: TaskState) -> str | None:
+    """Why an episode cannot count, whatever its final world shows.
+
+    A limit or a script cut off means the episode did not finish the work, even if
+    the world already looks right. A script that failed earlier and was recovered from
+    does not count against it, so only the last script's end matters.
+    """
+    for event in transcript().events:
+        if isinstance(event, SampleLimitEvent):
+            return f"A limit ended the episode: {event.message}"
+    if state.store.get("out_of_rounds"):
+        return "The episode ran out of rounds."
+    scripts = state.store.get("scripts", [])
+    if scripts and not scripts[-1]["ok"]:
+        return f"The last script did not run to completion: {scripts[-1]['error']}"
+    return None
+
+
 def ground_truth(shelf: Shelf | None = None) -> Scorer:
-    """Score from the snapshots. A success marks the shelf functions it used or saved as verified."""
+    """Score from the snapshots and how the episode ended.
+
+    A success marks each function version that ran and returned in it as verified.
+    A function it saved or loaded and never ran earns nothing, and neither does one
+    that raised, even if its caller caught that.
+    """
 
     @scorer(metrics=[mean()], name=SCORER)
     def factory() -> Scorer:
@@ -68,11 +102,11 @@ def ground_truth(shelf: Shelf | None = None) -> Scorer:
             if start is None or end is None:
                 return Score(value=0.0, explanation="The episode never started.")
             ok, why = check(spec_of(state), start, end)
+            ended_badly = _how_it_ended_badly(state) if ok else None
+            if ended_badly:
+                ok, why = False, ended_badly
             if ok and shelf is not None:
-                scripts = state.store.get("scripts", [])
-                shelf.mark_verified(
-                    sorted({name for s in scripts for name in (*s["shelf_used"], *s["saved"])})
-                )
+                shelf.mark_verified(_proven(state.store.get("scripts", [])))
             return Score(
                 value=1.0 if ok else 0.0,
                 explanation=why,

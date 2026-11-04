@@ -1,9 +1,12 @@
 """The driver refuses what is off the allow-list and enforces each budget."""
 
+import functools
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
+import mahoraga.driver as driver
 from mahoraga.driver import Budgets, ScriptRunner, allow_list, script_summary, stubs_for
 from walkie_agent.atomics import GPSR, go_to
 from walkie_agent.capabilities.fake import FakeRobot
@@ -174,6 +177,45 @@ def test_the_wall_budget_stops_a_slow_script_and_the_pool_stays_usable(pool):
     assert (result.ok, result.phase) == (False, "budget")
     assert "wall clock" in result.error
     assert ScriptRunner(pool).run("1 + 1", fns).output == 2
+
+
+@pytest.fixture
+def slow_go_to(monkeypatch, robot, fns):
+    """The driver's clock moves only when go_to runs, so a loaded machine cannot change a result."""
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(driver, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    go_to_on_robot = fns["go_to"]
+
+    @functools.wraps(go_to_on_robot)
+    def slow(*args, **kwargs):
+        clock.now += 31.0
+        return go_to_on_robot(*args, **kwargs)
+
+    return {**fns, "go_to": slow}
+
+
+def test_a_last_call_that_overruns_the_wall_budget_fails_it(runner, slow_go_to, robot):
+    result = runner.run('go_to("shelf")', slow_go_to)
+
+    assert (result.ok, result.phase) == (False, "budget")
+    assert "wall clock" in result.error
+    # A call already running finishes first: the budget does not interrupt it.
+    assert [(call["tool"], call["status"]) for call in result.calls] == [("go_to", "ok")]
+    assert robot.snapshot()["at"] == "shelf"
+
+
+def test_no_host_call_runs_after_the_wall_budget_is_spent(runner, slow_go_to, robot):
+    result = runner.run('go_to("shelf")\nsay("too late")', slow_go_to)
+
+    assert (result.ok, result.phase) == (False, "budget")
+    assert robot.said == []
+
+
+def test_a_run_inside_the_wall_budget_is_not_failed_by_the_check(runner, slow_go_to, robot):
+    result = runner.run('say("in time")', slow_go_to)
+
+    assert (result.ok, result.phase) == (True, "ok")
+    assert robot.said == ["in time"]
 
 
 def test_a_recursion_bomb_is_a_spent_budget(runner, fns):

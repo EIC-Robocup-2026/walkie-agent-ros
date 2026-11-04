@@ -271,6 +271,27 @@ def test_bind_lets_a_step_error_through(robot):
     assert caught.value.code is ErrorCode.NOT_FOUND
 
 
+# A stop
+
+
+@pytest.mark.parametrize(
+    "start",
+    [
+        lambda robot: bind(say, robot.ctx)("Too late."),
+        lambda robot: as_tool(say, robot.ctx).invoke({"text": "Too late."}),
+        lambda robot: bind(list_places, robot.ctx)(),
+    ],
+    ids=["bind", "tool", "read"],
+)
+def test_nothing_starts_once_the_token_is_set(robot, start):
+    robot.cancel.cancel()
+    with pytest.raises(StepError) as caught:
+        start(robot)
+    assert caught.value.code is ErrorCode.CANCELLED
+    assert robot.said == []
+    assert robot.calls == []
+
+
 def test_bind_works_with_validate_call_as_the_monty_driver_will_use_it(robot):
     call = pydantic.validate_call(bind(move_relative, robot.ctx))
     assert call(forward_m="0.5").startswith("Moved 0.5 m forward")

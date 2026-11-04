@@ -149,14 +149,14 @@ def test_counts_follow_the_ledger(shelf_runner, shelf, fns):
     shelf_runner.run("def value() -> int:\n    return 1\n\nvalue()", fns, save=["value"])
     shelf_runner.run("value()", fns)
     shelf_runner.run('value()\ngo_to("garage")', fns)
-    shelf.mark_verified(["value"])
+    shelf.mark_verified(shelf.versions())
 
     assert shelf.counts() == {"value": {"saved": 1, "run": 1, "fail": 1, "verified": 1}}
 
 
 def test_a_rewrite_starts_its_counts_again_but_keeps_the_churn(shelf_runner, shelf, fns):
     shelf_runner.run("def value() -> int:\n    return 1\n\nvalue()", fns, save=["value"])
-    shelf.mark_verified(["value"])
+    shelf.mark_verified(shelf.versions())
     shelf_runner.run("def value() -> int:\n    return 2\n\nvalue()", fns, save=["value"])
 
     assert shelf.counts() == {"value": {"saved": 2, "run": 0, "fail": 0, "verified": 0}}
@@ -165,10 +165,11 @@ def test_a_rewrite_starts_its_counts_again_but_keeps_the_churn(shelf_runner, she
 def test_a_frozen_shelf_offers_only_what_was_verified_when_it_froze(tmp_path, shelf_runner, shelf, fns):
     code = "def kept() -> int:\n    return 1\n\ndef unproven() -> int:\n    return 2\n"
     shelf_runner.run(code, fns, save=["kept", "unproven"])
-    shelf.mark_verified(["kept"])
+    versions = shelf.versions()
+    shelf.mark_verified({"kept": versions["kept"]})
 
     frozen = Shelf(shelf.root, frozen=True)
-    shelf.mark_verified(["unproven"])
+    shelf.mark_verified({"unproven": versions["unproven"]})
 
     assert frozen.names() == ["kept"]
     assert "unproven" not in frozen.examples()

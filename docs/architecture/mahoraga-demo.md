@@ -127,7 +127,8 @@ class FakeRobot:  # implements Base, Speech, Vision and Arms
                  drive_s: float = 0.0) -> None: ...
     ctx: Ctx
     cancel: CancelToken
-    calls: list[dict[str, Any]]   # {"verb": "base.go_to", "args": {...}, "error": None or a code}
+    calls: list[dict[str, Any]]   # {"verb": "base.go_to", "args": {...}, "error": None or a code,
+                                  #  "at": place or None, "room": room}, and for a lookup "returned": [ids]
     said: list[str]
     faults: dict[str, StepError]  # verb name -> the error every call to it raises; not base.stop
     def snapshot(self) -> dict[str, Any]: ...  # JSON-able copy for checkers: at, room, pose,
@@ -152,6 +153,11 @@ A place whose `room` is its own name is a room. An object's `at` is a place,
 what is at its place, or at every place in its room while it stands at the room
 itself, and the people in its room. `world=None` builds `chula_pat14_6(seed)`,
 and `drive_s` makes each drive take real seconds.
+
+A call record's `at` and `room` are where the robot was as that call ended. `at` is
+`None` once a relative move has left its place by more than 1 m, and `room` is then
+the room of the nearest place. A successful `vision.objects` or `vision.people`
+record also holds the ids it returned in `returned`.
 
 The constructor raises `ValueError` for a broken world, naming the record and
 field: an unknown start, a place or person in an unknown room, an object at
@@ -229,6 +235,7 @@ the fake world. MuJoCo validation and promotion are not built.
 | --- | --- |
 | `driver` | `ScriptRunner`, `Budgets`, `ScriptResult`, `allow_list`, `stubs_for`, `describe_functions`, `script_summary` |
 | `shelf` | `Shelf`: saved functions and `ledger.jsonl`, outside git |
+| `evidence` | `Watch`: which functions a run entered, returned from or raised through, from counters in the worker |
 | `sandbox` | `open_pool`, the Monty pool with each worker inside bwrap. It fails closed. |
 | `commands` | `RecordingGenerator`, `parse`, `commands(split, n, category)`, and the arena's names in `data/` |
 | `worlds` | `build_world(spec, seed)`, `world_seed(sample_id, epoch)` |
@@ -260,6 +267,13 @@ runs, it gets a type check against stubs made from the same signatures.
 | A bug in the host function | `RuntimeError("INTERNAL: tool failed with Type.")` |
 | A budget, by default 40 calls, 2 s a feed, 30 s of wall clock, 64 MiB or 4000 bytes printed | An error it cannot catch, which ends the run |
 
+The wall clock is checked after every host call and before a run reports success,
+so a last slow call that overruns fails the budget, and no host call starts after
+the budget is spent. A call already running still finishes first: nothing interrupts
+a host function, so a run can outlast its budget by one call. The script then gets
+up to one more feed's time to finish, with every further call refused, so that the
+evidence below stays readable.
+
 `ScriptResult.calls` is the ledger: one entry per call, with its status. The model
 sees only `script_summary(result)`.
 
@@ -272,6 +286,31 @@ tree. A run with `save=[names]` keeps top-level functions only if it succeeds. A
 frozen shelf fixes its callable set when it is built, to the functions verified by
 then. Only the scorer calls `mark_verified`, after a success.
 
+What a function earns comes from what it did at run time, never from its name in a
+script. `evidence.Watch` wraps each shelf function a script loads and each definition
+it may save, and counts entries and normal returns inside the worker:
+
+| Evidence | Means | Feeds |
+| --- | --- | --- |
+| Used | Entered at least once | `shelf_used`, run and fail events, M7 |
+| Raised | Entered more often than it returned: an exception crossed its boundary, even if a caller caught it, or the run ended inside it | `shelf_raised`, M8 |
+| Verified | Returned, never raised in that episode, and the episode scored 1 | The `verified` event |
+
+Each event carries the sha of the source that ran, so a rewrite starts with nothing.
+A function saved but never run stays unverified, so it stays off a frozen shelf. So
+does a verified function that names a saved function which never ran, because it
+could not stand alone without it. A definition the script bound more than once, or
+one that is not in `save`, goes unwatched and earns nothing, and a script's own
+definition is no use of the shelf.
+
+The counters' names carry a random token per run, and a script that loads or saves
+a function gets `locals`, `eval` and `exec` shadowed, so it cannot name or reach
+them. That holds against a careless or clever model, and it is no security boundary.
+Two limits come with it. A wrapper adds a frame, so recursion through a watched
+function reaches the depth limit in half the calls. If the counters cannot be read,
+after a worker crash or a script that keeps running well past its wall budget, the
+run has no evidence, so it earns nothing.
+
 ### Arms
 
 | Arm | The model gets |
@@ -283,8 +322,62 @@ then. Only the scorer calls `mark_verified`, after a success.
 | `D` | The per-step tools plus `BUNDLES` |
 | `induct` | `run_script` with `save`, on a writable shelf, for training only |
 
+`induct` runs alone and only on the train split. `run_episodes` and the CLI refuse
+anything else with a `ValueError`, and `gpsr_task` refuses it for commands outside
+that split, because a later arm's frozen shelf would then hold answers to the
+commands it is measured on.
+
 All arms share the prompt, the atomics and the eval's model, temperature and seed.
 One (command, epoch) is one seeded world, the same for every arm.
+
+An episode scores 1 only if its checker passes, no limit ended it (rounds, tokens or
+time), and on a script arm its last script ran to completion. So work done before a
+script is cut off, or before a limit, does not count. An earlier failed script the
+agent recovered from stays allowed.
+
+### Checkers
+
+`check(spec, start, end)` judges an episode from two snapshots and the records of
+its successful calls. Each record says where the robot was and what a lookup
+returned, so a check never rebuilds a trail from `go_to` calls, and a relative move
+counts for what it really did.
+
+| Kind | Passes when |
+| --- | --- |
+| `move_object` | An object of the wanted kind picked from the source ends at the destination |
+| `count_objects`, `best_object`, `count_people` | The answer is right after a look from there that returned what it is about |
+| `person_info` | The answer is right after a look in that room that returned the person |
+| `relay_info` | A look returned the source and a look in the recipient's room returned someone there, in either order, then the right answer is said in the recipient's room. A second look at the recipient is not needed |
+| `talk` | A lookup at the requested place returned the requested person, then a line is said in their room |
+| `escort` | That same lookup, then the greeting if asked for, then a move that reaches the destination. The robot may move on afterwards. A destination that is the named origin or holds it needs no further move |
+
+An answer is the first line that mentions a candidate after the last look that
+showed what it is about. That line must assert one distinct candidate, the right
+one. Later lines go unread, so "Task 99 is complete." after a correct count does not
+undo it. Looks that each show part of what is asked add up, and a later look at
+something else is not looking again.
+
+A candidate is a number for a count, the name of any object at that place for
+`best_object`, and a known value of the attribute for `person_info` and
+`relay_info`. Ordinary equivalents count for pose and gesture, so "seated" says
+sitting.
+
+Known limits, each pinned by a test or stated here because reading more would mean
+parsing language:
+
+- A correct answer followed by a correction still passes, whether or not the
+  correction names a candidate. A robot that changes its mind has to look again.
+- Negation is not read. "It is not the banana." counts as saying banana.
+- A true line with a second number or candidate fails, such as "There are two, one
+  apple and one banana" or "The banana is bigger than the apple". "One" counts as a
+  number even as a pronoun.
+- A look again at the same things needs an answer after it, even if an earlier
+  answer was right.
+- A shortened name such as "the plate" for "red plate" is not a candidate.
+- What a `talk` line says is not checked, so a refusal to the right person, found at
+  the right place, passes.
+- An escort cannot show that the person came along, since the fake's people do not
+  move. A `go_to` that leaves the robot where it stands counts as the move.
 
 ### The oracle gate
 
@@ -294,13 +387,21 @@ logs, for the same code and the same data.
 `run_gate` plays the oracle's scripts through the same driver, world builder and
 scorer an arm uses, twice, into `.eval` logs. It reads both back and compares them
 as JSON, with samples in a fixed order and without the fields in `gate.VOLATILE`:
-clocks, random ids and the log's location. The result lands in `<home>/gate/`.
+clocks, random ids and the log's location. A pass also needs every oracle script to
+have run to completion and no limit event. The result lands in `<home>/gate/`.
 
 `require_gate(records, epochs)` raises `GateError` unless passing results for the
 current `code_digest()` cover a digest of every (command, epoch, world) requested.
-The code digest covers the files `gate._digested_files()` lists, so changing a
-checker, the driver or `fake.py` means running the gate again. `gpsr_task` and
-`run_episodes` both call it. Arms, the report and the CLI are not digested.
+A result counts only if `passed` is true, `failures` is empty, its two pass digests
+are equal, and both logs exist and still hash as the gate recorded. This catches a
+stale, partial or hand-edited result made by mistake. It is no security boundary:
+nothing is signed. `gpsr_task` and `run_episodes` both call it.
+
+The code digest covers each file's repository path and content, for the files
+`gate._digested_files()` lists: every `mahoraga/*.py` except `report.py` and
+`__main__.py`, the data files, `errors.py`, `adapter.py`, `locations.py`, the
+capabilities and atomics packages, and `pixi.lock`. So an edit to any of them,
+related to the oracle or not, means running the gate again, which takes about a minute.
 
 ### Running it
 
@@ -329,7 +430,23 @@ The defaults are `deepseek/deepseek-v4.1-flash:nitro`, through OpenRouter at
 `--seed`, `--max-samples`, `--log-dir`, `--no-bwrap` and `--home`.
 
 The plan's R2 is then `run --arms induct --split train --commands 300`, followed by
-`run --arms A,B,C,C2,D --split heldout --commands 160 --epochs 3`.
+`run --arms A,B,C,C2,D --split heldout --commands 160 --epochs 3`. These are two runs
+on purpose, and each arm's shelf freezes as it starts. Generation keeps the splits
+apart: the seed ranges differ, and `commands("heldout", ...)` skips any
+sentence in the standard 300-command training set. A training run longer than that
+gets no such promise.
+
+An episode that errors, such as on a provider failure, gets no second attempt: a
+retry would replay the shelf's ledger and lose the failed attempt's usage. A transient
+provider error is retried inside the model call instead, so it costs no attempt. Two
+layers do that: the OpenAI client makes up to three requests, and Inspect repeats that
+up to three more times with backoff, so a provider that stays down sees up to twelve
+requests per model call. An episode that still errors, or never ran, stays in
+M1 as a failure, and the usage it logged counts towards tokens and cost. Rounds, wall
+time and the script metrics cover every episode logged. Any such episode sets the
+arm's `complete` to false, and that of each comparison with the arm. So does a
+comparison whose arms ran different commands. `report` then gives a plain `warning`,
+which is null only if every arm is complete.
 
 ## Runtime
 
@@ -406,7 +523,7 @@ model gets two tools beyond `tools`: `update_todos(ops)` and
 | --- | --- |
 | `ToolLog`, when configured | Logs every answer, refusals included |
 | `StopLatch` | Once the token is set: no model call, and every tool call refused |
-| `SerialGuard` | A failed call or a question skips the later calls of its message; only the first `update_todos` of a message runs |
+| `SerialGuard` | A failed call or a question skips the later calls of its message; only the first `update_todos` of a message runs, and a refused copy counts as a failed call |
 | `WalkieTodos` | The list, the reminder, the completion gate and the two tools |
 | `EndAfterQuestion` | Ends the run after a successful question |
 | `RepairHistory` | Answers calls left open by an earlier run and calls with unreadable arguments |
@@ -421,16 +538,20 @@ model gets two tools beyond `tools`: `update_todos(ops)` and
   `max_concurrency=1`, which is observed behaviour of the installed versions and not
   documented, so rerun `tests/test_runtime.py` on any dependency update.
 - **Stop.** A bare stop sets the token at once, which ends a drive through the verb and
-  refuses every remaining call of the run. It drops queued tasks but not a queued
-  reset. The Runner speaks `STOP_LINE` once through `ctx.speech.say` and logs it. A
-  later graph pass with no model call cancels the open steps and clears a waiting
-  question. The token stays set until the next task starts. A compound such as "stop
-  and come here" is an ordinary task, so it queues behind the active run.
+  refuses every remaining call of the run. `StopLatch` refuses a call before it is
+  dispatched. `as_tool`, `bind` and the two todo tools check the token again when the
+  body starts, for a stop that lands in between. A `say` already speaking is not cut
+  off. It drops queued tasks but not a queued reset. The Runner speaks `STOP_LINE` once
+  through `ctx.speech.say` and logs it under the session it was heard in. A later graph
+  pass with no model call cancels the open steps and clears a waiting question. The
+  token stays set until the next task starts. A compound such as "stop and come here"
+  is an ordinary task, so it queues behind the active run.
 - **Reset.** It cancels and drops the queue. After the active run has finished, it
   deletes the thread, starts a new session and publishes an empty list. A hung LLM call
   can delay this by up to the deadline.
 - **Shutdown.** It cancels, drops the queue, and waits for the active run and any stop
-  line. It returns False if the thread outlives `timeout`.
+  line. It returns False if the thread outlives `timeout`, and calling it again waits
+  again. From the moment it starts, `submit`, `stop` and `reset` raise.
 - **Failure.** An exception or a timeout ends that task only. The Runner logs it and
   sends `FAILURE_LINE` to `on_reply`, and the next task runs on the same checkpoint.
 - **Deadline.** It is cooperative: `asyncio.timeout` around the awaited call, which
@@ -479,8 +600,8 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
 - Four people templates are out: `guideClothPrsFromBeacToBeac`,
   `greetClothDscInRm`, `countClothPrsInRoom` and `meetNameAtLocThenFindInRm`.
 - `FakeRobot` has no follow verb and its people do not move, so follow and guide
-  are checked from the robot's trail. What a line says about "the time" is not
-  checked, and a relative move does not change the trail's place.
+  are checked from the robot's call records, and what a `talk` line says is not
+  checked. [Checkers](#checkers) lists the rules and the known limits.
 - The world builder renames the operator and takes them out of every pose and
   gesture, so no command's selector can match them.
 - M9 counts refused calls, since an escape would not show in a log. The bwrap

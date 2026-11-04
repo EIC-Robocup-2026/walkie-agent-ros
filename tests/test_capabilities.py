@@ -11,8 +11,10 @@ from walkie_agent.capabilities.guards import (
     MAX_MOVE_M,
     CancelToken,
     check_relative_move,
+    is_finite_number,
     relative_goal,
     require_finite,
+    require_text,
     require_timeout,
 )
 from walkie_agent.errors import ErrorCode, StepError
@@ -34,10 +36,29 @@ def test_require_finite_refuses_and_names_the_value(bad):
 
 
 def test_require_finite_passes_finite_values():
-    require_finite(a=0.0, b=-3.5)
+    require_finite(a=0.0, b=-3.5, c=2)
 
 
-@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf")])
+@pytest.mark.parametrize("bad", [True, False, "1", None, [], 10**400])
+def test_require_finite_refuses_what_is_not_a_number(bad):
+    assert not is_finite_number(bad)
+    assert code_of(require_finite, value=bad) is ErrorCode.REFUSED
+
+
+@pytest.mark.parametrize("bad", [None, 1, [], True])
+def test_require_text_refuses_what_is_not_a_string_and_names_it(bad):
+    with pytest.raises(StepError) as caught:
+        require_text(ok="fine", place=bad)
+    assert caught.value.code is ErrorCode.REFUSED
+    assert "place" in caught.value.message
+    assert "ok" not in caught.value.message
+
+
+def test_require_text_leaves_a_blank_string_to_the_verb():
+    require_text(query="")
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf"), True])
 def test_require_timeout_refuses_a_wait_with_no_bound(bad):
     assert code_of(require_timeout, bad) is ErrorCode.REFUSED
 
@@ -51,6 +72,11 @@ def test_require_timeout_refuses_a_wait_with_no_bound(bad):
         (0.0, 0.0, 0.0),
         (MAX_MOVE_M + 0.01, 0.0, 0.0),
         (2.5, 2.5, 0.0),
+        (True, 0.0, 0.0),
+        (0.0, True, 0.0),
+        (0.0, 0.0, True),
+        ("far", 0.0, 0.0),
+        (10**400, 0.0, 0.0),
     ],
 )
 def test_check_relative_move_refuses(move):
@@ -110,6 +136,58 @@ def test_wait_for_refuses_when_already_cancelled_even_if_done():
     token = CancelToken()
     token.cancel()
     assert code_of(token.wait_for, lambda: True, 1.0, "the drive") is ErrorCode.CANCELLED
+
+
+def test_a_cancel_during_the_completion_check_wins_over_the_completion():
+    token = CancelToken()
+
+    def done() -> bool:
+        token.cancel()
+        return True
+
+    assert code_of(token.wait_for, done, 1.0, "the drive") is ErrorCode.CANCELLED
+
+
+def test_unless_cancelled_skips_the_block_once_cancelled():
+    token = CancelToken()
+    token.cancel()
+    ran = []
+    with pytest.raises(StepError) as caught:
+        with token.unless_cancelled("the drive"):
+            ran.append(True)
+    assert caught.value.code is ErrorCode.CANCELLED
+    assert not ran
+
+
+def test_a_cancel_waits_for_a_commit_in_progress():
+    token = CancelToken()
+    in_block = threading.Event()
+    release = threading.Event()
+
+    def commit() -> None:
+        with token.unless_cancelled("the drive"):
+            in_block.set()
+            release.wait(5.0)
+
+    committer = threading.Thread(target=commit)
+    committer.start()
+    assert in_block.wait(5.0)
+    canceller = threading.Thread(target=token.cancel)
+    canceller.start()
+    canceller.join(0.05)
+    assert canceller.is_alive()
+    assert not token.cancelled
+    release.set()
+    committer.join(5.0)
+    canceller.join(5.0)
+    assert token.cancelled
+
+
+def test_a_cancel_inside_the_commit_block_does_not_deadlock():
+    token = CancelToken()
+    with token.unless_cancelled("the drive"):
+        token.cancel()
+    assert token.cancelled
 
 
 def test_a_cancel_from_another_thread_ends_the_wait_quickly():

@@ -8,7 +8,8 @@ fake refuses exactly what the robot refuses.
 import math
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from walkie_agent.capabilities.records import Pose2D
 from walkie_agent.errors import ErrorCode, StepError
@@ -27,13 +28,15 @@ class CancelToken:
 
     def __init__(self) -> None:
         self._event = threading.Event()
+        self._commit = threading.RLock()
 
     @property
     def cancelled(self) -> bool:
         return self._event.is_set()
 
     def cancel(self) -> None:
-        self._event.set()
+        with self._commit:
+            self._event.set()
 
     def reset(self) -> None:
         self._event.clear()
@@ -42,6 +45,19 @@ class CancelToken:
         """Raise StepError CANCELLED if the token is set. `what` names the step."""
         if self._event.is_set():
             raise StepError(ErrorCode.CANCELLED, f"Cancelled {what}: a stop is in effect.")
+
+    @contextmanager
+    def unless_cancelled(self, what: str) -> Iterator[None]:
+        """Run the block that commits a verb's result, unless the token is set.
+
+        This orders a commit against cancel(): a cancel that comes first raises
+        StepError CANCELLED and the block never runs, and a later one waits for
+        the block to end. So no state changes after cancel() has returned. Keep
+        the block short, since a stop waits for it.
+        """
+        with self._commit:
+            self.check(what)
+            yield
 
     def wait_for(
         self,
@@ -62,6 +78,8 @@ class CancelToken:
         while True:
             self.check(what)
             if done():
+                # A cancel that landed during done() wins over the completion.
+                self.check(what)
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -71,13 +89,34 @@ class CancelToken:
             self._event.wait(min(poll_s, remaining))
 
 
+def is_finite_number(value: object) -> bool:
+    """Whether `value` is an int or a float with a finite value. A bool is not a number here."""
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:  # An int too large for a float.
+        return False
+
+
 def require_finite(**values: float) -> None:
-    """Raise StepError REFUSED for NaN or infinity, which json.loads and pydantic both accept."""
-    bad = [name for name, value in values.items() if not math.isfinite(value)]
+    """Raise StepError REFUSED for anything but a finite number.
+
+    That covers NaN and infinity, which json.loads and pydantic both accept, and
+    a bool, which Python would otherwise count as the number 1 and move a meter.
+    """
+    bad = [name for name, value in values.items() if not is_finite_number(value)]
     if bad:
         raise StepError(
             ErrorCode.REFUSED, f"Refused: {', '.join(bad)} must be a finite number."
         )
+
+
+def require_text(**values: str) -> None:
+    """Raise StepError REFUSED for an argument that is not a string."""
+    bad = [name for name, value in values.items() if not isinstance(value, str)]
+    if bad:
+        raise StepError(ErrorCode.REFUSED, f"Refused: {', '.join(bad)} must be text.")
 
 
 def require_timeout(timeout_s: float) -> None:

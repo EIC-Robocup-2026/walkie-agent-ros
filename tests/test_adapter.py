@@ -76,6 +76,39 @@ def test_a_function_with_no_arguments_has_an_empty_schema(robot):
     assert as_tool(list_places, robot.ctx).args == {}
 
 
+@pytest.mark.parametrize(
+    "args",
+    [{"forward_m": True}, {"forward_m": "1"}, {"forward_m": 0.5, "left_m": True}],
+)
+def test_a_tool_refuses_a_bool_or_a_numeric_string_for_a_number(robot, args):
+    before = robot.pose()
+    with pytest.raises(pydantic.ValidationError):
+        as_tool(move_relative, robot.ctx).invoke(args)
+    assert robot.pose() == before
+
+
+def test_a_tool_still_takes_an_int_for_a_number(robot):
+    before = robot.pose()
+    as_tool(move_relative, robot.ctx).invoke({"forward_m": 1})
+    assert robot.pose() != before
+
+
+def test_a_bool_from_the_model_comes_back_as_an_error_and_moves_nothing(robot):
+    before = robot.pose()
+    call = tool_call("move_relative", {"forward_m": True}, "c1")
+    message = run_agent(robot, [as_tool(move_relative, robot.ctx)], call)
+    assert message.status == "error"
+    assert robot.pose() == before
+
+
+def test_bind_refuses_a_bool_through_the_verb_s_guard(robot):
+    before = robot.pose()
+    with pytest.raises(StepError) as caught:
+        bind(move_relative, robot.ctx)(True)
+    assert caught.value.code is ErrorCode.REFUSED
+    assert robot.pose() == before
+
+
 @pytest.mark.parametrize("tool_set", [GPSR, HRI, DEFAULT], ids=["GPSR", "HRI", "DEFAULT"])
 def test_every_tool_set_builds_with_ctx_hidden(robot, tool_set):
     tools = as_tools(tool_set, robot.ctx)

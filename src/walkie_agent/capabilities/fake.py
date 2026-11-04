@@ -23,7 +23,9 @@ from walkie_agent.capabilities import Ctx, ObjectSeen, PersonSeen, Pose2D
 from walkie_agent.capabilities.guards import (
     CancelToken,
     check_relative_move,
+    is_finite_number,
     relative_goal,
+    require_text,
     require_timeout,
 )
 from walkie_agent.errors import ErrorCode, StepError
@@ -140,20 +142,57 @@ def _verb(
             except StepError as error:
                 entry["error"] = str(error.code)
                 raise
+            except Exception:
+                entry["error"] = str(ErrorCode.INTERNAL)
+                raise
 
         return run
 
     return decorate
 
 
+def _check_world(world: Mapping[str, Any]) -> None:
+    """Raise ValueError for a world description with a broken name or coordinate.
+
+    A misspelled name does not fail by itself: the object or person just never
+    comes into view, and the episode reads as the agent's failure.
+    """
+    places, people = world["places"], world["people"]
+    rooms = {name for name, place in places.items() if place["room"] == name}
+    holders = {*places, *people, HELD}
+    problems = [f"start: unknown place {world['start']!r}"] if world["start"] not in places else []
+    for name, place in places.items():
+        if place["room"] not in rooms:
+            problems.append(f"places[{name!r}].room: unknown room {place['room']!r}")
+        problems += [
+            f"places[{name!r}].{field}: {place[field]!r} is not a finite number"
+            for field in ("x", "y", "yaw")
+            if not is_finite_number(place[field])
+        ]
+    problems += [
+        f"people[{person!r}].room: unknown room {who['room']!r}"
+        for person, who in people.items()
+        if who["room"] not in rooms
+    ]
+    problems += [
+        f"objects[{object_id!r}].at: nothing called {item['at']!r}"
+        for object_id, item in world["objects"].items()
+        if item["at"] not in holders
+    ]
+    if problems:
+        raise ValueError(f"Broken world: {'; '.join(problems)}.")
+
+
 class FakeRobot:
     """Implements Base, Speech, Vision and Arms over one world description.
 
     One object holds all four verb sets, since their names do not clash; `ctx`
-    is the Ctx that atomics take. `world=None` builds chula_pat14_6(seed).
-    `drive_s` makes a drive take real seconds, for stop tests. `calls` logs
-    every verb call, `said` every line, and `faults` maps a verb name such as
-    "base.go_to" to the StepError that each call to it raises.
+    is the Ctx that atomics take. `world=None` builds chula_pat14_6(seed), and a
+    world with a broken name or coordinate raises ValueError. `drive_s` makes a
+    drive take real seconds, for stop tests. `calls` logs every verb call, `said`
+    every line, and `faults` maps a verb name such as "base.go_to" to the
+    StepError that each call to it raises. base.stop takes no fault, since it
+    never raises.
     """
 
     def __init__(
@@ -164,6 +203,7 @@ class FakeRobot:
         drive_s: float = 0.0,
     ) -> None:
         described = chula_pat14_6(seed) if world is None else copy.deepcopy(dict(world))
+        _check_world(described)
         self._places: dict[str, dict[str, Any]] = described["places"]
         self._objects: dict[str, dict[str, Any]] = described["objects"]
         self._people: dict[str, dict[str, Any]] = described["people"]
@@ -226,9 +266,9 @@ class FakeRobot:
         goal = relative_goal(self._pose, forward_m, left_m, turn_deg)
         return self._drive("the move", goal, self._place_after(goal), timeout_s)
 
-    @_verb("base.stop")
     def stop(self) -> None:
         self._stopped.set()
+        self.calls.append({"verb": "base.stop", "args": {}, "error": None})
 
     @_verb("base.pose")
     def pose(self) -> Pose2D:
@@ -239,6 +279,7 @@ class FakeRobot:
     @_verb("speech.say")
     def say(self, text: str, *, timeout_s: float = 10.0) -> None:
         require_timeout(timeout_s)
+        require_text(text=text)
         if not text.strip():
             raise StepError(ErrorCode.REFUSED, "Nothing was said: the text is blank.")
         self.said.append(text)
@@ -248,6 +289,7 @@ class FakeRobot:
     @_verb("vision.objects")
     def objects(self, query: str = "", *, timeout_s: float = 5.0) -> list[ObjectSeen]:
         self._begin("looking for objects", timeout_s)
+        require_text(query=query)
         return [
             ObjectSeen(
                 id=object_id,
@@ -271,6 +313,7 @@ class FakeRobot:
     @_verb("vision.people")
     def people(self, query: str = "", *, timeout_s: float = 5.0) -> list[PersonSeen]:
         self._begin("looking for people", timeout_s)
+        require_text(query=query)
         room = self._room()
         return [
             PersonSeen(person_id, who["name"], who["pose"], who["gesture"], who["room"])
@@ -283,6 +326,7 @@ class FakeRobot:
     @_verb("arms.pick")
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str:
         self._begin(f"the pick of {object_id}", timeout_s)
+        require_text(object_id=object_id)
         item = self._objects.get(object_id)
         if item is None:
             raise StepError(
@@ -322,6 +366,7 @@ class FakeRobot:
     @_verb("arms.hand_over")
     def hand_over(self, person_id: str, *, timeout_s: float = 60.0) -> str:
         self._begin(f"the hand-over to {person_id}", timeout_s)
+        require_text(person_id=person_id)
         who = self._people.get(person_id)
         if who is None:
             raise StepError(
@@ -354,10 +399,12 @@ class FakeRobot:
         )
         if self._stopped.is_set():
             raise StepError(ErrorCode.CANCELLED, f"The base stopped {what}.")
-        self._pose, self._at = goal, at
+        with self.cancel.unless_cancelled(what):
+            self._pose, self._at = goal, at
         return goal
 
     def _known_place(self, place: str) -> str:
+        require_text(place=place)
         name = place.strip().lower()
         if name not in self._places:
             known = ", ".join(self._places)

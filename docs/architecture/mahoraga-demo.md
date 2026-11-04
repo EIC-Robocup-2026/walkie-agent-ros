@@ -86,7 +86,9 @@ implementation of a verb, fake or ROS-backed, calls them.
 
 ```python
 MAX_MOVE_M = 3.0  # main's navigation.py cap
-def require_finite(**values: float) -> None    # REFUSED for NaN or infinity
+def is_finite_number(value: object) -> bool    # a bool is not a number here
+def require_finite(**values: float) -> None    # REFUSED for NaN, infinity, a bool or a non-number
+def require_text(**values: str) -> None        # REFUSED for anything but a string
 def require_timeout(timeout_s: float) -> None  # REFUSED unless finite and positive
 def check_relative_move(forward_m: float, left_m: float, turn_deg: float) -> None  # REFUSED
 def relative_goal(start: Pose2D, forward_m: float, left_m: float, turn_deg: float) -> Pose2D
@@ -98,11 +100,17 @@ class CancelToken:
     def check(self, what: str) -> None: ...  # CANCELLED once cancelled
     def wait_for(self, done: Callable[[], bool], timeout_s: float, what: str,
                  *, poll_s: float = 0.02) -> None: ...  # CANCELLED or TIMEOUT
+    def unless_cancelled(self, what: str) -> ContextManager[None]: ...  # CANCELLED, or runs the block
 ```
 
 - There is no velocity verb, only named places and bounded relative moves.
 - Every wait is bounded and goes through `CancelToken.wait_for`, so a stop
-  ends it within `poll_s`.
+  ends it within `poll_s`. A cancel that lands while `done()` runs wins over
+  the completion.
+- A verb that changes state when a wait ends does so inside
+  `with cancel.unless_cancelled(what):`. A cancel either comes first and the
+  block never runs, or waits for the block, so nothing changes after `cancel()`
+  has returned.
 - Base, vision and arm verbs check the token before they start, so a set token
   latches them until the runtime resets it. `Speech.say` does not, so a bare
   "stop" can answer with its fixed line (decision 6).
@@ -120,7 +128,7 @@ class FakeRobot:  # implements Base, Speech, Vision and Arms
     cancel: CancelToken
     calls: list[dict[str, Any]]   # {"verb": "base.go_to", "args": {...}, "error": None or a code}
     said: list[str]
-    faults: dict[str, StepError]  # verb name -> the error every call to it raises
+    faults: dict[str, StepError]  # verb name -> the error every call to it raises; not base.stop
     def snapshot(self) -> dict[str, Any]: ...  # JSON-able copy for checkers: at, room, pose,
                                                # holding, places, objects, people, said, calls
 
@@ -143,6 +151,13 @@ A place whose `room` is its own name is a room. An object's `at` is a place,
 what is at its place, or at every place in its room while it stands at the room
 itself, and the people in its room. `world=None` builds `chula_pat14_6(seed)`,
 and `drive_s` makes each drive take real seconds.
+
+The constructor raises `ValueError` for a broken world, naming the record and
+field: an unknown start, a place or person in an unknown room, an object at
+something that does not exist, or a coordinate that is not a finite number.
+Without this, a misspelled name hides the object or person, and the episode
+reads as the agent's failure. Whether a world suits a given command is the gym's
+check, not this one.
 
 Places and rooms come from walkie-ros `origin/feat/chula-pat14-6-simulation`
 (`simulation/mujoco/worlds/chula_pat14_6/authoring/source/30_16102026_ChulaPat14_6_world.toml`).
@@ -190,7 +205,10 @@ docstring, signature without `ctx` and raw return value. `as_tool` builds
 `StructuredTool.from_function(parse_docstring=True,
 error_on_invalid_docstring=True)` over the same wrapper, raises `ValueError` for
 a parameter with no description, and sends a non-string result as JSON text, so
-an empty list reads `[]` rather than an empty message.
+an empty list reads `[]` rather than an empty message. Its schema validates
+strictly, because pydantic would otherwise turn a JSON `true` into `1.0` before
+any guard saw it. A model that sends a bool or a numeric string for a number
+gets a validation error back and can retry, and an int still counts as a number.
 
 `ToolErrorMiddleware(on_error=None, *, aon_error=None, tools=None)` ships in
 langchain 1.4.4 under `langchain.agents.middleware` and serves the sync and

@@ -40,6 +40,10 @@ def as_tool(fn: Callable[..., Any], ctx: Ctx) -> StructuredTool:
 
     Raises ValueError for a parameter the docstring does not describe, since
     the LLM would have to guess what it means. A malformed docstring raises too.
+
+    The schema validates strictly. In its default mode pydantic turns a JSON true
+    into 1.0 before any guard sees it, which would drive the base a meter. So a
+    model that sends a bool or a numeric string gets a validation error back.
     """
     tool = StructuredTool.from_function(
         _without_ctx(fn, ctx, _as_text),
@@ -49,6 +53,8 @@ def as_tool(fn: Callable[..., Any], ctx: Ctx) -> StructuredTool:
     undescribed = [name for name, field in tool.args.items() if not field.get("description")]
     if undescribed:
         raise ValueError(f"{fn.__name__}: no description for {', '.join(undescribed)}.")
+    tool.args_schema.model_config["strict"] = True
+    tool.args_schema.model_rebuild(force=True)
     return tool
 
 

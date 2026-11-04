@@ -431,6 +431,96 @@ def test_a_fault_makes_every_call_to_that_verb_fail(robot):
     robot.go_to("desk")
 
 
+def test_a_fault_on_stop_neither_raises_nor_lets_the_drive_finish():
+    robot = FakeRobot(world(), drive_s=30.0)
+    robot.faults["base.stop"] = StepError(ErrorCode.UNAVAILABLE, "No cancel backend.")
+    timer = threading.Timer(0.03, robot.stop)
+    timer.start()
+    assert code_of(robot.go_to, "shelf") is ErrorCode.CANCELLED
+    timer.join()
+    assert robot.snapshot()["at"] == "lobby"
+    assert robot.calls[-1] == {"verb": "base.stop", "args": {}, "error": None}
+
+
+def test_a_cancel_after_the_wait_and_before_the_commit_keeps_the_robot_in_place(
+    robot, monkeypatch
+):
+    wait_for = robot.cancel.wait_for
+
+    def then_cancel(*args, **kwargs) -> None:
+        wait_for(*args, **kwargs)
+        robot.cancel.cancel()
+
+    monkeypatch.setattr(robot.cancel, "wait_for", then_cancel)
+    before = robot.snapshot()
+    assert code_of(robot.go_to, "shelf") is ErrorCode.CANCELLED
+    after = robot.snapshot()
+    assert (after["at"], after["pose"]) == (before["at"], before["pose"])
+    assert robot.calls[-1]["error"] == "CANCELLED"
+
+
+@pytest.mark.parametrize(
+    ("verb", "args"),
+    [
+        ("go_to", (None,)),
+        ("move_relative", ("far",)),
+        ("move_relative", (True,)),
+        ("say", (123,)),
+        ("objects", (1,)),
+        ("people", (None,)),
+        ("pick", ([],)),
+        ("hand_over", (1,)),
+        ("place_on", (None,)),
+    ],
+)
+def test_a_wrong_type_is_refused_logged_and_changes_nothing(robot, verb, args):
+    before = robot.snapshot()
+    assert code_of(getattr(robot, verb), *args) is ErrorCode.REFUSED
+    assert robot.calls[-1]["error"] == "REFUSED"
+    after = robot.snapshot()
+    for key in ("at", "pose", "objects", "said"):
+        assert after[key] == before[key]
+
+
+def test_an_unexpected_exception_is_logged_as_internal_and_not_hidden(robot):
+    robot._objects = None
+    with pytest.raises(AttributeError):
+        robot.pick("apple_1")
+    assert robot.calls[-1]["error"] == "INTERNAL"
+
+
+@pytest.mark.parametrize(
+    ("break_it", "named"),
+    [
+        (lambda w: w.update(start="lobbby"), "start"),
+        (lambda w: w["places"]["desk"].update(room="lobbby"), "places['desk'].room"),
+        (lambda w: w["people"]["ann"].update(room="lobbby"), "people['ann'].room"),
+        (lambda w: w["objects"]["mug_1"].update(at="dsek"), "objects['mug_1'].at"),
+        (lambda w: w["places"]["desk"].update(x=float("nan")), "places['desk'].x"),
+        (lambda w: w["places"]["desk"].update(yaw=float("inf")), "places['desk'].yaw"),
+        (lambda w: w["places"]["desk"].update(y=True), "places['desk'].y"),
+    ],
+)
+def test_a_broken_world_is_refused_and_the_message_names_the_field(break_it, named):
+    broken = world()
+    break_it(broken)
+    with pytest.raises(ValueError, match="Broken world") as caught:
+        FakeRobot(broken)
+    assert named in str(caught.value)
+
+
+def test_a_world_may_start_with_an_object_held_or_already_handed_over():
+    start = world()
+    start["objects"]["mug_1"]["at"] = "robot"
+    start["objects"]["apple_1"]["at"] = "ann"
+    assert FakeRobot(start).snapshot()["holding"] == "mug_1"
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_every_seeded_arena_passes_the_world_check(seed):
+    FakeRobot(seed=seed)
+
+
 def test_the_snapshot_is_json_able_even_after_a_refused_nan():
     robot = holding_apple()
     robot.say("hello")

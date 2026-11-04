@@ -90,6 +90,8 @@ GESTURES = (
 NEAR_PLACE_M = 1.0
 # An object's "at" while the robot holds it.
 HELD = "robot"
+# The verbs whose records keep the ids they returned.
+LOOKUPS = frozenset({"vision.objects", "vision.people"})
 
 
 def chula_pat14_6(seed: int = 0) -> dict[str, Any]:
@@ -124,7 +126,11 @@ def _verb(
 ) -> Callable[
     [Callable[Concatenate["FakeRobot", P], R]], Callable[Concatenate["FakeRobot", P], R]
 ]:
-    """Record every call of a verb, with its outcome, and raise its fault if one is set."""
+    """Record every call of a verb, with its outcome, and raise its fault if one is set.
+
+    A record also holds where the robot was when the call ended, and the ids a
+    lookup returned, so a checker reads what happened and rebuilds nothing.
+    """
 
     def decorate(method: Callable[Concatenate["FakeRobot", P], R]):
         signature = inspect.signature(method)
@@ -133,18 +139,23 @@ def _verb(
         def run(self: "FakeRobot", *args: P.args, **kwargs: P.kwargs) -> R:
             given = signature.bind(self, *args, **kwargs).arguments
             logged = {key: _json_safe(value) for key, value in given.items() if key != "self"}
-            entry: dict[str, Any] = {"verb": name, "args": logged, "error": None}
+            entry: dict[str, Any] = {"verb": name, "args": logged, "error": None, **self._where()}
             self.calls.append(entry)
             try:
                 if name in self.faults:
                     raise self.faults[name]
-                return method(self, *args, **kwargs)
+                result = method(self, *args, **kwargs)
+                if name in LOOKUPS:
+                    entry["returned"] = [seen.id for seen in result]
+                return result
             except StepError as error:
                 entry["error"] = str(error.code)
                 raise
             except Exception:
                 entry["error"] = str(ErrorCode.INTERNAL)
                 raise
+            finally:
+                entry.update(self._where())
 
         return run
 
@@ -189,10 +200,11 @@ class FakeRobot:
     One object holds all four verb sets, since their names do not clash; `ctx`
     is the Ctx that atomics take. `world=None` builds chula_pat14_6(seed), and a
     world with a broken name or coordinate raises ValueError. `drive_s` makes a
-    drive take real seconds, for stop tests. `calls` logs every verb call, `said`
-    every line, and `faults` maps a verb name such as "base.go_to" to the
-    StepError that each call to it raises. base.stop takes no fault, since it
-    never raises.
+    drive take real seconds, for stop tests. `calls` logs every verb call with
+    the robot's place and room as it ended and, for a lookup, the ids returned.
+    `said` logs every line, and `faults` maps a verb name such as "base.go_to" to
+    the StepError that each call to it raises. base.stop takes no fault, since
+    it never raises.
     """
 
     def __init__(
@@ -268,7 +280,7 @@ class FakeRobot:
 
     def stop(self) -> None:
         self._stopped.set()
-        self.calls.append({"verb": "base.stop", "args": {}, "error": None})
+        self.calls.append({"verb": "base.stop", "args": {}, "error": None, **self._where()})
 
     @_verb("base.pose")
     def pose(self) -> Pose2D:
@@ -431,6 +443,10 @@ class FakeRobot:
         return min(self._places.values(), key=lambda place: self._distance(place, self._pose))[
             "room"
         ]
+
+    def _where(self) -> dict[str, str | None]:
+        """Where a call record says the robot was. `at` is None once it has left its place."""
+        return {"at": self._at, "room": self._room()}
 
     def _in_view(self, at: str) -> bool:
         """Whether something at `at` is in view: at the robot's place, or in the room it stands at."""

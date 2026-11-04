@@ -127,7 +127,8 @@ class FakeRobot:  # implements Base, Speech, Vision and Arms
                  drive_s: float = 0.0) -> None: ...
     ctx: Ctx
     cancel: CancelToken
-    calls: list[dict[str, Any]]   # {"verb": "base.go_to", "args": {...}, "error": None or a code}
+    calls: list[dict[str, Any]]   # {"verb": "base.go_to", "args": {...}, "error": None or a code,
+                                  #  "at": place or None, "room": room}, and for a lookup "returned": [ids]
     said: list[str]
     faults: dict[str, StepError]  # verb name -> the error every call to it raises; not base.stop
     def snapshot(self) -> dict[str, Any]: ...  # JSON-able copy for checkers: at, room, pose,
@@ -152,6 +153,11 @@ A place whose `room` is its own name is a room. An object's `at` is a place,
 what is at its place, or at every place in its room while it stands at the room
 itself, and the people in its room. `world=None` builds `chula_pat14_6(seed)`,
 and `drive_s` makes each drive take real seconds.
+
+A call record's `at` and `room` are where the robot was as that call ended. `at` is
+`None` once a relative move has left its place by more than 1 m, and `room` is then
+the room of the nearest place. A successful `vision.objects` or `vision.people`
+record also holds the ids it returned in `returned`.
 
 The constructor raises `ValueError` for a broken world, naming the record and
 field: an unknown start, a place or person in an unknown room, an object at

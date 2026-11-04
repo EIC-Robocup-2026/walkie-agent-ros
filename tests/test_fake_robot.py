@@ -410,15 +410,66 @@ def test_every_call_is_logged_with_its_arguments_and_outcome(robot):
     with pytest.raises(StepError):
         robot.go_to("moon")
     robot.move_relative(0.5, turn_deg=10.0, timeout_s=5.0)
+    desk = {"at": "desk", "room": "lobby"}
     assert robot.calls == [
-        {"verb": "base.go_to", "args": {"place": "desk"}, "error": None},
-        {"verb": "base.go_to", "args": {"place": "moon"}, "error": "NOT_FOUND"},
+        {"verb": "base.go_to", "args": {"place": "desk"}, "error": None, **desk},
+        {"verb": "base.go_to", "args": {"place": "moon"}, "error": "NOT_FOUND", **desk},
         {
             "verb": "base.move_relative",
             "args": {"forward_m": 0.5, "turn_deg": 10.0, "timeout_s": 5.0},
             "error": None,
+            **desk,
         },
     ]
+
+
+def test_a_record_says_where_the_robot_was_after_a_move_that_left_its_place(robot):
+    robot.go_to("den")
+    robot.move_relative(forward_m=-3.0)
+    robot.say("Still in the den.")
+    robot.move_relative(forward_m=-3.0)
+    robot.say("Nearer the lobby.")
+
+    assert [(call["at"], call["room"]) for call in robot.calls] == [
+        ("den", "den"),
+        (None, "den"),
+        (None, "den"),
+        (None, "lobby"),
+        (None, "lobby"),
+    ]
+
+
+def test_a_failed_move_is_recorded_where_the_robot_stayed(robot):
+    robot.faults["base.go_to"] = StepError(ErrorCode.SKILL_FAILED, "Nav2 aborted.")
+    assert code_of(robot.go_to, "den") is ErrorCode.SKILL_FAILED
+
+    assert (robot.calls[-1]["at"], robot.calls[-1]["room"]) == ("lobby", "lobby")
+
+
+def test_a_lookup_records_the_ids_it_returned(robot):
+    robot.people()
+    robot.people("Nobody")
+    robot.go_to("shelf")
+    robot.objects()
+    robot.objects("fruit")
+
+    lookups = [call for call in robot.calls if call["verb"].startswith("vision.")]
+    assert [call["returned"] for call in lookups] == [["ann"], [], ["apple_1", "dish_1"], ["apple_1"]]
+    assert "returned" not in next(call for call in robot.calls if call["verb"] == "base.go_to")
+
+
+def test_a_refused_lookup_records_nothing_returned(robot):
+    assert code_of(robot.people, timeout_s=-1.0) is ErrorCode.REFUSED
+
+    assert "returned" not in robot.calls[-1]
+    assert robot.calls[-1]["error"] == "REFUSED"
+
+
+def test_the_records_stay_json_able(robot):
+    robot.people()
+    robot.stop()
+
+    assert json.loads(json.dumps(robot.snapshot()["calls"])) == robot.calls
 
 
 def test_a_fault_makes_every_call_to_that_verb_fail(robot):
@@ -439,7 +490,13 @@ def test_a_fault_on_stop_neither_raises_nor_lets_the_drive_finish():
     assert code_of(robot.go_to, "shelf") is ErrorCode.CANCELLED
     timer.join()
     assert robot.snapshot()["at"] == "lobby"
-    assert robot.calls[-1] == {"verb": "base.stop", "args": {}, "error": None}
+    assert robot.calls[-1] == {
+        "verb": "base.stop",
+        "args": {},
+        "error": None,
+        "at": "lobby",
+        "room": "lobby",
+    }
 
 
 def test_a_cancel_after_the_wait_and_before_the_commit_keeps_the_robot_in_place(

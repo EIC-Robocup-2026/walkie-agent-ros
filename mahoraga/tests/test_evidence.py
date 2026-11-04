@@ -9,7 +9,8 @@ import pytest
 import mahoraga.driver as driver
 from mahoraga.driver import Budgets, ScriptRunner
 from mahoraga.evidence import Watch
-from mahoraga.shelf import Shelf, top_level_defs
+from mahoraga.shelf import Shelf, source_sha, top_level_defs
+from mahoraga.tasks import _proven
 
 VALUE ="def value() -> int:\n    return 1\n"
 BAD = 'def bad() -> str:\n    return go_to("garage")\n'
@@ -34,6 +35,22 @@ def run(pool, shelf, fns):
 
 def _events(shelf, name):
     return {key: shelf.counts()[name][key] for key in ("run", "fail", "verified")}
+
+
+def test_a_raise_in_a_failed_script_counts_against_the_version_it_ran(pool, tmp_path, fns):
+    """The script saved nothing, but the same text is on the shelf, so its verification must not stand."""
+    divide = "def divide(divisor=1):\n    return 1 / divisor\n"
+    runner = ScriptRunner(pool, shelf=Shelf(tmp_path / "shelf"))
+
+    first = runner.run(divide + "divide()", fns, save=["divide"])
+    second = runner.run(divide + "divide(0)", fns, save=["divide"])
+
+    assert first.saved == ["divide"]
+    assert second.ok is False
+    assert second.saved == []
+    assert second.returned == {}
+    assert second.raised == first.returned == {"divide": source_sha(divide)}
+    assert _proven([{"returned": r.returned, "raised": r.raised} for r in (first, second)]) == {}
 
 
 def test_a_function_that_ran_is_used_and_returned(run, shelf):

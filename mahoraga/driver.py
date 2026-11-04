@@ -189,7 +189,10 @@ class ScriptRunner:
         kept = {name: sha for name, sha in watch.own_versions.items() if name in result.saved}
         kept.update(shelf_versions)
         result.returned = {name: sha for name, sha in kept.items() if name in watch.returned}
-        result.raised = {name: sha for name, sha in kept.items() if name in watch.raised}
+        # A raise counts whether or not this script saved the version: the same text may
+        # already be on the shelf, and a return in another script must not verify it.
+        ran = {**watch.own_versions, **shelf_versions}
+        result.raised = {name: sha for name, sha in ran.items() if name in watch.raised}
         return result
 
     def _session(self, fns: Mapping[str, Callable[..., Any]], extra_stubs: str = "") -> Any:

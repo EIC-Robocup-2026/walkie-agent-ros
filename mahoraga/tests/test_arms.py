@@ -2,7 +2,7 @@
 
 import json
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 
 import pytest
@@ -18,6 +18,7 @@ from mahoraga.shelf import Shelf
 from walkie_agent.capabilities.fake import FakeRobot
 
 MOCK = "mockllm/model"
+_STALL_S = 20
 SPEAK = 'def speak_up():\n    """Say hello."""\n    say("Hello.")\n'
 
 
@@ -557,12 +558,17 @@ def test_a_provider_error_ends_the_sample_after_one_attempt(gated):
 class _FakeProvider(BaseHTTPRequestHandler):
     seen: list[dict] = []
     failures: int = 0
+    stalls: int = 0
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         type(self).seen.append(
             {"path": self.path, "auth": self.headers["Authorization"], "body": body}
         )
+        if type(self).stalls > 0:
+            type(self).stalls -= 1
+            time.sleep(_STALL_S)
+            return
         if type(self).failures > 0:
             type(self).failures -= 1
             self.send_error(500)
@@ -593,11 +599,13 @@ class _FakeProvider(BaseHTTPRequestHandler):
         pass
 
 
-def _run_on_the_fake_provider(gated, monkeypatch, *, failures=0):
-    server = HTTPServer(("127.0.0.1", 0), _FakeProvider)
+def _run_on_the_fake_provider(gated, monkeypatch, *, failures=0, stalls=0):
+    # Threads, so a stalled request does not hold up the retry that follows it.
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeProvider)
     Thread(target=server.serve_forever, daemon=True).start()
     _FakeProvider.seen.clear()
     _FakeProvider.failures = failures
+    _FakeProvider.stalls = stalls
     monkeypatch.setenv("OPENAI_API_KEY", "fake-key-for-test")
     monkeypatch.setenv("NO_PROXY", "127.0.0.1")
     gated(commands("trial", 1))
@@ -628,6 +636,19 @@ def test_a_transient_provider_error_is_retried_inside_the_model_call(gated, monk
     assert sample.error is None
     assert not sample.error_retries
     assert "ground_truth" in sample.scores
+
+
+def test_a_model_call_that_never_answers_is_abandoned_and_retried(gated, monkeypatch):
+    """A stalled call must not spend the episode's whole time limit and fail it."""
+    monkeypatch.setattr("mahoraga.gym._ATTEMPT_TIMEOUT_S", 1)
+
+    log = _run_on_the_fake_provider(gated, monkeypatch, stalls=1)
+
+    sample = log.samples[0]
+    assert len(_FakeProvider.seen) == 2
+    assert sample.error is None
+    assert sample.limit is None
+    assert sample.total_time < _STALL_S
 
 
 def test_a_model_id_goes_to_the_base_url_with_the_key_from_the_environment(gated, monkeypatch):

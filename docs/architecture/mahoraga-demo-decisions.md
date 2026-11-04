@@ -23,7 +23,7 @@ Status values:
 | S3 | Real-model runs are small slices on OpenRouter with `deepseek-v4.1-flash`. They stop before the 600-episode trial. Tests stay on fake models. | They prove that the pipeline runs at low cost. | The demo cannot say whether scripts beat per-step calls. | Owner |
 | S4 | Claude implements and fixes. Codex `gpt-6-astra` reviews, verifies, researches and writes briefs. | Reviews stay independent of the builder. | None. | Owner |
 | S5 | The agent decides demo questions alone and records them here. | This is a demo, and the choices can be reversed. | Asking first would stall the build. | Owner |
-| S6 | `run_script` stays off the robot agent until a small real-model run shows that scripts work. | Monty is not in the environment the robot agent runs from, so joining them is more than a flag. | Joining them now shows a script driving the simulated robot, but adds environment work and delays the demo. | Delegated |
+| S6 | `run_script` stays off the robot agent for this demo. The small real-model runs below show that scripts work in the fake world, which was the condition to reconsider, so this is now a choice and not a wait. | Scripts cost fewer rounds but gained no success, the fake world's moves take no time, and the script budget of 30 s of wall clock would not survive real moves. Monty is also not in the environment the robot agent runs from. | Joining them now shows a script driving the simulated robot, but needs a budget for real motion and environment work. The robot agent keeps per-step tools, at about 7 model calls a command against 4 for scripts. Revisit once the robot path runs. | Delegated |
 
 ## Plan decisions
 
@@ -104,6 +104,45 @@ These came up while building those fixes.
 | M21 | Keep both retry layers: the OpenAI client's 3 requests per attempt, inside Inspect's 4 attempts. | Nothing asked to change the client layer. | A dead provider sees up to 12 requests per model call, a computed figure. Passing `max_retries=0` as a model argument would remove the client layer. | Delegated |
 | M22 | The first line that mentions a candidate decides, and later lines go unread. | Reading corrections and negation needs the language parsing M5 ruled out. | Known wrong passes: "I see 2." then "No, 5.", and "It is not the banana." Known wrong fails: "There are two, one apple and one banana", and "No one is waving". Read failed answers from real-model runs before trusting a score. | Delegated |
 | M23 | Reaching an escort's destination is judged from the records after the find, and a destination that is or holds the named origin needs no further move. | The generator can draw "from the shelf to the shelf", and a robot that moves on afterwards still got there. | The fake's people do not move, so an escort whose person never came along still passes. | Delegated |
+| M24 | `induct`'s prompt says the model is building a library for later commands, to write each command's steps as a function with the names as parameters, call it and name it in `save`. | Offered as an option, 88 scripts held no function and nothing was saved, so C and C2 were B under other names. The plan left this prompt open. | 22 functions saved from 30 commands, all general. The shelf is uneven: it holds near duplicates, functions that do nothing when a search comes back empty, and functions whose only verification is an episode the model later rescued by hand. Verified means the function returned in a passing episode, not that it did the right thing. | Delegated |
+| M29 | Each model attempt in the gym has 30 s, then it is abandoned and retried. `run_limit` stays 25 and `deadline_s` stays 60. | 5 of 1750 model calls ran away. One wrote 131072 tokens in 275 s, most of the first shelf build's output, and the other 4 had not finished when their episode reached its 300 s limit, which fails an episode through no fault of its answer. Inspect's `timeout` only stops further retries. The longest normal call took 13 s and the longest episode 15 calls. | Abandoned attempts may still be billed by the provider, and Inspect's usage does not count them. Both limits are measured only on the fake world, on a fast model, so a slower model needs a higher attempt limit. | Delegated |
+
+### Small real-model runs
+
+Both ran `deepseek/deepseek-v4.1-flash:nitro` on 30 held-out commands, one epoch each,
+in the fake world, on 2026-11-05. These are checks that the pipeline works, not the
+planned comparison. No difference between arms is significant (McNemar p = 1.0 in each
+pair), and success is near the ceiling, so it cannot separate arms at this size.
+
+Second run, after M24. Shelf: 22 functions from 30 training commands, which cost
+$0.023.
+
+| Arm | Success | Mean rounds | Longest episode | Tokens per success | Shelf used |
+|---|---|---|---|---|---|
+| A | 29/30 | 6.9 | 13 | 2177 | n/a |
+| B | 29/30 | 4.4 | 8 | 2151 | n/a |
+| C | 28/30 | 4.9 | 15 | 3581 | 37% of episodes |
+| C2 | 29/30 | 3.4 | 8 | 2472 | as examples |
+| D | 29/30 | 5.8 | 12 | 1938 | n/a |
+
+What the failures were:
+
+- `200020`, in A, B and C: the instruction point is in the living room, so the model
+  took its empty view from there for the whole room and fetched a bowl from another
+  room. This is a fair failure. The first run failed C and C2 on this command the same
+  way.
+- `200031`, in C: the model passed "salute" to a shelf function as a person
+  description, the function did nothing because its search came back empty, and the
+  model spent 15 rounds trying other shelf functions. This is the one failure caused
+  by the shelf.
+- `200001`, in C2: the last script said its line only `if people`, the search found
+  nobody, and the model reported success anyway. The shelf's examples use the same
+  guard, though one trace cannot show that they caused it.
+- `200017`, in D: a model call never finished and the episode reached its time limit,
+  which M29 addresses.
+
+First run, before M24, with an empty shelf, so C and C2 were B under other names: A
+30/30, B 30/30, C 29/30, C2 29/30, D 30/30. Mean rounds were 6.7, 4.0, 4.0, 4.2 and 6.1.
 
 ## Not built on purpose
 

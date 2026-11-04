@@ -39,6 +39,9 @@ MAX_ROUNDS = 30
 # Guards against a runaway episode. MAX_ROUNDS is what normally ends one.
 _TOKEN_LIMIT = 200_000
 _TIME_LIMIT_S = 300
+# A completion that runs away would otherwise spend the whole time limit, and Inspect's
+# `timeout` only stops further retries. The longest normal call measured took 13 s.
+_ATTEMPT_TIMEOUT_S = 30
 
 
 def gpsr_task(
@@ -186,6 +189,7 @@ def run_episodes(
                 retry_on_error=0,
                 max_retries=3,
                 timeout=120,
+                attempt_timeout=_ATTEMPT_TIMEOUT_S,
                 score_display=False,
             )
     return logs

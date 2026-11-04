@@ -77,8 +77,12 @@ them will fail, so copy what you need into your script:
 
 {}"""
 _SAVE_NOTES = """\
-Save a function for later commands by naming it in save, if it would help again.
-It is kept only if the script succeeds and the function stands alone."""
+You are also building a library of functions for later commands, which will name
+other places, objects and people. Once you know what this command needs, write its
+steps as a function that takes those names as parameters, call it in the same
+script, and name it in save. Write no place, object or person into the function.
+When a function on your shelf fits, call it instead of writing a new one. A function
+is kept only if the script succeeds and the function stands alone."""
 
 
 @dataclass

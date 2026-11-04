@@ -9,8 +9,10 @@ them. `tasks.py` has already moved to templates by name only, for both agents.
 This page is the contract those slices follow.
 
 !!! warning "Prototype"
-    Nothing here has run against a real model, in MuJoCo or on the robot.
-    Every choice below is a provisional pick of the plan's recommended option.
+    The gym has run against a real model only on small slices, listed in the
+    [decision log](mahoraga-demo-decisions.md#small-real-model-runs). Nothing here
+    has run in MuJoCo or on the robot. Every choice below is a provisional pick of
+    the plan's recommended option.
 
 ## Layer map
 
@@ -327,6 +329,10 @@ anything else with a `ValueError`, and `gpsr_task` refuses it for commands outsi
 that split, because a later arm's frozen shelf would then hold answers to the
 commands it is measured on.
 
+`induct`'s prompt tells the model it is building a library for later commands, to
+write a command's steps as a function with the names as parameters, and to name that
+function in `save`. Offered only as an option, saving did not happen at all.
+
 All arms share the prompt, the atomics and the eval's model, temperature and seed.
 One (command, epoch) is one seeded world, the same for every arm.
 
@@ -441,7 +447,9 @@ retry would replay the shelf's ledger and lose the failed attempt's usage. A tra
 provider error is retried inside the model call instead, so it costs no attempt. Two
 layers do that: the OpenAI client makes up to three requests, and Inspect repeats that
 up to three more times with backoff, so a provider that stays down sees up to twelve
-requests per model call. An episode that still errors, or never ran, stays in
+requests per model call. An attempt that takes over 30 s is abandoned and retried the
+same way, because a completion that runs away would otherwise spend the episode's
+300 s limit and fail it. An episode that still errors, or never ran, stays in
 M1 as a failure, and the usage it logged counts towards tokens and cost. Rounds, wall
 time and the script metrics cover every episode logged. Any such episode sets the
 arm's `complete` to false, and that of each comparison with the arm. So does a

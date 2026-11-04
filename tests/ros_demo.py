@@ -313,13 +313,13 @@ def wait_settled(app: Application) -> None:
 
 
 def check_reset_cleared_everything(
-    report: Report, app: Application, operator: Operator, executor: Any, session: str
+    report: Report, app: Application, operator: Operator, session: str
 ) -> None:
     wait_for(lambda: app.runner.session.thread_id != session, "a new session", WAIT_S)
     wait_settled(app)
     wait_for(lambda: operator.todos[-1] == [], "the empty list", WAIT_S)
     report.data["session_ids"].append(app.runner.session.thread_id)
-    late = latched_todos(executor)
+    late = latched_todos()
     report.check("late_subscriber_gets_the_empty_list", late == [[]], late)
     config = {"configurable": {"thread_id": session}}
     checkpoint = app.runner.agent.checkpointer.get_tuple(config)
@@ -401,7 +401,7 @@ def run_fake(args: argparse.Namespace, report: Report) -> None:
         poses[name] = {"at_end": end.pose, "stable": samples[:: max(1, len(samples) // 3)]}
         check(f"{name}_pose_stable", set(samples) == {end.pose}, len(samples))
 
-    with spinning(robot, operator) as executor:
+    with spinning(robot, operator):
         try:
             connector = ROS2Connector(node_name=NODE_NAME, use_sim_time=args.use_sim_time)
             app = build_app(args, connector, model, DEMO_MOVE, report)
@@ -501,12 +501,12 @@ def run_fake(args: argparse.Namespace, report: Report) -> None:
             )
             in_progress = ["in_progress", "pending"]
             wait_for(lambda: operator.statuses() == in_progress, "the list in progress", WAIT_S)
-            late = latched_todos(executor)
+            late = latched_todos()
             check("late_subscriber_gets_the_latest_list", late == [operator.todos[-1]], late)
             reset = time.monotonic()
             operator.reset()
             check_cancelled("reset", reset)
-            check_reset_cleared_everything(report, app, operator, executor, session)
+            check_reset_cleared_everything(report, app, operator, session)
             check("no_goal_after_reset", robot.goals_received == goals + 1, robot.goals_received)
             report.check_not_run("reset_skipped_the_later_tool", "e_later")
             spoken = list(operator.spoken)
@@ -623,7 +623,7 @@ def run_external(args: argparse.Namespace, report: Report) -> None:
     poses, check = report.data["poses"], report.check
     report.data["cancellation"] = "not exercised"
 
-    with spinning(operator, watch) as executor:
+    with spinning(operator, watch):
         try:
             wait_for(watch.clock_advances, "an advancing /clock", args.ready_timeout)
             check("clock_advances", True, list(watch.clock))
@@ -662,11 +662,11 @@ def run_external(args: argparse.Namespace, report: Report) -> None:
             check("seed_source_is_operator", sources == ["operator"], sources)
 
             # The latched list, and a reset that clears it.
-            late = latched_todos(executor)
+            late = latched_todos()
             check("late_subscriber_gets_the_latest_list", late == [operator.todos[-1]], late)
             session = app.runner.session.thread_id
             operator.reset()
-            check_reset_cleared_everything(report, app, operator, executor, session)
+            check_reset_cleared_everything(report, app, operator, session)
 
             # Stop a separate goal, once the server says it is running.
             known = set(watch.latest)

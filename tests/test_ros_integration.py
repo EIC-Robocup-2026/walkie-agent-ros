@@ -15,7 +15,6 @@ from dataclasses import dataclass
 import pytest
 from action_msgs.msg import GoalStatus
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
-from rclpy.executors import Executor
 from ros_harness import (
     ObservedWalkie,
     Operator,
@@ -69,7 +68,6 @@ class Rig:
     model: ScriptedModel
     robot: ObservedWalkie
     operator: Operator
-    executor: Executor
 
     def history(self, thread_id: str | None = None) -> list:
         thread_id = thread_id or self.app.runner.session.thread_id
@@ -110,7 +108,7 @@ def rig(ros, locations, connector):
     robot = ObservedWalkie(drive_time_sec=0.2)
     operator = Operator()
     apps: list[Application] = []
-    with spinning(robot, operator) as executor:
+    with spinning(robot, operator):
 
         def start(*script, then=None, templates=None, tool_set="hri"):
             model = ScriptedModel(script=list(script), then=then)
@@ -126,7 +124,7 @@ def rig(ros, locations, connector):
             apps.append(app)
             app.start()
             wait_for_agent(app, operator)
-            return Rig(app, model, robot, operator, executor)
+            return Rig(app, model, robot, operator)
 
         yield start
         for app in apps:
@@ -307,7 +305,7 @@ def test_reset_cancels_motion_and_clears_checkpoint_and_latched_todos(rig):
     r.wait_settled()
 
     wait_for(lambda: r.operator.todos[-1] == [], "the empty list")
-    assert latched_todos(r.executor) == [[]]
+    assert latched_todos() == [[]]
     old_config = {"configurable": {"thread_id": old_session}}
     assert r.app.runner.agent.checkpointer.get_tuple(old_config) is None
     assert r.history() == []
@@ -325,13 +323,13 @@ def test_reset_cancels_motion_and_clears_checkpoint_and_latched_todos(rig):
 def test_late_subscriber_gets_latest_todos(rig):
     # test_agent.py:341
     r = rig(*MOVE_AND_REPORT, templates=TEMPLATES)
-    assert latched_todos(r.executor) == [[]]
+    assert latched_todos() == [[]]
 
     r.operator.send_task(task="Run the check.", template="demo_move")
     wait_for(lambda: "The check is complete." in r.operator.console, "the task's reply")
     wait_for(lambda: r.operator.statuses() == ["completed", "completed"], "the last list")
 
-    late = latched_todos(r.executor)
+    late = latched_todos()
     assert late == [r.operator.todos[-1]]
     assert [i["status"] for i in late[0]] == ["completed", "completed"]
     assert late[0][0]["evidence"] == ["drive"]

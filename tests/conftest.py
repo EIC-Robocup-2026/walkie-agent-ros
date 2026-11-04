@@ -70,9 +70,10 @@ def fake_walkie(ros):
     thread = threading.Thread(target=executor.spin, daemon=True)
     thread.start()
     yield node
+    # shutdown() does not wait for spin(), and a destroy under it can raise there.
     executor.shutdown()
-    node.destroy_node()
     thread.join(timeout=2)
+    node.destroy_node()
 
 
 @pytest.fixture

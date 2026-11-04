@@ -17,7 +17,7 @@ from typing import Any
 
 from rai_interfaces.msg import HRIMessage
 from rclpy.action import GoalResponse
-from rclpy.executors import Executor, MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.node import Node
 from std_msgs.msg import Empty, String
 
@@ -169,19 +169,28 @@ class Operator(Node):
         return all(p.get_subscription_count() for p in (self._input, self._task, self._reset))
 
 
-def latched_todos(executor: Executor, timeout_s: float = 20.0) -> list[list[dict[str, Any]]]:
-    """Every list that a subscriber joining now hears at once. One, if the topic is latched."""
+def latched_todos(timeout_s: float = 20.0) -> list[list[dict[str, Any]]]:
+    """Every list that a subscriber joining now hears at once. One, if the topic is latched.
+
+    It spins on the calling thread, because destroying a node while another thread spins
+    it can end that thread, and the robot's executor has to outlive this probe.
+    """
     node = Node(f"late_listener_{uuid.uuid4().hex[:8]}")
     heard: list[list[dict[str, Any]]] = []
     node.create_subscription(
         String, TODOS_TOPIC, lambda m: heard.append(json.loads(m.data)), LATCHED_QOS
     )
+    executor = SingleThreadedExecutor()
     executor.add_node(node)
     try:
-        wait_for(lambda: heard, "the latched todo list", timeout_s)
+        wait_for(
+            lambda: executor.spin_once(timeout_sec=0.05) or heard,
+            "the latched todo list",
+            timeout_s,
+        )
         return heard
     finally:
-        executor.remove_node(node)
+        executor.shutdown()
         node.destroy_node()
 
 
@@ -208,7 +217,7 @@ def wait_for_agent(app: Any, operator: Operator, timeout_s: float = 30.0) -> Non
 
 
 @contextmanager
-def spinning(*nodes: Node) -> Iterator[Executor]:
+def spinning(*nodes: Node) -> Iterator[None]:
     """Spin these nodes on an executor of their own, apart from the agent's connector."""
     executor = MultiThreadedExecutor()
     for node in nodes:
@@ -216,9 +225,10 @@ def spinning(*nodes: Node) -> Iterator[Executor]:
     thread = threading.Thread(target=executor.spin, daemon=True)
     thread.start()
     try:
-        yield executor
+        yield
     finally:
+        # shutdown() does not wait for spin(), and a destroy under it can raise there.
         executor.shutdown()
+        thread.join(timeout=2)
         for node in nodes:
             node.destroy_node()
-        thread.join(timeout=2)

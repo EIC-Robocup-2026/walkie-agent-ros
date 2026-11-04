@@ -3,9 +3,14 @@
 Only the harness reads these. Object commands are checked on the final world
 state, and answers against the world as it started. FakeRobot's people do not
 move and it has no follow verb, so a people command is checked on the records of
-its successful calls, which say where the robot really was: looked in the right
-room, said something there, went to the destination. What a line about "the time"
-says cannot be checked at all.
+its successful calls, which say where the robot really was and what a lookup
+returned.
+
+An answer is the first line that mentions a candidate after the last look that
+showed what it is about, and it must assert one candidate, the right one. Negation
+and corrections are not parsed. A talk needs the requested person returned at the
+requested place and then any line in their room, because what such a line says is
+not checked. docs/architecture/mahoraga-demo.md lists the rules and known limits.
 """
 
 import re

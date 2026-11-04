@@ -335,6 +335,50 @@ time), and on a script arm its last script ran to completion. So work done befor
 script is cut off, or before a limit, does not count. An earlier failed script the
 agent recovered from stays allowed.
 
+### Checkers
+
+`check(spec, start, end)` judges an episode from two snapshots and the records of
+its successful calls. Each record says where the robot was and what a lookup
+returned, so a check never rebuilds a trail from `go_to` calls, and a relative move
+counts for what it really did.
+
+| Kind | Passes when |
+| --- | --- |
+| `move_object` | An object of the wanted kind picked from the source ends at the destination |
+| `count_objects`, `best_object`, `count_people` | The answer is right after a look from there that returned what it is about |
+| `person_info` | The answer is right after a look in that room that returned the person |
+| `relay_info` | A look returned the source and a look in the recipient's room returned someone there, in either order, then the right answer is said in the recipient's room. A second look at the recipient is not needed |
+| `talk` | A lookup at the requested place returned the requested person, then a line is said in their room |
+| `escort` | That same lookup, then the greeting if asked for, then a move that reaches the destination. The robot may move on afterwards. A destination that is the named origin or holds it needs no further move |
+
+An answer is the first line that mentions a candidate after the last look that
+showed what it is about. That line must assert one distinct candidate, the right
+one. Later lines go unread, so "Task 99 is complete." after a correct count does not
+undo it. Looks that each show part of what is asked add up, and a later look at
+something else is not looking again.
+
+A candidate is a number for a count, the name of any object at that place for
+`best_object`, and a known value of the attribute for `person_info` and
+`relay_info`. Ordinary equivalents count for pose and gesture, so "seated" says
+sitting.
+
+Known limits, each pinned by a test or stated here because reading more would mean
+parsing language:
+
+- A correct answer followed by a correction still passes, whether or not the
+  correction names a candidate. A robot that changes its mind has to look again.
+- Negation is not read. "It is not the banana." counts as saying banana.
+- A true line with a second number or candidate fails, such as "There are two, one
+  apple and one banana" or "The banana is bigger than the apple". "One" counts as a
+  number even as a pronoun.
+- A look again at the same things needs an answer after it, even if an earlier
+  answer was right.
+- A shortened name such as "the plate" for "red plate" is not a candidate.
+- What a `talk` line says is not checked, so a refusal to the right person, found at
+  the right place, passes.
+- An escort cannot show that the person came along, since the fake's people do not
+  move. A `go_to` that leaves the robot where it stands counts as the move.
+
 ### The oracle gate
 
 An LLM arm refuses to start until the oracle has scored 100% twice with identical
@@ -556,9 +600,8 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
 - Four people templates are out: `guideClothPrsFromBeacToBeac`,
   `greetClothDscInRm`, `countClothPrsInRoom` and `meetNameAtLocThenFindInRm`.
 - `FakeRobot` has no follow verb and its people do not move, so follow and guide
-  are checked from the robot's call records. What a line says about "the time" is
-  not checked. A relative move counts for what it really did, since each record
-  says where the robot was.
+  are checked from the robot's call records, and what a `talk` line says is not
+  checked. [Checkers](#checkers) lists the rules and the known limits.
 - The world builder renames the operator and takes them out of every pose and
   gesture, so no command's selector can match them.
 - M9 counts refused calls, since an escape would not show in a log. The bwrap

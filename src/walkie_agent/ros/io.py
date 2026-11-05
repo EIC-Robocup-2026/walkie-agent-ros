@@ -26,6 +26,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from std_msgs.msg import Empty, String
 
 from walkie_agent.ros.speech import SPEECH_TOPIC
+from walkie_agent.runtime.runner import is_stop_utterance
 from walkie_agent.runtime.todos import console_line, public
 from walkie_agent.tasks import TaskTemplate, parse_task_message
 
@@ -139,7 +140,8 @@ class RosBridge:
     def _on_input(self, message: HRIMessage) -> None:
         if self._ingress_closed.is_set():
             return
-        if len(message.images) or len(message.audios):
+        has_payload = len(message.images) or len(message.audios)
+        if has_payload and not is_stop_utterance(message.text):  # a stop is never held back
             logger.warning(
                 "Refused a message on %s with %d images and %d audios: input is text only.",
                 self._input_topic,

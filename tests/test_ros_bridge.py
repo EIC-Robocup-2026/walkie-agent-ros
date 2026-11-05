@@ -157,6 +157,17 @@ def test_input_with_an_image_or_audio_is_refused_and_logged(serve, caplog, paylo
     assert humans(app.stack) == ["Go on."]
 
 
+def test_a_bare_stop_with_a_payload_still_stops(serve):
+    app = serve(then=DONE)
+    subscription(app.connector, "/from_human").callback(
+        HRIMessage(text="stop", images=[Image()], audios=[AudioMessage()])
+    )
+    assert app.stack.robot.cancel.cancelled
+    idle(app)
+    assert app.stack.model.received == []
+    assert app.stack.robot.said == [STOP_LINE]
+
+
 @pytest.mark.parametrize("text", ["", "  \n"])
 def test_input_with_no_text_is_ignored(serve, caplog, text):
     app = serve(then=DONE)

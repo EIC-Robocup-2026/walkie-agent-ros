@@ -47,9 +47,21 @@ def top_level_defs(code: str) -> dict[str, ast.FunctionDef]:
     return {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
 
 
-def definition_source(code: str, node: ast.FunctionDef) -> str:
-    """A definition's text, as its file on the shelf holds it."""
-    return ast.get_source_segment(code, node) + "\n"
+def definition_source(code: str, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """A definition's text without the indentation of the scope it sits in, as a file on the shelf holds it.
+
+    The segment starts at the `def`, so its first line has no indentation, but each
+    later line keeps the scope's. Each later line loses the node's col_offset leading
+    characters when they are all whitespace, so a copy under an `if` or inside another
+    function has the text, and so the sha, it has at top level. A line with fewer, such
+    as a line of a multi-line string at a shallower indent, stays as it is. A top-level
+    definition sits at column 0, so it loses nothing and keeps every sha on a shelf valid.
+    """
+    # col_offset counts UTF-8 bytes, but only indentation, which is ASCII, precedes a def.
+    width = node.col_offset
+    first, *rest = ast.get_source_segment(code, node).split("\n")
+    rest = [line[width:] if len(line) >= width and line[:width].isspace() else line for line in rest]
+    return "\n".join([first, *rest]) + "\n"
 
 
 def _defaults_are_literal(node: ast.FunctionDef) -> bool:

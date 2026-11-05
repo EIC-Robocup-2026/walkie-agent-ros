@@ -1,5 +1,6 @@
 """A function counts as used, returned or raised from what it did at run time, not from its name."""
 
+import ast
 import functools
 import re
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ import pytest
 import mahoraga.driver as driver
 from mahoraga.driver import Budgets, ScriptRunner
 from mahoraga.evidence import Watch
-from mahoraga.shelf import Shelf, source_sha, top_level_defs
+from mahoraga.shelf import Shelf, definition_source, source_sha, top_level_defs
 from mahoraga.tasks import _proven, script_record
 
 VALUE ="def value() -> int:\n    return 1\n"
@@ -54,15 +55,17 @@ def test_a_raise_in_a_failed_script_counts_against_the_version_it_ran(pool, tmp_
 
 
 DIVIDE = "def divide(divisor=1): return 1 / divisor\n"
+# Indented, a definition over two lines keeps the scope's indentation on its second line.
+DIVIDE_ON_TWO_LINES = "def divide(divisor=1):\n    return 1 / divisor\n"
 
 
-def _verify_after(pool, tmp_path, fns, second_code):
-    """Save and return DIVIDE in one script, run `second_code` unsaved, score both, freeze."""
+def _verify_after(pool, tmp_path, fns, second_code, saved=DIVIDE):
+    """Save and return `saved` in one script, run `second_code` unsaved, score both, freeze."""
     shelf = Shelf(tmp_path / "shelf")
     runner = ScriptRunner(pool, shelf=shelf)
-    first = runner.run(DIVIDE + "divide()", fns, save=["divide"])
+    first = runner.run(saved + "divide()", fns, save=["divide"])
     second = runner.run(second_code, fns)
-    assert first.returned == {"divide": source_sha(DIVIDE)}
+    assert first.returned == {"divide": source_sha(saved)}
     assert second.saved == []
     proven = _proven([script_record("", first), script_record(second_code, second)])
     shelf.mark_verified(proven)
@@ -70,25 +73,85 @@ def _verify_after(pool, tmp_path, fns, second_code):
 
 
 @pytest.mark.parametrize(
-    "second_code",
+    ("saved", "second_code"),
     [
         # Watched: the wrapper sees the raise.
-        DIVIDE + "divide(0)",
+        (DIVIDE, DIVIDE + "divide(0)"),
         # The others go unwatched, so their versions count as raised.
-        DIVIDE + "divide = divide\ndivide(0)",
-        DIVIDE + "try:\n    divide(0)\nexcept ZeroDivisionError:\n    pass\n"
-        "def divide(divisor=1): return 2 / divisor\ndivide()",
-        "if True:\n    def divide(divisor=1): return 1 / divisor\ndivide(0)",
-        "def outer():\n    def divide(divisor=1): return 1 / divisor\n    return divide(0)\nouter()",
+        (DIVIDE, DIVIDE + "divide = divide\ndivide(0)"),
+        (
+            DIVIDE,
+            DIVIDE + "try:\n    divide(0)\nexcept ZeroDivisionError:\n    pass\n"
+            "def divide(divisor=1): return 2 / divisor\ndivide()",
+        ),
+        (DIVIDE, "if True:\n    def divide(divisor=1): return 1 / divisor\ndivide(0)"),
+        (DIVIDE, "def outer():\n    def divide(divisor=1): return 1 / divisor\n    return divide(0)\nouter()"),
+        (DIVIDE_ON_TWO_LINES, "if True:\n    def divide(divisor=1):\n        return 1 / divisor\ndivide(0)"),
+        (
+            DIVIDE_ON_TWO_LINES,
+            "def outer():\n    def divide(divisor=1):\n        return 1 / divisor\n    return divide(0)\nouter()",
+        ),
     ],
-    ids=["watched", "bound-twice", "redefined-later", "conditional", "nested"],
+    ids=[
+        "watched",
+        "bound-twice",
+        "redefined-later",
+        "conditional",
+        "nested",
+        "conditional-on-two-lines",
+        "nested-on-two-lines",
+    ],
 )
-def test_a_raise_through_an_unsaved_copy_keeps_the_version_off_the_frozen_shelf(pool, tmp_path, fns, second_code):
+def test_a_raise_through_an_unsaved_copy_keeps_the_version_off_the_frozen_shelf(
+    pool, tmp_path, fns, saved, second_code
+):
     """The second script asks to save nothing, so only its raise can stop the verification."""
-    proven, frozen = _verify_after(pool, tmp_path, fns, second_code)
+    proven, frozen = _verify_after(pool, tmp_path, fns, second_code, saved)
 
     assert "divide" not in proven
     assert frozen == []
+
+
+def _definition(code, name):
+    """The one definition of `name` in `code`, at any depth."""
+    (node,) = [node for node in ast.walk(ast.parse(code)) if isinstance(node, ast.FunctionDef) and node.name == name]
+    return node
+
+
+NOTE = 'def note() -> str:\n    return """first\nsecond"""\n'
+
+
+@pytest.mark.parametrize(
+    ("top_level", "code", "name"),
+    [
+        (DIVIDE_ON_TWO_LINES, "if True:\n    def divide(divisor=1):\n        return 1 / divisor\n", "divide"),
+        (
+            DIVIDE_ON_TWO_LINES,
+            "def outer():\n    def divide(divisor=1):\n        return 1 / divisor\n    return divide(0)\n",
+            "divide",
+        ),
+        (
+            DIVIDE_ON_TWO_LINES,
+            "def outer():\n    if True:\n        def divide(divisor=1):\n            return 1 / divisor\n    return divide(0)\n",
+            "divide",
+        ),
+        (DIVIDE_ON_TWO_LINES, "if True:\n\tdef divide(divisor=1):\n\t    return 1 / divisor\n", "divide"),
+        # A line with less than the scope's indentation, here inside a string, stays as it is.
+        (NOTE, 'if True:\n    def note() -> str:\n        return """first\nsecond"""\n', "note"),
+        (NOTE, 'if True:\n    def note() -> str:\n        return """first\n    second"""\n', "note"),
+    ],
+    ids=[
+        "conditional",
+        "nested",
+        "two-scopes-deep",
+        "tab-indented",
+        "string-line-at-column-0",
+        "string-line-indented-with-the-rest",
+    ],
+)
+def test_an_indented_copy_has_the_text_and_sha_of_the_same_definition_at_top_level(top_level, code, name):
+    assert definition_source(code, _definition(code, name)) == top_level
+    assert (name, source_sha(top_level)) in Watch(code, {}, watch_own=True).unwatched
 
 
 def test_an_unsaved_copy_that_returns_does_not_block_the_verification(pool, tmp_path, fns):

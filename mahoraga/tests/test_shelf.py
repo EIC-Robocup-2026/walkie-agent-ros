@@ -1,5 +1,6 @@
 """The shelf keeps what succeeded, outside git, and only the harness verifies."""
 
+import ast
 import json
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import pytest
 
 import mahoraga
 from mahoraga.driver import ScriptRunner, script_summary
-from mahoraga.shelf import Shelf, definition_source, source_sha, top_level_defs
+from mahoraga.shelf import Shelf, definition_source, shape, source_sha, top_level_defs
 
 FETCH = 'def to_shelf() -> str:\n    """Drive to the shelf."""\n    return go_to("shelf")\n\nto_shelf()'
 
@@ -76,7 +77,7 @@ REPORT = (
 
 
 def test_a_top_level_definition_is_saved_with_its_text_exactly_as_written(shelf):
-    """Taking off a scope's indentation takes nothing off at top level, so each sha on a shelf stays valid."""
+    """A definition's text is its source as written, so each sha on a shelf stays valid."""
     code = REPORT + '\nreport(["kitchen"])'
 
     assert definition_source(code, top_level_defs(code)["report"]) == REPORT
@@ -86,7 +87,7 @@ def test_a_top_level_definition_is_saved_with_its_text_exactly_as_written(shelf)
 
 
 def test_a_form_feed_before_a_top_level_definition_takes_nothing_off_its_lines(shelf):
-    """The def's column offset is 1, but a form feed is not indentation, so the text and sha stay as written."""
+    """The def's column offset is 1 and its text starts at the def, so the text and sha stay as written."""
     note = 'def note():\n    return """first\n    second"""\n'
     code = "\f" + note + "note()"
 
@@ -94,6 +95,18 @@ def test_a_form_feed_before_a_top_level_definition_takes_nothing_off_its_lines(s
     assert shelf.save(code, ["note"])[0] == ["note"]
     assert (shelf.root / "note.py").read_text() == note
     assert events(shelf)[0]["sha"] == source_sha(note)
+
+
+def test_a_shape_leaves_out_layout_comments_and_decorators_but_not_what_the_code_does():
+    plain = top_level_defs("def f(x):\n    return x + 1\n")["f"]
+    laid_out = top_level_defs("def f(x):  # Add one.\n\n    return (x\n            + 1)\n")["f"]
+    decorated = top_level_defs("@wrap\ndef f(x):\n    return x + 1\n")["f"]
+    other = top_level_defs("def f(x):\n    return x + 2\n")["f"]
+
+    assert shape(plain) == shape(laid_out) == shape(decorated)
+    assert shape(other) != shape(plain)
+    # The caller's tree keeps its decorators.
+    assert [ast.unparse(decorator) for decorator in decorated.decorator_list] == ["wrap"]
 
 
 def test_a_failed_run_saves_nothing(shelf_runner, shelf, fns):

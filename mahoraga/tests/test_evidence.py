@@ -10,7 +10,7 @@ import pytest
 import mahoraga.driver as driver
 from mahoraga.driver import Budgets, ScriptRunner
 from mahoraga.evidence import Watch
-from mahoraga.shelf import Shelf, definition_source, source_sha, top_level_defs
+from mahoraga.shelf import Shelf, shape, source_sha, top_level_defs
 from mahoraga.tasks import _proven, script_record
 
 VALUE ="def value() -> int:\n    return 1\n"
@@ -119,9 +119,32 @@ def _definition(code, name):
 
 
 NOTE = 'def note() -> str:\n    return """first\nsecond"""\n'
+# The same function with four spaces before its string's second line, a different value.
+NOTE_INDENTED = 'def note() -> str:\n    return """first\n    second"""\n'
 
 
-@pytest.mark.parametrize(
+def _episode(pool, tmp_path, fns, saved, copy, name="divide"):
+    """Save `saved` and return through it, run the unsaved `copy`, recover, score all three, freeze.
+
+    Returns the copy's result, what the episode proves and the names on the frozen shelf.
+    """
+    shelf = Shelf(tmp_path / "shelf")
+    runner = ScriptRunner(pool, shelf=shelf)
+    first = runner.run(saved + f"{name}()", fns, save=[name])
+    second = runner.run(copy, fns)
+    recovery = runner.run("1", fns)
+    assert (first.ok, first.saved, first.returned) == (True, [name], {name: source_sha(saved)})
+    assert (second.saved, recovery.ok) == ([], True)
+    records = [script_record(saved + f"{name}()", first), script_record(copy, second), script_record("1", recovery)]
+    # Without the copy the saved version is proven, so whatever the episode refuses, the copy refused.
+    assert _proven([records[0], records[2]]) == first.returned
+    proven = _proven(records)
+    shelf.mark_verified(proven)
+    return second, proven, Shelf(shelf.root, frozen=True).names()
+
+
+# Each copy sits beside the top-level definition it copies, so the two have one shape.
+_COPIES = pytest.mark.parametrize(
     ("top_level", "code", "name"),
     [
         (DIVIDE_ON_TWO_LINES, "if True:\n    def divide(divisor=1):\n        return 1 / divisor\n", "divide"),
@@ -136,9 +159,8 @@ NOTE = 'def note() -> str:\n    return """first\nsecond"""\n'
             "divide",
         ),
         (DIVIDE_ON_TWO_LINES, "if True:\n\tdef divide(divisor=1):\n\t    return 1 / divisor\n", "divide"),
-        # Python counts indentation from the last form feed, so the \f is not part of it.
         (DIVIDE_ON_TWO_LINES, "if True:\n\f    def divide(divisor=1):\n        return 1 / divisor\n", "divide"),
-        # A lone \r ends a line for the parser, and each ending is kept as written.
+        # A lone \r ends a line for the parser, as \r\n does.
         (
             "def divide(divisor=1):\r    return 1 / divisor\n",
             "if True:\r    def divide(divisor=1):\r        return 1 / divisor\r",
@@ -149,9 +171,12 @@ NOTE = 'def note() -> str:\n    return """first\nsecond"""\n'
             "if True:\r\n    def divide(divisor=1):\r\n        return 1 / divisor\r\n",
             "divide",
         ),
-        # A line with less than the scope's indentation, here inside a string, stays as it is.
+        # A string keeps its text, so a string line indented with the rest copies a
+        # top-level string that holds the same spaces.
         (NOTE, 'if True:\n    def note() -> str:\n        return """first\nsecond"""\n', "note"),
-        (NOTE, 'if True:\n    def note() -> str:\n        return """first\n    second"""\n', "note"),
+        (NOTE_INDENTED, 'if True:\n    def note() -> str:\n        return """first\n    second"""\n', "note"),
+        # The shape leaves the decorators out, as the text did by starting at the def.
+        (DIVIDE_ON_TWO_LINES, "def wrap(fn):\n    return fn\n\n@wrap\ndef divide(divisor=1):\n    return 1 / divisor\n", "divide"),
     ],
     ids=[
         "conditional",
@@ -163,11 +188,190 @@ NOTE = 'def note() -> str:\n    return """first\nsecond"""\n'
         "crlf-line-endings",
         "string-line-at-column-0",
         "string-line-indented-with-the-rest",
+        "decorated",
     ],
 )
-def test_an_indented_copy_has_the_text_and_sha_of_the_same_definition_at_top_level(top_level, code, name):
-    assert definition_source(code, _definition(code, name)) == top_level
-    assert (name, source_sha(top_level)) in Watch(code, {}, watch_own=True).unwatched
+
+
+@_COPIES
+def test_an_indented_copy_has_the_shape_of_the_same_definition_at_top_level(top_level, code, name):
+    saved = shape(top_level_defs(top_level)[name])
+    watch = Watch(code, {}, watch_own=True)
+
+    assert shape(_definition(code, name)) == saved
+    assert [watch.shapes[sha] for unwatched, sha in watch.unwatched if unwatched == name] == [saved]
+
+
+@_COPIES
+def test_an_indented_copy_keeps_the_same_definition_at_top_level_off_the_frozen_shelf(
+    pool, tmp_path, fns, top_level, code, name
+):
+    """No wrapper watches the copy, so it counts as raised whether it ran or not."""
+    _, proven, frozen = _episode(pool, tmp_path, fns, top_level, code, name)
+
+    assert proven == {}
+    assert frozen == []
+
+
+@pytest.mark.parametrize(
+    "copy",
+    [
+        "if True:\n\x0c    def divide(divisor=1):\n\x0c        return 1 / divisor\ndivide(0)",
+        "if True:\n    \\\ndef divide(divisor=1):\n        return 1 / divisor\ndivide(0)",
+        "if True:\n   \\\n def divide(divisor=1):\n        return 1 / divisor\ndivide(0)",
+        "if True:\n    def divide(divisor=1):\n        # One over the divisor.\n\n        return 1 / divisor\ndivide(0)",
+    ],
+    ids=[
+        "form-feed-on-each-indented-line",
+        "indentation-before-a-continuation",
+        "indentation-split-across-a-continuation",
+        "comment-and-blank-line",
+    ],
+)
+def test_a_raise_through_a_copy_laid_out_another_way_keeps_the_saved_version_off_the_frozen_shelf(
+    pool, tmp_path, fns, copy
+):
+    second, proven, frozen = _episode(pool, tmp_path, fns, DIVIDE_ON_TWO_LINES, copy)
+
+    assert second.phase == "runtime"
+    assert "ZeroDivisionError" in second.error
+    assert proven == {}
+    assert frozen == []
+
+
+def test_a_raise_through_a_copy_that_computes_something_else_does_not_veto_the_saved_version(pool, tmp_path, fns):
+    copy = "if True:\n    def divide(divisor=1):\n        return 2 / divisor\ndivide(0)"
+
+    second, proven, frozen = _episode(pool, tmp_path, fns, DIVIDE_ON_TWO_LINES, copy)
+
+    assert "ZeroDivisionError" in second.error
+    assert proven == {"divide": source_sha(DIVIDE_ON_TWO_LINES)}
+    assert frozen == ["divide"]
+
+
+def test_a_copy_whose_string_holds_other_text_does_not_veto_the_saved_version(pool, tmp_path, fns):
+    """Indented with the rest, the copy's string has four more spaces, so it returns another value."""
+    copy = 'if True:\n    def note() -> str:\n        return """first\n    second"""\nnote()'
+
+    _, proven, frozen = _episode(pool, tmp_path, fns, NOTE, copy, "note")
+
+    assert proven == {"note": source_sha(NOTE)}
+    assert frozen == ["note"]
+
+
+def test_a_raise_through_a_shelf_version_vetoes_a_rewrite_of_the_same_shape(pool, tmp_path, fns):
+    """The shelf version's shape comes from the shelf's source the run loaded."""
+    commented = "def divide(divisor=1):\n    # One over the divisor.\n    return 1 / divisor\n"
+    shelf = Shelf(tmp_path / "shelf")
+    assert shelf.save(DIVIDE_ON_TWO_LINES, ["divide"])[0] == ["divide"]
+    runner = ScriptRunner(pool, shelf=shelf)
+
+    loaded = runner.run("divide(0)", fns)
+    rewrite = runner.run(commented + "divide()", fns, save=["divide"])
+
+    assert (loaded.shelf_raised, rewrite.saved) == (["divide"], ["divide"])
+    assert loaded.shapes[source_sha(DIVIDE_ON_TWO_LINES)] == rewrite.shapes[source_sha(commented)]
+    proven = _proven([script_record("divide(0)", loaded), script_record(commented + "divide()", rewrite)])
+    shelf.mark_verified(proven)
+    assert proven == {}
+    assert Shelf(shelf.root, frozen=True).names() == []
+
+
+@pytest.mark.parametrize(
+    ("scripts", "proven"),
+    [
+        # A record from before shapes existed compares shas.
+        ([{"returned": {"f": "aaa"}, "raised": {}}, {"returned": {}, "raised": {"f": "aaa"}}], {}),
+        ([{"returned": {"f": "aaa"}, "raised": {}}, {"returned": {}, "raised": {"f": "bbb"}}], {"f": "aaa"}),
+        ([{"returned": {"f": "aaa"}, "raised": {}, "unwatched": [["f", "aaa"]]}], {}),
+        ([{"returned": {"f": "aaa"}, "raised": {}, "unwatched": [["f", "bbb"]]}], {"f": "aaa"}),
+        # Two shas of one shape are one version for the veto, and the text sha is what is proven.
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {"aaa": "one"}},
+                {"returned": {}, "raised": {}, "unwatched": [["f", "bbb"]], "shapes": {"bbb": "one"}},
+            ],
+            {},
+        ),
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {"aaa": "one"}},
+                {"returned": {}, "raised": {"f": "bbb"}, "shapes": {"bbb": "one"}},
+            ],
+            {},
+        ),
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {"aaa": "one"}},
+                {"returned": {}, "raised": {"f": "bbb"}, "shapes": {"bbb": "two"}},
+            ],
+            {"f": "aaa"},
+        ),
+        # A shape vetoes its own name only.
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {"aaa": "one"}},
+                {"returned": {}, "raised": {"g": "bbb"}, "shapes": {"bbb": "one"}},
+            ],
+            {"f": "aaa"},
+        ),
+        # A sha the record has no shape for still vetoes the same sha.
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {"aaa": "one"}},
+                {"returned": {}, "raised": {"f": "aaa"}},
+            ],
+            {},
+        ),
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {}},
+                {"returned": {}, "raised": {"f": "aaa"}, "shapes": {"bbb": "one"}},
+            ],
+            {},
+        ),
+    ],
+    ids=[
+        "old-same-sha-raised",
+        "old-other-sha-raised",
+        "old-same-sha-unwatched",
+        "old-other-sha-unwatched",
+        "same-shape-unwatched",
+        "same-shape-raised",
+        "other-shape-raised",
+        "same-shape-other-name",
+        "same-sha-without-a-shape",
+        "same-sha-missing-from-the-shapes",
+    ],
+)
+def test_proven_compares_versions_by_shape_and_falls_back_to_the_sha(scripts, proven):
+    assert _proven(scripts) == proven
+
+
+# A top-level def after lines that end in a lone \r, which the parser and Monty both accept.
+LONE_CR = "# comment\rdef divide(divisor=1):\r    return 1 / divisor\r"
+
+
+def test_a_definition_after_lone_carriage_returns_is_watched_on_its_own_line():
+    watch = Watch(LONE_CR, {}, watch_own=True)
+
+    assert list(watch.own_versions) == ["divide"]
+    assert watch.unwatched == []
+    assert re.fullmatch(r"# comment\rdef _h[0-9a-f]{16}_divide\(divisor=1\):\r    return 1 / divisor\r", watch.code)
+
+
+def test_a_script_with_lone_carriage_returns_runs_and_its_definition_is_counted(pool, tmp_path, fns):
+    runner = ScriptRunner(pool, shelf=Shelf(tmp_path / "shelf"))
+    version = {"divide": source_sha("def divide(divisor=1):\r    return 1 / divisor\n")}
+
+    returned = runner.run(LONE_CR + "divide(2)", fns, save=["divide"])
+    raised = runner.run(LONE_CR + "divide(0)", fns)
+
+    assert (returned.ok, returned.output, returned.saved) == (True, 0.5, ["divide"]), returned.error
+    assert returned.returned == version
+    assert raised.phase == "runtime"
+    assert "ZeroDivisionError" in raised.error
+    assert raised.raised == version
 
 
 def test_an_unsaved_copy_that_returns_does_not_block_the_verification(pool, tmp_path, fns):

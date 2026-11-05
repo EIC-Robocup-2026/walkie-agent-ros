@@ -77,7 +77,10 @@ class ScriptResult:
     `raised` also covers a definition the run did not save, since the same text may be
     on the shelf. `unwatched` lists, as (name, sha) pairs, every definition no wrapper
     could watch, which the scorer counts as raised. A name may appear in it more than
-    once, one pair per version.
+    once, one pair per version. A sha is of the version's text, as the ledger keeps it.
+    `shapes` maps the sha of each version the run named, a loaded shelf function or
+    one of the script's definitions, to its shape (shelf.shape), which the scorer's veto
+    compares, so a copy at another depth or laid out another way counts as the same version.
     """
 
     ok: bool = False
@@ -91,6 +94,7 @@ class ScriptResult:
     returned: dict[str, str] = field(default_factory=dict)
     raised: dict[str, str] = field(default_factory=dict)
     unwatched: list[tuple[str, str]] = field(default_factory=list)
+    shapes: dict[str, str] = field(default_factory=dict)
     saved: list[str] = field(default_factory=list)
     refused: dict[str, str] = field(default_factory=dict)
 
@@ -153,7 +157,7 @@ class ScriptRunner:
         prefix, shelf_versions = self.shelf.source_for(code) if self.shelf is not None else ("", {})
         may_save = self.shelf is not None and not self.shelf.frozen
         # Own definitions are watched while the shelf can still verify, saved or not.
-        watch = Watch(code, shelf_versions, watch_own=may_save, reserved=set(fns))
+        watch = Watch(code, shelf_versions, shelf_source=prefix, watch_own=may_save, reserved=set(fns))
 
         def fail(phase: str, error: str) -> None:
             result.ok, result.phase, result.error = False, phase, _clip(watch.clean(error))
@@ -200,6 +204,7 @@ class ScriptRunner:
         ran = {**watch.own_versions, **shelf_versions}
         result.raised = {name: sha for name, sha in ran.items() if name in watch.raised}
         result.unwatched = watch.unwatched
+        result.shapes = watch.shapes
         return result
 
     def _session(self, fns: Mapping[str, Callable[..., Any]], extra_stubs: str = "") -> Any:

@@ -9,10 +9,10 @@ while it keeps counting runs for the report.
 """
 
 import ast
+import copy
 import hashlib
 import json
 import os
-import re
 import tempfile
 import threading
 import time
@@ -25,12 +25,26 @@ from mahoraga import home
 LEDGER = "ledger.jsonl"
 # The loader defines these itself, so a saved function under one could not run as saved.
 SHADOWED = frozenset({"locals", "eval", "exec"})
-# The line endings Python's parser counts, captured so a split keeps them.
-_LINE_END = re.compile(r"(\r\n|\r|\n)")
 
 
 def source_sha(source: str) -> str:
     return hashlib.sha256(source.encode()).hexdigest()[:16]
+
+
+def shape(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    """The sha of a definition's syntax tree, which an episode's veto compares versions by.
+
+    The tree has no positions, whitespace, comments or line endings, so a copy under an
+    `if`, inside another function or laid out another way has the shape of the same
+    definition at top level. Decorators are left out, as a definition's text starts at
+    its `def`, so a decorated copy has its undecorated version's shape. `ast.dump`
+    differs between Python versions, so a shape is only compared within the episode
+    that recorded it.
+    """
+    # A shallow copy, so the caller's node keeps its decorators.
+    bare = copy.copy(node)
+    bare.decorator_list = []
+    return source_sha(ast.dump(bare, include_attributes=False))
 
 
 def _names_in(code: str) -> set[str]:
@@ -51,30 +65,14 @@ def top_level_defs(code: str) -> dict[str, ast.FunctionDef]:
 
 
 def definition_source(code: str, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
-    """A definition's text without the indentation of the scope it sits in, as a file on the shelf holds it.
+    """A definition's text as written, from its `def` to its last line, as a file on the shelf holds it.
 
-    The segment starts at the `def`, so its first line has no indentation, but each
-    later line keeps the scope's. Each later line loses as many leading characters as
-    the scope's indentation has, when they are all whitespace, so a copy under an `if`
-    or inside another function has the text, and so the sha, it has at top level. A line
-    with fewer, such as a line of a multi-line string at a shallower indent, stays as it
-    is. A top-level definition has no indentation, so it loses nothing and keeps every
-    sha on a shelf valid.
+    Its sha names the version in the ledger. A top-level definition's text is exactly
+    what was saved, so every sha on a shelf stays valid. A copy at another depth keeps
+    the scope's indentation on its later lines, so its sha differs from the same
+    definition's at top level. An episode's veto compares shapes, not shas, for that.
     """
-    # Only whitespace precedes a def on its line, and it is ASCII, so the UTF-8 byte
-    # count in col_offset is also a character count. Python resets the indentation
-    # column at a form feed, so the indentation is what follows the last one: a
-    # top-level def after a form feed has col_offset 1 and no indentation.
-    prefix = _LINE_END.split(code)[2 * (node.lineno - 1)][: node.col_offset]
-    width = len(prefix) - (prefix.rfind("\f") + 1)
-    # Lines end where the parser ends them, at \r\n, \r or \n. Even places hold the
-    # lines and odd places their endings, which are kept as written.
-    parts = _LINE_END.split(ast.get_source_segment(code, node))
-    for i in range(2, len(parts), 2):
-        line = parts[i]
-        if len(line) >= width and line[:width].isspace():
-            parts[i] = line[width:]
-    return "".join(parts) + "\n"
+    return ast.get_source_segment(code, node) + "\n"
 
 
 def _defaults_are_literal(node: ast.FunctionDef) -> bool:

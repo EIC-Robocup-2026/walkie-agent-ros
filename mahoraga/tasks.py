@@ -58,6 +58,7 @@ def script_record(code: str, result: ScriptResult) -> dict[str, Any]:
         "returned": result.returned,
         "raised": result.raised,
         "unwatched": [list(version) for version in result.unwatched],
+        "shapes": result.shapes,
         "saved": result.saved,
         "refused": result.refused,
     }
@@ -66,15 +67,26 @@ def script_record(code: str, result: ScriptResult) -> dict[str, Any]:
 def _proven(scripts: Sequence[Mapping[str, Any]]) -> dict[str, str]:
     """Per name, the last version that returned in an episode and that nothing raised through in it.
 
-    A version that ran where no wrapper watched it counts as raised. A record from
-    before `unwatched` existed has none.
+    A version that ran where no wrapper watched it counts as raised. Versions match by
+    name and shape, from each script's own `shapes`, so a raise through a copy at
+    another depth or laid out another way counts against the version it copies. They
+    also match by name and sha, which is all a record from before `shapes` existed, or
+    a sha missing from its record's shapes, has to go on. A record from before
+    `unwatched` existed has none. What is proven is the text sha, as the ledger keeps it.
     """
-    raised = {version for script in scripts for version in script["raised"].items()}
-    raised |= {tuple(version) for script in scripts for version in script.get("unwatched", ())}
+
+    def keys(script: Mapping[str, Any], name: str, sha: str) -> set[tuple[str, str, str]]:
+        shape = script.get("shapes", {}).get(sha)
+        return {("sha", name, sha)} | ({("shape", name, shape)} if shape else set())
+
+    raised: set[tuple[str, str, str]] = set()
+    for script in scripts:
+        for name, sha in [*script["raised"].items(), *script.get("unwatched", ())]:
+            raised |= keys(script, name, sha)
     proven: dict[str, str] = {}
     for script in scripts:
         for name, sha in script["returned"].items():
-            if (name, sha) not in raised:
+            if not keys(script, name, sha) & raised:
                 proven[name] = sha
     return proven
 
@@ -102,8 +114,8 @@ def ground_truth(shelf: Shelf | None = None) -> Scorer:
 
     A success marks, per function name, the last version that ran and returned in it
     as verified. A function it saved or loaded and never ran earns nothing, and neither
-    does a version that raised, even if its caller caught that, or one whose text also
-    ran in the episode where no wrapper watched it.
+    does a version that raised, even if its caller caught that, or one that shares its
+    shape with a version that raised or that no wrapper watched in the episode.
     """
 
     @scorer(metrics=[mean()], name=SCORER)

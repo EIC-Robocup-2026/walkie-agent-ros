@@ -29,6 +29,11 @@ anything: nothing counts as used or returned. Every version it watched counts as
 raised, since a raise through it may be what was lost, so no other script of the
 episode verifies that version. A wrapper adds a frame per call,
 so recursion through a watched function reaches the depth limit in half the calls.
+
+A version is named by the sha of its text, which the ledger keeps, and has a shape,
+the sha of its syntax tree (shelf.shape). The episode's veto compares shapes, so a
+raise through a copy at another depth, or laid out another way, counts against the
+version it copies.
 """
 
 import ast
@@ -41,20 +46,25 @@ from typing import Any
 
 from pydantic_monty import CollectString, MontyError
 
-from mahoraga.shelf import SHADOWED, definition_source, header, source_sha, top_level_defs
+from mahoraga.shelf import SHADOWED, definition_source, header, shape, source_sha, top_level_defs
 
 _logger = logging.getLogger(__name__)
+# Where the parser ends a line: after \n, and after a \r that no \n follows.
+_LINE_ENDS = re.compile(r"(?<=\n)|(?<=\r)(?!\n)")
 
 
 class Watch:
     """The counters of one run, over the shelf functions it loads and the script's own definitions.
 
     With `watch_own`, the script's definitions are watched too, saved or not, since the
-    same text may already be on the shelf. A watched definition is renamed on its own
-    line, so its line numbers hold, and the wrapper takes its name. A stub keeps its
+    same function may already be on the shelf. A watched definition is renamed on its
+    own line, so its line numbers hold, and the wrapper takes its name. A stub keeps its
     signature in the type check. Every other definition in the script, at any depth, is
     in `unwatched` as a (name, sha) pair: a raise through it would go unseen, so it
-    counts as raised. With nothing to watch, the run has no loader and no token.
+    counts as raised. `shapes` maps the sha of each version the run names to its shape:
+    each shelf version, read from `shelf_source`, the source the run feeds first, and
+    each of the script's watched and unwatched definitions. With nothing to watch, the
+    run has no loader and no token.
     """
 
     def __init__(
@@ -62,13 +72,18 @@ class Watch:
         code: str,
         shelf_versions: Mapping[str, str],
         *,
+        shelf_source: str = "",
         watch_own: bool = False,
         reserved: Collection[str] = (),
     ) -> None:
         watched = _watchable(code, reserved) if watch_own else {}
+        others = _unwatched(code, watched) if watch_own else []
         self._tag = f"_h{secrets.token_hex(8)}"
         self.own_versions = {name: _sha(code, node) for name, node in watched.items()}
-        self.unwatched = _unwatched(code, watched) if watch_own else []
+        self.unwatched = sorted({(node.name, _sha(code, node)) for node in others})
+        loaded = top_level_defs(shelf_source)
+        self.shapes = {sha: shape(loaded[name]) for name, sha in shelf_versions.items() if name in loaded}
+        self.shapes.update((_sha(code, node), shape(node)) for node in [*watched.values(), *others])
         self.code = _renamed(code, watched, self._tag)
         self.stubs = "".join(f"{header(definition_source(code, node))}\n" for node in watched.values())
         self.loader = _loader(self._tag, shelf_versions, watched) if shelf_versions or watched else ""
@@ -130,7 +145,7 @@ def _watchable(code: str, reserved: Collection[str]) -> dict[str, ast.FunctionDe
             bound[node.name] += 1
         elif isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
             bound[node.id] += 1
-    lines = code.split("\n")
+    lines = _lines(code)
     return {
         name: node
         for name, node in defs.items()
@@ -138,33 +153,41 @@ def _watchable(code: str, reserved: Collection[str]) -> dict[str, ast.FunctionDe
     }
 
 
-def _unwatched(code: str, watched: Mapping[str, ast.FunctionDef]) -> list[tuple[str, str]]:
-    """Every other definition in the script, at any depth, as sorted (name, sha) pairs.
+def _unwatched(
+    code: str, watched: Mapping[str, ast.FunctionDef]
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every other definition in the script, at any depth.
 
     That covers a second definition of a name, one under an `if` or inside another
     function, and a decorated one. Each may run and raise where no wrapper sees it,
-    and its text may match a shelf version, so the caller counts it as raised.
+    and its shape may match a shelf version's, so the caller counts it as raised.
     """
     try:
         tree = ast.parse(code)
     except SyntaxError:
         return []
     kept = {(node.lineno, node.col_offset) for node in watched.values()}
-    return sorted(
-        {
-            (node.name, _sha(code, node))
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-            and (node.lineno, node.col_offset) not in kept
-        }
-    )
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and (node.lineno, node.col_offset) not in kept
+    ]
+
+
+def _lines(code: str) -> list[str]:
+    """The script's lines as the parser numbers them, each with its line ending as written.
+
+    The parser ends a line at CR LF, a lone CR or LF, and nowhere else, so
+    `lines[node.lineno - 1]` is a node's line, and joining the lines gives the script back.
+    """
+    return _LINE_ENDS.split(code)
 
 
 def _renamed(code: str, own: Mapping[str, ast.FunctionDef], tag: str) -> str:
-    lines = code.split("\n")
+    lines = _lines(code)
     for name, node in own.items():
         lines[node.lineno - 1] = re.sub(rf"^def(\s+){name}\b", rf"def\g<1>{tag}_{name}", lines[node.lineno - 1])
-    return "\n".join(lines)
+    return "".join(lines)
 
 
 def _loader(tag: str, shelf: Iterable[str], own: Iterable[str]) -> str:

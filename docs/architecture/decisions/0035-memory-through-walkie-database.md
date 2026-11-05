@@ -1,7 +1,14 @@
 # ADR-0035: Read Walkie's memory through walkie-database's ROS 2 services
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-20
+**Status:** Accepted, amended by
+[ADR-0052](/architecture/decisions/0052-capability-verbs-and-backends.md) ·
+**Date:** 2026-10-20
+
+The `find_objects` tool, its timeouts and its messages are retired: a remembered row is
+not a current view, so no tool in the agent reads memory today. The rest stands. Memory is
+read only through the database node's services, and the pin, the message package and the
+build steps stay for the memory capability that will use them.
 
 **Context**
 

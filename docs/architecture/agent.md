@@ -640,7 +640,7 @@ The arm manipulation decisions, ADR-0021 to ADR-0028, are on the
 
     --8<-- "architecture/decisions/0034-vision-models-in-walkie-vision.md:body"
 
-??? success "ADR-0035: Read Walkie's memory through walkie-database's ROS 2 services · Accepted"
+??? success "ADR-0035: Read Walkie's memory through walkie-database's ROS 2 services · Accepted, amended by ADR-0052"
 
     --8<-- "architecture/decisions/0035-memory-through-walkie-database.md:body"
 

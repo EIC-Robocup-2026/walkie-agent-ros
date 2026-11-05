@@ -278,3 +278,28 @@ as P51 and P52, and corrects P46 and P49.
   beside this file as `pair-gate-9793705.log`.
 - For walkie-agent-ros, the follow-up above now means walkie-vision `9793705` and
   walkie-database `ef2a7c1`.
+
+## Final commits, 2026-11-06
+
+The final re-check of `9793705` closed R5-F2 and found R5M66-F1, a low wording
+gap: the no-depth sentence on the architecture page left out that the request's
+age and camera checks come first. walkie-vision `64811fe` fixes that page only
+(P53), and walkie-database `522ab92` moves the pin to it (P54). The fixes were not
+re-checked again, as P53 records: the review loop stops here.
+
+| Repository | Worktree | Commit | Subject |
+|---|---|---|---|
+| walkie-vision | `/var/tmp/wv-prep` | `64811feb79ca983456a74f4c2667195db176dcb6` | docs: say that the request's checks come before the no-depth answer |
+| walkie-database | `/var/tmp/wd-prep` | `522ab92f4b1a06b4a82904414b004f2ad25ac2ba` | build: pin walkie-vision at the no-depth answer docs fix |
+
+- Both commits are on local `feat/scene-graph-prep`. Neither repository's `main`
+  moved, and nothing is pushed.
+- `64811fe` changes only `docs/architecture/vision.md`, so walkie-vision's suite
+  result at `9793705` still applies; its strict docs build passed.
+  walkie-database's suite gave 1640 passed at `522ab92`.
+- The pair gate ran once at `64811fe` and `522ab92` with `--build` on domain 89
+  and passed all 20 checks. Its report is
+  `/var/tmp/wa-impl-prep/pair-gate-64811fe/report.json`, and its summary is kept
+  beside this file as `pair-gate-64811fe.log`.
+- For walkie-agent-ros, the follow-up above now means walkie-vision `64811fe` and
+  walkie-database `522ab92`.

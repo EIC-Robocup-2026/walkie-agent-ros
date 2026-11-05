@@ -224,3 +224,29 @@ decision log records the fixes as P45 to P48, and P42 and P43 are amended.
   commits as reviewed only by their tests.
 - For walkie-agent-ros, the follow-up above now means walkie-vision `a8a76ef` and
   walkie-database `f36a038`.
+
+## After the third re-check, 2026-11-06
+
+The re-check of `f36a038` closed R-F2 with no new finding. The re-check of
+`a8a76ef` closed RJ-F1 to RJ-F3 and found A8-F1 and A8-F2, two low docs gaps in
+the intake guard's text. The fix moved both final commits once more. The decision
+log records it as P49 and P50, and P45 and P46 are corrected.
+
+| Repository | Worktree | Commit | Subject |
+|---|---|---|---|
+| walkie-vision | `/var/tmp/wv-prep` | `5b6d347f9e111970c539bf6bafa1920118a98745` | docs: say what the services' intake guard keeps, refuses and costs |
+| walkie-database | `/var/tmp/wd-prep` | `6fd1c619f1972473f6c8f7a518f6cd3d8ac9eb11` | build: pin walkie-vision at the intake guard docs fix |
+
+- walkie-vision `5b6d347` changes only docstrings and docs after `a8a76ef` (P49).
+  walkie-database `6fd1c61` moves the pin to it (P50), on top of `f36a038`.
+- `walkie_vision_msgs` did not change, and neither `pixi.lock` nor `pixi.toml`
+  changed in either repository.
+- walkie-vision's suite gave 1222 passed and 1 skipped (the missing `buffalo_l`
+  model) at `5b6d347`, and walkie-database's gave 1640 passed at `6fd1c61`. Both
+  strict docs builds passed.
+- The pair gate ran once at `5b6d347` and `6fd1c61` with `--build` on domain 89
+  and passed all 20 checks. Its report is
+  `/var/tmp/wa-impl-prep/pair-gate-5b6d347/report.json`, and its summary is kept
+  beside this file as `pair-gate-5b6d347.log`.
+- For walkie-agent-ros, the follow-up above now means walkie-vision `5b6d347` and
+  walkie-database `6fd1c61`.

@@ -136,8 +136,21 @@ def test_a_missing_openai_key_is_a_value_error_that_names_it(monkeypatch):
         ("ftp://127.0.0.1/v1", "must be an http or https URL with a host"),
         ("http:///v1", "must be an http or https URL with a host"),
         (42, "must be a string"),
+        ("http://[::1/v1", "is not a URL"),
+        ("http://[127.0.0.1]/v1", "is not a URL"),
+        ("http://exa＃mple.com/v1", "is not a URL"),
     ],
-    ids=["word-port", "port-out-of-range", "no-scheme", "other-scheme", "no-host", "not-a-string"],
+    ids=[
+        "word-port",
+        "port-out-of-range",
+        "no-scheme",
+        "other-scheme",
+        "no-host",
+        "not-a-string",
+        "unclosed-ipv6-bracket",
+        "ipv4-in-brackets",
+        "nfkc-invalid-host",
+    ],
 )
 def test_a_bad_base_url_is_a_value_error_that_names_the_setting(api_key, vendor, base_url, reason):
     # The HTTP client's own URL error is neither a ValueError nor the SDK's error, so

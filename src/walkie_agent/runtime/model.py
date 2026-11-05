@@ -112,7 +112,11 @@ def _check_base_url(vendor: str, base_url: object) -> None:
     where = f"[{vendor}].base_url"
     if not isinstance(base_url, str):
         raise ValueError(f"{where} must be a string, not {base_url!r}.")
-    parts = urlsplit(base_url)
+    try:
+        # urlsplit itself refuses some hosts, such as an unclosed IPv6 bracket.
+        parts = urlsplit(base_url)
+    except ValueError as e:
+        raise ValueError(f"{where} is not a URL the client can parse, {base_url!r}: {e}.") from e
     if parts.scheme not in ("http", "https") or not parts.hostname:
         raise ValueError(f"{where} must be an http or https URL with a host, not {base_url!r}.")
     try:

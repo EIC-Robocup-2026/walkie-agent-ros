@@ -368,8 +368,10 @@ todos = [
 - **Shutdown.** The first SIGINT or SIGTERM closes input, cancels the goal and drains.
   If Nav2 has not answered, the agent keeps ROS running, keeps input closed, retries and
   logs what is unresolved. A second signal ends the process at once with exit code 3,
-  and the robot's state is then unknown. A clean exit is code 0, and a startup or
-  runtime failure is code 1.
+  and the robot's state is then unknown. A clean exit is code 0. A bad input found
+  before ROS starts, such as a missing or broken file, a missing setting or API key,
+  or a bad `[team]` table, prints one line on stderr, `walkie-agent: <message>`, and
+  exits with code 2. A failure once ROS has started is code 1.
 
 ## Tools
 

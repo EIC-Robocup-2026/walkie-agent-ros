@@ -106,8 +106,8 @@ perception backend and an arm commander client exist.
 ROS (M36). It reads the computer's wall clock, not ROS time, in the timezone of
 `config.toml`'s `[team]` table, which also holds the team's name, country and
 affiliation (M37). `main` builds it from that table and passes it to `assemble`. A
-missing table, a blank value or an unknown timezone stops the agent with a one-line
-error before `rclpy.init`. `assemble` without `facts` keeps `UnavailableFacts`.
+missing table, a blank value or an unknown timezone stops the agent before
+`rclpy.init`, with one line on stderr and exit code 2 (M56). `assemble` without `facts` keeps `UnavailableFacts`.
 
 ### Guards live in the verbs
 
@@ -350,9 +350,13 @@ Each event carries the sha of the source that ran, so a rewrite starts with noth
 If an episode ran several versions of one name, only the last that returned and never
 raised is verified. A function saved but never run stays unverified, so it stays off
 a frozen shelf. So does a verified function that names a saved function which never
-ran, because it could not stand alone without it. A definition the script bound more
-than once, or one that is not in `save`, goes unwatched and earns nothing, and a
-script's own definition is no use of the shelf.
+ran, because it could not stand alone without it. A script's own definition earns a
+return only if the script saves it, and it is no use of the shelf. While the shelf can
+still verify, a definition the script bound more than once, a decorated one, or one
+under an `if` or inside another function goes unwatched and counts as raised for its
+version (M51). Its sha is taken
+from its text without the indentation of the scope it sits in, so a copy under an `if`
+has the sha of the same text at top level (M52).
 
 The counters' names carry a random token per run, and a script that loads or saves
 a function gets `locals`, `eval` and `exec` shadowed, so it cannot name or reach
@@ -423,7 +427,7 @@ counts for what it really did.
 | `count_objects`, `best_object`, `count_people` | The answer is right after a look from there that returned what it is about |
 | `person_info` | The answer is right after a look in that room that returned the person |
 | `relay_info` | A look returned the source and a look in the recipient's room returned someone there, in either order, then the right answer is said in the recipient's room. A second look at the recipient is not needed |
-| `talk` | A lookup at the requested place returned the requested person, then some line in their room says the fact the topic asks for. For "something about yourself", any line in their room |
+| `talk` | A lookup at the requested place returned the requested person and a read of the topic's fact succeeded, in either order, then some line in their room says that fact. For "something about yourself", any line in their room, with no read |
 | `escort` | That same lookup, then the greeting if asked for, then a move that reaches the destination. The robot may move on afterwards. A destination that is the named origin or holds it needs no further move |
 
 An answer is the first line that mentions a candidate after the last look that
@@ -447,7 +451,10 @@ say it. Pointing and waving need no body part.
 
 A `talk` fact is judged against the start snapshot's `facts` (M39). The first-line
 rule does not apply: any line said in the person's room after the lookup that found
-them counts.
+them counts. The line must also come after a successful read of the fact: `facts.now`
+for the time and the four day topics, and `facts.team` for the three team topics.
+`get_facts` makes both reads, before or after the lookup. A right line with no read
+before it fails, and the reason says so (M53).
 
 | Topic | A line passes when it says |
 | --- | --- |
@@ -459,10 +466,17 @@ them counts.
 | "your teams name", "your teams country", "your teams affiliation" | That team value |
 | "something about yourself" | Anything (M41) |
 
-- A time is `H:MM` or `HH:MM` in 24-hour form, or `h:MM` in 12-hour form. An am or pm
-  after it is optional, in any case and with or without dots, and must be right when
-  given. An hour with a leading zero and no am or pm reads as 24-hour, so "02:05" is
-  not 14:05. "h o'clock" counts only on the hour, with the hour in digits.
+- A time is `H:MM` or `HH:MM` in 24-hour form, `h:MM` in 12-hour form, "h o'clock"
+  on the hour with the hour in digits, or a digit hour right before a qualifier, such
+  as "12 am", "2 p.m." or "12 noon", which is that hour on the hour. Every form reads
+  its hour the same way (M55). A qualifier is optional and must be right when given:
+  am or pm in any case and with or without dots, "in the morning" for am, "in the
+  afternoon" or "in the evening" for pm, and "noon" or "midnight" only after 12 on
+  the hour, at 12:00 or 00:00. An hour with a leading zero and no qualifier reads as
+  24-hour, so "02:05" is not 14:05 and "02 o'clock" is not 14:00.
+- A day topic asks about today, except "what day is tomorrow". A line that names
+  another of today, tomorrow and yesterday, and not the day asked about, does not
+  count for it, so "Tomorrow is Thursday." does not say that today is Thursday (M54).
 - A weekday is its English name as a whole word, in any case.
 - A date is the month's full name and the day's number in either order, with an
   optional ordinal suffix, "of" or "the": "5 November", "5th of November",
@@ -492,9 +506,14 @@ parsing language:
 - A shortened name such as "the plate" for "red plate" is not a candidate.
 - What a "something about yourself" line says is not checked, so a refusal to the
   right person, found at the right place, passes.
-- A time in words fails, such as "quarter past two", "half past two" or "five past
-  two". So do "two o'clock", a time with seconds such as "14:05:30", and a month's
-  short name such as "5 Nov".
+- A time in words fails, such as "quarter past two", "half past two", "five past
+  two" or "noon" alone. So do "two o'clock", a time with seconds such as "14:05:30",
+  and a month's short name such as "5 Nov".
+- A qualifier goes with a 12-hour time, so a right 24-hour time with one fails, such
+  as "14:05 pm", "14:05 in the afternoon" or "00:00 midnight".
+- "at night" is not read, so "10 at night" fails at 22:00 and "2:05 at night" passes
+  at 14:05.
+- The checker sees that a read came before the line, not that the line used it.
 - A line that names both today and tomorrow passes for either, such as "Today is
   Thursday and tomorrow is Friday."
 - Any number in a line counts for the day of the month, so "It is the one you
@@ -852,7 +871,7 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
   `greetClothDscInRm`, `countClothPrsInRoom` and `meetNameAtLocThenFindInRm`.
 - `FakeRobot` has no follow verb and its people do not move, so follow and guide
   are checked from the robot's call records. A `talk` line is checked for the fact
-  its topic asks for, except "something about yourself". [Checkers](#checkers)
+  its topic asks for, after a read of that fact, except "something about yourself". [Checkers](#checkers)
   lists the rules and the known limits.
 - The world builder renames the operator and takes them out of every pose and
   gesture, so no command's selector can match them.

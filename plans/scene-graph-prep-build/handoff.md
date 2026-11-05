@@ -130,3 +130,34 @@ The pair gate covers these two repositories with fake data only. These remain op
 - The Robot Memory plan may mark M0 "contract-ready" now that the pair report exists.
   M1, M2, M4 and M5 stay open.
 - walkie-vision's links into withdrawn agent pages were handled in V8.
+
+## After the review fixes, 2026-11-05
+
+The sections above describe the pair as built. The review of both branches found
+D-F1 to D-F4 and V-F1 to V-F5, and the fixes moved both final commits. The
+agent's decision log records each fix and its cost as P32 to P41.
+
+| Repository | Worktree | Commit | Subject |
+|---|---|---|---|
+| walkie-vision | `/var/tmp/wv-prep` | `60721b63733991e0f8a78b56c6fdf5987979ea02` | fix: take a DetectObjects pair only while it arrived within the request's age |
+| walkie-database | `/var/tmp/wd-prep` | `9ad2d36bb299aa8246aa8c176dffd32086efe4d5` | build: pin walkie-vision at its review fixes |
+
+- `ros2_ws.repos` now pins walkie-vision at `60721b6`, and the imported clone is
+  at that commit. `walkie_vision_msgs` did not change between `00a4fed` and
+  `60721b6`.
+- Neither `pixi.lock` changed, so the lock hashes above still hold. walkie-database's
+  `pixi.toml` gained a two-line comment on `--id-floor`.
+- On the final commits, walkie-vision's suite gave 1208 passed and 1 skipped (the
+  missing `buffalo_l` model), and walkie-database's gave 1636 passed. Both strict
+  docs builds passed.
+- The pair gate ran once at these commits with `--build` on domain 89 and passed.
+  Its report is `/var/tmp/wa-impl-prep/pair-gate-60721b6/report.json`, and its
+  summary is kept beside this file as `pair-gate-60721b6.log`.
+- Observation QoS is settled. Both observation publishers, the real node and the
+  fake, use RELIABLE, VOLATILE, KEEP_LAST 5, and a vision test holds the fake's
+  profile equal to the node's `OUTPUT_QOS`. The database's observation
+  subscription stays BEST_EFFORT, VOLATILE, KEEP_LAST 1. A RELIABLE publisher
+  matches both kinds of subscriber, and the gate's observation checks passed over
+  this pairing. Brief line 145 says the same since agent commit `6418405`.
+- For walkie-agent-ros, the follow-up above now means walkie-vision `60721b6` and
+  walkie-database `9ad2d36`, not `00a4fed` and `704eb24`.

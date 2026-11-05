@@ -17,6 +17,9 @@ directory (see .env.example). PYTHON_DOTENV_DISABLED=1 turns the .env file off. 
 [team] table names the team and the timezone that `get_facts` reads, with the time from
 the computer's wall clock.
 
+A missing or broken file, a missing setting or API key, or a bad [team] table stops the
+agent before ROS starts, with one line on stderr and exit code 2.
+
 A first SIGINT or SIGTERM starts an orderly shutdown. If that cannot finish, for example
 because Nav2 has not answered a cancel, the agent keeps ROS running and keeps trying. A
 second signal then ends the process at once, with exit code 3, and the goal's state unknown.
@@ -78,6 +81,16 @@ CLOSE_ATTEMPT_S = 1.0
 POLL_S = 0.05
 SIGNALS_TO_FORCE = 2
 FORCED_EXIT_CODE = 3
+
+# What bad input raises while main() reads everything before ROS starts. ValueError
+# includes tomllib.TOMLDecodeError, UnicodeDecodeError and pydantic's ValidationError.
+# OSError is a missing or unreadable file, and KeyError a key that build_model looks up in
+# config.toml. A single value where a table belongs, such as `vendor = "openai"`, raises
+# TypeError or AttributeError. Those stay out, because they also mean a bug, which needs
+# its traceback.
+STARTUP_ERRORS = (OSError, ValueError, KeyError)
+# The code argparse exits with for a bad command line.
+STARTUP_ERROR_EXIT_CODE = 2
 
 _RULES_START = """\
 You are Walkie, a home service robot. You have a mobile base and can drive between named places.
@@ -430,6 +443,19 @@ def _run(args: argparse.Namespace, **assembly: Any) -> int:
     return code
 
 
+def _startup_message(error: Exception, config_path: str) -> str:
+    """The one line that main() prints for one of STARTUP_ERRORS."""
+    if isinstance(error, KeyError):
+        # Its str() is the quoted key alone. Here only config.toml lookups raise it.
+        text = f"{config_path}: missing key {error}."
+    else:
+        text = str(error)
+    # A message can span several lines, as pydantic's ValidationError does. Its lines are
+    # joined with spaces, so the operator still gets one line.
+    line = " ".join(part.strip() for part in text.splitlines() if part.strip())
+    return line or type(error).__name__
+
+
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -469,17 +495,22 @@ def main(argv: list[str] | None = None) -> int:
     # Variables already set in the shell take precedence over .env.
     load_dotenv()
 
-    # All of this runs before ROS starts, so a bad file or credential fails fast.
-    config = load_config(args.config)
-    locations = load_locations(args.locations)
-    templates = load_task_templates(args.task_templates)
-    check_templates(templates, args.tool_set)
-    robot_description = Path(args.robot_description).read_text(encoding="utf-8")
-    model = build_model(config)
-    fallback = build_fallback(config)
-    callbacks = build_callbacks(config)
-    facts = facts_from_config(config)
-    tool_log = ToolLog(args.tool_log) if args.tool_log else None
+    # All of this runs before ROS starts, so a bad file or credential fails fast, in one
+    # line. A failure once ROS has started, in _run, keeps its traceback.
+    try:
+        config = load_config(args.config)
+        locations = load_locations(args.locations)
+        templates = load_task_templates(args.task_templates)
+        check_templates(templates, args.tool_set)
+        robot_description = Path(args.robot_description).read_text(encoding="utf-8")
+        model = build_model(config)
+        fallback = build_fallback(config)
+        callbacks = build_callbacks(config)
+        facts = facts_from_config(config)
+        tool_log = ToolLog(args.tool_log) if args.tool_log else None
+    except STARTUP_ERRORS as error:
+        print(f"walkie-agent: {_startup_message(error, args.config)}", file=sys.stderr)
+        return STARTUP_ERROR_EXIT_CODE
 
     return _run(
         args,

@@ -107,6 +107,16 @@ def test_an_unknown_vendor_is_refused():
         build_model(config)
 
 
+def test_a_missing_openai_key_is_a_value_error_that_names_it(monkeypatch):
+    # main() reports a ValueError in one line, and the client's own OpenAIError is not one.
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    with pytest.raises(ValueError, match="OPENAI_API_KEY") as caught:
+        build_model(config_for())
+    assert "'big-openai'" in str(caught.value)
+    assert isinstance(caught.value.__cause__, openai.OpenAIError)
+
+
 # -- The fallback -----------------------------------------------------------------
 
 

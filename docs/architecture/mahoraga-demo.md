@@ -361,18 +361,23 @@ source file, so a string across lines holds the same value when the script runs 
 once its definition is saved (M62). It runs only a script that Python's parser
 accepts, because the evidence reads definitions with that parser: Monty would run
 some source it refuses, such as one with a null byte, with no definition watched
-(M63). A version's sha is of its text as written, from its `def`, which is what the
-shelf file and the ledger hold. Each script's record also maps the sha of every
-version it named to a shape: a loaded shelf function, and, while the shelf can still
-verify, each of its own definitions at any depth. A shape is the sha of the
-definition's syntax tree without positions, decorators or `u` string prefixes (M64).
-A returned version is not verified when a version with the same name and shape, or
-the same sha, raised or went unwatched anywhere in the episode. A syntax tree keeps
-no layout, comments or line endings, only the values the code holds, so a copy under
-an `if`, a copy with a comment, and the same function at top level are one version
-for this veto, while a copy that computes something else, or whose string holds
-other spaces, is not (M60). A copy is matched only as a definition under the saved
-name. One bound to that name another way, such as a renamed definition assigned to
+(M63). The host parses the script before Monty's budgets apply, so a parser or an
+evidence step that runs out of stack or memory ends the script as a refusal, like
+any other failure, with nothing run or saved (M67). A version's sha is of its text as
+written, from its `def`, which is what the shelf file and the ledger hold. Each
+script's record also maps the sha of every version it named to a shape: a loaded
+shelf function, and, while the shelf can still verify, each of its own definitions
+at any depth. A shape is the sha of the definition's syntax tree without positions,
+its own decorators or `u` string prefixes (M64). A returned version is not verified
+when a version with the same name and shape, or the same sha, raised or went
+unwatched anywhere in the episode. A syntax tree keeps no layout, comments or line
+endings, only the code's structure, names and values, so a copy under an `if`, a
+copy with a comment, and the same function at top level are one version for this
+veto, while a copy whose code differs, or whose string holds other spaces, is not
+(M60). Equal trees do not mean equal behaviour: a copy that reads other names from
+its scope, or that another decorator wraps, can compute something else under the
+same shape, which errs toward blocking. A copy is matched only as a definition under
+the saved name. One bound to that name another way, such as a renamed definition assigned to
 it, a lambda or a comprehension variable, is not seen, and neither is a copy with a
 docstring or an annotation added (M65). A record without shapes, from before M60,
 compares shas.

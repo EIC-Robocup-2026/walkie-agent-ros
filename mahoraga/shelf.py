@@ -45,13 +45,19 @@ def shape(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     (M65). `ast.dump` differs between Python versions, so a shape is only compared
     within the episode that recorded it.
     """
-    # A copy, so the caller's node keeps its decorators and its prefixes.
-    bare = copy.deepcopy(node)
+    # A shallow copy, so the caller's node keeps its decorators. The prefixes are cleared
+    # in place and put back, because a deep copy recurses several frames per level of
+    # nesting and fails on code that ast.dump, the parser and Monty all accept (M66).
+    bare = copy.copy(node)
     bare.decorator_list = []
-    for part in ast.walk(bare):
-        if isinstance(part, ast.Constant):
+    prefixed = [(part, part.kind) for part in ast.walk(bare) if isinstance(part, ast.Constant) and part.kind]
+    try:
+        for part, _ in prefixed:
             part.kind = None
-    return source_sha(ast.dump(bare, include_attributes=False))
+        return source_sha(ast.dump(bare, include_attributes=False))
+    finally:
+        for part, kind in prefixed:
+            part.kind = kind
 
 
 def _names_in(code: str) -> set[str]:

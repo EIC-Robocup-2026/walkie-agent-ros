@@ -126,14 +126,17 @@ def _parse_error(code: str) -> str | None:
 
     The evidence reads the script's definitions with Python's parser. Monty runs some
     source that parser refuses, such as a null byte, and such a script would run with
-    none of its definitions watched, so it does not run at all (M63).
+    none of its definitions watched, so it does not run at all (M63). The message is
+    Python's own SyntaxError, which names the file and line when Python gives them.
+    A string that cannot be encoded as UTF-8, such as one holding a lone surrogate, is
+    refused the same way (M67).
     """
     try:
         ast.parse(code, filename="main.py")
     except SyntaxError as exc:
         return "".join(traceback.format_exception_only(exc)).rstrip()
-    except RecursionError:
-        return "RecursionError: the script nests too deeply for Python's parser."
+    except UnicodeEncodeError as exc:
+        return f"SyntaxError: the script is not valid UTF-8 ({exc.reason})."
     return None
 
 
@@ -185,21 +188,33 @@ class ScriptRunner:
         """Run `code` with `fns` callable. After a success, keep the definitions named in `save`.
 
         The script runs, is read and is saved with `\\n` line endings, and only if
-        Python's parser accepts it.
+        Python's parser accepts it and the evidence can read it. A refusal is a result
+        like any failure, with no host call made and nothing saved.
         """
         code = _with_newlines(code)
         result = ScriptResult()
-        unparsable = _parse_error(code)
-        if unparsable is not None:
-            result.ok, result.phase, result.error = False, "syntax", _clip(unparsable)
+        may_save = self.shelf is not None and not self.shelf.frozen
+        # The host parses the script before Monty's budgets apply, so a parser or the
+        # evidence running out of stack or memory is a refusal, not an exception (M67).
+        refusal: tuple[str, str] | None = None
+        try:
+            if (unparsable := _parse_error(code)) is not None:
+                refusal = ("syntax", unparsable)
+            else:
+                prefix, shelf_versions = self.shelf.source_for(code) if self.shelf is not None else ("", {})
+                # Own definitions are watched while the shelf can still verify, saved or not.
+                watch = Watch(code, shelf_versions, shelf_source=prefix, watch_own=may_save, reserved=set(fns))
+        except RecursionError:
+            refusal = ("syntax", "RecursionError: the script nests too deeply for the host to read it.")
+        except MemoryError:
+            refusal = ("budget", "MemoryError: the host ran out of memory while it read the script.")
+        if refusal is not None:
+            result.ok, result.phase = False, refusal[0]
+            result.error = _clip(refusal[1])
             if save:
                 reason = "The script did not succeed." if self.shelf is not None else "This run has no shelf."
                 result.refused = dict.fromkeys(save, reason)
             return result
-        prefix, shelf_versions = self.shelf.source_for(code) if self.shelf is not None else ("", {})
-        may_save = self.shelf is not None and not self.shelf.frozen
-        # Own definitions are watched while the shelf can still verify, saved or not.
-        watch = Watch(code, shelf_versions, shelf_source=prefix, watch_own=may_save, reserved=set(fns))
 
         def fail(phase: str, error: str) -> None:
             result.ok, result.phase, result.error = False, phase, _clip(watch.clean(error))

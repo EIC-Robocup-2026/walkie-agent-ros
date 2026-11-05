@@ -470,6 +470,80 @@ def test_a_raise_through_a_copy_with_a_u_prefix_keeps_the_saved_version_off_the_
     assert frozen == []
 
 
+def test_a_definition_nested_deeper_than_a_deep_copy_reaches_still_runs_and_saves(pool, tmp_path, fns):
+    """ast.dump, the parser and Monty all read this, so its shape must too (M66)."""
+    code = "def f():\n    return " + "[" * 190 + "1" + "]" * 190 + "\nf()"
+    runner = ScriptRunner(pool, shelf=Shelf(tmp_path / "shelf"))
+
+    result = runner.run(code, fns, save=["f"])
+
+    assert (result.ok, result.saved) == (True, ["f"])
+    assert result.returned == {"f": "c32d1cf56da9e2b5"}
+    assert "c32d1cf56da9e2b5" in result.shapes
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["+".join(["1"] * 256), "(1)" + ".real" * 240, '"a"' + "[0]" * 240],
+    ids=["sum", "attributes", "subscripts"],
+)
+def test_a_definition_too_deep_for_monty_ends_as_its_syntax_error(pool, tmp_path, fns, body):
+    runner = ScriptRunner(pool, shelf=Shelf(tmp_path / "shelf"))
+
+    result = runner.run(f"def f():\n    return {body}\nf()", fns, save=["f"])
+
+    assert (result.ok, result.phase) == (False, "syntax")
+    assert "too deeply nested" in result.error
+    assert result.refused == {"f": "The script did not succeed."}
+
+
+def test_a_lone_surrogate_is_refused_as_syntax_without_a_shelf(pool, fns):
+    """Python's parser cannot encode it as UTF-8, so it raises UnicodeEncodeError, not SyntaxError (M67)."""
+    result = ScriptRunner(pool).run('"\ud800"', fns, save=["f"])
+
+    assert (result.ok, result.phase) == (False, "syntax")
+    assert "not valid UTF-8" in result.error
+    assert result.refused == {"f": "This run has no shelf."}
+
+
+def test_a_script_too_deep_for_python_s_parser_is_refused_as_syntax(pool, tmp_path, fns):
+    shelf = Shelf(tmp_path / "shelf")
+
+    result = ScriptRunner(pool, shelf=shelf).run("+".join(["1"] * 100000), fns, save=["f"])
+
+    assert (result.ok, result.phase) == (False, "syntax")
+    assert result.error.startswith("RecursionError:")
+    assert result.calls == [] and result.refused == {"f": "The script did not succeed."}
+
+
+@pytest.mark.parametrize(
+    ("where", "error", "phase"),
+    [
+        ("parser", MemoryError, "budget"),
+        ("evidence", MemoryError, "budget"),
+        ("evidence", RecursionError, "syntax"),
+    ],
+)
+def test_the_host_running_out_while_it_reads_a_script_ends_as_a_result(
+    pool, tmp_path, fns, monkeypatch, where, error, phase
+):
+    """The host reads the script before Monty's budgets apply, so a failure there is a refusal (M67)."""
+
+    def runs_out(*args, **kwargs):
+        raise error
+
+    shelf = Shelf(tmp_path / "shelf")
+    runner = ScriptRunner(pool, shelf=shelf)
+    monkeypatch.setattr(*((driver.ast, "parse") if where == "parser" else (driver, "Watch")), runs_out)
+
+    result = runner.run('go_to("kitchen")\ndef f():\n    return 1\nf()', fns, save=["f"])
+
+    assert (result.ok, result.phase) == (False, phase)
+    assert result.error.startswith(f"{error.__name__}:")
+    assert result.calls == [] and result.saved == [] and result.refused == {"f": "The script did not succeed."}
+    assert shelf.names() == []
+
+
 def test_an_unsaved_copy_that_returns_does_not_block_the_verification(pool, tmp_path, fns):
     proven, frozen = _verify_after(pool, tmp_path, fns, DIVIDE + "divide(2)")
 

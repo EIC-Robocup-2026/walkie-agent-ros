@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 from action_msgs.msg import GoalStatus
+from action_msgs.srv import CancelGoal
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, SystemMessage
 from rai_interfaces.msg import HRIMessage
@@ -196,6 +197,34 @@ def test_a_reset_is_not_a_shutdown(build):
     assert built.node.destroyed == []
     run_one(built)
     assert len(built.model.received) == 1
+
+
+@pytest.mark.parametrize("again", ["stop", "reset"])
+def test_a_later_stop_or_reset_asks_again_after_a_refused_cancel(build, nav, again):
+    built = build(ai(call("go_to", {"place": "kitchen"})))
+    built.app.start()
+    callbacks = {s.topic: s.callback for s in built.node.subscriptions}
+    built.app.runner.submit("Drive to the kitchen.")
+    nav[0].wait_for_goals()
+    handle = nav[0].accept(
+        on_cancel=lambda h, _future: h.acknowledge(CancelGoal.Response.ERROR_REJECTED)
+    )
+    assert handle.result_asked.wait(WATCHDOG_S)
+
+    callbacks["/from_human"](HRIMessage(text="stop"))
+    assert built.app.runner.wait_idle(WATCHDOG_S)
+    assert handle.cancel_asks == 1
+    assert built.app.ctx.base.unresolved(), "a refused cancel leaves the goal live"
+
+    # No verb waits on this goal any more, so only the Runner can ask again.
+    handle.on_cancel = lambda h, _future: h.finish(GoalStatus.STATUS_CANCELED)
+    if again == "stop":
+        callbacks["/from_human"](HRIMessage(text="stop"))
+    else:
+        callbacks["/walkie/reset"](Empty())
+    assert built.app.runner.wait_idle(WATCHDOG_S)
+    assert handle.cancel_asks == 2
+    assert built.app.ctx.base.unresolved() == []
 
 
 @pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri"])

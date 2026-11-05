@@ -220,7 +220,8 @@ def test_stop_during_an_llm_call_runs_none_of_the_tools_it_returns(serve):
     for call_id in calls:
         assert stack.answer(call_id).content == AFTER_STOP
         assert stack.answer(call_id).status == "error"
-    assert stack.verbs() == ["speech.say"]
+    # The stop itself reaches the base, and then speaks its line. No tool ran.
+    assert stack.verbs() == ["base.stop", "speech.say"]
     assert stack.robot.said == [STOP_LINE]
     assert len(stack.model.received) == 1
     assert stack.items() == []
@@ -583,7 +584,8 @@ def test_reset_waits_for_the_active_llm_call(serve):
     idle(stack)
     assert stack.runner.session != old
     assert list(stack.agent.checkpointer.list(old.config())) == []
-    assert stack.verbs() == []  # the reply's drive was refused, since reset also cancels
+    # The reset's own stop of the base is all: the reply's drive was refused.
+    assert stack.verbs() == ["base.stop"]
 
 
 def test_a_task_after_a_queued_reset_runs_in_the_new_session(serve):

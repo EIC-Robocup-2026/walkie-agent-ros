@@ -151,6 +151,12 @@ These came up while building M35 to M41.
 | M49 | A talk topic with no check raises `ValueError` in the checker, and one with no line raises it in the oracle. | A new topic from the generator must not pass or fail unnoticed. | A generator change stops the gate until the topic has a check and a line. | Delegated, built |
 | M50 | The arm tests that script a generic line now pick a "something about yourself" talk command, and the talk trace tests say the fact through `get_facts`. | Their lines say no fact, so they would now fail for a reason they do not test. | The arm tests run more mock episodes to reach that command: 33 on the trial split, 6 on the training split and 68 on the held-out split, against 9, 3 and 2 before. | Delegated, built |
 
+This settles finding R2 of the merge review and its re-check, R2-a.
+
+| ID | Decision | Why | Alternative and consequence | Status |
+| --- | --- | --- | --- | --- |
+| M51 | While the shelf can still verify, a script's own top-level definitions are watched whether or not it saves them. Every definition no wrapper covers, at any depth, is kept as a (name, sha) pair, one per version, and counts as raised for the episode. If the counters cannot be read, every version the run watched counts as raised. Frozen and shelf-less runs watch no own definitions. | R2: a raise through an unsaved copy of a shelf version went unseen, so a later success verified that version. R2-a: the first fix kept one entry per name, so an earlier or conditional definition of the same name was lost. | Measured on writable shelves: an unsaved function now runs behind a wrapper, so `locals` and `eval` are shadowed for it, recursion through it reaches the depth limit in half the calls, its stub allows a forward reference, and the run's token can appear in the printed text of an error the script catches. An unwatched copy blocks verification of its text in that episode even when it ran cleanly. Frozen and shelf-less runs behave as before. | Delegated, built |
+
 ### Small real-model runs
 
 All three ran `deepseek/deepseek-v4.1-flash:nitro` on 30 held-out commands, one epoch

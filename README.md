@@ -91,7 +91,7 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | `src/walkie_agent/sim/`      | The fake robot node                                               |
 | `tests/`                     | Tests with a scripted LLM. Some use real rclpy with a fake robot. |
 | `mahoraga/`                  | The research gym, in its own Pixi environment. Fake world only.   |
-| `config.toml`                | LLM vendor and models, voice, tracing                             |
+| `config.toml`                | LLM vendor and models, the team and its timezone, voice, tracing  |
 | `config/locations.toml`      | The robot's real places. Ships empty until they are measured.     |
 | `config/locations.sim.toml`  | Test points for the blank simulation map                          |
 | `tests/fixtures/locations.toml` | Invented places for tests and the fake robot                   |

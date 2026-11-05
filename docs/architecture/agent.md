@@ -386,6 +386,7 @@ come from the todo middleware, in every set.
 | `object_info` | default, gpsr | `UNAVAILABLE`, for the same reason |
 | `find_people` | default, gpsr, hri | `UNAVAILABLE`: live people perception is not connected |
 | `pick`, `place_on`, `hand_over` | gpsr | `UNAVAILABLE`: no arm commander client exists |
+| `get_facts` | default, gpsr | Reads the time and the date from the computer's clock, in the timezone of `config.toml`'s `[team]`, and the team's name, country and affiliation from that table |
 | `update_todos` | always | Adds, updates and removes steps by id, all or nothing |
 | `wait_for_person` | always | Asks a question out loud and ends the run until the answer |
 

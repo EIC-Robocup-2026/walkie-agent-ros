@@ -166,7 +166,8 @@ Terminal 2 logs what the robot says, for example `[Walkie says] Hi everyone! I h
 arrived in the kitchen.`, and terminal 4 shows the agent's final text reply.
 
 The `default` tool set has `list_places`, `go_to`, `move_relative`, `say`,
-`find_objects`, `object_info` and `find_people`. The agent also has `update_todos` and
+`find_objects`, `object_info`, `find_people` and `get_facts`, which reads the time, the
+date and the team from `config.toml`'s `[team]`. The agent also has `update_todos` and
 `wait_for_person`. `--tool-set gpsr` and `--tool-set hri` pick the other fixed sets.
 `find_objects`, `object_info` and `find_people` answer `UNAVAILABLE`, because live vision
 is not connected. In the `gpsr` set, `pick`, `place_on` and `hand_over` answer

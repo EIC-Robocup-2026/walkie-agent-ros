@@ -67,6 +67,7 @@ Pose2D(x: float, y: float, yaw: float)  # map frame, yaw in radians
 ObjectSeen(id: str, name: str, category: str, place: str, size_cm: float | None = None,
            weight_g: float | None = None, thickness_cm: float | None = None)
 PersonSeen(id: str, name: str | None, pose: str, gesture: str, room: str)
+Team(name: str, country: str, affiliation: str)
 
 class Base(Protocol):
     def places(self) -> Mapping[str, Location]: ...  # walkie_agent.locations.Location
@@ -84,9 +85,13 @@ class Arms(Protocol):  # each returns the id of the object picked, placed or han
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str: ...
     def place_on(self, place: str, *, timeout_s: float = 60.0) -> str: ...
     def hand_over(self, person_id: str, *, timeout_s: float = 60.0) -> str: ...
+class Facts(Protocol):
+    def now(self) -> datetime: ...  # timezone-aware
+    def team(self) -> Team: ...
 
 Ctx(cancel: CancelToken, base: Base, speech: Speech, vision: Vision,  # frozen dataclass
-    arms: Arms = UnavailableArms())  # UnavailableArms raises UNAVAILABLE on every verb
+    arms: Arms = UnavailableArms(),  # UnavailableArms raises UNAVAILABLE on every verb
+    facts: Facts = UnavailableFacts())  # so does UnavailableFacts
 ```
 
 A query of `""` matches everything. Otherwise it matches an object's name,
@@ -94,6 +99,15 @@ category or plural category, or a person's name, pose or gesture, ignoring
 case. The vision verbs and the arm verbs work only on `FakeRobot`. On the robot's
 `ctx`, `UnavailableVision` and `UnavailableArms` raise `UNAVAILABLE`, until a live
 perception backend and an arm commander client exist.
+
+`ctx.facts` answers the talk commands that ask for the time, the date or the team
+(decision M35). Its verbs never wait, so they do not check the cancel token.
+`walkie_agent.capabilities.facts.SystemFacts` is the robot's source, and imports no
+ROS (M36). It reads the computer's wall clock, not ROS time, in the timezone of
+`config.toml`'s `[team]` table, which also holds the team's name, country and
+affiliation (M37). `main` builds it from that table and passes it to `assemble`. A
+missing table, a blank value or an unknown timezone stops the agent with a one-line
+error before `rclpy.init`. `assemble` without `facts` keeps `UnavailableFacts`.
 
 ### Guards live in the verbs
 
@@ -142,7 +156,7 @@ class CancelToken:
 
 ```python
 # walkie_agent.capabilities.fake
-class FakeRobot:  # implements Base, Speech, Vision and Arms
+class FakeRobot:  # implements Base, Speech, Vision, Arms and Facts
     def __init__(self, world: Mapping[str, Any] | None = None, *, seed: int = 0,
                  drive_s: float = 0.0) -> None: ...
     ctx: Ctx
@@ -152,9 +166,10 @@ class FakeRobot:  # implements Base, Speech, Vision and Arms
     said: list[str]
     faults: dict[str, StepError]  # verb name -> the error every call to it raises; not base.stop
     def snapshot(self) -> dict[str, Any]: ...  # JSON-able copy for checkers: at, room, pose,
-                                               # holding, places, objects, people, said, calls
+                                               # holding, places, objects, people, facts, said, calls
 
 def chula_pat14_6(seed: int = 0) -> dict[str, Any]  # a seeded world description
+def fake_facts(seed: int) -> dict[str, Any]         # the clock and the team of that world
 ```
 
 A world description is JSON-able, so the gym can build, store and compare it:
@@ -165,8 +180,16 @@ A world description is JSON-able, so the gym can build, store and compare it:
                          "thickness_cm": 8, "at": "shelf"}},
  "people": {"operator": {"name": "Jane", "room": "living room", "pose": "standing person",
                          "gesture": "waving person"}},
+ "facts": {"now": "2026-11-05T14:05:00+07:00",
+           "team": {"name": "EIC", "country": "Thailand", "affiliation": "Chulalongkorn University"}},
  "start": "instruction point"}
 ```
+
+The clock is fixed for an episode (M38). `fake_facts` draws it from the seed, on its
+own random stream so the rest of the world is unchanged: any date in 2026 and any
+minute of the day, at UTC+07:00. The same seed gives the same clock. The team is
+the one in `config.toml`. `facts` is optional. Without it both facts verbs raise
+`UNAVAILABLE`, and the snapshot's `facts` is `None`.
 
 A place whose `room` is its own name is a room. An object's `at` is a place,
 `"robot"` while held, or the id of the person who received it. The robot sees
@@ -181,7 +204,8 @@ record also holds the ids it returned in `returned`.
 
 The constructor raises `ValueError` for a broken world, naming the record and
 field: an unknown start, a place or person in an unknown room, an object at
-something that does not exist, or a coordinate that is not a finite number.
+something that does not exist, a coordinate that is not a finite number, a clock
+that is no ISO 8601 date and time with a UTC offset, or a blank team value.
 Without this, a misspelled name hides the object or person, and the episode
 reads as the agent's failure. Whether a world suits a given command is the gym's
 check, not this one.
@@ -210,11 +234,17 @@ def find_people(ctx: Ctx, description: str = "") -> list[dict[str, Any]]
 def pick(ctx: Ctx, object_id: str) -> str
 def place_on(ctx: Ctx, place: str) -> str
 def hand_over(ctx: Ctx, person_id: str) -> str
+def get_facts(ctx: Ctx) -> dict[str, Any]
 
-GPSR: list[Callable[..., Any]]     # the nine the spike used: every atomic but list_places
+GPSR: list[Callable[..., Any]]     # the nine the spike used, every atomic but list_places, then get_facts
 HRI: list[Callable[..., Any]]      # list_places, go_to, move_relative, say, find_people
-DEFAULT: list[Callable[..., Any]]  # every atomic that needs no arms
+DEFAULT: list[Callable[..., Any]]  # every atomic that needs no arms, get_facts included
 ```
+
+`get_facts` returns the time as 24-hour `HH:MM`, `today` and `tomorrow` such as
+"Thursday, 5 November 2026", `day_of_week`, `day_of_month` as a number, and
+`team_name`, `team_country` and `team_affiliation`. Tomorrow is the next calendar
+day in the clock's timezone, so it crosses a month or a year. HRI does not take it.
 
 ## Adapter
 
@@ -371,7 +401,9 @@ write a command's steps as a function with the names as parameters, and to name 
 function in `save`. Offered only as an option, saving did not happen at all.
 
 All arms share the prompt, the atomics and the eval's model, temperature and seed.
-One (command, epoch) is one seeded world, the same for every arm.
+One (command, epoch) is one seeded world, the same for every arm. The prompt tells
+each arm to read the time, the date and the team with `get_facts` and never to guess
+a fact (M40). The oracle's `talk` scripts read `get_facts` too.
 
 An episode scores 1 only if its checker passes, no limit ended it (rounds, tokens or
 time), and on a script arm its last script ran to completion. So work done before a
@@ -391,7 +423,7 @@ counts for what it really did.
 | `count_objects`, `best_object`, `count_people` | The answer is right after a look from there that returned what it is about |
 | `person_info` | The answer is right after a look in that room that returned the person |
 | `relay_info` | A look returned the source and a look in the recipient's room returned someone there, in either order, then the right answer is said in the recipient's room. A second look at the recipient is not needed |
-| `talk` | A lookup at the requested place returned the requested person, then a line is said in their room |
+| `talk` | A lookup at the requested place returned the requested person, then some line in their room says the fact the topic asks for. For "something about yourself", any line in their room |
 | `escort` | That same lookup, then the greeting if asked for, then a move that reaches the destination. The robot may move on afterwards. A destination that is the named origin or holds it needs no further move |
 
 An answer is the first line that mentions a candidate after the last look that
@@ -413,6 +445,35 @@ Ordinary equivalents count for pose and gesture, so "seated" says sitting. A rai
 arm also needs an arm or a hand in the line, so "raising their right leg" does not
 say it. Pointing and waving need no body part.
 
+A `talk` fact is judged against the start snapshot's `facts` (M39). The first-line
+rule does not apply: any line said in the person's room after the lookup that found
+them counts.
+
+| Topic | A line passes when it says |
+| --- | --- |
+| "the time" | The time |
+| "what day is today" | Today's weekday or today's date |
+| "what day is tomorrow" | Tomorrow's weekday or tomorrow's date |
+| "the day of the week" | Today's weekday |
+| "the day of the month" | Today's day number |
+| "your teams name", "your teams country", "your teams affiliation" | That team value |
+| "something about yourself" | Anything (M41) |
+
+- A time is `H:MM` or `HH:MM` in 24-hour form, or `h:MM` in 12-hour form. An am or pm
+  after it is optional, in any case and with or without dots, and must be right when
+  given. An hour with a leading zero and no am or pm reads as 24-hour, so "02:05" is
+  not 14:05. "h o'clock" counts only on the hour, with the hour in digits.
+- A weekday is its English name as a whole word, in any case.
+- A date is the month's full name and the day's number in either order, with an
+  optional ordinal suffix, "of" or "the": "5 November", "5th of November",
+  "November 5th". The year is not read.
+- A day of the month is digits with an optional ordinal suffix, or an English word
+  from one to thirty-one, such as "fifth", "twenty-one" or "twenty first". Digits
+  beside a colon are a time and do not count.
+- A team value is its words as a whole phrase, in any case.
+- A topic with no check, or a checked topic in a world without facts, raises
+  `ValueError`.
+
 Known limits, each pinned by a test or stated here because reading more would mean
 parsing language:
 
@@ -429,8 +490,16 @@ parsing language:
 - A line that also names a leg or a foot says no raised arm, so "Their left arm is
   raised and their legs are crossed" fails. Words are not attached to each other.
 - A shortened name such as "the plate" for "red plate" is not a candidate.
-- What a `talk` line says is not checked, so a refusal to the right person, found at
-  the right place, passes.
+- What a "something about yourself" line says is not checked, so a refusal to the
+  right person, found at the right place, passes.
+- A time in words fails, such as "quarter past two", "half past two" or "five past
+  two". So do "two o'clock", a time with seconds such as "14:05:30", and a month's
+  short name such as "5 Nov".
+- A line that names both today and tomorrow passes for either, such as "Today is
+  Thursday and tomorrow is Friday."
+- Any number in a line counts for the day of the month, so "It is the one you
+  wanted" passes on the 1st, and "wait a second" on the 2nd.
+- Ordinal suffixes are not matched to the number, so "5rd November" says 5 November.
 - An escort cannot show that the person came along, since the fake's people do not
   move. A `go_to` that leaves the robot where it stands counts as the move.
 
@@ -621,7 +690,8 @@ tool whose name collides with these two is refused at build.
 
 `config.toml` may add an `[agent]` table with `run_limit`, `deadline_s`,
 `fallback_vendor` and `fallback_model`. The defaults of 25 calls and 60 s are
-provisional until real runs measure them.
+provisional until real runs measure them. Its `[team]` table is required, and is
+read by `walkie_agent.capabilities.facts`, not by the runtime.
 
 All of these promises are tested with a scripted model. `tests/test_runtime_model.py`
 checks the provider settings against a local fake provider. No real provider has been
@@ -698,7 +768,7 @@ Limits that the fakes cannot settle:
 def assemble(*, connector, model, config, locations, templates, robot_description,
              tool_set="default", callbacks=(), tool_log=None, input_topic=..., output_topic=...,
              reset_topic=..., task_topic=..., todos_topic=..., use_sim_time=False,
-             fallback=None) -> Application: ...
+             fallback=None, facts=UnavailableFacts()) -> Application: ...
 
 class Application:
     ctx: Ctx
@@ -710,7 +780,8 @@ class Application:
 ```
 
 `assemble` builds `RosBase`, `RosSpeech`, `UnavailableVision` and `RosBridge`, then
-`build_agent` and `Runner`. `Ctx.arms` stays `UnavailableArms`. It builds no model or tracer,
+`build_agent` and `Runner`. `Ctx.arms` stays `UnavailableArms`. `Ctx.facts` is the `facts`
+it is given, and `main` gives it the `SystemFacts` of `[team]`. It builds no model or tracer,
 and it does not start or destroy ROS. A failure part of the way through closes what was built
 before it raises.
 
@@ -764,7 +835,7 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
   which come with the commander client. Pick and place then become bundles.
 - `ctx.base.pose()` replaces `ctx.pose`, and `ctx.base.places()` lets
   `list_places` replace the old `list_locations`.
-- `FakeRobot` is one class, so its `ctx` holds the same object four times.
+- `FakeRobot` is one class, so its `ctx` holds the same object five times.
 - `format_tool_error` answers a bug with `INTERNAL` rather than re-raising it,
   so one bad tool does not end a run.
 - `BUNDLES` are stand-ins, because the team has no reviewed bundles yet. Until it
@@ -777,8 +848,9 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
 - Four people templates are out: `guideClothPrsFromBeacToBeac`,
   `greetClothDscInRm`, `countClothPrsInRoom` and `meetNameAtLocThenFindInRm`.
 - `FakeRobot` has no follow verb and its people do not move, so follow and guide
-  are checked from the robot's call records, and what a `talk` line says is not
-  checked. [Checkers](#checkers) lists the rules and the known limits.
+  are checked from the robot's call records. A `talk` line is checked for the fact
+  its topic asks for, except "something about yourself". [Checkers](#checkers)
+  lists the rules and the known limits.
 - The world builder renames the operator and takes them out of every pose and
   gesture, so no command's selector can match them.
 - M9 counts refused calls, since an escape would not show in a log. The bwrap
@@ -790,7 +862,7 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
   1,447 in `runtime/` and 162 in `tasks.py`. The decided fixes, the Runner's lifecycle and
   the op-based todo list, 625 lines against the plan's 175, cost more than the estimate.
   The ROS wrappers add 1,063 lines, 638 of them in `ros/base.py` because a goal can outlive
-  its verb. `main.py` adds 482.
+  its verb. `main.py` adds 499.
 - The stop's list update is a graph pass with a `stopping` input key rather than
   `aupdate_state`, so it keeps the same order as a task in the Runner's queue.
 - The stop line is spoken at once rather than after the active run, which may be a

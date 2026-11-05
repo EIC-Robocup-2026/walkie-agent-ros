@@ -223,12 +223,25 @@ base_url = "https://openrouter.ai/api/v1"
 To try another model, change `complex_model` to any
 [OpenRouter model ID](https://openrouter.ai/models).
 
+`rai-config-init` does not write the `[team]` table, so add it. The agent's
+`get_facts` tool reads the team from it, and the time from the computer's clock in
+its timezone, an IANA name. The agent does not start without it:
+
+```toml title="config.toml"
+[team]
+name = "EIC"
+country = "Thailand"
+affiliation = "Chulalongkorn University"
+timezone = "Asia/Bangkok"
+```
+
 The same file has more than one reader:
 
 | Section | Who reads it |
 | ------- | ------------ |
 | `[vendor]`, `[openai]`, `[ollama]` | `walkie_agent.runtime.model` reads `complex_model` and `base_url` of the vendor that `[vendor]` names |
 | `[agent]`, optional | `run_limit`, `deadline_s`, `fallback_vendor` and `fallback_model` for the agent. The defaults are provisional, and no fallback is selected |
+| `[team]` | `walkie_agent.capabilities.facts` reads `name`, `country`, `affiliation` and `timezone` for `get_facts`. Required |
 | `[tracing.langfuse]` | The agent's Langfuse callback, when `use_langfuse` is true |
 | `[asr]`, `[tts]` | The voice entry points, through `rai_s2s` |
 

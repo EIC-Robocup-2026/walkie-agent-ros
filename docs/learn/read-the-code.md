@@ -10,8 +10,8 @@ The first group imports no ROS, and most of the tests for it need no ROS either.
 | File | What's in it | Tests |
 | ---- | ------------- | ----- |
 | `src/walkie_agent/errors.py` | `StepError` and its codes | `tests/test_errors.py` |
-| `src/walkie_agent/capabilities/` | The verb protocols on `ctx`, the guards, the cancel token, `FakeRobot` | `tests/test_capabilities.py`, `tests/test_fake_robot.py` |
-| `src/walkie_agent/atomics/` | The tools, as plain functions, and the three tool sets | `tests/test_atomics.py`, `tests/test_tool_sets.py` |
+| `src/walkie_agent/capabilities/` | The verb protocols on `ctx`, the guards, the cancel token, `SystemFacts`, `FakeRobot` | `tests/test_capabilities.py`, `tests/test_facts.py`, `tests/test_fake_robot.py` |
+| `src/walkie_agent/atomics/` | The tools, as plain functions, and the three tool sets | `tests/test_atomics.py`, `tests/test_facts.py`, `tests/test_tool_sets.py` |
 | `src/walkie_agent/adapter.py` | Turns an atomic into a LangChain tool or a plain callable | `tests/test_adapter.py` |
 | `src/walkie_agent/runtime/todos.py` | The list, the rules, the ledger and `WalkieTodos` | `tests/test_runtime_todos.py` |
 | `src/walkie_agent/runtime/middleware.py` | The smaller middlewares | `tests/test_runtime.py` |

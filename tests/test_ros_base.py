@@ -744,7 +744,7 @@ def test_stop_during_drive_cancels_owned_goal():
 
 
 def test_token_alone_cancels_the_goal_through_the_verb():
-    # The Runner sets only the token, and never calls base.stop.
+    # The token alone, with no call to base.stop, still cancels the goal through the verb.
     rig = Rig()
     verb, handle = send_and_drive(rig)
     bounded(rig.token.cancel)

@@ -84,7 +84,8 @@ class Runner:
 
     A stop sets the shared `ctx.cancel` at once, which ends a drive through the verb
     and makes StopLatch refuse the rest of the run. It holds until the next task
-    starts. `on_reply(text)` gets the final text of a task, and `on_todos(items,
+    starts. A stop or a reset also calls `ctx.base.stop()`, so a goal that outlived its
+    verb, such as one whose first cancel Nav2 refused, is asked again. `on_reply(text)` gets the final text of a task, and `on_todos(items,
     changed)`, the same listener as build_agent's, gets the empty list at a start or a
     reset. They run on the loop thread and must not block. `tool_log` logs the stop line.
     """
@@ -151,6 +152,7 @@ class Runner:
         The line does not wait for the active run, which may be a hung LLM call. The
         list changes after that run, in a graph pass that makes no model call.
         """
+        self._stop_base()
         with self._lock:
             self._require_open()
             self.ctx.cancel.cancel()
@@ -165,6 +167,7 @@ class Runner:
         The old thread is deleted only once the active run and its checkpoint writes
         have finished, which a hung LLM call can delay by up to the deadline.
         """
+        self._stop_base()
         with self._lock:
             self._require_open()
             self.ctx.cancel.cancel()
@@ -196,6 +199,20 @@ class Runner:
         return not self._thread.is_alive()
 
     # -- The loop thread -------------------------------------------------------
+
+    def _stop_base(self) -> None:
+        """Abandon the base's goal. Call it before taking the lock.
+
+        Only a verb that is still waiting reads the token. A goal left behind by a
+        refused or failed cancel therefore needs base.stop() to ask again. base.stop()
+        also sets the token. Run after the lock, it could set the token of a task that
+        started in between. Run first, it can only meet a task that this stop cancels
+        anyway, with the token it sets under the lock.
+        """
+        try:
+            self.ctx.base.stop()
+        except Exception:  # The protocol says it never raises, and a stop must not fail.
+            logger.exception("base.stop failed.")
 
     def _require_open(self) -> None:
         """Call with the lock held, before any change: the queue holds the shutdown's item."""

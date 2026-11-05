@@ -664,7 +664,10 @@ tool whose name collides with these two is refused at build.
   `max_concurrency=1`, which is observed behaviour of the installed versions and not
   documented, so rerun `tests/test_runtime.py` on any dependency update.
 - **Stop.** A bare stop sets the token at once, which ends a drive through the verb and
-  refuses every remaining call of the run, even when the agent is idle. `StopLatch`
+  refuses every remaining call of the run, even when the agent is idle. It also calls
+  `ctx.base.stop()`, as a reset does, so a goal whose first cancel Nav2 refused gets
+  another one after its verb has returned (W19 in the
+  [decision log](mahoraga-demo-decisions.md#ros-wiring)). `StopLatch`
   refuses a call before it is dispatched. `as_tool`, `bind` and the two todo tools check
   the token again when the body starts, for a stop that lands in between. A `say` already
   speaking is not cut off. It drops queued tasks but not a queued reset. The Runner speaks

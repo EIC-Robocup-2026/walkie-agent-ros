@@ -72,8 +72,12 @@ class ScriptResult:
 
     `shelf_used` and `shelf_raised` name the shelf functions the run entered and
     those an exception crossed, as evidence.Watch saw at run time. `returned` and
-    `raised` hold the same evidence by name and source sha, for a shelf function or a
-    definition this run saved, which is what the scorer verifies from.
+    `raised` hold the same evidence by name and source sha, which is what the scorer
+    verifies from. `returned` covers a shelf function or a definition this run saved.
+    `raised` also covers a definition the run did not save, since the same text may be
+    on the shelf. `unwatched` lists, as (name, sha) pairs, every definition no wrapper
+    could watch, which the scorer counts as raised. A name may appear in it more than
+    once, one pair per version.
     """
 
     ok: bool = False
@@ -86,6 +90,7 @@ class ScriptResult:
     shelf_raised: list[str] = field(default_factory=list)
     returned: dict[str, str] = field(default_factory=dict)
     raised: dict[str, str] = field(default_factory=dict)
+    unwatched: list[tuple[str, str]] = field(default_factory=list)
     saved: list[str] = field(default_factory=list)
     refused: dict[str, str] = field(default_factory=dict)
 
@@ -147,7 +152,8 @@ class ScriptRunner:
         result = ScriptResult()
         prefix, shelf_versions = self.shelf.source_for(code) if self.shelf is not None else ("", {})
         may_save = self.shelf is not None and not self.shelf.frozen
-        watch = Watch(code, shelf_versions, save if may_save else (), set(fns))
+        # Own definitions are watched while the shelf can still verify, saved or not.
+        watch = Watch(code, shelf_versions, watch_own=may_save, reserved=set(fns))
 
         def fail(phase: str, error: str) -> None:
             result.ok, result.phase, result.error = False, phase, _clip(watch.clean(error))
@@ -193,6 +199,7 @@ class ScriptRunner:
         # already be on the shelf, and a return in another script must not verify it.
         ran = {**watch.own_versions, **shelf_versions}
         result.raised = {name: sha for name, sha in ran.items() if name in watch.raised}
+        result.unwatched = watch.unwatched
         return result
 
     def _session(self, fns: Mapping[str, Callable[..., Any]], extra_stubs: str = "") -> Any:

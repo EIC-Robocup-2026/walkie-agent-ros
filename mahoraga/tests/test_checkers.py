@@ -694,10 +694,15 @@ def at_clock(now=THURSDAY):
     return built
 
 
-def talk(topic, *lines, now=THURSDAY):
-    """Whether lines said in Jane's room, after a look that found her, pass a talk on `topic`."""
+# The two facts verbs that get_facts calls, as robot actions.
+READ_CLOCK, READ_TEAM = ("now",), ("team",)
+READ = (READ_CLOCK, READ_TEAM)
+
+
+def talk(topic, *lines, now=THURSDAY, read=READ):
+    """Whether lines said in Jane's room, after a look that found her and `read`, pass a talk on `topic`."""
     spec = {**TALK, "topic": topic}
-    return episode(spec, at_clock(now), *TALK_LOOK, *(("say", line) for line in lines))[0]
+    return episode(spec, at_clock(now), *TALK_LOOK, *read, *(("say", line) for line in lines))[0]
 
 
 @pytest.mark.parametrize("topic", CHECKED_TOPICS)
@@ -718,7 +723,55 @@ def test_talk_fails_when_the_right_line_is_said_in_another_room(topic):
     line = RIGHT_LINES.get(topic, "I am Walkie.")
     leave = ("go_to", "living room")
 
-    assert not episode({**TALK, "topic": topic}, at_clock(), *TALK_LOOK, leave, ("say", line))[0]
+    assert not episode({**TALK, "topic": topic}, at_clock(), *TALK_LOOK, *READ, leave, ("say", line))[0]
+
+
+@pytest.mark.parametrize(("topic", "line"), [("your teams name", "We are EIC."), ("the time", "It is 14:05.")])
+def test_talk_fails_when_a_right_fact_is_said_without_reading_it(topic, line):
+    assert talk(topic, line)
+    assert not talk(topic, line, read=())
+
+
+@pytest.mark.parametrize("topic", CHECKED_TOPICS)
+def test_talk_takes_only_a_line_said_after_a_facts_read(topic):
+    spec, line = {**TALK, "topic": topic}, ("say", RIGHT_LINES[topic])
+
+    assert not episode(spec, at_clock(), *TALK_LOOK, line, *READ)[0]
+    # The read may come before the lookup, and a line after both counts.
+    assert episode(spec, at_clock(), *READ, *TALK_LOOK, line)[0]
+    assert episode(spec, at_clock(), *TALK_LOOK, line, *READ, line)[0]
+
+
+@pytest.mark.parametrize("topic", CHECKED_TOPICS)
+def test_talk_needs_the_read_of_the_fact_its_topic_asks_for(topic):
+    needed, other = (READ_TEAM, READ_CLOCK) if topic.startswith("your teams") else (READ_CLOCK, READ_TEAM)
+
+    assert talk(topic, RIGHT_LINES[topic], read=[needed])
+    assert not talk(topic, RIGHT_LINES[topic], read=[other])
+
+
+def test_a_refused_facts_read_does_not_count():
+    robot = FakeRobot(at_clock())
+    start = robot.snapshot()
+    robot.go_to("kitchen room")
+    robot.people("Jane")
+    robot.faults["facts.now"] = StepError("SKILL_FAILED", "No clock.")
+    with pytest.raises(StepError):
+        robot.now()
+    robot.say("It is 14:05.")
+
+    assert not check({**TALK, "topic": "the time"}, start, robot.snapshot())[0]
+
+
+def test_talk_says_why_a_right_line_without_a_facts_read_fails():
+    ok, why = episode({**TALK, "topic": "the time"}, at_clock(), *TALK_LOOK, ("say", "It is 14:05."))
+
+    assert not ok
+    assert "'It is 14:05.'" in why and "no successful facts.now read came before it" in why
+
+
+def test_talk_about_yourself_needs_no_facts_read():
+    assert episode(TALK, at_clock(), *TALK_LOOK, ("say", "I am Walkie."))[0]
 
 
 @pytest.mark.parametrize(
@@ -747,6 +800,42 @@ def test_talk_fails_when_the_right_line_is_said_in_another_room(topic):
         ("the time", "It is 12:30 am.", "2026-11-05T00:30:00+07:00", True),
         ("the time", "It is 00:30.", "2026-11-05T00:30:00+07:00", True),
         ("the time", "It is 12:30 pm.", "2026-11-05T00:30:00+07:00", False),
+        # A part of the day after the time is a qualifier too, and must be right.
+        ("the time", "It is 2:05 in the afternoon.", THURSDAY, True),
+        ("the time", "It is 2:05 in the morning.", THURSDAY, False),
+        ("the time", "It is 7:05 in the evening.", "2026-11-05T19:05:00+07:00", True),
+        ("the time", "It is 7:05 in the evening.", "2026-11-05T07:05:00+07:00", False),
+        ("the time", "It is 9:05 in the morning.", "2026-11-05T09:05:00+07:00", True),
+        # Noon and midnight need 12 on the hour, at that hour.
+        ("the time", "It is 12:00 noon.", "2026-11-05T12:00:00+07:00", True),
+        ("the time", "It is 12:00 noon.", "2026-11-05T00:00:00+07:00", False),
+        ("the time", "It is 12:00 midnight.", "2026-11-05T00:00:00+07:00", True),
+        ("the time", "It is 12:00 midnight.", "2026-11-05T12:00:00+07:00", False),
+        ("the time", "It is 12:30 noon.", "2026-11-05T12:30:00+07:00", False),
+        ("the time", "It is 12 noon.", "2026-11-05T12:00:00+07:00", True),
+        ("the time", "It is 12 midnight.", "2026-11-05T00:00:00+07:00", True),
+        # A digit hour from 1 to 12 right before a qualifier is that hour on the hour.
+        ("the time", "It is 12 am.", "2026-11-05T00:00:00+07:00", True),
+        ("the time", "It is 12 pm.", "2026-11-05T12:00:00+07:00", True),
+        ("the time", "It is 2 p.m.", "2026-11-05T14:00:00+07:00", True),
+        ("the time", "It is 2PM.", "2026-11-05T14:00:00+07:00", True),
+        ("the time", "It is 2 in the afternoon.", "2026-11-05T14:00:00+07:00", True),
+        ("the time", "It is 12 am.", "2026-11-05T12:00:00+07:00", False),
+        ("the time", "It is 12 pm.", "2026-11-05T00:00:00+07:00", False),
+        ("the time", "It is 2 am.", "2026-11-05T14:00:00+07:00", False),
+        ("the time", "It is 2 pm.", THURSDAY, False),
+        ("the time", "It is 2 noon.", "2026-11-05T12:00:00+07:00", False),
+        ("the time", "It is 2.", "2026-11-05T14:00:00+07:00", False),
+        ("the time", "It is 2.05 pm.", "2026-11-05T17:00:00+07:00", False),
+        # "h o'clock" reads its hour like the other forms, leading zero included.
+        ("the time", "It is 2 o'clock in the afternoon.", "2026-11-05T14:00:00+07:00", True),
+        ("the time", "It is 2 o'clock in the morning.", "2026-11-05T14:00:00+07:00", False),
+        ("the time", "It is 2 o'clock pm.", "2026-11-05T14:00:00+07:00", True),
+        ("the time", "It is 02 o'clock.", "2026-11-05T14:00:00+07:00", False),
+        ("the time", "It is 02 o'clock.", "2026-11-05T02:00:00+07:00", True),
+        ("the time", "It is 14 o'clock.", "2026-11-05T14:00:00+07:00", True),
+        ("the time", "It is 12 o'clock midnight.", "2026-11-05T00:00:00+07:00", True),
+        ("the time", "It is 12 o'clock noon.", "2026-11-05T00:00:00+07:00", False),
         # Today: the weekday, or the date in either order.
         ("what day is today", "Today is thursday.", THURSDAY, True),
         ("what day is today", "Today is 5 November.", THURSDAY, True),
@@ -755,17 +844,27 @@ def test_talk_fails_when_the_right_line_is_said_in_another_room(topic):
         ("what day is today", "Today is Friday.", THURSDAY, False),
         ("what day is today", "Today is 15 November.", THURSDAY, False),
         ("what day is today", "Today is the 5th.", THURSDAY, False),
+        # A line about another day than the one asked for does not answer it.
+        ("what day is today", "Tomorrow is Thursday.", THURSDAY, False),
+        ("what day is today", "TOMORROW is 5 November.", THURSDAY, False),
+        ("what day is today", "Yesterday was Thursday.", THURSDAY, False),
+        ("what day is today", "Yesterday was Wednesday, so today is Thursday.", THURSDAY, True),
         # Tomorrow: tomorrow's weekday or date, never today's.
         ("what day is tomorrow", "Tomorrow is November 6.", THURSDAY, True),
         ("what day is tomorrow", "Tomorrow is Thursday.", THURSDAY, False),
         ("what day is tomorrow", "Tomorrow is 5 November.", THURSDAY, False),
         ("what day is tomorrow", "Tomorrow is 1 January.", "2026-12-31T23:59:00+07:00", True),
         ("what day is tomorrow", "Tomorrow is Friday.", "2026-12-31T23:59:00+07:00", True),
+        ("what day is tomorrow", "It will be Friday.", THURSDAY, True),
+        ("what day is tomorrow", "Today is Friday.", THURSDAY, False),
+        ("what day is tomorrow", "Today is 6 November.", THURSDAY, False),
         # The day of the week: the name as a whole word.
         ("the day of the week", "It is THURSDAY today.", THURSDAY, True),
         ("the day of the week", "It is Wednesday.", THURSDAY, False),
         ("the day of the week", "It is Friday.", THURSDAY, False),
+        ("the day of the week", "Tomorrow is Thursday.", THURSDAY, False),
         # The day of the month: digits with an optional suffix, or a word from 1 to 31.
+        ("the day of the month", "Tomorrow is the 5th.", THURSDAY, False),
         ("the day of the month", "Today is day 5.", THURSDAY, True),
         ("the day of the month", "It is the fifth.", THURSDAY, True),
         ("the day of the month", "It is day five.", THURSDAY, True),
@@ -789,10 +888,17 @@ def test_talk_accepts_the_forms_of_its_fact(topic, line, now, passes):
 
 
 def test_talk_keeps_its_known_limits():
-    # A line that names both today and tomorrow passes for either.
-    both = "Today is Thursday and tomorrow is Friday."
-    assert talk("what day is today", both)
-    assert talk("what day is tomorrow", both)
+    # A line that names both today and tomorrow passes for either, in either order.
+    for both in ("Today is Thursday and tomorrow is Friday.", "Tomorrow is Friday and today is Thursday."):
+        assert talk("what day is today", both)
+        assert talk("what day is tomorrow", both)
+    # Times in words, seconds and "at night" are not read.
+    assert not talk("the time", "It is two o'clock.", now="2026-11-05T14:00:00+07:00")
+    assert not talk("the time", "It is 14:05:30.")
+    assert not talk("the time", "It is 10 at night.", now="2026-11-05T22:00:00+07:00")
+    # A qualifier goes with a 12-hour time, so a 24-hour time with one fails although it is right.
+    assert not talk("the time", "It is 14:05 in the afternoon.")
+    assert not talk("the time", "It is 00:00 midnight.", now="2026-11-05T00:00:00+07:00")
     # Any number in the line counts for the day of the month, even a pronoun.
     assert talk("the day of the month", "It is the one you wanted.", now="2026-11-01T10:00:00+07:00")
     # The year of a date is not read.

@@ -20,8 +20,12 @@ DEFAULT_DEADLINE_S = 60.0
 
 
 def load_config(path: str | Path = "config.toml") -> dict[str, Any]:
+    """The parsed file. A TOML syntax error is a ValueError that names the file."""
     with open(path, "rb") as f:
-        return tomllib.load(f)
+        try:
+            return tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise ValueError(f"{path}: {e}.") from e
 
 
 def agent_settings(config: dict[str, Any]) -> dict[str, Any]:
@@ -81,8 +85,13 @@ def _chat_model(config: dict[str, Any], vendor: str, name: str) -> BaseChatModel
     base_url = config.get(vendor, {}).get("base_url")
     if vendor == "openai":
         from langchain_openai import ChatOpenAI
+        from openai import OpenAIError
 
-        return ChatOpenAI(model=name, base_url=base_url, timeout=timeout_s, max_retries=0)
+        try:
+            return ChatOpenAI(model=name, base_url=base_url, timeout=timeout_s, max_retries=0)
+        except OpenAIError as e:
+            # Such as a missing OPENAI_API_KEY. main() reports a ValueError in one line.
+            raise ValueError(f"The openai model {name!r} cannot be built: {e}") from e
     if vendor == "ollama":
         from langchain_ollama import ChatOllama
 

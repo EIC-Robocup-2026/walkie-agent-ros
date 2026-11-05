@@ -2,13 +2,16 @@
 
 The ROS lifecycle and the model factories are patched and their calls inspected, so
 nothing here needs a live graph, credentials or the network. Signals are real, sent to
-this process, which is why `main` runs on the test's main thread.
+this process, which is why `main` runs on the test's main thread. One test runs the real
+entry point in a fresh interpreter, to see what the operator's terminal gets.
 """
 
 import logging
 import os
 import re
 import signal
+import subprocess
+import sys
 import threading
 from functools import partial
 from pathlib import Path
@@ -32,7 +35,7 @@ from walkie_agent.capabilities.facts import SystemFacts
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location, load_locations
 from walkie_agent.ros import RosBase, RosSpeech, UnavailableVision
-from walkie_agent.runtime import Runner, ToolLog
+from walkie_agent.runtime import Runner, ToolLog, build_model
 from walkie_agent.tasks import TaskTemplate
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -637,6 +640,21 @@ def broken_file(cli, text, name="broken.toml"):
     return str(path)
 
 
+def startup_error(cli, capsys, *flags, **paths):
+    """Run main() into an error found before ROS starts. Returns its message.
+
+    Every such error ends the same way: exit code 2, no rclpy.init, and one line on
+    stderr that starts with "walkie-agent: ".
+    """
+    code = cli.run(*flags, **paths)
+    stderr = capsys.readouterr().err
+    assert code == 2, stderr
+    assert len(stderr.splitlines()) == 1, stderr
+    assert stderr.startswith("walkie-agent: ") and stderr.endswith("\n"), stderr
+    assert "init" not in cli.events
+    return stderr.removeprefix("walkie-agent: ").removesuffix("\n")
+
+
 @pytest.mark.parametrize(
     ("flag", "text", "extra"),
     [
@@ -674,13 +692,11 @@ def broken_file(cli, text, name="broken.toml"):
         "no-robot-description",
     ],
 )
-def test_config_errors_happen_before_ros_init(cli, monkeypatch, flag, text, extra):
+def test_config_errors_happen_before_ros_init(cli, capsys, monkeypatch, flag, text, extra):
     monkeypatch.delenv("LANGFUSE_PUBLIC_KEY", raising=False)
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     path = str(cli.tmp_path / "missing") if text is None else broken_file(cli, text)
-    with pytest.raises((OSError, ValueError)):
-        cli.run(*extra, **{flag: path})
-    assert "init" not in cli.events
+    assert startup_error(cli, capsys, *extra, **{flag: path})
     assert cli.connectors == []
 
 
@@ -695,21 +711,108 @@ def test_config_errors_happen_before_ros_init(cli, monkeypatch, flag, text, extr
     ],
     ids=["no-team", "missing-values", "not-text", "wrong-case-timezone", "path-timezone"],
 )
-def test_a_bad_team_table_stops_with_one_line_before_ros_init(cli, text, match):
-    with pytest.raises(ValueError, match=match) as raised:
-        cli.run(config=broken_file(cli, text))
-    assert "\n" not in str(raised.value)
-    assert "init" not in cli.events
+def test_a_bad_team_table_stops_with_one_line_before_ros_init(cli, capsys, text, match):
+    assert re.search(match, startup_error(cli, capsys, config=broken_file(cli, text)))
 
 
-def test_a_model_that_cannot_be_built_stops_before_ros_init(cli, monkeypatch):
+def test_a_model_that_cannot_be_built_stops_before_ros_init(cli, capsys, monkeypatch):
     def no_key(_config):
         raise ValueError("no API key")
 
     monkeypatch.setattr(main, "build_model", no_key)
-    with pytest.raises(ValueError, match="no API key"):
+    assert startup_error(cli, capsys) == "no API key"
+
+
+def test_a_message_of_several_lines_is_printed_as_one(cli, capsys, monkeypatch):
+    # pydantic's ValidationError, from a model client given a bad setting, has this shape.
+    def invalid(_config):
+        raise ValueError(
+            "1 validation error for ChatOllama\nmodel\n  Input should be a valid string\n"
+        )
+
+    monkeypatch.setattr(main, "build_model", invalid)
+    assert startup_error(cli, capsys) == (
+        "1 validation error for ChatOllama model Input should be a valid string"
+    )
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        (TEAM_CONFIG, "'vendor'"),
+        ('[vendor]\ncomplex_model = "openai"\n' + TEAM_CONFIG, "'openai'"),
+        ('[vendor]\ncomplex_model = "openai"\n[openai]\n' + TEAM_CONFIG, "'complex_model'"),
+    ],
+    ids=["no-vendor-table", "no-vendor-model-table", "no-model-name"],
+)
+def test_a_missing_model_setting_names_the_file_and_key(cli, capsys, monkeypatch, text, key):
+    # The real builder, which reads these keys before it builds any client.
+    monkeypatch.setattr(main, "build_model", build_model)
+    config = broken_file(cli, text)
+    assert startup_error(cli, capsys, config=config) == f"{config}: missing key {key}."
+
+
+def test_a_missing_openai_key_stops_with_one_line_before_ros_init(cli, capsys, monkeypatch):
+    # The real builder. The client refuses to exist without a key, so nothing is sent.
+    monkeypatch.setattr(main, "build_model", build_model)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
+    assert "OPENAI_API_KEY" in startup_error(cli, capsys)
+
+
+def test_an_error_once_ros_has_started_is_not_a_startup_error(cli, capsys, monkeypatch):
+    # Only the reading before ROS starts ends in one line. After that, the traceback stays.
+    def fails(**_kwargs):
+        raise ValueError("rcl could not start")
+
+    monkeypatch.setattr(main.rclpy, "init", fails)
+    with pytest.raises(ValueError, match="rcl could not start"):
         cli.run()
-    assert "init" not in cli.events
+    assert "walkie-agent:" not in capsys.readouterr().err
+
+
+def test_the_entry_point_ends_a_bad_team_table_with_one_line_and_code_2(tmp_path):
+    """`python -m walkie_agent.main` in a fresh interpreter, as the operator runs it.
+
+    The config is the openai vendor that the shipped config.toml uses, with a fake key and
+    a local port, and no [team] table. The client is built and never sends anything.
+    """
+    config = tmp_path / "config.toml"
+    config.write_text(MODEL_CONFIG + 'base_url = "http://127.0.0.1:1/v1"\n')
+    robot = tmp_path / "robot.md"
+    robot.write_text(ROBOT)
+    env = {
+        **os.environ,
+        # This tree's src first, since the environment's editable install can point at
+        # another checkout.
+        "PYTHONPATH": os.pathsep.join([str(PROJECT_ROOT / "src"), os.environ.get("PYTHONPATH", "")]),
+        "PYTHON_DOTENV_DISABLED": "1",
+        "OPENAI_API_KEY": "test-key-not-real",
+        # Off any domain a robot uses, should a regression reach rclpy.init.
+        "ROS_DOMAIN_ID": "77",
+    }
+    command = [
+        sys.executable,
+        "-m",
+        "walkie_agent.main",
+        "--config",
+        str(config),
+        "--locations",
+        str(FIXTURE_LOCATIONS),
+        "--task-templates",
+        str(tmp_path / "no_templates.toml"),
+        "--robot-description",
+        str(robot),
+    ]
+    done = subprocess.run(
+        command, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=120
+    )
+    assert done.returncode == 2, done.stderr
+    assert "Traceback" not in done.stderr
+    assert done.stderr.splitlines() == [
+        "walkie-agent: The config needs a [team] table with name, country, affiliation and timezone."
+    ]
+    assert done.stdout == ""
 
 
 def test_sim_time_reaches_connector(cli):

@@ -117,6 +117,14 @@ def test_a_bad_template_fails_at_load(tmp_path, text, error):
     assert "[templates.<name>]" in message
 
 
+def test_a_template_file_that_is_not_toml_is_refused_with_its_path(tmp_path):
+    # main() prints this one line alone, so the line has to say which file is broken.
+    path = write(tmp_path, "[templates.tour\n")
+    with pytest.raises(ValueError, match=r"line 1, column 16") as caught:
+        load_task_templates(path)
+    assert str(caught.value).startswith(f"{path}: ")
+
+
 def test_a_template_task_is_stripped():
     assert TaskTemplate(name="tour", task="  Show.\n", todos=["a"]).task == "Show."
 

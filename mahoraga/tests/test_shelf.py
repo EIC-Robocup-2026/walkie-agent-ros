@@ -7,7 +7,7 @@ import pytest
 
 import mahoraga
 from mahoraga.driver import ScriptRunner, script_summary
-from mahoraga.shelf import Shelf
+from mahoraga.shelf import Shelf, definition_source, source_sha, top_level_defs
 
 FETCH = 'def to_shelf() -> str:\n    """Drive to the shelf."""\n    return go_to("shelf")\n\nto_shelf()'
 
@@ -59,6 +59,30 @@ def test_a_success_saves_one_file_per_definition_and_a_ledger_line(shelf_runner,
     event = events(shelf)[0]
     assert (event["event"], event["name"]) == ("saved", "to_shelf")
     assert event["sha"] and event["ts"]
+
+
+# Each later line has leading text the shelf must keep: a body, a continuation at column 0,
+# a blank line of spaces, and the lines of a string.
+REPORT = (
+    "def report(rooms: list[str]) -> str:\n"
+    '    """Say which rooms were checked."""\n'
+    "    names = [\n"
+    "room.upper()\n"
+    "        for room in rooms]\n"
+    "    \n"
+    '    return """Checked:\n'
+    '  """ + ", ".join(names)\n'
+)
+
+
+def test_a_top_level_definition_is_saved_with_its_text_exactly_as_written(shelf):
+    """Taking off a scope's indentation takes nothing off at top level, so each sha on a shelf stays valid."""
+    code = REPORT + '\nreport(["kitchen"])'
+
+    assert definition_source(code, top_level_defs(code)["report"]) == REPORT
+    assert shelf.save(code, ["report"])[0] == ["report"]
+    assert (shelf.root / "report.py").read_text() == REPORT
+    assert events(shelf)[0]["sha"] == source_sha(REPORT)
 
 
 def test_a_failed_run_saves_nothing(shelf_runner, shelf, fns):

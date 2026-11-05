@@ -1,138 +1,145 @@
 # Watching Progress
 
-Every change to the todo list is pushed to its listeners, and the agent
-registers two. One publishes the whole list as JSON on `/walkie/todos`; the
-other sends one line per status change to the operator console,
-`/walkie/console`. Neither reaches the speaker.
+The runtime tells its listeners about each change to the list. In `main.py`, `RosBridge`
+is that listener. It publishes the list on `/walkie/todos`, and a line for each change on
+the console topic. The listener itself is plain Python, so this page needs no ROS.
 
 ## Listeners
 
-`TodoList.add_listener(callback)` registers `callback(items, changed)`.
-`items` is a snapshot of the new list. `changed` holds the items whose
-status changed: every item for a seed, none for a clear or new evidence.
+`on_todos(items, changed)` gets the whole list, and the items whose status just changed.
+Both hold public copies, so a listener can keep them or change them safely.
 
 ```pycon
->>> from walkie_agent.todo import TodoList, console_line
->>> todos = TodoList()
->>> def show(items, changed):
-...     print(len(items), "items, changed:", [item.id for item in changed])
->>> todos.add_listener(show)
->>> todos.seed([{"content": "Go to the kitchen", "active_form": "Going to the kitchen"}, "Pick up the mug"])
-2 items, changed: ['t1', 't2']
->>> todos.apply([{"op": "update", "id": "t1", "status": "in_progress"}])
-2 items, changed: ['t1']
-'Updated: t1 → in_progress. Open: t1, t2.'
->>> todos.record_tool_result("navigate_to_location", "call_1", ok=True)
-2 items, changed: []
+>>> import asyncio, json
+>>> from langchain_core.language_models import BaseChatModel
+>>> from langchain_core.messages import AIMessage, HumanMessage
+>>> from langchain_core.outputs import ChatGeneration, ChatResult
+>>> from walkie_agent.capabilities.fake import FakeRobot
+>>> from walkie_agent.runtime import Session, build_agent, console_line, parse_seed
+>>> class Scripted(BaseChatModel):
+...     script: list
+...     seen: list = []
+...     @property
+...     def _llm_type(self):
+...         return "scripted"
+...     def bind_tools(self, tools, **kwargs):
+...         return self
+...     def _generate(self, *args, **kwargs):
+...         raise NotImplementedError("The runtime only uses the async path.")
+...     async def _agenerate(self, messages, *args, **kwargs):
+...         self.seen.append(list(messages))
+...         reply = self.script.pop(0).model_copy(update={"id": None})
+...         return ChatResult(generations=[ChatGeneration(message=reply)])
+...
+>>> def todo(call_id, *ops):
+...     return AIMessage("", tool_calls=[{"name": "update_todos", "args": {"ops": list(ops)}, "id": call_id, "type": "tool_call"}])
+...
+>>> def status(item, value, **fields):
+...     return {"op": "update", "id": item, "status": value, **fields}
+...
+>>> script = [
+...     todo("u1", status("t1", "in_progress")),
+...     todo("u2", status("t1", "completed"), status("t2", "failed", note="Nobody was there.")),
+...     AIMessage("One step done, one failed."),
+... ]
+>>> heard = []
+>>> def on_todos(items, changed):
+...     heard.append((items, changed))
+...
+>>> agent = build_agent(Scripted(script=script), FakeRobot().ctx, on_todos=on_todos)
+>>> seed = parse_seed([{"content": "Go to the table", "active_form": "Going to the table"}, "Greet the person"])
+>>> _ = asyncio.run(agent.ainvoke({"messages": [HumanMessage("Do it.")], "todo_seed": seed}, Session().config()))
+>>> len(heard)
+3
 
 ```
 
-`TodoList` calls listeners outside its lock, so a listener may change the
-list itself. Changes are queued, and one thread at a time drains the queue.
-So an edit on the agent thread and a reset from a ROS callback reach the
-listeners in the order they were made. A listener that raises is logged,
-and the list is unaffected.
+Three changes: the seed, the first update and the second. A change that moves no status
+still publishes, with `changed` empty, and a refused call publishes nothing.
+
+Listeners run on the Runner's thread, so they must not block. If one raises, the failure is
+logged and the list is unaffected. A slow listener would delay the whole agent, so the
+bridge only publishes and returns.
 
 ## Console lines
 
-`console_line(item)` turns one changed item into one line. The agent's
-listener, `WalkieAgent._send_status_lines`, sends each non-empty line to the
-target connectors. This listener does the same with `print`:
+`console_line` writes one line for a step whose status just changed. A pending step has no
+line. A step in progress uses its "-ing" form:
 
 ```pycon
->>> def console(items, changed):
-...     for item in changed:
-...         if console_line(item):
-...             print(console_line(item))
->>> todos.add_listener(console)
->>> _ = todos.apply([{"op": "update", "id": "t1", "status": "completed"},
-...                  {"op": "update", "id": "t2", "status": "in_progress"}])
-2 items, changed: ['t1', 't2']
-t1 completed: Go to the kitchen
-t2: Pick up the mug
->>> _ = todos.set_waiting("Which mug?")
-2 items, changed: ['t2']
-t2 waiting: Pick up the mug
+>>> for items, changed in heard:
+...     print([console_line(item) for item in changed])
+...
+['', '']
+['t1: Going to the table']
+['t1 completed: Go to the table', 't2 failed: Greet the person']
 
 ```
-
-| Status change | Console line |
-| --- | --- |
-| To `in_progress` | The active form: `t1: Going to the kitchen` |
-| To `pending` | None, because a step that has not started is not news |
-| To anything else | The content: `t1 completed: Go to the kitchen`, `t2 waiting: Pick up the mug` |
-
-The lines go out as RAI's `HRICallbackHandler` sends the LLM's replies, so
-they reach `/walkie/console` and never `/to_human`. One known limit: RAI
-creates the console publisher on the first send, with depth 1. The first
-line can be lost, and a burst of lines can drop some.
 
 ## The list on /walkie/todos
 
-`WalkieAgent.publish_todos` publishes `TodoList.to_json()`, a JSON array of
-every item with all its fields, as a `std_msgs/msg/String`. Here is the item
-that is waiting:
+`RosBridge.on_todos` publishes `json.dumps(public(items))` as a `std_msgs/String`:
 
 ```pycon
->>> import json
->>> print(json.dumps(json.loads(todos.to_json())[1], indent=2))
+>>> items, _ = heard[-1]
+>>> print(json.dumps(items[1], indent=1))
 {
-  "id": "t2",
-  "content": "Pick up the mug",
-  "active_form": "Pick up the mug",
-  "status": "waiting",
-  "note": "",
-  "source": "seed",
-  "locked": true,
-  "requires_tool": "",
-  "evidence": [],
-  "question": "Which mug?"
+ "id": "t2",
+ "content": "Greet the person",
+ "active_form": "Greet the person",
+ "status": "failed",
+ "note": "Nobody was there.",
+ "source": "seed",
+ "locked": true,
+ "requires_tool": "",
+ "evidence": [],
+ "question": ""
 }
->>> todos.clear()
-0 items, changed: []
->>> todos.to_json()
-'[]'
 
 ```
 
-The publisher's QoS makes the topic latched:
+The two output topics differ on purpose:
 
-| QoS setting | Value | What it gives a viewer |
-| --- | --- | --- |
-| Reliability | `RELIABLE` | A lost message is resent, so the last list arrives |
-| Durability | `TRANSIENT_LOCAL` | A viewer that starts late still gets the last list |
-| Depth | 1 | Only the current list is kept, never older ones |
+| Topic | What it carries | QoS | Why |
+| ----- | ---------------- | --- | --- |
+| `/walkie/todos` | The whole list, as JSON | Reliable, transient local, depth 1 | Latched, so a monitor that starts late gets the current list |
+| `/walkie/console` | One line for each change, and the task's final text | Reliable, depth 10 | A log, read in order. Never spoken |
+| `/to_human` | What `ctx.speech.say` says | Reliable, depth 10 | The speaker, through the separate `voice-tts` process |
 
-`publish_todos` adds its listener first, then publishes once, so the topic
-holds `[]` from startup. The listener ignores its snapshot and publishes the
-current `to_json()`, so the last message is always the current list. A
-reset runs `todos.clear()` on the agent thread, which publishes `[]`.
+The console is not the speaker. A plain-text reply goes to the console only. To reach a
+person, the agent must call `say` or `wait_for_person`. The system prompt says so, and
+`robot.said` here stays empty, whatever the model wrote:
 
-```bash
-pixi run ros2 topic echo /walkie/todos std_msgs/msg/String --field data
+```pycon
+>>> robot = FakeRobot()
+>>> agent = build_agent(Scripted(script=[AIMessage("I am telling the console, not the room.")]), robot.ctx)
+>>> _ = asyncio.run(agent.ainvoke({"messages": [HumanMessage("Hello.")]}, Session().config()))
+>>> robot.said
+[]
+
 ```
 
-`ros2 topic echo` asks for transient-local durability when every publisher
-offers it, so it prints the current list even if started late. A viewer of
-your own must ask for `TRANSIENT_LOCAL` itself.
+A reset and a Runner start publish `[]`, so a monitor doesn't keep showing an old task.
 
 ## Wiring in main.py
 
-`main.py` loads the templates from `--task-templates` before ROS starts,
-then calls `subscribe_task` on `--task-topic` (default `/walkie/task`) and
-`publish_todos` on `--todos-topic` (default `/walkie/todos`). Console lines
-go to `--output-topic`, `/walkie/console`, the agent's target connector.
+`assemble` in `src/walkie_agent/main.py` connects these, in about this shape:
 
-`FORBIDDEN_NAMES` in `src/walkie_agent/tools/__init__.py` lists
-`/walkie/task` and `/walkie/todos`, so the agent's ROS tools cannot read or
-write its own control plane. The list holds those default names, so a topic
-renamed with a flag is not covered.
+```python
+bridge = RosBridge(connector, templates, ...)
+agent = build_agent(model, ctx, on_todos=bridge.on_todos, ...)
+runner = Runner(agent, ctx, on_todos=bridge.on_todos, on_reply=bridge.on_reply, ...)
+```
+
+Both `build_agent` and `Runner` take the same listener. The middleware reports changes
+during a run, and the Runner reports the empty list at a start or a reset.
+
+`tests/test_ros_bridge.py` checks that bridge with a fake connector.
+`tests/test_ros_integration.py` runs it on real rclpy, against a fake robot. It has not run
+on the robot's own graph.
 
 !!! example "Try it"
-    Make a fresh `TodoList`, add the `console` listener, seed two steps and
-    set `t1` to `in_progress`. Then call `todos.seed(...)` again with new
-    steps. What does the console print, and why? Then read `publish_todos`
-    in `src/walkie_agent/agent.py` and say why `publish` ignores its
-    arguments.
+    Make `on_todos` raise an exception, and rerun the first block. Does the run finish?
+    Then read `test_a_listener_that_raises_does_not_affect_the_list`.
 
 Previous: [Seeding a Task](seeding.md) · Next: [Read the Code Next](read-the-code.md)

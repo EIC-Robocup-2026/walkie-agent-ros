@@ -1,158 +1,199 @@
 # The Rules: Ledger and Window
 
-`TodoList.apply` enforces the todo rules in code, so the LLM cannot talk its
-way past them. It edits a `_Draft` copy and keeps it only if every op and the
-final check pass, so one call is all or nothing. An error ledger of tool
-results then decides when an item may become `completed`.
+In a task with several steps, an LLM tends to drop a step, to call the task done once it has
+spoken, or to report success after a tool failed. So the rules are in code, and the model
+can't talk its way past them. A refused call changes nothing and tells the model what to do
+instead.
 
-## Rules on the list
+## Setup
 
-| Rule | Checked in |
-| --- | --- |
-| At most one item `in_progress` or `waiting` | `_Draft.check_one_active`, once after all ops |
-| `failed` and `cancelled` need a note | `_check_status` |
-| Seeded items keep their wording | `_Draft._update` |
-| Seeded items cannot be removed | `_Draft._remove` |
-| Only `wait_for_person` sets `waiting` | `_check_status` |
-| Ids are assigned by the list, never chosen | `_Draft._add` |
-| An update must change something | `_Draft._update` |
-
-The reasons come from the robot: physical work is serial, the published list
-must say why a step was dropped, and the LLM must not drop a seeded step
-([ADR-0041](../architecture/decisions/0041-todo-list-and-seeding.md)).
-
-The examples seed three steps, which locks them
-([Seeding a Task](seeding.md) covers seeding). The helper `attempt` prints the
-summary of a good call, or the refusal the LLM would read.
+`attempt` is the helper from the last page. It runs one `update_todos` worth of ops on a
+draft of the list, and prints the answer.
 
 ```pycon
->>> from walkie_agent.todo import TodoList, TodoRejected
->>> todos = TodoList()
->>> todos.seed([
-...     "Go to the kitchen",
-...     "Find the cup",
-...     {"content": "Hand over the cup", "requires_tool": "hand_over"},
-... ])
->>> def attempt(ops):
+>>> from walkie_agent.runtime import TodoRejected, parse_seed
+>>> from walkie_agent.runtime.todos import TodoOp, _Draft
+>>> def attempt(items, *ops, next_id=1, ledger=()):
+...     draft = _Draft(items, next_id, list(ledger))
 ...     try:
-...         print(todos.apply(ops))
-...     except TodoRejected as e:
-...         print(e)
+...         print(draft.apply([TodoOp(**op) for op in ops]))
+...     except TodoRejected as error:
+...         print("Refused:", error)
+...     return draft
 ...
->>> attempt([{"op": "update", "id": "t1", "status": "in_progress"},
-...          {"op": "update", "id": "t2", "status": "in_progress"}])
-Only one item can be in progress or waiting at a time, but t1 and t2 would be; finish the others or set them back to pending.
->>> attempt([{"op": "update", "id": "t1", "status": "failed"}])
-Marking t1 failed needs a note that says why.
->>> attempt([{"op": "update", "id": "t1", "content": "Go to the living room"}])
-t1 is a seeded step, so its wording cannot change.
->>> attempt([{"op": "remove", "id": "t1"}])
-t1 is a seeded step, so it cannot be removed; mark it cancelled with a note instead.
->>> attempt([{"op": "update", "id": "t1", "status": "waiting"}])
-Only wait_for_person can set waiting; call it to ask the person a question.
->>> attempt([{"op": "update", "id": "t1", "status": "pending"}])
-The update to t1 changes nothing; leave it out or change a field.
 
 ```
 
-A refused call changes nothing, even its valid ops. Below, the add is fine,
-but the second op names an item that does not exist, so t4 is never created.
+## Rules on the list
+
+One step at a time, because physical work is serial:
 
 ```pycon
->>> attempt([{"op": "add", "content": "Say goodbye"},
-...          {"op": "update", "id": "t9", "status": "completed"}])
-There is no item t9; use an id from the todo list.
->>> todos.open_ids()
-['t1', 't2', 't3']
->>> attempt([{"op": "update", "id": "t1", "status": "in_progress"}])
-Updated: t1 → in_progress. Open: t1, t2, t3.
+>>> items = attempt([], {"op": "add", "content": "Drive", "status": "in_progress"}, {"op": "add", "content": "Speak"}).items
+Added: t1, t2. Open: t1, t2.
+>>> _ = attempt(items, {"op": "update", "id": "t2", "status": "in_progress"}, next_id=3)
+Refused: Only one item can be in progress or waiting at a time, but t1 and t2 would be; finish the others or set them back to pending.
+
+```
+
+A failed or cancelled step says why:
+
+```pycon
+>>> _ = attempt(items, {"op": "update", "id": "t1", "status": "cancelled"}, next_id=3)
+Refused: Marking t1 cancelled needs a note that says why.
+>>> _ = attempt(items, {"op": "update", "id": "t1", "status": "cancelled", "note": "The door is shut."}, next_id=3)
+Updated: t1 → cancelled. Open: t2.
+
+```
+
+Seeded steps are the operator's plan, so the model can't reword them, remove them or move
+one past another. It can add steps of its own. And `before_agent` is what gives a seed its
+`added` and `since`, so this block does the same:
+
+```pycon
+>>> seed = [{**item, "added": 0, "since": 0} for item in parse_seed(["Fetch the mug", "Bring it back"])]
+>>> _ = attempt(seed, {"op": "update", "id": "t1", "content": "Fetch a cup"}, next_id=3)
+Refused: t1 is a seeded step, so its wording cannot change.
+>>> _ = attempt(seed, {"op": "remove", "id": "t2"}, next_id=3)
+Refused: t2 is a seeded step, so it cannot be removed; mark it cancelled with a note instead.
+>>> _ = attempt(seed, {"op": "update", "id": "t1", "after": "t2"}, next_id=3)
+Refused: Seeded steps keep their order, so one cannot move past another.
+>>> _ = attempt(seed, {"op": "add", "content": "Open the door", "after": "t1"}, next_id=3)
+Added: t3. Open: t1, t3, t2.
 
 ```
 
 ## The error ledger
 
-`WalkieToolRunner` in `src/walkie_agent/graph.py` calls
-`record_tool_result(tool, call_id, ok)` for each result of a known tool. A
-raised exception or a `ToolMessage` with status `error` counts as `ok=False`.
-A success while an item is `in_progress` or `waiting` also becomes that item's
-evidence.
-
-Some results never reach the ledger. `update_todos` is ignored, because a
-refused edit is a mistake in the list, not a failed step. Calls the runner
-refuses itself are skipped too: an unknown tool, a second `update_todos` in
-one message, and calls after a question.
-
-Here you play the tools node. A failed drive blocks t1, and a later success
-of the same tool resolves the failure.
+Each call a tool actually runs adds one entry to `ledger`, an additive part of the state.
+This is what the list checks when a step completes:
 
 ```pycon
->>> todos.record_tool_result("navigate_to_location", "call_1", ok=False)
->>> attempt([{"op": "update", "id": "t1", "status": "completed"}])
-t1 cannot be completed because navigate_to_location failed and has not succeeded since; retry it, or add a note that explains why the step is done anyway.
->>> todos.record_tool_result("navigate_to_location", "call_2", ok=True)
->>> attempt([{"op": "update", "id": "t1", "status": "completed"},
-...          {"op": "update", "id": "t2", "status": "in_progress"}])
-Updated: t1 → completed, t2 → in_progress. Open: t2, t3.
->>> todos.snapshot()[0].evidence
-['call_2']
+>>> failed = {"tool": "go_to", "id": "c1", "ok": False}
+>>> spoke = {"tool": "say", "id": "c2", "ok": True}
+>>> drove = {"tool": "go_to", "id": "c3", "ok": True}
+>>> done = {"op": "update", "id": "t1", "status": "completed"}
+>>> step = attempt([], {"op": "add", "content": "Drive", "status": "in_progress"}).items
+Added: t1. Open: t1.
+>>> _ = attempt(step, done, next_id=2, ledger=[failed])
+Refused: t1 cannot be completed because go_to failed and has not succeeded since; retry it, or add a note that explains why the step is done anyway.
 
 ```
 
-Only the same tool resolves a failure, and only if it succeeds after the
-failure. The other way out is a note that explains why the step is done
-anyway. The note is visible on `/walkie/todos`, so the claim is on record.
+Speaking doesn't fix a failed drive. A later success of the same tool does:
 
 ```pycon
->>> todos.record_tool_result("find_objects", "call_3", ok=False)
->>> attempt([{"op": "update", "id": "t2", "status": "completed",
-...           "note": "The person pointed at the cup"}])
-Updated: t2 → completed. Open: t3.
+>>> _ = attempt(step, done, next_id=2, ledger=[failed, spoke])
+Refused: t1 cannot be completed because go_to failed and has not succeeded since; retry it, or add a note that explains why the step is done anyway.
+>>> _ = attempt(step, done, next_id=2, ledger=[failed, spoke, drove])
+Updated: t1 → completed. Open: none.
+
+```
+
+A note can excuse a failure, so the model can say the step is done another way:
+
+```pycon
+>>> _ = attempt(step, {**done, "note": "The person came to me instead."}, next_id=2, ledger=[failed])
+Updated: t1 → completed. Open: none.
 
 ```
 
 ## The window and requires_tool
 
-Each item's window is the part of the ledger that counts for it. It starts
-when the item is created or seeded, and again whenever an op moves the item
-into `in_progress` from another status. `resume_waiting` keeps the window,
-because an answer continues the same attempt.
-
-An item with `requires_tool` needs a success of that tool inside its window.
-A note cannot stand in for it, so "Hand over the cup" needs a real
-`hand_over`, not the LLM saying "here you go".
+The ledger is the whole task's history, and two positions on each step say which part
+counts for it. `since` opens the failure window, and setting `in_progress` again moves it.
+So a new attempt starts with a clean slate:
 
 ```pycon
->>> attempt([{"op": "update", "id": "t3", "status": "in_progress"}])
-Updated: t3 → in_progress. Open: t3.
->>> todos.record_tool_result("speak", "call_4", ok=True)
->>> attempt([{"op": "update", "id": "t3", "status": "completed",
-...           "note": "I said here you go"}])
-t3 needs a successful hand_over before it can be completed.
->>> todos.record_tool_result("hand_over", "call_5", ok=True)
->>> attempt([{"op": "update", "id": "t3", "status": "completed"}])
-Updated: t3 → completed. Open: none.
+>>> restart = attempt(step, {"op": "update", "id": "t1", "status": "pending"}, next_id=2, ledger=[failed]).items
+Updated: t1 → pending. Open: t1.
+>>> again = attempt(restart, {"op": "update", "id": "t1", "status": "in_progress"}, next_id=2, ledger=[failed]).items
+Updated: t1 → in_progress. Open: t1.
+>>> _ = attempt(again, done, next_id=2, ledger=[failed])
+Updated: t1 → completed. Open: none.
 
 ```
 
-The last op needs no note, although `find_objects` failed and never
-succeeded. That failure lies outside t3's window:
+`added` opens the other window. A step with `requires_tool` needs a successful call of that
+tool since the step was added. A note can't excuse a missing requirement, because a note
+excuses failures, and this is a thing that never happened:
 
-| Seq | Tool | Result | Active item | In t3's window |
-| --- | --- | --- | --- | --- |
-| 1 | `navigate_to_location` | failed | t1 | No |
-| 2 | `navigate_to_location` | ok | t1 | No |
-| 3 | `find_objects` | failed | t2 | No |
-| 4 | `speak` | ok | t3 | Yes |
-| 5 | `hand_over` | ok | t3 | Yes |
+```pycon
+>>> two = [
+...     {**item, "added": 0, "since": 0}
+...     for item in parse_seed([
+...         {"content": "Go to the table", "requires_tool": "go_to"},
+...         {"content": "Go to the shelf", "requires_tool": "go_to"},
+...     ])
+... ]
+>>> _ = attempt(two, {"op": "update", "id": "t1", "status": "completed", "note": "I am sure."}, next_id=3)
+Refused: t1 needs a successful go_to before it can be completed.
 
-Seeding and `clear()` empty the ledger, so a new task starts clean. A retry
-from `failed` back to `in_progress` also gets a new window, so an old failure
-does not block the new attempt.
+```
+
+Each result completes one step only. One drive can't finish two steps, whatever the model
+claims:
+
+```pycon
+>>> first = attempt(two, {"op": "update", "id": "t1", "status": "completed"}, next_id=3, ledger=[drove])
+Updated: t1 → completed. Open: t2.
+>>> first.items[0]["evidence"]
+['c3']
+>>> _ = attempt(first.items, {"op": "update", "id": "t2", "status": "completed"}, next_id=3, ledger=[drove])
+Refused: t2 needs a successful go_to before it can be completed.
+
+```
+
+## Failed and never run
+
+A call that was refused before it ran is not a failure of the robot, so it must not block a
+step. `StopLatch` and `SerialGuard` sit outside `WalkieTodos`, so their answers never reach
+the ledger. An unknown tool never ran either. The real stack shows it:
+
+```pycon
+>>> import asyncio
+>>> from langchain_core.language_models import BaseChatModel
+>>> from langchain_core.messages import AIMessage, HumanMessage
+>>> from langchain_core.outputs import ChatGeneration, ChatResult
+>>> from walkie_agent.capabilities.fake import FakeRobot
+>>> from walkie_agent.runtime import Session, build_agent
+>>> class Scripted(BaseChatModel):
+...     script: list
+...     seen: list = []
+...     @property
+...     def _llm_type(self):
+...         return "scripted"
+...     def bind_tools(self, tools, **kwargs):
+...         return self
+...     def _generate(self, *args, **kwargs):
+...         raise NotImplementedError("The runtime only uses the async path.")
+...     async def _agenerate(self, messages, *args, **kwargs):
+...         self.seen.append(list(messages))
+...         reply = self.script.pop(0).model_copy(update={"id": None})
+...         return ChatResult(generations=[ChatGeneration(message=reply)])
+...
+>>> def call(name, call_id, **args):
+...     return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+...
+>>> script = [
+...     AIMessage("", tool_calls=[call("go_to", "c1", place="garage"), call("say", "c2", text="Hello.")]),
+...     AIMessage("", tool_calls=[call("fly", "c3")]),
+...     AIMessage("I could not do it."),
+... ]
+>>> agent = build_agent(Scripted(script=script), FakeRobot().ctx)
+>>> result = asyncio.run(agent.ainvoke({"messages": [HumanMessage("Go.")]}, Session().config()))
+>>> [message.content.split(":")[0] for message in result["messages"] if message.type == "tool"]
+['NOT_FOUND', 'Not run', 'Error']
+>>> result["ledger"]
+[{'tool': 'go_to', 'id': 'c1', 'ok': False}]
+
+```
+
+`go_to` ran and failed, so it's the one entry. `say` and `fly` left no trace in the ledger.
 
 !!! example "Try it"
-    Seed a fresh list with one step and start it. Record a failed
-    `navigate_to_location`, mark the step `failed` with a note, then set it
-    back to `in_progress` and complete it without a note. Find the line in
-    `_Draft._update` in `src/walkie_agent/todo.py` that let the retry pass.
+    Read `test_a_call_that_never_ran_does_not_poison_completion` in
+    `tests/test_runtime_todos.py`. What would go wrong if `SerialGuard` sat inside
+    `WalkieTodos`?
 
 Previous: [Todo Items and Ops](todo-items.md) · Next: [Asking a Question](asking-questions.md)

@@ -1,7 +1,10 @@
 # ADR-0038: Run our own graph on LangChainAgent and bind the visible tools every turn
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-22
+**Status:** Superseded by
+[ADR-0061](/architecture/decisions/0061-create-agent-runtime-and-cancellation.md), with
+fixed binding in [ADR-0067](/architecture/decisions/0067-static-tool-sets.md) ·
+**Date:** 2026-10-22
 
 **Context**
 

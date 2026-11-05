@@ -398,7 +398,7 @@ pixi run toolbox promote <tool-or-cluster-id> --tier bundled_preset|atomic
 The command creates a branch and writes the tool file, generated tests,
 scenario fixtures and a doc stub. A human opens, reviews and merges the pull
 request ([open question 2](#open-questions)). For `--tier atomic`, the
-command moves the file into `src/walkie_agent/tools/atomic/` and adds a
+command moves the file into `src/walkie_agent/atomics/` and adds a
 fake-backed test stub. It writes `META.effect`; `META.ros` as
 `{read, call, publish, action}` and `META.net`, both from the lint and the
 run traces; `META.origin`; `META.provenance` with the draft id, coder model
@@ -409,7 +409,7 @@ Once in git, the reviewed manifest replaces the level policy
 ([Access Levels](access-levels.md)). A generated tool runs in the agent
 process only after a human rewrites or audits it and sets
 `META.runtime = "inprocess"` with a `META.reviewer`. A new CI test fails
-when a file in `tools/atomic/` has generated provenance and `"inprocess"`
+when a file in `atomics/` has generated provenance and `"inprocess"`
 with no reviewer, or an Unrestricted stamp with no rewrite note.
 
 **Drafts from practice sessions** are the one exception to the harvest
@@ -494,7 +494,7 @@ Each of these is a request, not a change made here
 | Oracle perception and `FakeSkillServer` | walkie-agent-ros | `src/walkie_agent/sim/oracle_perception.py`, `src/walkie_agent/sim/fake_skill_server.py` (new) |
 | Named places of the harvest world, and of `agent-sim` | walkie-agent-ros | `config/locations.chula_pat14_6.toml` (new), `config/locations.sim.toml` (unchanged) |
 | Harvest-only environment with the pinned GPSR generator, and the `harvest-smoke` and `toolbox` tasks | walkie-agent-ros | `pixi.toml` (new environment and tasks) |
-| Promoted tools | walkie-agent-ros | `src/walkie_agent/tools/atomic/`, `src/walkie_agent/tools/bundled_preset/` (new) |
+| Promoted tools | walkie-agent-ros | `src/walkie_agent/atomics/`, `src/walkie_agent/bundled_preset/` (new) |
 | Reports, per-worker drafts, indexes and episode database files, quarantine lane | local, never in git | `$WALKIE_TOOLS_HOME/harvest/<run-id>/`, `$WALKIE_TOOLS_HOME/quarantine_lane/` (new) |
 | World assets: scenes, map, keepout mask, `world.toml` | walkie-ros, `robot_simulation` package | `simulation/gazebo/worlds/chula_pat14_6/`, on a branch, moving (see [The world file](#the-world-file)) |
 | World manifest and world loader | walkie-ros | `bringup/config/mujoco/worlds/chula_pat14_6.toml`, `bringup/robot_bringup/world_loader.py`, on a branch |

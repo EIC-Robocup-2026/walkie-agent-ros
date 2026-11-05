@@ -3,6 +3,13 @@
 <!-- --8<-- [start:body] -->
 **Status:** Proposed · **Date:** 2026-10-12
 
+**Scope, 2026-11-05.** The context below describes the old agent. A stop or a reset now
+cancels the base's own Nav2 goal
+([ADR-0052](/architecture/decisions/0052-capability-verbs-and-backends.md),
+[ADR-0061](/architecture/decisions/0061-create-agent-runtime-and-cancellation.md)). A
+supervisor over every motion, arm motion and the emergency stop is not built, and stays
+proposed.
+
 **Context**
 
 RAI checks for an interrupt only between graph steps, and runs all tool calls

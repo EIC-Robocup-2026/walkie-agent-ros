@@ -123,9 +123,10 @@ import time
 
 import pytest
 from langchain.agents import create_agent
-from langchain.agents.middleware import ModelCallLimitMiddleware
+from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddleware
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 from runtime_harness import (
     ScriptedModel,
     add,
@@ -140,10 +141,10 @@ from runtime_harness import (
 )
 
 from walkie_agent.adapter import as_tools
-from walkie_agent.atomics import DEFAULT
+from walkie_agent.atomics import DEFAULT, go_to, list_places, say
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.runtime import SYSTEM_PROMPT, ToolLog, build_middleware
+from walkie_agent.runtime import SYSTEM_PROMPT, ToolLog, build_agent, build_middleware
 from walkie_agent.runtime.middleware import INTERRUPTED, UNREADABLE_ARGUMENTS, RepairHistory
 from walkie_agent.runtime.todos import parse_seed
 
@@ -659,3 +660,101 @@ def test_the_tool_warning_counts_the_two_todo_tools(caplog):
     stack.run()
     assert len(stack.model.bound[0]) == 21
     assert {"update_todos", "wait_for_person"} <= set(stack.model.bound[0])
+
+
+# -- Moved from test_graph.py, which tested the old host ----------------------------
+
+
+def test_static_binding_rejects_all_duplicate_names():
+    # test_graph.py:234 replaced. A tool set used to overwrite a tool of the same name
+    # silently. Now a set is fixed at build time, and a repeated name stops the build.
+    def first(ctx) -> str:
+        """Do nothing."""
+        return "first"
+
+    def second(ctx) -> str:
+        """Do nothing else."""
+        return "second"
+
+    second.__name__ = first.__name__
+    robot = FakeRobot()
+    model = ScriptedModel(then=DONE)
+    with pytest.raises(ValueError, match="Tool names used twice: first."):
+        build_agent(model, robot.ctx, tools=[first, second])
+
+    for reserved in ("update_todos", "wait_for_person"):
+        second.__name__ = reserved
+        with pytest.raises(ValueError, match=f"reserved by the middleware: {reserved}"):
+            build_agent(model, robot.ctx, tools=[first, second])
+
+
+def test_repair_keeps_tool_image_order():
+    # test_graph.py:293. A human message that follows a tool's result stays after every
+    # answer. This pins the order only: tool images do not reach the agent today (W2).
+    fixed = fixed_by_repair(
+        [
+            ai(drive("c1"), drive("c2")),
+            answer("c1", "Saw a mug."),
+            HumanMessage("Image returned by a tool call c1"),
+        ]
+    )
+    assert [type(m) for m in fixed] == [AIMessage, ToolMessage, ToolMessage, HumanMessage]
+    assert fixed[2].tool_call_id == "c2"
+    assert_every_call_answered(fixed)
+
+
+def test_complete_tool_set_is_fixed_before_first_call():
+    # test_graph.py:539 replaced. Tools used to be added during a task. Now every call of
+    # a run is bound to the same complete set, and changing the list later does nothing.
+    tools = [list_places, say]
+    stack = make_stack(ai(call("list_places", {}, "l")), ai(call("say", {"text": "Hi"}, "s")), DONE, tools=tools)
+    tools.append(go_to)
+    stack.run()
+    complete = ["list_places", "say", "update_todos", "wait_for_person"]
+    assert [sorted(bound) for bound in stack.model.bound] == [complete] * 3
+    assert stack.answer("l").status == "success"
+    assert stack.answer("s").status == "success"
+
+
+def test_task_below_configured_run_limit_finishes():
+    # test_graph.py:589, with a limit that is explicit. No task is promised unbounded runs.
+    rounds = 15
+    stack = make_stack(*[ai(drive(f"d{n}")) for n in range(rounds)], DONE, run_limit=rounds + 1)
+    result = stack.run()
+    assert len(stack.model.received) == rounds + 1
+    assert result["messages"][-1].content == "Done."
+
+
+class AddsAHumanMessageAfterATool(AgentMiddleware):
+    """Puts a human-typed message after a tool's answer, as a tool's image would arrive."""
+
+    async def awrap_tool_call(self, request, handler):
+        result = await handler(request)
+        image = HumanMessage("Image returned by a tool call")
+        return Command(update={**result.update, "messages": [*result.update["messages"], image]})
+
+
+def test_nonhuman_history_messages_do_not_reseed_or_reset_gate():
+    # test_graph.py:652. Only a new ainvoke starts a task, whatever types are in the history.
+    # One gate is spent before the message arrives, so only one more fires after it.
+    stack = make_stack(
+        AIMessage("Looking."),
+        ai(drive("look")),
+        AIMessage("Found it."),
+        AIMessage("Really found it."),
+        tool_log=AddsAHumanMessageAfterATool(),
+    )
+    gate = "[todo] Open items: t1. Finish them, or mark them failed or cancelled with a note."
+    stack.run("Find the mug.", todos=["Find the mug"])
+
+    assert [m.content for m in stack.messages if isinstance(m, HumanMessage)] == [
+        "Find the mug.",
+        gate,
+        "Image returned by a tool call",
+        gate,
+    ]
+    assert len(stack.model.received) == 4
+    assert stack.state["gates"] == 2
+    assert stack.messages[-1].content == "Really found it."
+    assert [(i["id"], i["status"]) for i in stack.items()] == [("t1", "pending")]
+    assert stack.state["next_id"] == 2

@@ -87,21 +87,19 @@ nav:
       - 3. Install RAI: setup/03-ros-and-rai.md
       - 4. Trace with Local Langfuse: setup/04-langfuse.md
       - 5. Limit What Tools Can Touch: setup/05-tool-access.md
-      - 6. Give Walkie an Identity: setup/06-whoami.md
-      - 7. Talk to Walkie by Voice: setup/07-voice.md
+      - 6. Talk to Walkie by Voice: setup/07-voice.md
   - Learn the Agent:
       - learn/index.md
-      - 1. RAI Runs It, We Own the Graph: learn/rai-and-our-graph.md
-      - 2. What Changed from the Old Agent: learn/old-vs-new.md
-      - "3. The Graph: llm, tools and gate": learn/the-graph.md
-      - 4. One Task, Start to Finish: learn/one-task.md
-      - 5. Todo Items and Ops: learn/todo-items.md
-      - "6. The Rules: Ledger and Window": learn/todo-rules.md
-      - 7. Asking a Question: learn/asking-questions.md
-      - 8. Queue, Stop, Reset and Repair: learn/queue-stop-reset.md
-      - 9. Seeding a Task: learn/seeding.md
-      - 10. Watching Progress: learn/watching-progress.md
-      - 11. Read the Code Next: learn/read-the-code.md
+      - 1. RAI's Connector, Our Runtime: learn/rai-and-our-graph.md
+      - "2. The Graph: create_agent and Middleware": learn/the-graph.md
+      - 3. One Task, Start to Finish: learn/one-task.md
+      - 4. Todo Items and Ops: learn/todo-items.md
+      - "5. The Rules: Ledger and Window": learn/todo-rules.md
+      - 6. Asking a Question: learn/asking-questions.md
+      - 7. Queue, Stop, Reset and Repair: learn/queue-stop-reset.md
+      - 8. Seeding a Task: learn/seeding.md
+      - 9. Watching Progress: learn/watching-progress.md
+      - 10. Read the Code Next: learn/read-the-code.md
   - Architecture:
       - architecture/index.md
       - The Agent: architecture/agent.md

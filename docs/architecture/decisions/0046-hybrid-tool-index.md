@@ -3,6 +3,12 @@
 <!-- --8<-- [start:body] -->
 **Status:** Proposed · **Date:** 2026-10-22
 
+**Scope, 2026-11-05.** The agent binds one fixed set
+([ADR-0067](/architecture/decisions/0067-static-tool-sets.md)) and has no `find_tools`.
+`search_robot_docs` and its FAISS index are retired
+([ADR-0068](/architecture/decisions/0068-static-robot-description.md)). This index
+would serve a later catalogue only, which is not built and stays proposed.
+
 **Context**
 
 The [self-evolving agent](/architecture/self-evolving-agent.md) binds at

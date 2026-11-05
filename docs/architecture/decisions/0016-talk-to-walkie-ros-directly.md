@@ -1,7 +1,12 @@
 # ADR-0016: Call walkie-ros directly and retire walkie-sdk
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-12
+**Status:** Accepted, amended by
+[ADR-0052](/architecture/decisions/0052-capability-verbs-and-backends.md) ·
+**Date:** 2026-10-12
+
+The agent still calls walkie-ros directly, but only inside `walkie_agent/ros/`. Tools
+call capability verbs, and see `StepError` codes instead of goal statuses.
 
 **Context**
 

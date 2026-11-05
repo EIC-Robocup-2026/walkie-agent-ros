@@ -1,4 +1,4 @@
-# 7. Talk to Walkie by Voice
+# 6. Talk to Walkie by Voice
 
 **Goal:** speak a task into a microphone, and hear Walkie answer through a
 speaker. This follows RAI's
@@ -13,7 +13,7 @@ topics, so the agent does not know whether a task was typed or spoken.
 flowchart LR
     mic([Microphone]) --> asr[voice-asr]
     asr -- "/from_human" --> agent[agent]
-    agent -- "speak tool: /to_human" --> tts[voice-tts]
+    agent -- "say, wait_for_person, stop line: /to_human" --> tts[voice-tts]
     tts --> spk([Speaker])
     asr -- "/voice_commands" --> tts
     tts -- "/walkie/speaking" --> asr
@@ -27,8 +27,16 @@ flowchart LR
   Kokoro, which runs locally and is free.
 - While voice-tts plays, it says so on `/walkie/speaking`, and voice-asr
   ignores the microphone. Otherwise Walkie would hear itself.
-- The agent says things out loud **only** with its `speak` tool. Its final
-  text reply goes to `/walkie/console`, so a summary is not read out twice.
+- The agent says things out loud **only** through its `say` and
+  `wait_for_person` tools and the fixed stop line. Its final text reply goes to
+  `/walkie/console`, so a summary is not read out twice.
+- `say` returns once the line is published. Nothing tells the agent whether
+  the line was played or heard.
+- The voice entry points keep RAI's `AgentRunner` and its speech agents. The
+  agent itself does not use them
+  ([ADR-0061](../architecture/decisions/0061-create-agent-runtime-and-cancellation.md)).
+- `/from_human` is text only. The agent logs and refuses a message that carries
+  an image or audio. RAI's speech recognition sends text.
 
 ## Step 1: Install
 
@@ -45,8 +53,11 @@ rai-s2s = { git = "https://github.com/RobotecAI/rai.git", tag = "2.12.2", subdir
 
 - `rai_s2s` imports every speech backend when it loads, so all the extras
   are needed, even the ones we do not use.
-- See [6. Give Walkie an Identity](06-whoami.md#step-1-install-rai_whoami)
-  for why the tag is 2.12.2.
+- `rai_s2s` is not on PyPI for our RAI version, so it comes from the RAI
+  repository. Tag 2.12.2 has the same `rai_s2s` sources as 2.12.1, which
+  matches our `rai-core`, and drops a broken submodule entry that makes a Git
+  install of 2.12.1 fail
+  ([ADR-0012](../architecture/decisions/0012-rai-git-tag-2-12-2.md)).
 - This adds about 4 GB to the environment, mostly PyTorch and the NVIDIA
   CUDA libraries.
 
@@ -126,11 +137,11 @@ Start a Zenoh router first, unless one already runs, as in
 Then open four terminals:
 
 ```bash title="Terminal 1"
-pixi run fake-walkie   # or the real robot
+pixi run fake-walkie
 ```
 
 ```bash title="Terminal 2"
-pixi run agent
+pixi run agent --locations tests/fixtures/locations.toml
 ```
 
 ```bash title="Terminal 3"
@@ -149,7 +160,7 @@ starts skip the downloads and also work offline.
 
 Say something like _"Go to the kitchen and say hello."_ The ASR terminal
 prints `starting recording...` when it hears you, then what it understood.
-The speaker says the agent's `speak` lines. If ASR never reacts to your
+The speaker says the agent's `say` lines. If ASR never reacts to your
 voice, the default microphone is the wrong one or muted: check it with
 `wpctl` (Step 2).
 
@@ -195,9 +206,8 @@ While Walkie is quiet, ASR controls TTS on `/voice_commands`, as in RAI:
   the old answer.
 - RAI's TTS plays messages from **one conversation ID at a time**. It locks
   onto the first ID it receives, and only accepts a new one after a `stop`.
-- So the `speak` tool keeps one ID and changes it only when it sees `stop`.
-  If every `speak` call used a new ID, only the first sentence would ever be
-  played.
+- So `RosSpeech` keeps one ID and changes it only when it sees `stop`. If
+  every line used a new ID, only the first sentence would ever be played.
 
 ??? warning "Watching `/voice_commands` can break it"
     `ros2 topic echo /voice_commands`, started before ASR sends its first

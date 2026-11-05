@@ -3,6 +3,12 @@
 <!-- --8<-- [start:body] -->
 **Status:** Proposed · **Date:** 2026-10-22
 
+**Scope, 2026-11-05.** `tools/navigation.py` and the tool host this proposal assumes are
+gone. `RosBase` now owns the agent's Nav2 goals
+([ADR-0052](/architecture/decisions/0052-capability-verbs-and-backends.md)), and
+`/navigate_to_pose` is reached only through `go_to` and `move_relative`. An internal
+`navigate_to_pose` with handle provenance is not built, and stays proposed.
+
 **Context**
 
 [ADR-0010](/architecture/decisions/0010-bounded-navigation-tool.md) lets the

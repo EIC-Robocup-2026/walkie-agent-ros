@@ -14,36 +14,30 @@ import pytest
 os.environ["RMW_IMPLEMENTATION"] = "rmw_fastrtps_cpp"
 # Keep test traffic on this machine and off any domain a real robot might use.
 os.environ["ROS_AUTOMATIC_DISCOVERY_RANGE"] = "LOCALHOST"
-
-# The message packages from ros2_ws.repos, built by `pixi run build-ros2`.
-# scripts/activate.sh adds them to the environment only once they are built.
-# Without them, an import fails with an ImportError that does not say what to
-# do: the FakeWalkie import below needs rai_interfaces, and the test modules
-# import walkie_database_msgs. The check runs here, before those imports,
-# because pytest imports this file before it calls pytest_configure.
-_missing = [
-    name
-    for name in ("rai_interfaces", "walkie_database_msgs")
-    if importlib.util.find_spec(name) is None
-]
-if _missing:
-    raise pytest.UsageError(
-        f"Message packages not built: {', '.join(_missing)}. "
-        "Run `pixi run build-ros2` once, then run the tests again."
-    )
-
-import rclpy  # noqa: E402
-from rai.communication.ros2 import ROS2Connector  # noqa: E402
-from rclpy.executors import MultiThreadedExecutor  # noqa: E402
+# A test must never pick up a developer's API keys, even through code that calls load_dotenv.
+os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 
 from walkie_agent.locations import load_locations  # noqa: E402
-from walkie_agent.sim.fake_walkie import FakeWalkie  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 
-@pytest.fixture(scope="session", autouse=True)
+@pytest.fixture(scope="session")
 def ros():
+    """A ROS context on a random domain, for the tests that ask for a real graph.
+
+    Everything from ROS is imported here, so tests of the runtime, the atomics and
+    the tasks collect and run on an installation that has no ROS at all.
+    """
+    # rai_interfaces comes from ros2_ws.repos, and scripts/activate.sh adds it to the
+    # environment only once it is built. The import error alone does not say what to do.
+    if importlib.util.find_spec("rai_interfaces") is None:
+        raise pytest.UsageError(
+            "Message package not built: rai_interfaces. "
+            "Run `pixi run build-ros2` once, then run the tests again."
+        )
+    import rclpy
+
     rclpy.init(domain_id=random.randint(100, 200))
     yield
     rclpy.try_shutdown()
@@ -51,37 +45,41 @@ def ros():
 
 @pytest.fixture(autouse=True)
 def no_tracing(monkeypatch):
-    """Keep tests off Langfuse/LangSmith whatever config.toml enables.
+    """Keep tests off LangSmith whatever the environment enables.
 
-    RAI reads the tracing settings from ./config.toml when an agent is built
-    and again on every LLM call, so both lookups are patched.
+    A test of the tracing path turns it back on, with a fake client.
     """
-    monkeypatch.setattr("rai.agents.langchain.agent.get_tracing_callbacks", lambda *_: [])
-    monkeypatch.setattr(
-        "rai.agents.langchain.invocation_helpers.get_tracing_callbacks", lambda *_: []
-    )
+    monkeypatch.setenv("LANGSMITH_TRACING", "false")
+    monkeypatch.setenv("LANGCHAIN_TRACING_V2", "false")
 
 
 @pytest.fixture
 def locations():
-    return load_locations(PROJECT_ROOT / "config" / "locations.toml")
+    return load_locations(PROJECT_ROOT / "tests" / "fixtures" / "locations.toml")
 
 
 @pytest.fixture
-def fake_walkie():
+def fake_walkie(ros):
+    from rclpy.executors import MultiThreadedExecutor
+
+    from walkie_agent.sim.fake_walkie import FakeWalkie
+
     node = FakeWalkie(drive_time_sec=0.2)
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     thread = threading.Thread(target=executor.spin, daemon=True)
     thread.start()
     yield node
+    # shutdown() does not wait for spin(), and a destroy under it can raise there.
     executor.shutdown()
-    node.destroy_node()
     thread.join(timeout=2)
+    node.destroy_node()
 
 
 @pytest.fixture
-def connector():
+def connector(ros):
+    from rai.communication.ros2 import ROS2Connector
+
     conn = ROS2Connector(node_name=f"test_connector_{random.randint(0, 1_000_000)}")
     yield conn
     conn.shutdown()

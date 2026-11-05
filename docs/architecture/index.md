@@ -7,8 +7,8 @@ costs later.
 
 | Page                                             | What it covers                                                                  |
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |
-| [The Agent](agent.md)                            | The agent node, its topics and tools, how it reaches the robot, and what lives where |
-| [Mahoraga Demo Prototype](mahoraga-demo.md)      | The prototype's layers and public signatures: capability verbs, FakeRobot, atomics and the tool adapter |
+| [The Agent](agent.md)                            | The assembled agent, its topics and tools, how it reaches the robot, what has and has not been tested, and what lives where |
+| [Mahoraga Demo Prototype](mahoraga-demo.md)      | The layer contract and public signatures: capability verbs, FakeRobot, atomics, the adapter, the runtime, the ROS wrappers and the wiring |
 | [Arm Manipulation (Proposed)](manipulation.md)   | How the agent will move the arms and grippers, and run skills such as a VLA policy |
 | [Perception (Proposed)](perception.md)           | How the agent will use walkie-vision's models and walkie-database's memory to find objects and people |
 | [HRI Task (Proposed)](hri.md)                    | The first task the new agent runs end to end: greeting, seating and introducing guests, and the gaze loop |
@@ -38,6 +38,7 @@ Each ADR has a status, shown by the color of its block:
 | Proposed                                | `note` (blue)      | Written for review. Nothing depends on it yet.                   |
 | Accepted                                | `success` (green)  | Agreed and in effect.                                            |
 | Accepted, partly superseded by ADR-NNNN | `success` (green)  | In effect, except for the points the newer ADR replaces.         |
+| Accepted, amended by ADR-NNNN           | `success` (green)  | In effect, with a newer ADR changing the points it names.        |
 | Superseded by ADR-NNNN                  | `quote` (gray)     | Replaced by a newer decision. Kept so the reasons stay readable. |
 | Rejected                                | `failure` (red)    | Considered and turned down.                                      |
 

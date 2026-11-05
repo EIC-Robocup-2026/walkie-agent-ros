@@ -10,8 +10,9 @@
 #           active_form (the "-ing" line for the console) and requires_tool
 #           (a tool that must succeed before the step can be completed)
 #
-# A malformed template stops the agent at startup. To try the example,
-# remove the "# " in front of each of its lines.
+# A malformed template, or a requires_tool that the running tool set does not
+# have, stops the agent at startup. To try the example, remove the "# " in front
+# of each of its lines. The places it names must exist in the locations file.
 #
 # [templates.tour]
 # task = """
@@ -19,9 +20,9 @@
 # there. Then come back to the start.
 # """
 # todos = [
-#   { content = "Go to the kitchen", active_form = "Going to the kitchen", requires_tool = "navigate_to_location" },
-#   { content = "Describe the kitchen", active_form = "Describing the kitchen", requires_tool = "speak" },
-#   { content = "Go to the living room", active_form = "Going to the living room", requires_tool = "navigate_to_location" },
-#   { content = "Describe the living room", active_form = "Describing the living room", requires_tool = "speak" },
-#   { content = "Come back to the start", active_form = "Coming back to the start", requires_tool = "navigate_to_location" },
+#   { content = "Go to the kitchen", active_form = "Going to the kitchen", requires_tool = "go_to" },
+#   { content = "Describe the kitchen", active_form = "Describing the kitchen", requires_tool = "say" },
+#   { content = "Go to the living room", active_form = "Going to the living room", requires_tool = "go_to" },
+#   { content = "Describe the living room", active_form = "Describing the living room", requires_tool = "say" },
+#   { content = "Come back to the start", active_form = "Coming back to the start", requires_tool = "go_to" },
 # ]

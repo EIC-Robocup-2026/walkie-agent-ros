@@ -1,7 +1,14 @@
 # ADR-0041: Keep a seedable todo list for every task
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-22
+**Status:** Accepted, partly superseded and amended by
+[ADR-0060](/architecture/decisions/0060-atomic-tools-and-adapter.md),
+[ADR-0061](/architecture/decisions/0061-create-agent-runtime-and-cancellation.md) and
+[ADR-0069](/architecture/decisions/0069-task-templates-by-name.md) ·
+**Date:** 2026-10-22
+
+Seeded todos, evidence and public progress survive. The old mutable implementation and
+the keyword matching do not.
 
 **Context**
 

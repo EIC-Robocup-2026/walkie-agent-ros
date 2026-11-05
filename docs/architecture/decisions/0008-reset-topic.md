@@ -1,7 +1,12 @@
 # ADR-0008: Reset the conversation with a message on /walkie/reset
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-12
+**Status:** Accepted, amended by
+[ADR-0061](/architecture/decisions/0061-create-agent-runtime-and-cancellation.md) ·
+**Date:** 2026-10-12
+
+The topic stays. `Runner.reset` now also cancels a running drive, so the consequence
+below about driving to the end no longer holds.
 
 **Context**
 

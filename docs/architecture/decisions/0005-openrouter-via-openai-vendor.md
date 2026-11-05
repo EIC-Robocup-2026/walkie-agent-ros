@@ -1,7 +1,11 @@
 # ADR-0005: Reach LLMs through OpenRouter with RAI's openai vendor
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-12
+**Status:** Accepted, with its loading path amended by proposed
+[ADR-0062](/architecture/decisions/0062-bounded-model-calls.md) · **Date:** 2026-10-12
+
+OpenRouter through the `openai` vendor stays the default. The agent no longer loads
+its model through RAI, and nothing reads the embeddings endpoint any more.
 
 **Context**
 

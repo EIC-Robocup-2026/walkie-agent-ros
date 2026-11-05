@@ -1,7 +1,11 @@
 # ADR-0012: Install rai_s2s and rai_whoami from RAI's Git tag 2.12.2
 
 <!-- --8<-- [start:body] -->
-**Status:** Accepted · **Date:** 2026-10-12
+**Status:** Accepted, partly superseded by
+[ADR-0068](/architecture/decisions/0068-static-robot-description.md) ·
+**Date:** 2026-10-12
+
+ADR-0068 removes `rai_whoami`. `rai_s2s` still installs from tag 2.12.2.
 
 **Context**
 
@@ -25,6 +29,5 @@ speech backend when it loads.
 - The speech extras pull in torch and add about 4 GB to the environment
   ([ADR-0013](/architecture/decisions/0013-cuda-torch.md)).
 
-**See also:** [Give Walkie an identity](/setup/06-whoami.md),
-[Talk to Walkie by voice](/setup/07-voice.md)
+**See also:** [Talk to Walkie by voice](/setup/07-voice.md)
 <!-- --8<-- [end:body] -->

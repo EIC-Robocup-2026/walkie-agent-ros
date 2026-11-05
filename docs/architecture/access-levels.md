@@ -4,6 +4,10 @@
     Nothing on this page is built yet. It is the design for team review. Each
     of the [open questions](#open-questions) says which phase it blocks.
 
+    This page's `speak`, `list_locations` and `navigate_*` are the older names of today's
+    `say`, `list_places` and `go_to`. The agent runs one fixed tool set today
+    ([The Agent](agent.md)).
+
 The [self-evolving agent](self-evolving-agent.md) runs tools it wrote
 itself: bundles (checked data) and generated Python in the `temporary` tier. This
 page says what that code may do at each level, how the agent proves it is in

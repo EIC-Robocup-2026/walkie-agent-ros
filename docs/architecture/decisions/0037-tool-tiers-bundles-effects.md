@@ -3,6 +3,12 @@
 <!-- --8<-- [start:body] -->
 **Status:** Proposed · **Date:** 2026-10-22
 
+**Scope, 2026-11-05.** The tool shape below, `build_walkie_tools()` and
+`search_robot_docs` are gone from the code.
+[ADR-0060](/architecture/decisions/0060-atomic-tools-and-adapter.md) replaces the
+tool-shape part of this proposal with plain typed atomics. Tiers, bundles as data and
+effect gating are not built, and stay proposed.
+
 **Context**
 
 Today `build_walkie_tools()` in `src/walkie_agent/tools/__init__.py` builds

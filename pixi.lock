@@ -674,7 +674,6 @@ environments:
       - conda: https://prefix.dev/robostack-jazzy/linux-64/ros2-zstd-vendor-0.26.11-np2py312h2ed9cc7_21.conda
       - pypi: ./
       - pypi: git+https://github.com/RobotecAI/rai.git?subdirectory=src%2Frai_s2s&tag=2.12.2#54f2423f5980b59c59d32f9bd133ebe4be86fe52
-      - pypi: git+https://github.com/RobotecAI/rai.git?subdirectory=src%2Frai_whoami&tag=2.12.2#54f2423f5980b59c59d32f9bd133ebe4be86fe52
       - pypi: git+https://github.com/maciejmajek/openWakeWord.git?rev=chore%2Fremove-tflite-backend#f2340d82a39fe7bfb972c8c4114642fa87e5dc59
       - pypi: https://files.pythonhosted.org/packages/01/23/d72e70cac2b7c5c832a629c380235b53b20fac8c0921856bcf625b08ba44/ctranslate2-4.8.2-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/01/8e/1e35281b8ab6d5d72ebe9911edcdffa3f36b04ed9d51dec6dd140396e220/scipy-1.17.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
@@ -727,7 +726,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/46/ea/e9196f01ec3c5ad537e1bb83fe08da3bacfbdfee8a872c461e491f489801/sounddevice-0.4.7-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/47/8d/d529b5d697919ba8c11ad626e835d4039be708a35b0d22de83a269a6682c/pyasn1_modules-0.4.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/48/b7/04a96dabea4ffd1cc990b429c36f08316b442f2ea4964bd8b52e28aeb36f/torchaudio-2.3.1-cp312-cp312-manylinux1_x86_64.whl
-      - pypi: https://files.pythonhosted.org/packages/48/d9/6cff57c80a6963e7dd183bf09e9f21604a77716644b1e580e97b259f7612/pypdf-5.9.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/49/41/fdcdd869c052874b17e2325c986cf8c2fc6bbefa3b9d5404dd64dfffb12a/langchain_core-1.6.9-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/4b/2a/0a131f572aa09f741c30ccd45a8e56316e8be8dfc7bc19bf0ab7cfef7b19/nvidia_nccl_cu12-2.20.5-py3-none-manylinux2014_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/4c/72/22b6449e15bec4cc86c62b659e6c625ab777d01e87aaec717ecef440f87a/llvmlite-0.50.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
@@ -753,7 +751,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/6a/bd/d91c5e39f490a49df14320f4e8c80161cfcce09f1e2cde1edd16a551abb3/frozenlist-1.8.0-cp312-cp312-manylinux1_x86_64.manylinux_2_28_x86_64.manylinux_2_5_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/6c/c0/a98505f18594f1bce828bb159cec0fcf9860562f1a2c85913409fc8f3d9e/fsspec-2026.9.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/6c/c7/69d13026db3577c157877dea47a9dc5fffd3dcde2d1ab8009fa8f7e5f6a6/langgraph_sdk-0.4.6-py3-none-any.whl
-      - pypi: https://files.pythonhosted.org/packages/6c/f4/098bd9d178ae36fa078c66068d3264e27fff4308d5131655e5e743153d4c/faiss_cpu-1.15.1-cp310-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/6d/ab/5b68110e0460d73fad814d5bd11c7b1ddcce5c37b10177eb264d6a36e331/onnxruntime-1.24.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/6f/34/3998411437aff304a9ed4fa37a6fe1ef3132bcd2b5eac59851b80c86123c/pydeck-0.9.3-py2.py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/6f/40/2211b4ff48cccfb21d4c38fb56788d7a975189883efb8d549be9d51aba7d/numba-0.68.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
@@ -779,7 +776,6 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/88/39/799be3f2f0f38cc727ee3b4f1445fe6d5e4133064ec2e4115069418a5bb6/cloudpickle-3.1.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/8d/15/1633010b26e88e872c93b67c0b6c5e174fb74cb6fb5c1472b4d51d4a8f22/platformdirs-4.13.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/8e/57/a50162f3d29feb979ab6347c6debda506dfb525bcff3c50dd17606651c7e/scikit_learn-1.9.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-      - pypi: https://files.pythonhosted.org/packages/8e/5e/c86a5643653825d3c913719e788e41386bee415c2b87b4f955432f2de6b2/pypdf2-3.0.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/8f/39/5d97e42a3e95dc2a6d71b2f902a3fae71786131e11d01bddb604accb0ebe/langchain_community-0.4.2-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/92/9d/c4e665119135114480843e7ab388fa94d8480650450e6f8e26b70d323a4c/urllib3-2.8.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/95/3c/87c42b4bd6dd297536f04cd9383d212ac557ecd49f2cbdcd46da1c9ef5c8/opentelemetry_sdk-1.45.1-py3-none-any.whl
@@ -13321,18 +13317,6 @@ packages:
   - onnxruntime-gpu>=1.23,<1.24 ; python_full_version == '3.10.*' and platform_machine == 'x86_64' and extra == 'all'
   - onnxruntime-gpu>=1.24,<1.25 ; python_full_version == '3.12.*' and platform_machine == 'x86_64' and extra == 'all'
   requires_python: '>=3.10,<3.13'
-- pypi: git+https://github.com/RobotecAI/rai.git?subdirectory=src%2Frai_whoami&tag=2.12.2#54f2423f5980b59c59d32f9bd133ebe4be86fe52
-  name: rai-whoami
-  version: 0.1.0
-  requires_dist:
-  - pyyaml
-  - langchain>=1.0.0,<2.0.0
-  - langchain-community
-  - pypdf2
-  - pillow
-  - faiss-cpu
-  - pypdf>=5.4.0,<6.0.0
-  requires_python: '>=3.10,<3.13'
 - pypi: git+https://github.com/maciejmajek/openWakeWord.git?rev=chore%2Fremove-tflite-backend#f2340d82a39fe7bfb972c8c4114642fa87e5dc59
   name: openwakeword
   version: 0.6.0
@@ -14195,30 +14179,6 @@ packages:
   sha256: 07b72d76fa108ac0f3400a759456ba96bdaa2b8649fd9588cc93295a532b01d9
   requires_dist:
   - torch==2.3.1
-- pypi: https://files.pythonhosted.org/packages/48/d9/6cff57c80a6963e7dd183bf09e9f21604a77716644b1e580e97b259f7612/pypdf-5.9.0-py3-none-any.whl
-  name: pypdf
-  version: 5.9.0
-  sha256: be10a4c54202f46d9daceaa8788be07aa8cd5ea8c25c529c50dd509206382c35
-  requires_dist:
-  - typing-extensions>=4.0 ; python_full_version < '3.11'
-  - cryptography ; extra == 'crypto'
-  - pycryptodome ; extra == 'cryptodome'
-  - black ; extra == 'dev'
-  - flit ; extra == 'dev'
-  - pip-tools ; extra == 'dev'
-  - pre-commit ; extra == 'dev'
-  - pytest-cov ; extra == 'dev'
-  - pytest-socket ; extra == 'dev'
-  - pytest-timeout ; extra == 'dev'
-  - pytest-xdist ; extra == 'dev'
-  - wheel ; extra == 'dev'
-  - myst-parser ; extra == 'docs'
-  - sphinx ; extra == 'docs'
-  - sphinx-rtd-theme ; extra == 'docs'
-  - cryptography ; extra == 'full'
-  - pillow>=8.0.0 ; extra == 'full'
-  - pillow>=8.0.0 ; extra == 'image'
-  requires_python: '>=3.8'
 - pypi: https://files.pythonhosted.org/packages/49/41/fdcdd869c052874b17e2325c986cf8c2fc6bbefa3b9d5404dd64dfffb12a/langchain_core-1.6.9-py3-none-any.whl
   name: langchain-core
   version: 1.6.9
@@ -14630,14 +14590,6 @@ packages:
   - orjson>=3.11.5
   - websockets>=14,<17
   requires_python: '>=3.10'
-- pypi: https://files.pythonhosted.org/packages/6c/f4/098bd9d178ae36fa078c66068d3264e27fff4308d5131655e5e743153d4c/faiss_cpu-1.15.1-cp310-abi3-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-  name: faiss-cpu
-  version: 1.15.1
-  sha256: f2c31b7f2f6647eb76829a5cfe3c398fb9346df9f26b1d4db35269c91eb58c33
-  requires_dist:
-  - numpy>=1.25
-  - packaging
-  requires_python: '>=3.10'
 - pypi: https://files.pythonhosted.org/packages/6d/ab/5b68110e0460d73fad814d5bd11c7b1ddcce5c37b10177eb264d6a36e331/onnxruntime-1.24.4-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
   name: onnxruntime
   version: 1.24.4
@@ -14996,27 +14948,6 @@ packages:
   - narwhals>=2.0.1
   - threadpoolctl>=3.5.0
   requires_python: '>=3.11'
-- pypi: https://files.pythonhosted.org/packages/8e/5e/c86a5643653825d3c913719e788e41386bee415c2b87b4f955432f2de6b2/pypdf2-3.0.1-py3-none-any.whl
-  name: pypdf2
-  version: 3.0.1
-  sha256: d16e4205cfee272fbdc0568b68d82be796540b1537508cef59388f839c191928
-  requires_dist:
-  - typing-extensions>=3.10.0.0 ; python_full_version < '3.10'
-  - dataclasses ; python_full_version < '3.7'
-  - pycryptodome ; extra == 'crypto'
-  - black ; extra == 'dev'
-  - pip-tools ; extra == 'dev'
-  - pre-commit<2.18.0 ; extra == 'dev'
-  - pytest-cov ; extra == 'dev'
-  - flit ; extra == 'dev'
-  - wheel ; extra == 'dev'
-  - sphinx ; extra == 'docs'
-  - sphinx-rtd-theme ; extra == 'docs'
-  - myst-parser ; extra == 'docs'
-  - pycryptodome ; extra == 'full'
-  - pillow ; extra == 'full'
-  - pillow ; extra == 'image'
-  requires_python: '>=3.6'
 - pypi: https://files.pythonhosted.org/packages/8f/39/5d97e42a3e95dc2a6d71b2f902a3fae71786131e11d01bddb604accb0ebe/langchain_community-0.4.2-py3-none-any.whl
   name: langchain-community
   version: 0.4.2

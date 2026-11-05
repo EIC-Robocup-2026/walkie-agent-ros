@@ -2,31 +2,42 @@
 
 A prototype, on branch `feat/mahoraga-demo`, of the layered agent that the
 Mahoraga agent plan proposes. The competition agent and Mahoraga share its
-ROS-free foundation, so the same atomics run on the robot, in unit tests and
-in the fake-world gym. It sits beside main's agent, whose `agent.py`,
-`graph.py`, `todo.py` and `tools/` stay unchanged until a later slice replaces
-them. `tasks.py` has already moved to templates by name only, for both agents.
-This page is the contract those slices follow.
+ROS-free foundation, so the same atomics run through the ROS wrappers, in unit
+tests and in the fake-world gym. The main entry point now uses this stack. The old
+`agent.py`, `graph.py`, `todo.py` and `tools/` are deleted, along with RAI's agent host.
+RAI's connector stays, and the two voice entry points keep RAI's `AgentRunner`.
+This page is the contract each layer follows.
+[The Agent](agent.md) describes the assembled node.
 
-!!! warning "Prototype"
-    The gym has run against a real model only on small slices, listed in the
-    [decision log](mahoraga-demo-decisions.md#small-real-model-runs). Nothing here
-    has run in MuJoCo or on the robot. Every choice below is a provisional pick of
-    the plan's recommended option.
+!!! warning "Prototype: what the evidence covers"
+    Every choice below is a provisional pick of the plan's recommended option. The
+    evidence comes in five kinds, and they do not stand in for each other:
+
+    | Kind | What ran | Status |
+    | --- | --- | --- |
+    | Fake and unit | `FakeRobot`, fake ROS objects, a scripted model | Run |
+    | ROS graph with a fake robot | Real rclpy and RAI's connector against a `FakeWalkie` node, on Fast DDS | Run |
+    | Silent demo | Separate processes on rmw_zenoh and a private router, a scripted model, no audio | Run, on fake robots only |
+    | Gym with a real model | Small slices in the fake world, listed in the [decision log](mahoraga-demo-decisions.md#small-real-model-runs) | Run, no ROS involved |
+    | Real Nav2, simulator, hardware, real model on the robot path | The robot's own graph | **Not run** |
+
+    The last row is the one that would show the robot works. Nothing here claims it.
 
 ## Layer map
 
-Each layer calls only the layer below it. Mahoraga reaches layer 3 only.
+Each layer calls only the layer below it. Mahoraga reaches layer 3 only. The
+ROS-backed verbs implement layer 2's Protocols, and only `main.py` connects them.
 
-| Layer | Module | Slice |
+| Layer | Module | State |
 | --- | --- | --- |
-| 2. Capability verbs, guards, `Ctx` | `walkie_agent/capabilities/` | This one |
-| 2. FakeRobot, Mahoraga's FakeCtx | `walkie_agent/capabilities/fake.py` | This one |
-| 3. Error type | `walkie_agent/errors.py` | This one |
-| 3. Atomics and tool sets | `walkie_agent/atomics/` | This one |
-| 4. Adapter to LangChain tools | `walkie_agent/adapter.py` | This one |
-| 5. `create_agent`, middlewares, Runner | `walkie_agent/runtime/` | [Built, unused](#runtime) |
-| 1 to 2. rclpy glue, ROS-backed verbs | `walkie_agent/ros/` | Later |
+| 2. Capability verbs, guards, `Ctx` | `walkie_agent/capabilities/` | Built |
+| 2. FakeRobot, Mahoraga's FakeCtx | `walkie_agent/capabilities/fake.py` | Built, fake only |
+| 3. Error type | `walkie_agent/errors.py` | Built |
+| 3. Atomics and tool sets | `walkie_agent/atomics/` | Built |
+| 4. Adapter to LangChain tools | `walkie_agent/adapter.py` | Built |
+| 5. `create_agent`, middlewares, Runner | `walkie_agent/runtime/` | [Built, and used by `main.py`](#runtime) |
+| 1 to 2. ROS-backed verbs, operator topics | `walkie_agent/ros/` | [Built, run on fake robots only](#ros-wrappers) |
+| Entry point: flags, signals, assembly | `walkie_agent/main.py` | [Built, run on fake robots only](#wiring-in-mainpy) |
 | 6. `run_script`, shelf, gym | `mahoraga/`, with its own pixi environment | [Built](#mahoraga), fake world only |
 
 `errors`, `capabilities`, `atomics`, `adapter` and `runtime` never import
@@ -80,7 +91,9 @@ Ctx(cancel: CancelToken, base: Base, speech: Speech, vision: Vision,  # frozen d
 
 A query of `""` matches everything. Otherwise it matches an object's name,
 category or plural category, or a person's name, pose or gesture, ignoring
-case. The arm verbs are fake-only until the arm commander client exists.
+case. The vision verbs and the arm verbs work only on `FakeRobot`. On the robot's
+`ctx`, `UnavailableVision` and `UnavailableArms` raise `UNAVAILABLE`, until a live
+perception backend and an arm commander client exist.
 
 ### Guards live in the verbs
 
@@ -88,7 +101,7 @@ case. The arm verbs are fake-only until the arm commander client exists.
 implementation of a verb, fake or ROS-backed, calls them.
 
 ```python
-MAX_MOVE_M = 3.0  # main's navigation.py cap
+MAX_MOVE_M = 3.0  # the cap the old navigation tool had (ADR-0031)
 def is_finite_number(value: object) -> bool    # a bool is not a number here
 def require_finite(**values: float) -> None    # REFUSED for NaN, infinity, a bool or a non-number
 def require_text(**values: str) -> None        # REFUSED for anything but a string
@@ -116,9 +129,14 @@ class CancelToken:
   has returned.
 - Base, vision and arm verbs check the token before they start, so a set token
   latches them until the runtime resets it. `Speech.say` does not, so a bare
-  "stop" can answer with its fixed line (decision 6).
-- A ROS-backed verb cancels its own goal when a wait ends in `CANCELLED` or
-  `TIMEOUT`, then raises.
+  "stop" can answer with its fixed line (decision 6). `as_tool` and `bind` also check
+  the token before an atomic runs, so the `say` tool refuses once a stop is set. Only
+  the stop line calls the speech verb directly.
+- `RosBase` keeps one record per goal, from its reservation until Nav2 reports an
+  end. A verb that ends in `CANCELLED` or `TIMEOUT` marks the record abandoned for
+  good, and sends the cancel when the goal is accepted, however late. A cancel
+  acknowledgement ends nothing. While a record lives, a new motion gets
+  `PRECONDITION_FAILED`. See [ROS wrappers](#ros-wrappers) for the limits.
 
 ## FakeRobot
 
@@ -503,8 +521,8 @@ so an episode it lost counts as never run.
 
 `walkie_agent.runtime` is `create_agent` plus a small stack of middlewares, the
 todo list and a Runner. Tools come from `as_tools` over a `Ctx`, errors go through
-`tool_error_middleware`, and `ctx.cancel` is the only cancel signal. Nothing starts
-it yet: the cutover slice adds `walkie_agent/ros/` and a new `main.py`.
+`tool_error_middleware`, and `ctx.cancel` is the only cancel signal. `main.py` starts
+it through `assemble`, and the [wiring](#wiring-in-mainpy) is below.
 
 ```python
 # walkie_agent.runtime
@@ -547,23 +565,11 @@ def public(items) -> list[dict]: ...  # items without their private ledger keys
 def console_line(item) -> str: ...
 ```
 
-Wiring, as the cutover slice will do it:
-
-```python
-config = load_config()
-log = ToolLog("logs/tools.jsonl")
-agent = build_agent(build_model(config), ctx, on_todos=publish, tool_log=log,
-                    fallback=build_fallback(config), **agent_settings(config))
-runner = Runner(agent, ctx, on_todos=publish, on_reply=print, tool_log=log,
-                callbacks=build_callbacks(config))
-runner.start()
-runner.hear("Go to the sofa.")
-```
-
 `on_todos(items, changed)` gets public copies, and `changed` holds the items whose
 status changed. Both listeners run on the Runner's thread and must not block. The
 model gets two tools beyond `tools`: `update_todos(ops)` and
-`wait_for_person(question)`. The warning at more than 20 bound tools counts them.
+`wait_for_person(question)`. The warning at more than 20 bound tools counts them. A
+tool whose name collides with these two is refused at build.
 
 ### The middleware order
 
@@ -589,17 +595,18 @@ model gets two tools beyond `tools`: `update_todos(ops)` and
   `max_concurrency=1`, which is observed behaviour of the installed versions and not
   documented, so rerun `tests/test_runtime.py` on any dependency update.
 - **Stop.** A bare stop sets the token at once, which ends a drive through the verb and
-  refuses every remaining call of the run. `StopLatch` refuses a call before it is
-  dispatched. `as_tool`, `bind` and the two todo tools check the token again when the
-  body starts, for a stop that lands in between. A `say` already speaking is not cut
-  off. It drops queued tasks but not a queued reset. The Runner speaks `STOP_LINE` once
-  through `ctx.speech.say` and logs it under the session it was heard in. A later graph
-  pass with no model call cancels the open steps and clears a waiting question. The
-  token stays set until the next task starts. A compound such as "stop and come here"
-  is an ordinary task, so it queues behind the active run.
+  refuses every remaining call of the run, even when the agent is idle. `StopLatch`
+  refuses a call before it is dispatched. `as_tool`, `bind` and the two todo tools check
+  the token again when the body starts, for a stop that lands in between. A `say` already
+  speaking is not cut off. It drops queued tasks but not a queued reset. The Runner speaks
+  `STOP_LINE` once through `ctx.speech.say` and logs it under the session it was heard in.
+  A later graph pass with no model call cancels the open steps and clears a waiting
+  question. The token stays set until the next task starts. A compound such as "stop and
+  come here" is an ordinary task, so it queues behind the active run.
 - **Reset.** It cancels and drops the queue. After the active run has finished, it
   deletes the thread, starts a new session and publishes an empty list. A hung LLM call
-  can delay this by up to the deadline.
+  can delay this by up to the deadline. A reset during a stop line waits for that line,
+  bounded by the say timeout.
 - **Shutdown.** It cancels, drops the queue, and waits for the active run and any stop
   line. It returns False if the thread outlives `timeout`, and calling it again waits
   again. From the moment it starts, `submit`, `stop` and `reset` raise.
@@ -616,6 +623,109 @@ model gets two tools beyond `tools`: `update_todos(ops)` and
 `fallback_vendor` and `fallback_model`. The defaults of 25 calls and 60 s are
 provisional until real runs measure them.
 
+All of these promises are tested with a scripted model. `tests/test_runtime_model.py`
+checks the provider settings against a local fake provider. No real provider has been
+called.
+
+## ROS wrappers
+
+`walkie_agent.ros` holds the capability backends and the operator's topics. Importing it
+loads rclpy, so the foundation never imports it.
+
+```python
+# walkie_agent.ros
+class RosBase:  # Base over Nav2's /navigate_to_pose and TF map <- base_footprint
+    def __init__(self, connector, locations, cancel, *, ...): ...
+    def close(self, timeout_s=5.0) -> bool: ...  # False while a goal lives; the client stays
+    def unresolved(self) -> list[str]: ...       # what kept the last close from finishing
+
+class RosSpeech:  # Speech over /to_human, with the speech id rotated on /voice_commands
+    def __init__(self, connector, *, ...): ...
+    def close(self) -> None: ...
+
+class UnavailableVision:  # Vision: checks its arguments and the latch, then UNAVAILABLE
+    def __init__(self, cancel): ...
+
+class RosBridge:  # the operator's topics; see the topic table on The Agent
+    def __init__(self, connector, templates, *, input_topic=..., output_topic=..., ...): ...
+    def open(self, runner) -> None: ...
+    def on_todos(self, items, changed) -> None: ...  # safe from any thread
+    def on_reply(self, text) -> None: ...            # safe from any thread
+    def close_ingress(self) -> None: ...             # ignores input, keeps subscriptions
+    def close(self) -> None: ...
+
+FORBIDDEN_NAMES = ("/cmd_vel", "/walkie/reset", "/walkie/task", "/walkie/todos")
+def check_endpoint(node, name, forbidden=FORBIDDEN_NAMES) -> str: ...  # StepError REFUSED
+```
+
+- **`say` returns once published.** There is no playback acknowledgement, so it means
+  "sent".
+- **Input is text only.** A `/from_human` message with an image or audio payload is logged
+  and refused, and that includes a bare "stop" with a payload.
+- **Forbidden names are checked at construction.** `RosBase` and `RosSpeech` call
+  `check_endpoint`. It is a guard against a configuration mistake and not security.
+
+Limits that the fakes cannot settle:
+
+- **TF poll.** RAI's transform helper never checks the buffer at a zero timeout, and
+  sleeps 0.1 s on a miss. So `_TF_LOOKUP_S` is 0.01 s, and a stop during a TF read can take
+  about 0.1 s plus scheduling to land.
+- **TF freshness.** A sample stamped more than 0.5 s ahead of the clock reads as stale, so
+  clock skew reads as `TIMEOUT`. Stale TF is `TIMEOUT`. Missing TF with no publishers is
+  `UNAVAILABLE`, and the message names the domain and the router. Freshness on the real
+  robot is unmeasured.
+- **Pending-cancel cleanup.** A cancel acknowledgement is not terminal and does not prove
+  the wheels stopped. `RosBase.close` returns False, and `unresolved()` says so, while a
+  goal has no terminal result: "Nav2 has not answered the goal", "a cancel was requested,
+  but no terminal result has arrived" or "no terminal result has arrived". The hold, retry
+  and forced exit have run only against fakes, never against a real unanswered Nav2 goal.
+- **Unknown state holds the gate.** A failed acceptance future, a failed result future or
+  `STATUS_UNKNOWN` keeps the record. If Nav2 restarts and forgets a goal, motion stays
+  refused until the agent restarts.
+- **Real Nav2 races.** The race matrix runs against fakes, and the acceptance tests run
+  against a `FakeWalkie` action server. Real Nav2's timing is unknown.
+- **Stop latency.** The 0.5 s terminal cancel is a fake-only test criterion. It is not a
+  braking figure. The 2 s discovery, 2 s acceptance and 1 s TF budgets are implementation
+  defaults, not measured needs.
+- **Shutdown noise.** The connector's spin thread can still die during the final destroys or
+  RAI's `connector.shutdown()`. That can print a traceback at shutdown, and the exit code
+  is unaffected.
+
+## Wiring in main.py
+
+```python
+# walkie_agent.main
+def assemble(*, connector, model, config, locations, templates, robot_description,
+             tool_set="default", callbacks=(), tool_log=None, input_topic=..., output_topic=...,
+             reset_topic=..., task_topic=..., todos_topic=..., use_sim_time=False,
+             fallback=None) -> Application: ...
+
+class Application:
+    ctx: Ctx
+    runner: Runner
+    bridge: RosBridge
+    def start(self) -> None: ...  # the Runner, then the subscriptions
+    def close(self, timeout_s=5.0) -> bool: ...  # False leaves endpoints alive; call it again
+    def unresolved(self) -> list[str]: ...
+```
+
+`assemble` builds `RosBase`, `RosSpeech`, `UnavailableVision` and `RosBridge`, then
+`build_agent` and `Runner`. `Ctx.arms` stays `UnavailableArms`. It builds no model or tracer,
+and it does not start or destroy ROS. A failure part of the way through closes what was built
+before it raises.
+
+`Application.close` runs in one order: close the input, cancel and stop the base, shut down
+the Runner, drain the base, close speech, close the bridge. Only then does `main` shut down
+the connector and the context, on a thread of its own.
+
+Signals use `SignalHandlerOptions.NO`, because rclpy's own handler would shut the context
+down before the cancel of a running goal could be sent. The first SIGINT or SIGTERM starts
+the shutdown. A second one logs what is unresolved and calls `os._exit(3)`. A failure counts
+as the first signal, and it exits with code 1.
+
+The real `main()`, signalled by PID, exits 0 in about 0.8 s on one signal, and exits 3 when
+`close` is patched to never finish. Both ran against fakes.
+
 ## Provisional decisions
 
 | # | Decision | Pick |
@@ -629,6 +739,22 @@ provisional until real runs measure them.
 | 23 | Where Mahoraga lives | Top-level `mahoraga/` with its own pixi environment |
 | 26 | Arena data | A trash location and more objects in the fake arena |
 
+The cutover settled a few forks of its own, also provisionally:
+
+| Fork | Pick |
+| --- | --- |
+| Vision | `objects` and `people` raise `UNAVAILABLE`. The remembered-object tool is retired, and a remembered row is never presented as a current view. |
+| HRI input | Text only. A message with an image or audio payload is logged and refused. |
+| Shutdown that cannot settle | Keep the executor alive and input closed, retry within bounds, and report what is unresolved. A second signal forces the exit. |
+| Larger proposals | Mark what is obsolete and record exact partial supersessions. Withdraw none of them. |
+| Place names | Trimmed lowercase keys. Other forms and duplicates are refused at load, and lookup ignores case. `config/locations.toml` stays empty. |
+| `say` | Returns once published. No playback acknowledgement is claimed. |
+| RAI | The connector, `rai-core`, `rai-s2s` and both voice entry points stay. The agent host leaves `main` only. |
+| Identity | Static `robot.md` replaces the whoami tree. |
+
+Still the team's: the fallback model (none is selected), the walkie-database pin in
+`ros2_ws.repos` (unchanged) and the real places (none invented).
+
 Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
 (decision 9), MuJoCo validation (Phase R3) and promotion (Phase R4).
 
@@ -637,7 +763,7 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
 - `ctx.arms` has the GPSR verbs, not the plan's `move_to` and `set_gripper`,
   which come with the commander client. Pick and place then become bundles.
 - `ctx.base.pose()` replaces `ctx.pose`, and `ctx.base.places()` lets
-  `list_places` replace main's `list_locations`.
+  `list_places` replace the old `list_locations`.
 - `FakeRobot` is one class, so its `ctx` holds the same object four times.
 - `format_tool_error` answers a bug with `INTERNAL` rather than re-raising it,
   so one bad tool does not end a run.
@@ -660,9 +786,11 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
 - There is no secondary template-chain set, no frozen paraphrases, no
   pre-registration file and no flag registering `run_script` in the runtime.
 - The plan's target for what replaces `agent.py`, `graph.py`, `todo.py`, `tasks.py`
-  and `tools/todos.py` is about 575 own lines, against 1,111 today. It measures 1,074:
-  995 in `runtime/` and 79 in `tasks.py`. The decided fixes and the op-based todo list,
-  455 lines against the plan's 175, cost more than the estimate.
+  and `tools/todos.py` is about 575 own lines, against 1,111 before. It measures 1,609:
+  1,447 in `runtime/` and 162 in `tasks.py`. The decided fixes, the Runner's lifecycle and
+  the op-based todo list, 625 lines against the plan's 175, cost more than the estimate.
+  The ROS wrappers add 1,063 lines, 638 of them in `ros/base.py` because a goal can outlive
+  its verb. `main.py` adds 482.
 - The stop's list update is a graph pass with a `stopping` input key rather than
   `aupdate_state`, so it keeps the same order as a task in the Runner's queue.
 - The stop line is spoken at once rather than after the active run, which may be a

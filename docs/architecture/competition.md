@@ -5,6 +5,12 @@
     [open questions](#open-questions) must be answered before the
     Competition work is finished.
 
+    The current agent is smaller than this page assumes. It runs one fixed tool set,
+    with a static `robot.md`, and has no levels, no taint and no generated tools. See
+    [The Agent](agent.md). This page's `speak` and `list_locations` are the older names
+    of today's `say` and `list_places`. Its `find_objects` is the retired remembered-object
+    tool, so a new one would need a separate name.
+
 Competition is the access level the robot runs at in RoboCup@Home tests and
 at the booth. People talk to it, nobody from the team may type or approve
 anything, and the internet may disappear at any moment. The agent starts at
@@ -397,8 +403,8 @@ handshake to OpenRouter and to each search provider.
 | A request that needs creation           | An immediate refusal with an alternative                            |
 | Speech gate                             | Local checks only                                                   |
 
-`search_robot_docs` embeds through OpenRouter, so it likely fails offline.
-Whether it fails fast is checked in phase 3. Offline, BM25 alone misses
+`search_robot_docs` is gone ([ADR-0068](decisions/0068-static-robot-description.md)).
+The static `robot.md` needs no network, and the LLM itself still does. Offline, BM25 alone would miss
 requests that share no word with a tool, such as "can you make a cat
 noise" ([ADR-0046](decisions/0046-hybrid-tool-index.md)).
 
@@ -521,19 +527,19 @@ The main risks, and what limits each:
 | Visitor data in a query                              | The query writer sees only the person's words; the provenance check                   |
 | The provider's terms on attribution, storage and LLM use | Site names spoken, snippets never stored; the terms are checked before phase 6    |
 | A fetched sound's license, or hidden speech in it    | The license filter, VAD and local ASR, a license check before the pack                |
-| The TTS override depends on RAI internals            | `rai_s2s` pinned at Git tag 2.12.2 and `rai-core` below 2.13, an ordering test and a silent integration test |
+| The TTS override depends on RAI internals            | `rai_s2s` pinned at a Git tag and `rai-core` pinned exactly in `pixi.toml`, an ordering test and a silent integration test |
 
 ## What lives where
 
 | Piece                                          | Repository       | Location                                                      |
 | ---------------------------------------------- | ---------------- | ------------------------------------------------------------- |
-| `play_sound`, `fetch_sound`, `look_up_online`  | walkie-agent-ros | `src/walkie_agent/tools/atomic/` (new)                        |
+| `play_sound`, `fetch_sound`, `look_up_online`  | walkie-agent-ros | `src/walkie_agent/atomics/` (new)                             |
 | Curated sound pack                             | walkie-agent-ros | `src/walkie_agent/assets/sounds/`, `SOUNDS.toml` (new)        |
-| Shared speech-ID holder, TTS override          | walkie-agent-ros | `src/walkie_agent/tools/speech.py`, `src/walkie_agent/half_duplex.py` (changed) |
+| Shared speech-ID holder, TTS override          | walkie-agent-ros | `src/walkie_agent/ros/speech.py`, `src/walkie_agent/half_duplex.py` (changed) |
 | Speech gate                                    | walkie-agent-ros | `src/walkie_agent/toolbox/speech_gate.py` (new)               |
 | Decode sandbox                                 | walkie-agent-ros | `src/walkie_agent/toolbox/sandbox/decode.py` (new)            |
 | HTTP broker and search client                  | walkie-agent-ros | `src/walkie_agent/toolbox/bridge/http.py`, `search.py` (new)  |
-| Taint filter and history scrub                 | walkie-agent-ros | `src/walkie_agent/graph.py` (new)                             |
+| Taint filter and history scrub                 | walkie-agent-ros | New middleware in `src/walkie_agent/runtime/` (proposed)      |
 | API notes for the named sources                | walkie-agent-ros | `src/walkie_agent/toolsmith/api_notes/` (new)                 |
 | Denylist and site names                        | walkie-agent-ros | `config/search_denylist.txt`, `config/site_names.toml` (new)  |
 | Profile, search and model roles                | walkie-agent-ros | `config.toml`: `[walkie.mode]`, `[walkie.search]`, `[walkie.models.*]` (new tables) |

@@ -70,13 +70,26 @@ wget = "*"
 # Python packages that are not on conda-forge come from PyPI. Pixi resolves
 # these together with the conda packages above into the same environment.
 [pypi-dependencies]
-rai-core = ">=2.12.1, <2.13"
+# The agent's runtime libraries, pinned exactly because its behavior depends on
+# theirs: graph streaming, middleware, tool calls and SDK timeouts. The Mahoraga
+# feature below pins langchain, langchain-core, langchain-openai and langgraph to
+# the same versions. rai-core stays for the ROS connector and the voice entry points.
+langchain = "==1.4.4"
+langchain-core = "==1.6.9"
+langchain-ollama = "==1.1.0"
+langchain-openai = "==1.7.0"
+langfuse = "==3.15.0"
+langgraph = "==1.2.14"
+langgraph-checkpoint = "==4.2.0"
+langgraph-prebuilt = "==1.1.0"
+pydantic = "==2.14.0"
+rai-core = "==2.12.1"
 python-dotenv = ">=1.0"
 walkie-agent = { path = ".", editable = true }
-# rai_s2s and rai_whoami are not published on PyPI for this RAI release, so
-# they come from the RAI repository. Tag 2.12.2 has the same rai_s2s and
-# rai_whoami sources as 2.12.1 (our rai-core), but drops a broken submodule
-# entry that makes a git install of 2.12.1 fail.
+# rai_s2s is not published on PyPI for this RAI release, so it comes from the
+# RAI repository. Tag 2.12.2 has the same rai_s2s sources as 2.12.1 (our
+# rai-core), but drops a broken submodule entry that makes a git install of
+# 2.12.1 fail.
 # rai_s2s imports every speech backend at import time, so all extras except
 # the GPU one are required even though we only use Whisper and Kokoro.
 rai-s2s = { git = "https://github.com/RobotecAI/rai.git", tag = "2.12.2", subdirectory = "src/rai_s2s", extras = [
@@ -86,7 +99,6 @@ rai-s2s = { git = "https://github.com/RobotecAI/rai.git", tag = "2.12.2", subdir
   "wakeword",
   "kokoro",
 ] }
-rai-whoami = { git = "https://github.com/RobotecAI/rai.git", tag = "2.12.2", subdirectory = "src/rai_whoami" }
 # rai_s2s pins torchaudio 2.3.1, which pulls torch 2.3.1. The PyPI wheels are
 # CUDA 12.1 builds (NVIDIA driver 525 or newer), so Whisper runs on the GPU
 # when one is present and falls back to the CPU otherwise.
@@ -150,7 +162,7 @@ description = "Run a fake robot (Nav2 action, TF, speech topic) for testing with
 
 [tasks.agent]
 cmd = "python -m walkie_agent.main"
-description = "Run the Walkie RAI agent (reads tasks from /from_human)"
+description = "Run the Walkie agent (takes input from /from_human, tasks from /walkie/task)"
 
 # The agent against walkie-ros's MuJoCo simulation (blank map). It uses the
 # Zenoh router on localhost:7447, from either repository, and the calling
@@ -179,12 +191,6 @@ description = "Speak everything published on /to_human"
 [tasks.list-audio-devices]
 cmd = "python -c 'import sounddevice; print(sounddevice.query_devices())'"
 description = "List microphone and speaker names for config.toml"
-
-# Robot identity (RAI's rai_whoami). Calls the LLM and embeddings model from
-# config.toml, so it costs a little each run. See docs/setup/06-whoami.md.
-[tasks.whoami-build]
-cmd = "build-whoami whoami --build-vector-db"
-description = "Build Walkie's description and documentation index into whoami/generated/"
 
 # Self-hosted Langfuse for tracing agent runs. Needs Docker on the host.
 # See docs/setup/04-langfuse.md.

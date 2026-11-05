@@ -1,5 +1,15 @@
-# RAI configuration, read by rai.get_llm_model() from the working directory.
-# Full reference: https://robotecai.github.io/rai/setup/vendors/
+# Walkie's settings, read from the working directory.
+#
+# Who reads what:
+# - The agent (walkie_agent.runtime.model): complex_model and base_url of the
+#   vendor that [vendor] names, [agent] if present, and [tracing.langfuse].
+# - The voice entry points (walkie_agent.voice), through rai_s2s: [asr] and [tts].
+# - Nothing in this repository reads simple_model, embeddings_model, [tracing]'s
+#   project or [tracing.langsmith]. They stay so the file keeps the shape of RAI's
+#   own config (https://robotecai.github.io/rai/setup/vendors/).
+#
+# No fallback model is selected. To use one, set both fallback_vendor and
+# fallback_model in an [agent] table; that choice is the team's.
 #
 # The `openai` vendor works with any OpenAI-compatible endpoint. Here it points
 # at OpenRouter (same provider walkie-agent-v2 used); set OPENAI_API_KEY to an

@@ -2,8 +2,12 @@
 
 <!-- --8<-- [start:body] -->
 **Status:** Accepted, partly superseded by
-[ADR-0038](/architecture/decisions/0038-own-graph-per-turn-binding.md) ·
+[ADR-0038](/architecture/decisions/0038-own-graph-per-turn-binding.md) and
+[ADR-0061](/architecture/decisions/0061-create-agent-runtime-and-cancellation.md) ·
 **Date:** 2026-10-12
+
+ADR-0061 replaces the agent-host path. RAI's connector, rai-core, rai-s2s and the
+voice entry points stay.
 
 **Context**
 

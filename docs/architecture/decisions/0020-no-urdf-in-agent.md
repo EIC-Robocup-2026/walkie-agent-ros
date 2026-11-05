@@ -3,6 +3,9 @@
 <!-- --8<-- [start:body] -->
 **Status:** Proposed · **Date:** 2026-10-12
 
+The no-URDF decision stands. The identity document now lives in `robot.md`, because
+[ADR-0068](/architecture/decisions/0068-static-robot-description.md) retires whoami.
+
 **Context**
 
 RAI's whoami tutorial suggests adding the robot's URDF. In rai_whoami 2.12,

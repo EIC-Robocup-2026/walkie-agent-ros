@@ -1,140 +1,185 @@
 # One Task, Start to Finish
 
-This page follows one unseeded task through the graph and the todo list, from
-the first message to the cleared list. The tool results are made up; the
-agent's messages and routes are what the code does. The person says: *"Go to
-the kitchen, find my cup, then come back and tell me."*
+This page traces one seeded task through the real stack: the commands the model sends, a
+question and its answer, a failed call, and a refusal. The model is scripted and the robot
+is `FakeRobot`. So the point is what the code does with each reply, not how a real model
+would choose them.
 
-Turns 1 and 2 are one graph run that ends with a question, and turn 3 is a
-second run started by the answer. The code blocks replay the list's side with
-the calls the agent makes: `apply` for `update_todos`, `record_tool_result`
-for the tools node, and `set_waiting` and `resume_waiting` for the question.
-A listener prints the console lines, as `_send_status_lines` does.
+## The setup
 
-## Turn 1: the plan and the first step
-
-1. **`_run_agent` takes the message.** It has no seed, so `_prepare_todos`
-   finds nothing waiting and nothing to clear. The text goes to the graph
-   unchanged.
-2. **`llm` runs with no reminder,** because the list is empty. The model
-   replies with two calls in one message: `update_todos` adding t1 as
-   `in_progress` plus t2 and t3, then `navigate_to_location("kitchen")`.
-3. **`tools` runs them in order.** The drive succeeds, so its call id becomes
-   t1's evidence. The ledger ignores the `update_todos` result.
+The same scripted model as before, and small helpers. `show` prints each tool's answer.
 
 ```pycon
->>> from walkie_agent.todo import TodoList, TodoRejected, console_line
->>> todos = TodoList()
->>> def console(items, changed):
-...     for item in changed:
-...         if line := console_line(item):
-...             print(line)
+>>> import asyncio
+>>> from langchain_core.language_models import BaseChatModel
+>>> from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+>>> from langchain_core.outputs import ChatGeneration, ChatResult
+>>> from walkie_agent.capabilities.fake import FakeRobot
+>>> from walkie_agent.runtime import Session, build_agent, parse_seed, render
+>>> class Scripted(BaseChatModel):
+...     script: list
+...     seen: list = []
+...     @property
+...     def _llm_type(self):
+...         return "scripted"
+...     def bind_tools(self, tools, **kwargs):
+...         return self
+...     def _generate(self, *args, **kwargs):
+...         raise NotImplementedError("The runtime only uses the async path.")
+...     async def _agenerate(self, messages, *args, **kwargs):
+...         self.seen.append(list(messages))
+...         reply = self.script.pop(0).model_copy(update={"id": None})
+...         return ChatResult(generations=[ChatGeneration(message=reply)])
 ...
->>> todos.add_listener(console)
->>> print(todos.render() or "(no reminder)")
-(no reminder)
->>> print(todos.apply([
-...     {"op": "add", "content": "Go to the kitchen",
-...      "active_form": "Going to the kitchen", "status": "in_progress"},
-...     {"op": "add", "content": "Find the cup", "active_form": "Finding the cup"},
-...     {"op": "add", "content": "Come back and tell the person", "active_form": "Coming back"},
-... ]))
-t1: Going to the kitchen
-Added: t1, t2, t3. Open: t1, t2, t3.
->>> todos.record_tool_result("update_todos", "call_1", ok=True)
->>> todos.record_tool_result("navigate_to_location", "call_2", ok=True)
->>> todos.snapshot()[0].evidence
-['call_2']
+>>> def call(name, call_id, **args):
+...     return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+...
+>>> def ai(*calls, text=""):
+...     return AIMessage(text, tool_calls=list(calls))
+...
+>>> def update(call_id, *changes):
+...     ops = [{"op": "update", "id": item, "status": status} for item, status in changes]
+...     return call("update_todos", call_id, ops=ops)
+...
+>>> def show(result, start):
+...     for message in result["messages"][start:]:
+...         if isinstance(message, ToolMessage):
+...             print(f"{message.name} ({message.status}): {message.content}")
+...
 
 ```
 
-## Turn 2: a question
-
-1. **`route_after_tools` goes back to `llm`, which now sends the reminder.**
-   The model marks t1 `completed` and t2 `in_progress`, and calls
-   `find_objects("cup")`. Completing t1 passes, because its window holds one
-   success and no failure.
-2. **Two cups are remembered,** so the model calls
-   `wait_for_person("Is yours the red cup or the blue one?")`. The question is
-   spoken, t2 becomes `waiting`, and `route_after_tools` ends the run.
+The task has two seeded steps. The first requires a successful `go_to`.
 
 ```pycon
->>> print(todos.render())
+>>> seed = parse_seed([{"content": "Go to the table", "requires_tool": "go_to"}, "Greet the person"])
+>>> print(render(seed))
 <todos>
-[>] t1 Go to the kitchen
-[ ] t2 Find the cup
-[ ] t3 Come back and tell the person
+[ ] t1 Go to the table  needs: go_to
+[ ] t2 Greet the person
 </todos>
->>> print(todos.apply([
-...     {"op": "update", "id": "t1", "status": "completed"},
-...     {"op": "update", "id": "t2", "status": "in_progress"},
-... ]))
-t1 completed: Go to the kitchen
-t2: Finding the cup
-Updated: t1 → completed, t2 → in_progress. Open: t2, t3.
->>> todos.record_tool_result("find_objects", "call_4", ok=True)
->>> todos.set_waiting("Is yours the red cup or the blue one?")
-t2 waiting: Find the cup
-'t2'
->>> todos.record_tool_result("wait_for_person", "call_5", ok=True)
 
 ```
 
-## Turn 3: the answer, a failure and a refusal
+## Run 1: the commands
 
-1. **"The red one" arrives while the agent is idle.** `_prepare_todos` calls
-   `resume_waiting`, so t2 is back `in_progress` with the same window. Items
-   are open, so the message belongs to this task.
-2. **The model completes t2, starts t3 and drives to `start`.** Nav2 rejects
-   the goal. The tool's `ToolException` becomes a result with status `error`,
-   and the ledger records a failure.
-3. **`apply` refuses to mark t3 `completed`.** The model retries the drive,
-   and that later success resolves the failure. It calls `speak`, then
-   completes t3.
+The model starts the first step, drives and completes the step. Then it starts the second,
+and asks a question.
 
 ```pycon
->>> todos.resume_waiting()
-t2: Finding the cup
->>> print(todos.apply([
-...     {"op": "update", "id": "t2", "status": "completed"},
-...     {"op": "update", "id": "t3", "status": "in_progress"},
-... ]))
-t2 completed: Find the cup
-t3: Coming back
-Updated: t2 → completed, t3 → in_progress. Open: t3.
->>> todos.record_tool_result("navigate_to_location", "call_7", ok=False)
->>> try:
-...     todos.apply([{"op": "update", "id": "t3", "status": "completed"}])
-... except TodoRejected as e:
-...     print(e)
-t3 cannot be completed because navigate_to_location failed and has not succeeded since; retry it, or add a note that explains why the step is done anyway.
->>> todos.record_tool_result("navigate_to_location", "call_9", ok=True)
->>> todos.record_tool_result("speak", "call_10", ok=True)
->>> print(todos.apply([{"op": "update", "id": "t3", "status": "completed"}]))
-t3 completed: Come back and tell the person
-Updated: t3 → completed. Open: none.
+>>> script = [
+...     ai(update("u1", ("t1", "in_progress"))),
+...     ai(call("go_to", "c1", place="table")),
+...     ai(update("u2", ("t1", "completed"), ("t2", "in_progress"))),
+...     ai(call("wait_for_person", "q1", question="What should I say?")),
+... ]
+>>> model, robot = Scripted(script=script), FakeRobot()
+>>> agent = build_agent(model, robot.ctx)
+>>> config = Session().config()
+>>> payload = {"messages": [HumanMessage("Go to the table and greet the person.")], "todo_seed": seed}
+>>> result = asyncio.run(agent.ainvoke(payload, config))
+>>> show(result, 0)
+update_todos (success): Updated: t1 → in_progress. Open: t1, t2.
+go_to (success): Arrived at table.
+update_todos (success): Updated: t1 → completed, t2 → in_progress. Open: t2.
+wait_for_person (success): Asked: What should I say?
 
 ```
 
-The model sees more than `print(e)`: `UpdateTodosTool` adds "None of the
-changes were applied.", and RAI's `ToolRunner` prefixes "Failed to run tool.
-Error: " in a result with status `error`.
+The run has ended, because a successful question ends it. The step shows as waiting, and
+t1 kept the call that proved it:
+
+```pycon
+>>> print(render(result["todos"]))
+<todos>
+[x] t1 Go to the table
+[?] t2 Greet the person  waiting: "What should I say?"
+</todos>
+>>> result["todos"][0]["evidence"]
+['c1']
+>>> robot.said
+['What should I say?']
+
+```
+
+The evidence names the one `go_to` call that completed t1. The list took it from the
+ledger, not from the model's word.
+
+## Run 2: the answer, a failure and a refusal
+
+The answer arrives as a new message. A question was pending, so it resumes t2 and keeps the
+list. In this run the model first drives to a place that doesn't exist, then tries to
+say hello in the same message. Next it tries to call the step done anyway. Then it
+recovers.
+
+```pycon
+>>> model.script += [
+...     ai(call("go_to", "c2", place="garage"), call("say", "c3", text="Hello.")),
+...     ai(update("u3", ("t2", "completed"))),
+...     ai(call("go_to", "c4", place="table"), call("say", "c5", text="Hello.")),
+...     ai(update("u4", ("t2", "completed"))),
+...     ai(text="I said hello."),
+... ]
+>>> start = len(result["messages"])
+>>> result = asyncio.run(agent.ainvoke({"messages": [HumanMessage("Say hello.")]}, config))
+>>> show(result, start)
+go_to (error): NOT_FOUND: ...
+say (error): Not run: go_to failed earlier in this message. Decide again.
+update_todos (error): REFUSED: t2 cannot be completed because go_to failed and has not succeeded since; retry it, or add a note that explains why the step is done anyway. None of the changes were applied.
+go_to (success): Arrived at table.
+say (success): Said: Hello.
+update_todos (success): Updated: t2 → completed. Open: none.
+
+```
+
+Read those answers in order:
+
+1. `go_to` failed, and the error went back to the model as text.
+2. `say` never ran. It was planned on the drive working, so `SerialGuard` skipped it.
+3. The list refused to complete t2, because the failed `go_to` was in t2's window.
+4. A later success of the same tool resolved the failure, so the next try went through.
+
+The first model call of this run shows that the answer resumed t2. `[>]` is back, and the
+reminder is the last thing the model got:
+
+```pycon
+>>> print(model.seen[4][-1].content)
+<todos>
+[x] t1 Go to the table
+[>] t2 Greet the person
+</todos>
+
+```
 
 ## The end
 
-1. **The model replies with plain text and no tool calls.** Nothing is open,
-   so `route_after_llm` ends the run.
-2. **The next message clears the finished list.** `_prepare_todos` sees a
-   list with no open items and calls `clear()` before the LLM sees it.
+The final text ends the run, since no step is open. It goes to the operator console, not to
+the speaker. Only `say` and `wait_for_person` reach the person:
 
-Had the model stopped with t3 still open, the gate would have sent it back
-with "[todo] Open items: t3. ...". After two gates the run ends with t3 open,
-which shows on `/walkie/todos`.
+```pycon
+>>> print(render(result["todos"]))
+<todos>
+[x] t1 Go to the table
+[x] t2 Greet the person
+</todos>
+>>> result["messages"][-1].content
+'I said hello.'
+>>> robot.said
+['What should I say?', 'Hello.']
+>>> [entry["verb"] for entry in robot.calls if entry["verb"] == "base.go_to"]
+['base.go_to', 'base.go_to', 'base.go_to']
+>>> [entry["error"] for entry in robot.calls if entry["verb"] == "base.go_to"]
+[None, 'NOT_FOUND', None]
+
+```
+
+The model's words never completed a step. On a real robot, `Arrived at table.` would rest
+on a Nav2 result that has not been measured for this runtime yet. See
+[What has been tested](../architecture/agent.md#what-has-been-tested).
 
 !!! example "Try it"
-    Replay the blocks up to the failed drive. Instead of retrying, run
-    `todos.apply([{"op": "update", "id": "t3", "status": "completed", "note": "The person came to me."}])`.
-    A note may stand in for a retry; `print(todos.render())` shows it. The
-    rules are on [The Rules: Ledger and Window](todo-rules.md).
+    Change the last `update` in the script to complete t2 with the failed drive still
+    unresolved, but with a note. `update` here has no note field, so write the op by hand.
+    Then look at what `t2`'s `note` holds in `result["todos"]`.
 
-Previous: [The Graph: llm, tools and gate](the-graph.md) · Next: [Todo Items and Ops](todo-items.md)
+Previous: [The Graph: create_agent and Middleware](the-graph.md) · Next: [Todo Items and Ops](todo-items.md)

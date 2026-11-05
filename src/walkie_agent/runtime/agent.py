@@ -129,17 +129,24 @@ def build_agent(
             len(bound) + TODO_TOOL_COUNT,
             MAX_BOUND_TOOLS,
         )
+    middleware = build_middleware(
+        ctx,
+        run_limit=run_limit,
+        deadline_s=deadline_s,
+        on_todos=on_todos,
+        fallback=fallback,
+        tool_log=tool_log,
+    )
+    # With two tools of one name, the graph would silently run only the last one. The
+    # attribute is optional on a middleware, so this reads it as create_agent does.
+    taken = {tool.name for layer in middleware for tool in getattr(layer, "tools", [])}
+    collisions = sorted(taken & {tool.name for tool in bound})
+    if collisions:
+        raise ValueError(f"Tool names reserved by the middleware: {', '.join(collisions)}.")
     return create_agent(
         model,
         bound,
         system_prompt=system_prompt,
-        middleware=build_middleware(
-            ctx,
-            run_limit=run_limit,
-            deadline_s=deadline_s,
-            on_todos=on_todos,
-            fallback=fallback,
-            tool_log=tool_log,
-        ),
+        middleware=middleware,
         checkpointer=InMemorySaver() if checkpointer is None else checkpointer,
     )

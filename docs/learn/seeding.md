@@ -1,145 +1,193 @@
 # Seeding a Task
 
-A seed puts a task's steps on the todo list before the LLM sees the task.
-Seeded items are locked: the LLM can complete or cancel them, but it cannot
-reword or remove them, so a fixed task such as Receptionist cannot lose a
-step ([ADR-0041](../architecture/decisions/0041-todo-list-and-seeding.md)).
+A fixed task can start with its steps already on the list. That's a seed. Seeded steps keep
+their wording and order, so the LLM follows the plan and can't rewrite it. An
+unseeded task starts with an empty list, and the LLM writes its own.
 
 ## Three ways to seed
 
-| Way | Item `source` | When the seed applies |
-| --- | --- | --- |
-| `agent.submit(text, todos)` from Python | `seed` | When that message's task starts |
-| `/walkie/task` with `todos` | `operator` | When that message's task starts |
-| `/walkie/task` with `template` | `operator` | When that message's task starts |
+| From | How | `source` |
+| ---- | --- | -------- |
+| Python | `runner.submit("Do it.", todos=[...])` | `seed` |
+| ROS, with the steps | `{"task": "...", "todos": [...]}` on `/walkie/task` | `operator` |
+| ROS, with a template's name | `{"task": "...", "template": "name"}` on `/walkie/task` | `operator` |
 
-Every way ends in `TodoList.seed`. It replaces the whole list, restarts the
-ids at `t1` and empties the error ledger. Each item is a string, or a dict
-with `content` and optionally `active_form` and `requires_tool`.
+All three end at `Runner.submit`, and `parse_seed` checks the steps there. So a bad seed
+raises in the caller, before anything is queued. Each entry is a string, or a dict with
+`content` and optionally `active_form` and `requires_tool`:
 
 ```pycon
->>> from walkie_agent.todo import TodoList, TodoRejected
->>> todos = TodoList()
->>> todos.seed(["Go to the kitchen", {"content": "Say hi", "requires_tool": "speak"}])
->>> [(item.id, item.source, item.locked, item.requires_tool) for item in todos.snapshot()]
-[('t1', 'seed', True, ''), ('t2', 'seed', True, 'speak')]
->>> try:
-...     todos.seed([{"content": "Say hi", "require_tool": "speak"}])
-... except TodoRejected as e:
-...     print(e)
-Seed item t1 has unknown keys: require_tool.
+>>> from walkie_agent.runtime import TodoRejected, parse_seed, render
+>>> seed = parse_seed(["Go to the table", {"content": "Say hello", "requires_tool": "say"}], "operator")
+>>> print(render(seed))
+<todos>
+[ ] t1 Go to the table
+[ ] t2 Say hello  needs: say
+</todos>
+>>> [(item["source"], item["locked"]) for item in seed]
+[('operator', True), ('operator', True)]
 
 ```
 
-Any other key is refused, because a typo such as `require_tool` would
-silently drop a check.
+The refusals say what's wrong. An unknown key is most likely a typo, and it would silently
+drop a check if the code let it through:
+
+```pycon
+>>> for bad in [[{"content": "Go", "require_tool": "go_to"}], [""], "Go to the table", [3]]:
+...     try:
+...         parse_seed(bad)
+...     except TodoRejected as error:
+...         print(error)
+...
+Seed item t1 has unknown keys: require_tool.
+Seed item t1 has no content.
+A seed is a list of items, not a single string.
+Seed item t1 must be a string or a dict, not int.
+
+```
+
+`parse_seed` returns new items, so the queued seed is a copy. The caller may change its own
+list afterwards. `test_a_queued_seed_is_a_copy_and_keeps_its_source` holds this.
 
 ## When a seed applies
 
-`WalkieAgent.submit` does not touch the list. It checks the seed on a
-scratch `TodoList`, so a bad seed raises `TodoRejected` in the caller, not
-later on the agent thread. Then it queues the message with its seed.
+`submit` puts the seed in the task's input as `todo_seed`. `WalkieTodos.before_agent` reads
+it when the task's run starts. So it's the task's first step, and a queued seed waits its
+turn with the task.
+
+| Input | What happens to the list |
+| ----- | ------------------------- |
+| A seed | Replaces the list. Ids start again from `t1`, and the windows and the gate budget are reset |
+| `todos=[]` | That's a seed too, an empty one. The list is emptied |
+| `todos=None`, with a question pending | Resumes the waiting step |
+| `todos=None`, with nothing pending | A new task. The list is cleared |
+
+Here's the difference between a seed and no seed, on the real stack:
 
 ```pycon
->>> from langchain_core.language_models import FakeListChatModel
->>> from walkie_agent.agent import WalkieAgent
->>> agent = WalkieAgent(target_connectors={}, llm=FakeListChatModel(responses=[]))
->>> agent.submit("Go to the kitchen and say hi.", todos=["Go to the kitchen", "Say hi"])
->>> agent.todos.is_empty
-True
->>> try:
-...     agent.submit("Say hi.", todos="Say hi")
-... except TodoRejected as e:
-...     print(e)
-A seed is a list of items, not a single string.
+>>> import asyncio
+>>> from langchain_core.language_models import BaseChatModel
+>>> from langchain_core.messages import AIMessage, HumanMessage
+>>> from langchain_core.outputs import ChatGeneration, ChatResult
+>>> from walkie_agent.capabilities.fake import FakeRobot
+>>> from walkie_agent.runtime import Session, build_agent
+>>> class Scripted(BaseChatModel):
+...     script: list
+...     seen: list = []
+...     @property
+...     def _llm_type(self):
+...         return "scripted"
+...     def bind_tools(self, tools, **kwargs):
+...         return self
+...     def _generate(self, *args, **kwargs):
+...         raise NotImplementedError("The runtime only uses the async path.")
+...     async def _agenerate(self, messages, *args, **kwargs):
+...         self.seen.append(list(messages))
+...         reply = self.script.pop(0).model_copy(update={"id": None})
+...         return ChatResult(generations=[ChatGeneration(message=reply)])
+...
+>>> # The model stops talking each time, and the gate sends it back at most twice.
+>>> model = Scripted(script=[AIMessage(f"Reply {n}.") for n in range(9)])
+>>> agent = build_agent(model, FakeRobot().ctx)
+>>> config = Session().config()
+>>> def run(text, seed=None):
+...     payload = {"messages": [HumanMessage(text)], "todo_seed": seed}
+...     return asyncio.run(agent.ainvoke(payload, config))
+...
+>>> [item["id"] for item in run("Do it.", parse_seed(["One", "Two"]))["todos"]]
+['t1', 't2']
+>>> print(model.seen[0][-1].content)
+<todos>
+[ ] t1 One
+[ ] t2 Two
+</todos>
+>>> run("Something else.")["todos"]
+[]
+>>> [item["id"] for item in run("Again.", parse_seed(["Three"]))["todos"]]
+['t1']
+>>> run("Nothing to do.", parse_seed([]))["todos"]
+[]
 
 ```
-
-RAI also logs a `Received message` line for each `submit`. The agent thread
-applies the seed when the task starts: `_run_agent` takes the message with
-its seed and calls `_prepare_todos`. `todos=None` keeps the current list, as
-an utterance does; `todos=[]` starts with an empty list.
-
-```mermaid
-flowchart TD
-    start([A message's task starts]) --> seeded{Has a seed?}
-    seeded -- yes --> seed[todos.seed replaces the list] --> run([Run the graph])
-    seeded -- no --> resume[resume_waiting, then clear a finished list] --> run
-```
-
-A seed wins over open items: it replaces the list even if the previous task
-left steps open. An utterance never starts a template, so a stray word in
-speech cannot start the wrong plan.
 
 ## Operator tasks on /walkie/task
 
-The topic takes a `std_msgs/msg/String` holding a JSON object. It needs a
-non-empty `task`, exactly one of `todos` or `template`, and no other keys.
-`parse_task_message` turns it into the text to run and the seed.
+`/walkie/task` is a `std_msgs/String` holding JSON. `parse_task_message` reads it, with no
+ROS. `RosBridge` hands the result to `Runner.submit` with `source="operator"`. A bad message
+is logged and refused. It never queues half a task:
 
 ```pycon
 >>> from walkie_agent.tasks import parse_task_message
->>> parse_task_message('{"task": "Say hi.", "todos": ["Go to the kitchen", "Say hi"]}', {})
-('Say hi.', ['Go to the kitchen', 'Say hi'])
->>> for data in ['{"task": "Say hi."}', '{"task": "Say hi.", "todo": []}', "say hi"]:
-...     try:
-...         parse_task_message(data, {})
-...     except ValueError as e:
-...         print(e)
-The task message is malformed: Value error, needs exactly one of todos and template.
-The task message is malformed: todo: Extra inputs are not permitted.
-The task message is malformed: Invalid JSON: expected value at line 1 column 1.
+>>> parse_task_message('{"task": "Fetch the mug.", "todos": ["Go to the table", "Pick it up"]}', {})
+('Fetch the mug.', ['Go to the table', 'Pick it up'])
+>>> parse_task_message('{"task": "Just do it.", "todos": []}', {})
+('Just do it.', [])
+>>> parse_task_message('{"task": "Both.", "todos": [], "template": "tour"}', {})
+Traceback (most recent call last):
+    ...
+ValueError: The task message is malformed: Value error, needs exactly one of todos and template.
+>>> parse_task_message('{"task": "Neither."}', {})
+Traceback (most recent call last):
+    ...
+ValueError: The task message is malformed: Value error, needs exactly one of todos and template.
+>>> parse_task_message('{"task": "Typo.", "items": []}', {})
+Traceback (most recent call last):
+    ...
+ValueError: The task message is malformed: ...
 
 ```
-
-On the robot or in the sim, send one with:
-
-```bash
-pixi run ros2 topic pub --once /walkie/task std_msgs/msg/String \
-  "{data: '{\"task\": \"Go to the kitchen and say hi.\", \"todos\": [\"Go to the kitchen\", \"Say hi\"]}'}"
-```
-
-`subscribe_task` hands each message to `_submit_task_message`, which runs
-`parse_task_message` and `submit(text, todos, source="operator")`. A bad
-message or seed is logged as a warning and ignored. Every exception is
-caught there, because in the connector's executor it would end the thread
-that serves all of the node's subscriptions.
 
 ## Templates
 
-Templates live in `config/task_templates.toml`, one `[templates.<name>]`
-table each; the shipped file has only a commented `tour` example. `main.py`
-loads it at startup with `load_task_templates`, which seeds each template on
-a scratch list. A bad template raises `ValueError` there, not mid-task.
+A template is a fixed task in `config/task_templates.toml`. The file ships with none. An
+operator picks one by its exact name, and nothing matches keywords, so a stray word in
+speech can't start the wrong plan ([ADR-0069](../architecture/decisions/0069-task-templates-by-name.md)).
 
 ```pycon
->>> import tempfile
->>> from pathlib import Path
->>> from walkie_agent.tasks import load_task_templates
->>> toml = '''
+>>> import pathlib, tempfile
+>>> from walkie_agent.tasks import check_required_tools, load_task_templates
+>>> folder = tempfile.TemporaryDirectory()
+>>> path = pathlib.Path(folder.name) / "templates.toml"
+>>> _ = path.write_text('''
 ... [templates.tour]
-... task = "Give the person a short tour, then come back to the start."
-... todos = ["Go to the kitchen", { content = "Come back", requires_tool = "navigate_to_location" }]
-... '''
->>> with tempfile.TemporaryDirectory() as tmp:
-...     path = Path(tmp) / "task_templates.toml"
-...     _ = path.write_text(toml)
-...     templates = load_task_templates(path)
->>> text, seed = parse_task_message('{"task": "Show me the house.", "template": "tour"}', templates)
->>> text
-'Show me the house.\n\nGive the person a short tour, then come back to the start.'
->>> seed
-['Go to the kitchen', {'content': 'Come back', 'requires_tool': 'navigate_to_location'}]
+... task = "Show the person around, and say one sentence at each place."
+... todos = ["Go to the sofa", {content = "Say something", requires_tool = "say"}]
+... ''')
+>>> templates = load_task_templates(path)
+>>> list(templates)
+['tour']
+>>> text, todos = parse_task_message('{"task": "Please give a tour.", "template": "tour"}', templates)
+>>> print(text)
+Please give a tour.
+<BLANKLINE>
+Show the person around, and say one sentence at each place.
+>>> [item["content"] for item in parse_seed(todos)]
+['Go to the sofa', 'Say something']
+>>> parse_task_message('{"task": "Tour?", "template": "Tour"}', templates)
+Traceback (most recent call last):
+    ...
+ValueError: There is no task template 'Tour'. Known templates: tour.
 
 ```
 
-The operator picks a template by its exact name. The LLM gets the message's
-`task`, a blank line, then the template's `task`. The full format is on
-[The Agent](../architecture/agent.md#task-templates).
+A malformed template stops the agent at startup. So does a step that requires a tool outside
+the running tool set, because such a step could never complete:
+
+```pycon
+>>> check_required_tools(templates, {"say", "go_to"})
+>>> check_required_tools(templates, {"go_to"})
+Traceback (most recent call last):
+    ...
+ValueError: Task templates require tools this tool set lacks: tour.t2 requires say. Available: go_to.
+>>> folder.cleanup()
+
+```
+
+The failure is loud on purpose. A template that can never finish should stop the run at
+startup, not in front of a referee.
 
 !!! example "Try it"
-    In `pixi run python`, ask `parse_task_message` for `"template": "garage"`
-    and read the error. It lists the templates you could have named.
-    Then change `requires_tool` to `require_tool` and load the file again.
+    Open `config/task_templates.toml`. Read its commented example, then load the file with
+    `load_task_templates`. What does it return, and why?
 
 Previous: [Queue, Stop, Reset and Repair](queue-stop-reset.md) · Next: [Watching Progress](watching-progress.md)

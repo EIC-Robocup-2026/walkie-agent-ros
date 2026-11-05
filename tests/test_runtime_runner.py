@@ -253,13 +253,23 @@ def test_a_refused_call_of_a_stopped_run_does_not_reach_the_ledger(serve):
 
 
 def test_a_stop_during_a_hung_llm_call_speaks_at_once_and_updates_after_the_deadline(serve):
-    stack = serve(_hang, DONE, deadline_s=0.5)
+    # The test ends the call with what the deadline raises, so no step here races a real
+    # clock on a loaded machine. test_a_failed_task_is_logged_... proves the real deadline.
+    deadline_passed = threading.Event()
+
+    async def hang_until_the_deadline(_messages):
+        while not deadline_passed.is_set():
+            await asyncio.sleep(0.005)
+        raise TimeoutError
+
+    stack = serve(hang_until_the_deadline, DONE)
     stack.runner.submit("Go.", todos=["Open step"])
     wait_until(lambda: stack.model.received)
     stack.runner.stop()
 
-    wait_until(lambda: stack.robot.said == [STOP_LINE], timeout_s=0.3)
+    wait_until(lambda: stack.robot.said == [STOP_LINE])
     assert stack.statuses() == ["pending"]  # the active run still holds the checkpoint
+    deadline_passed.set()
     idle(stack)
     assert stack.statuses() == ["cancelled"]
 
@@ -311,9 +321,14 @@ def test_a_stop_line_is_logged_under_the_session_it_was_heard_in(serve, tmp_path
     log = ToolLog(tmp_path / "tools.jsonl")
     stack = serve(robot=SlowStopLine(), tool_log=log)
     heard_in = stack.runner.session.thread_id
+    # The loop waits until both are queued. Once its queue is empty it waits for the line,
+    # so a reset that arrived only then would run after the line, and this would hang.
+    queued = threading.Event()
+    stack.runner._loop.call_soon_threadsafe(queued.wait, 5)
     stack.runner.stop()
-    assert stack.robot.speaking.wait(5)
     stack.runner.reset()
+    queued.set()
+    assert stack.robot.speaking.wait(5)
     wait_until(lambda: stack.runner.session.thread_id != heard_in)
     stack.robot.release.set()
     idle(stack)

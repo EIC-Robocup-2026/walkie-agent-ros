@@ -457,6 +457,15 @@ def test_a_u_prefix_leaves_a_definition_its_shape():
     assert prefixed.body[0].value.left.kind == "u"
 
 
+def test_a_built_tree_with_an_empty_kind_has_the_shape_of_one_with_none():
+    saved = _definition('def f():\n    return "x"\n', "f")
+    built = _definition('def f():\n    return "x"\n', "f")
+    built.body[0].value.kind = ""
+
+    assert shape(built) == shape(saved)
+    assert built.body[0].value.kind == ""
+
+
 def test_a_raise_through_a_copy_with_a_u_prefix_keeps_the_saved_version_off_the_frozen_shelf(pool, tmp_path, fns):
     """The prefix changes no value, so the copy computes what the saved version does (M64)."""
     saved = 'def divide(divisor=1):\n    return "s" * (1 // divisor)\n'

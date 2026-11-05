@@ -48,9 +48,13 @@ def shape(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     # A shallow copy, so the caller's node keeps its decorators. The prefixes are cleared
     # in place and put back, because a deep copy recurses several frames per level of
     # nesting and fails on code that ast.dump, the parser and Monty all accept (M66).
+    # Every kind that is not None is cleared, as M64 cleared them, so a built tree with
+    # an empty kind has the shape of the same tree with none.
     bare = copy.copy(node)
     bare.decorator_list = []
-    prefixed = [(part, part.kind) for part in ast.walk(bare) if isinstance(part, ast.Constant) and part.kind]
+    prefixed = [
+        (part, part.kind) for part in ast.walk(bare) if isinstance(part, ast.Constant) and part.kind is not None
+    ]
     try:
         for part, _ in prefixed:
             part.kind = None

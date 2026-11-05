@@ -9,10 +9,11 @@ returned.
 An answer is the first line that mentions a candidate after the last look that
 showed what it is about, and it must assert one candidate, the right one. Negation
 and corrections are not parsed. A talk needs the requested person returned at the
-requested place, then some line in their room that says the fact its topic asks
-for, from the start snapshot's facts. Any such line counts, not only the first.
-"Something about yourself" takes any line in the room, since what it says is not
-checked. docs/architecture/mahoraga-demo.md lists the rules and known limits.
+requested place and a successful read of the fact its topic asks for, in either
+order, then some line in their room that says that fact, from the start snapshot's
+facts. Any such line counts, not only the first. "Something about yourself" takes
+any line in the room and no read, since what it says is not checked.
+docs/architecture/mahoraga-demo.md lists the rules and known limits.
 """
 
 import re
@@ -322,10 +323,26 @@ Says = tuple[Callable[[str], bool], str]
 
 # The talk topic whose line is not checked.
 ABOUT_YOURSELF = "something about yourself"
-# "a.m." or "pm" after a time, in any case, dots optional.
-_HALF_DAY = r"(?:\s*([ap])\.?\s?m\b\.?)?"
-_CLOCK = re.compile(rf"(?<![\d:])(\d{{1,2}}):(\d{{2}})(?![\d:]){_HALF_DAY}")
-_OCLOCK = re.compile(rf"(?<![\d:])(\d{{1,2}})\s*o['’]?\s?clock\b{_HALF_DAY}")
+# What may follow a time to say which half of the day it is in: "a.m." or "pm" with
+# dots optional, a part of the day, or noon or midnight. "at night" is not one.
+_QUALIFIER = (
+    r"(?:\s*(?P<half>[ap])\.?\s?m\b\.?"
+    r"|\s+in\s+the\s+(?P<part>morning|afternoon|evening)\b"
+    r"|\s*(?P<point>noon|midnight)\b)"
+)
+_PARTS = {"morning": "a", "afternoon": "p", "evening": "p"}
+# The hour that noon and midnight each name, as 12 on the hour.
+_POINTS = {"noon": 12, "midnight": 0}
+_CLOCK = re.compile(rf"(?<![\d:])(?P<hour>\d{{1,2}}):(?P<minute>\d{{2}})(?![\d:]){_QUALIFIER}?")
+_OCLOCK = re.compile(rf"(?<![\d:])(?P<hour>\d{{1,2}})\s*o['’]?\s?clock\b{_QUALIFIER}?")
+# An hour alone needs a qualifier. Digits after a digit and a dot are no hour, so the
+# "05" of "2.05 pm" is not 5 pm.
+_BARE_HOUR = re.compile(rf"(?<![\d:])(?<!\d\.)(?P<hour>\d{{1,2}}){_QUALIFIER}")
+# The days a line can say it is about. One that names another of them, and not the
+# day asked about, does not answer for that day.
+_RELATIVE_DAYS = ("today", "tomorrow", "yesterday")
+# The facts verbs that read the clock and the team.
+_NOW_READ, _TEAM_READ = "facts.now", "facts.team"
 _DAY_DIGITS = re.compile(r"(?<![\d:])(\d{1,2})(?:st|nd|rd|th)?(?![\d:])")
 _ORDINAL = r"(?:st|nd|rd|th)?"
 _ONES = (
@@ -360,26 +377,37 @@ _DAY_WORD = re.compile(
 
 
 def _says_time(now: datetime) -> Says:
-    """The time as H:MM or HH:MM in 24-hour form, or as h:MM in 12-hour form.
+    """The time as H:MM or HH:MM, as "h o'clock" on the hour, or as an hour and a qualifier.
 
-    A 12-hour time may end in am or pm, which must then be right. On the hour, "h
-    o'clock" says it too. An hour with a leading zero and no am or pm reads as 24-hour
-    only, so "02:05" is not 14:05. Minutes in words are not read.
+    Every form reads its hour the same way. With no qualifier the hour is 24-hour or
+    12-hour, but one with a leading zero is 24-hour only, so "02:05" is not 14:05 and
+    "02 o'clock" is not 14:00. A qualifier must be right: am or pm, "in the morning"
+    for am, "in the afternoon" or "in the evening" for pm, and "noon" or "midnight"
+    only after 12 on the hour, at that hour. A digit hour from 1 to 12 right before a
+    qualifier, as in "2 pm" or "12 noon", is that hour on the hour. "o'clock" needs
+    its hour in digits, and times in words or with seconds are not read.
     """
     hour, minute = now.hour, now.minute
     twelve, half = hour % 12 or 12, "a" if hour < 12 else "p"
 
-    def right_hour(digits: str, said_half: str) -> bool:
+    def right(said: re.Match[str], minutes: int) -> bool:
+        """Whether an hour as written, `minutes` and the qualifier after them give the clock."""
+        digits = said["hour"]
+        if said["point"]:
+            return int(digits) == 12 and minutes == 0 and (hour, minute) == (_POINTS[said["point"]], 0)
+        if minutes != minute:
+            return False
+        said_half = said["half"] or _PARTS.get(said["part"] or "")
         if said_half:
             return int(digits) == twelve and said_half == half
         return int(digits) == hour or (int(digits) == twelve and not digits.startswith("0"))
 
     def says(line: str) -> bool:
         spoken = line.lower()
-        if any(int(m) == minute and right_hour(h, s) for h, m, s in _CLOCK.findall(spoken)):
-            return True
-        return minute == 0 and any(
-            int(h) == twelve and s in ("", half) for h, s in _OCLOCK.findall(spoken)
+        return (
+            any(right(said, int(said["minute"])) for said in _CLOCK.finditer(spoken))
+            or any(right(said, 0) for said in _OCLOCK.finditer(spoken))
+            or any(right(said, 0) for said in _BARE_HOUR.finditer(spoken) if 1 <= int(said["hour"]) <= 12)
         )
 
     return says, f"{hour:02d}:{minute:02d}"
@@ -428,25 +456,50 @@ def _either(*options: Says) -> Says:
     return (lambda line: any(says(line) for says, _ in options)), " or ".join(name for _, name in options)
 
 
+def _says_day(day: date) -> Says:
+    """A day's weekday or its date."""
+    return _either(_says_weekday(day), _says_date(day))
+
+
+def _about_day(asked: str, fact: Says) -> Says:
+    """`fact`, in a line that names `asked` or none of the other _RELATIVE_DAYS, as whole words.
+
+    "Tomorrow is Thursday." says nothing about today, even on a Thursday. A line
+    that names both today and tomorrow counts for either.
+    """
+    says, name = fact
+    named = re.compile(rf"\b{asked}\b", re.IGNORECASE)
+    others = re.compile(rf"\b(?:{'|'.join(day for day in _RELATIVE_DAYS if day != asked)})\b", re.IGNORECASE)
+
+    def about(line: str) -> bool:
+        return says(line) and (bool(named.search(line)) or not others.search(line))
+
+    return about, name
+
+
 def _tomorrow(now: datetime) -> date:
     return now.date() + timedelta(days=1)
 
 
-# What a line must say for each checked talk topic, from the clock and the team.
-_TALK_FACTS: dict[str, Callable[[datetime, Mapping[str, str]], Says]] = {
-    "the time": lambda now, team: _says_time(now),
-    "what day is today": lambda now, team: _either(_says_weekday(now.date()), _says_date(now.date())),
-    "what day is tomorrow": lambda now, team: _either(_says_weekday(_tomorrow(now)), _says_date(_tomorrow(now))),
-    "the day of the week": lambda now, team: _says_weekday(now.date()),
-    "the day of the month": lambda now, team: _says_day_number(now.date()),
-    "your teams name": lambda now, team: _says_phrase(team["name"]),
-    "your teams country": lambda now, team: _says_phrase(team["country"]),
-    "your teams affiliation": lambda now, team: _says_phrase(team["affiliation"]),
+# For each checked talk topic, the facts verb whose successful call must come before
+# the line, and what the line must say, from the clock and the team.
+_TALK_FACTS: dict[str, tuple[str, Callable[[datetime, Mapping[str, str]], Says]]] = {
+    "the time": (_NOW_READ, lambda now, team: _says_time(now)),
+    "what day is today": (_NOW_READ, lambda now, team: _about_day("today", _says_day(now.date()))),
+    "what day is tomorrow": (_NOW_READ, lambda now, team: _about_day("tomorrow", _says_day(_tomorrow(now)))),
+    "the day of the week": (_NOW_READ, lambda now, team: _about_day("today", _says_weekday(now.date()))),
+    "the day of the month": (_NOW_READ, lambda now, team: _about_day("today", _says_day_number(now.date()))),
+    "your teams name": (_TEAM_READ, lambda now, team: _says_phrase(team["name"])),
+    "your teams country": (_TEAM_READ, lambda now, team: _says_phrase(team["country"])),
+    "your teams affiliation": (_TEAM_READ, lambda now, team: _says_phrase(team["affiliation"])),
 }
 
 
-def _talk_fact(topic: str, start: Snapshot) -> Says | None:
-    """What a talk line must say, or None for ABOUT_YOURSELF. An unknown topic raises ValueError."""
+def _talk_fact(topic: str, start: Snapshot) -> tuple[str, Says] | None:
+    """The facts verb to read and what a talk line must say, or None for ABOUT_YOURSELF.
+
+    An unknown topic, or a checked one in a world without facts, raises ValueError.
+    """
     if topic == ABOUT_YOURSELF:
         return None
     if topic not in _TALK_FACTS:
@@ -454,7 +507,8 @@ def _talk_fact(topic: str, start: Snapshot) -> Says | None:
     facts = start.get("facts")
     if facts is None:
         raise ValueError(f"The world has no facts to check {topic!r} against.")
-    return _TALK_FACTS[topic](datetime.fromisoformat(facts["now"]), facts["team"])
+    read, fact = _TALK_FACTS[topic]
+    return read, fact(datetime.fromisoformat(facts["now"]), facts["team"])
 
 
 def _check_talk(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:
@@ -466,11 +520,16 @@ def _check_talk(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tupl
     lines = _said(after, room)
     if fact is None:
         return bool(lines), f"Expected a line in {room} after finding the person."
-    says, name = fact
-    right = next((line for line in lines if says(line)), None)
-    if right is None:
-        return False, f"Expected a line in {room} that says {name} after finding the person. Said: {lines!r}."
-    return True, f"Said {name} in {room}: {right!r}."
+    read, (says, name) = fact
+    # Both are tails of the same calls, so the shorter one follows the lookup and the read.
+    after_read = _after_look(_done(end), read, lambda _call: True) or []
+    right = next((line for line in _said(min(after, after_read, key=len), room) if says(line)), None)
+    if right is not None:
+        return True, f"Said {name} in {room}: {right!r}."
+    unread = next((line for line in lines if says(line)), None)
+    if unread is not None:
+        return False, f"Said {name} in {room}: {unread!r}, but no successful {read} read came before it."
+    return False, f"Expected a line in {room} that says {name} after finding the person. Said: {lines!r}."
 
 
 def _check_escort(spec: Mapping[str, Any], start: Snapshot, end: Snapshot) -> tuple[bool, str]:

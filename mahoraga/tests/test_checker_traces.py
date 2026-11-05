@@ -541,6 +541,7 @@ def test_talk_keeps_its_known_limit_on_what_was_said_only_about_the_robot_itself
     def finds_them_and_refuses(f, _start, spec):
         f["go_to"](spec["place"])
         f["find_people"](spec["person"].get("name") or spec["person"]["description"])
+        f["get_facts"]()
         f["say"]("Goodbye, operator; I refuse this request.")
 
     assert _run(ABOUT_YOURSELF_TO_RAISED_RIGHT_ARM, finds_them_and_refuses)[0]
@@ -584,9 +585,23 @@ def test_talk_fails_when_the_line_only_repeats_a_question(seed):
     def asks_back(f, _start, spec):
         f["go_to"](spec["place"])
         f["find_people"](spec["person"].get("name") or spec["person"]["description"])
+        f["get_facts"]()
         f["say"]("What day is tomorrow?")
 
     ok, why = _run(seed, asks_back)
+
+    assert not ok, why
+
+
+def test_talk_fails_when_the_right_fact_was_said_without_reading_it():
+    """The team never changes, so a line from memory is right in every world, but it is a guess."""
+
+    def says_it_from_memory(f, _start, spec):
+        f["go_to"](spec["place"])
+        f["find_people"](spec["person"].get("name") or spec["person"]["description"])
+        f["say"]("We are team EIC.")
+
+    ok, why = _run(TALK_TOPICS["your teams name"], says_it_from_memory)
 
     assert not ok, why
 

@@ -53,6 +53,30 @@ def test_a_raise_in_a_failed_script_counts_against_the_version_it_ran(pool, tmp_
     assert _proven([{"returned": r.returned, "raised": r.raised} for r in (first, second)]) == {}
 
 
+@pytest.mark.parametrize(
+    "second_code",
+    [
+        "divide(0)",
+        # Bound twice, so no wrapper can watch it: its raise is not seen, so it counts.
+        "divide = divide\ndivide(0)",
+    ],
+)
+def test_a_raise_through_an_unsaved_copy_keeps_the_version_off_the_frozen_shelf(pool, tmp_path, fns, second_code):
+    """The second script asks to save nothing, so only its raise can stop the verification."""
+    divide = "def divide(divisor=1):\n    return 1 / divisor\n"
+    shelf = Shelf(tmp_path / "shelf")
+    runner = ScriptRunner(pool, shelf=shelf)
+
+    first = runner.run(divide + "divide()", fns, save=["divide"])
+    second = runner.run(divide + second_code, fns)
+
+    assert first.returned == {"divide": source_sha(divide)}
+    assert (second.ok, second.saved) == (False, [])
+    assert second.raised == first.returned
+    shelf.mark_verified(_proven([{"returned": r.returned, "raised": r.raised} for r in (first, second)]))
+    assert Shelf(shelf.root, frozen=True).names() == []
+
+
 def test_a_function_that_ran_is_used_and_returned(run, shelf):
     result = run("value()")
 
@@ -250,7 +274,7 @@ def test_a_script_that_spins_past_its_feed_is_a_budget_and_keeps_its_evidence(po
     assert ScriptRunner(pool, shelf=shelf).run("value()", fns).ok
 
 
-def test_counters_that_cannot_be_read_leave_no_evidence(run, monkeypatch):
+def test_counters_that_cannot_be_read_credit_nothing_and_count_as_raised(run, shelf, monkeypatch):
     def refuses(*args, **kwargs):
         raise RuntimeError("monty worker protocol error")
 
@@ -262,6 +286,8 @@ def test_counters_that_cannot_be_read_leave_no_evidence(run, monkeypatch):
     assert result.ok
     assert result.shelf_used == []
     assert result.returned == {}
+    # A raise may be what was lost, so another script's return cannot verify the version.
+    assert result.raised == {"value": shelf.versions()["value"]}
 
 
 @pytest.mark.parametrize(
@@ -533,6 +559,8 @@ def test_a_definition_bound_twice_runs_as_written_and_earns_no_evidence(run, cod
 
     assert (result.ok, result.output) == (True, output), result.error
     assert result.returned == {}
+    # Unwatched, so a raise through it would go unseen: it counts as raised.
+    assert list(result.raised) == ["mine"]
 
 
 def test_a_saved_definition_keeps_its_line_numbers_and_name_in_errors(run):

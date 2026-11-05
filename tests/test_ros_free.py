@@ -102,7 +102,12 @@ def _files_under(*relative: str) -> list[Path]:
             files.append(path)
         elif path.is_dir():
             files += [f for f in path.rglob("*") if f.is_file() and f.suffix in TEXT_SUFFIXES]
-    return [f for f in files if f != Path(__file__).resolve()]
+    # An editable install writes ignored packaging metadata that can list deleted files.
+    return [
+        f
+        for f in files
+        if f != Path(__file__).resolve() and not any(p.endswith(".egg-info") for p in f.parts)
+    ]
 
 
 def _mentions(files: list[Path], pattern: re.Pattern[str]) -> list[str]:

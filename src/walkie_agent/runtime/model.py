@@ -20,8 +20,12 @@ DEFAULT_DEADLINE_S = 60.0
 
 
 def load_config(path: str | Path = "config.toml") -> dict[str, Any]:
+    """The parsed file. A TOML syntax error is a ValueError that names the file."""
     with open(path, "rb") as f:
-        return tomllib.load(f)
+        try:
+            return tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise ValueError(f"{path}: {e}.") from e
 
 
 def agent_settings(config: dict[str, Any]) -> dict[str, Any]:

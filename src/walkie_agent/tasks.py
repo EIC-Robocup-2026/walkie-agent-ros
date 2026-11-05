@@ -97,7 +97,10 @@ def load_task_templates(path: str | Path) -> dict[str, TaskTemplate]:
     if not path.exists():
         return {}
     with open(path, "rb") as f:
-        data = tomllib.load(f)
+        try:
+            data = tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise ValueError(f"{path}: {e}.") from e
     try:
         entries = _TemplateFile.model_validate(data).templates
     except ValidationError as e:

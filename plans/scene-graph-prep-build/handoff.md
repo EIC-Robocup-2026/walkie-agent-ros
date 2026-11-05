@@ -250,3 +250,31 @@ log records it as P49 and P50, and P45 and P46 are corrected.
   beside this file as `pair-gate-5b6d347.log`.
 - For walkie-agent-ros, the follow-up above now means walkie-vision `5b6d347` and
   walkie-database `6fd1c61`.
+
+## After the fourth re-check, 2026-11-06
+
+The re-check of `5b6d347` closed A8-F2, partly closed A8-F1, and confirmed that
+no executable line changed. It found R5-F1, a boundary-depth sentence that claimed
+"no points" unconditionally, and R5-F2, P46's claim that a stopped `/clock` keeps
+every new image out. Both are low and docs only. The decision log records the fix
+as P51 and P52, and corrects P46 and P49.
+
+| Repository | Worktree | Commit | Subject |
+|---|---|---|---|
+| walkie-vision | `/var/tmp/wv-prep` | `9793705f6cdfef74d7a37b544937ef22bdb02689` | docs: say when a colour image whose depth the intake guard refuses still has points |
+| walkie-database | `/var/tmp/wd-prep` | `ef2a7c107dc2d5795bfb88e25eb1f595749e7f4d` | build: pin walkie-vision at the boundary depth docs fix |
+
+- walkie-vision `9793705` changes one docstring and one paragraph after
+  `5b6d347` (P51). walkie-database `ef2a7c1` moves the pin to it (P52), on top of
+  `6fd1c61`.
+- `walkie_vision_msgs` did not change, and neither `pixi.lock` nor `pixi.toml`
+  changed in either repository.
+- walkie-vision's suite gave 1222 passed and 1 skipped (the missing `buffalo_l`
+  model) at `9793705`, and walkie-database's gave 1640 passed at `ef2a7c1`. Both
+  strict docs builds passed.
+- The pair gate ran once at `9793705` and `ef2a7c1` with `--build` on domain 89
+  and passed all 20 checks. Its report is
+  `/var/tmp/wa-impl-prep/pair-gate-9793705/report.json`, and its summary is kept
+  beside this file as `pair-gate-9793705.log`.
+- For walkie-agent-ros, the follow-up above now means walkie-vision `9793705` and
+  walkie-database `ef2a7c1`.

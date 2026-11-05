@@ -1,0 +1,21 @@
+pass  sources: both worktrees are clean at the given commits
+pass  pin: the pin and the clone are at the vision commit
+pass  locks: sha256 of each pixi.lock
+pass  build: both installations and the client overlay were built
+pass  probe.vision: imports are from this worktree's builds
+pass  probe.database: imports are from this worktree's builds
+pass  hashes: every type hash agrees, nested types included
+pass  control.hash: an altered walkie_vision_msgs/msg/ObjectDetectionArray in srv/LocalizeObjects.json was caught
+pass  control.import: a vision peer importing the database's own build was refused
+pass  seed: seeded and restored map pairlab-2026-11-05-517bef3e
+pass  observe.nonempty: 6 checks passed
+pass  observe.empty: 6 checks passed
+pass  observe.vector: 7 checks passed
+pass  observe.malformed: 6 checks passed
+pass  localize: 9 checks passed
+pass  database-services: 14 checks passed
+pass  vision-services: 11 checks passed
+pass  store-rows: no object row was made, and only the seeded anchors' first start stamp changed
+pass  processes: no process ran past its limit
+pass  teardown: every process and its group stopped
+PASSED; report /var/tmp/wa-impl-prep/pair-gate-9793705/report.json

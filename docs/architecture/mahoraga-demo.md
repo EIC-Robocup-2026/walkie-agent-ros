@@ -356,15 +356,17 @@ still verify, a definition the script bound more than once, a decorated one, or 
 under an `if` or inside another function goes unwatched and counts as raised for its
 version (M51).
 
-A version's sha is of its text as written, from its `def`, which is what the shelf
-file and the ledger hold. Each script's record also maps the sha of every version it
-named, a loaded shelf function or one of its own definitions at any depth, to a shape:
-the sha of the definition's syntax tree without positions or decorators. A returned
-version is not verified when a version with the same name and shape, or the same sha,
-raised or went unwatched anywhere in the episode. A syntax tree has no whitespace,
-comments or line endings, so a copy under an `if`, a copy with a comment, and the
-same function at top level are one version for this veto, while a copy that computes
-something else is not (M60). A record without shapes, from before M60, compares shas.
+A version's sha is of its text as written, from its `def`, with each line ending in
+`\n`, which is what the shelf file and the ledger hold. Each script's record also
+maps the sha of every version it named to a shape: a loaded shelf function, and,
+while the shelf can still verify, each of its own definitions at any depth. A shape
+is the sha of the definition's syntax tree without positions or decorators. A
+returned version is not verified when a version with the same name and shape, or the
+same sha, raised or went unwatched anywhere in the episode. A syntax tree keeps no
+layout, comments or line endings, only the values the code holds, so a copy under an
+`if`, a copy with a comment, and the same function at top level are one version for
+this veto, while a copy that computes something else, or whose string holds other
+spaces, is not (M60). A record without shapes, from before M60, compares shas.
 
 The counters' names carry a random token per run, and a script that loads or saves
 a function gets `locals`, `eval` and `exec` shadowed, so it cannot name or reach

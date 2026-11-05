@@ -123,6 +123,11 @@ NOTE = 'def note() -> str:\n    return """first\nsecond"""\n'
 NOTE_INDENTED = 'def note() -> str:\n    return """first\n    second"""\n'
 
 
+def _lf(text):
+    """`text` with `\\r\\n` and `\\r` line endings as `\\n`, as the shelf holds a version."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _episode(pool, tmp_path, fns, saved, copy, name="divide"):
     """Save `saved` and return through it, run the unsaved `copy`, recover, score all three, freeze.
 
@@ -133,7 +138,7 @@ def _episode(pool, tmp_path, fns, saved, copy, name="divide"):
     first = runner.run(saved + f"{name}()", fns, save=[name])
     second = runner.run(copy, fns)
     recovery = runner.run("1", fns)
-    assert (first.ok, first.saved, first.returned) == (True, [name], {name: source_sha(saved)})
+    assert (first.ok, first.saved, first.returned) == (True, [name], {name: source_sha(_lf(saved))})
     assert (second.saved, recovery.ok) == ([], True)
     records = [script_record(saved + f"{name}()", first), script_record(copy, second), script_record("1", recovery)]
     # Without the copy the saved version is proven, so whatever the episode refuses, the copy refused.
@@ -362,7 +367,7 @@ def test_a_definition_after_lone_carriage_returns_is_watched_on_its_own_line():
 
 def test_a_script_with_lone_carriage_returns_runs_and_its_definition_is_counted(pool, tmp_path, fns):
     runner = ScriptRunner(pool, shelf=Shelf(tmp_path / "shelf"))
-    version = {"divide": source_sha("def divide(divisor=1):\r    return 1 / divisor\n")}
+    version = {"divide": source_sha(DIVIDE_ON_TWO_LINES)}
 
     returned = runner.run(LONE_CR + "divide(2)", fns, save=["divide"])
     raised = runner.run(LONE_CR + "divide(0)", fns)
@@ -372,6 +377,24 @@ def test_a_script_with_lone_carriage_returns_runs_and_its_definition_is_counted(
     assert raised.phase == "runtime"
     assert "ZeroDivisionError" in raised.error
     assert raised.raised == version
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r", "\r\n"], ids=["lf", "lone-cr", "crlf"])
+def test_a_version_saved_and_returned_in_one_script_is_verified_and_frozen_whatever_its_line_endings(
+    pool, tmp_path, fns, ending
+):
+    """The sha the run returns and the ledger saves is the one the shelf reports when it reads the file back."""
+    shelf = Shelf(tmp_path / "shelf")
+    code = f"def divide(divisor=1):{ending}    return 1 / divisor{ending}divide()"
+
+    result = ScriptRunner(pool, shelf=shelf).run(code, fns, save=["divide"])
+    shelf.mark_verified(_proven([script_record(code, result)]))
+
+    assert (result.ok, result.output, result.saved) == (True, 1.0, ["divide"]), result.error
+    assert (shelf.root / "divide.py").read_bytes() == DIVIDE_ON_TWO_LINES.encode()
+    assert result.returned == shelf.versions() == {"divide": source_sha(DIVIDE_ON_TWO_LINES)}
+    assert shelf.counts()["divide"]["verified"] == 1
+    assert Shelf(shelf.root, frozen=True).names() == ["divide"]
 
 
 def test_an_unsaved_copy_that_returns_does_not_block_the_verification(pool, tmp_path, fns):

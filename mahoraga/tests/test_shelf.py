@@ -86,6 +86,16 @@ def test_a_top_level_definition_is_saved_with_its_text_exactly_as_written(shelf)
     assert events(shelf)[0]["sha"] == source_sha(REPORT)
 
 
+@pytest.mark.parametrize("ending", ["\r", "\r\n"], ids=["lone-cr", "crlf"])
+def test_a_definition_is_saved_with_newline_endings_so_its_ledger_sha_is_the_one_the_shelf_reports(shelf, ending):
+    code = REPORT.replace("\n", ending) + 'report(["kitchen"])'
+
+    assert definition_source(code, top_level_defs(code)["report"]) == REPORT
+    assert shelf.save(code, ["report"])[0] == ["report"]
+    assert (shelf.root / "report.py").read_bytes() == REPORT.encode()
+    assert events(shelf)[0]["sha"] == shelf.versions()["report"] == source_sha(REPORT)
+
+
 def test_a_form_feed_before_a_top_level_definition_takes_nothing_off_its_lines(shelf):
     """The def's column offset is 1 and its text starts at the def, so the text and sha stay as written."""
     note = 'def note():\n    return """first\n    second"""\n'

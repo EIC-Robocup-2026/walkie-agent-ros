@@ -34,9 +34,10 @@ def source_sha(source: str) -> str:
 def shape(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     """The sha of a definition's syntax tree, which an episode's veto compares versions by.
 
-    The tree has no positions, whitespace, comments or line endings, so a copy under an
-    `if`, inside another function or laid out another way has the shape of the same
-    definition at top level. Decorators are left out, as a definition's text starts at
+    The tree keeps no positions, comments, line endings or layout, only the values the
+    code holds, string values included, so a copy under an `if`, inside another
+    function or laid out another way has the shape of the same definition at top
+    level, while a copy whose string holds other spaces does not. Decorators are left out, as a definition's text starts at
     its `def`, so a decorated copy has its undecorated version's shape. `ast.dump`
     differs between Python versions, so a shape is only compared within the episode
     that recorded it.
@@ -67,12 +68,17 @@ def top_level_defs(code: str) -> dict[str, ast.FunctionDef]:
 def definition_source(code: str, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     """A definition's text as written, from its `def` to its last line, as a file on the shelf holds it.
 
-    Its sha names the version in the ledger. A top-level definition's text is exactly
-    what was saved, so every sha on a shelf stays valid. A copy at another depth keeps
-    the scope's indentation on its later lines, so its sha differs from the same
+    Its sha names the version in the ledger. Each line ends in `\\n`, because the shelf
+    reads its files with universal newlines, so the sha of a version saved from a
+    script with `\\r` or `\\r\\n` endings must be the sha the shelf reports for it later.
+    Python reads those endings as `\\n` everywhere, inside strings too, so this changes
+    nothing the definition does. A top-level definition with `\\n` endings keeps the
+    text it had before, so every sha on a shelf stays valid. A copy at another depth
+    keeps the scope's indentation on its later lines, so its sha differs from the same
     definition's at top level. An episode's veto compares shapes, not shas, for that.
     """
-    return ast.get_source_segment(code, node) + "\n"
+    text = ast.get_source_segment(code, node)
+    return text.replace("\r\n", "\n").replace("\r", "\n") + "\n"
 
 
 def _defaults_are_literal(node: ast.FunctionDef) -> bool:

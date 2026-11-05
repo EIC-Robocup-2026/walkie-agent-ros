@@ -78,9 +78,11 @@ class ScriptResult:
     on the shelf. `unwatched` lists, as (name, sha) pairs, every definition no wrapper
     could watch, which the scorer counts as raised. A name may appear in it more than
     once, one pair per version. A sha is of the version's text, as the ledger keeps it.
-    `shapes` maps the sha of each version the run named, a loaded shelf function or
-    one of the script's definitions, to its shape (shelf.shape), which the scorer's veto
-    compares, so a copy at another depth or laid out another way counts as the same version.
+    `shapes` maps the sha of each version the run named, a loaded shelf function or,
+    while the shelf can still verify, one of the script's own definitions, to its shape
+    (shelf.shape), which the scorer's veto compares, so a copy at another depth or laid
+    out another way counts as the same version. A frozen or shelf-less run watches no own
+    definitions (M51), so it maps none of them.
     """
 
     ok: bool = False

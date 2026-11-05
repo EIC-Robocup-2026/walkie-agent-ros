@@ -57,14 +57,20 @@ def script_record(code: str, result: ScriptResult) -> dict[str, Any]:
         "shelf_raised": result.shelf_raised,
         "returned": result.returned,
         "raised": result.raised,
+        "unwatched": [list(version) for version in result.unwatched],
         "saved": result.saved,
         "refused": result.refused,
     }
 
 
 def _proven(scripts: Sequence[Mapping[str, Any]]) -> dict[str, str]:
-    """Per name, the last version that returned in an episode and that nothing raised through in it."""
+    """Per name, the last version that returned in an episode and that nothing raised through in it.
+
+    A version that ran where no wrapper watched it counts as raised. A record from
+    before `unwatched` existed has none.
+    """
     raised = {version for script in scripts for version in script["raised"].items()}
+    raised |= {tuple(version) for script in scripts for version in script.get("unwatched", ())}
     proven: dict[str, str] = {}
     for script in scripts:
         for name, sha in script["returned"].items():
@@ -96,7 +102,8 @@ def ground_truth(shelf: Shelf | None = None) -> Scorer:
 
     A success marks, per function name, the last version that ran and returned in it
     as verified. A function it saved or loaded and never ran earns nothing, and neither
-    does a version that raised, even if its caller caught that.
+    does a version that raised, even if its caller caught that, or one whose text also
+    ran in the episode where no wrapper watched it.
     """
 
     @scorer(metrics=[mean()], name=SCORER)

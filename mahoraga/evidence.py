@@ -49,28 +49,26 @@ _logger = logging.getLogger(__name__)
 class Watch:
     """The counters of one run, over the shelf functions it loads and the script's own definitions.
 
-    `own` names the script's definitions to watch, saved or not, since the same text
-    may already be on the shelf. A watched definition is renamed on its own line, so
-    its line numbers hold, and the wrapper takes its name. A stub keeps its signature
-    in the type check. One that no wrapper can stand in for is in `unseen_versions`:
-    a raise through it would go unseen, so it counts as raised. With nothing to watch,
-    the run has no loader and no token.
+    With `watch_own`, the script's definitions are watched too, saved or not, since the
+    same text may already be on the shelf. A watched definition is renamed on its own
+    line, so its line numbers hold, and the wrapper takes its name. A stub keeps its
+    signature in the type check. Every other definition in the script, at any depth, is
+    in `unwatched` as a (name, sha) pair: a raise through it would go unseen, so it
+    counts as raised. With nothing to watch, the run has no loader and no token.
     """
 
     def __init__(
         self,
         code: str,
         shelf_versions: Mapping[str, str],
-        own: Collection[str] = (),
+        *,
+        watch_own: bool = False,
         reserved: Collection[str] = (),
     ) -> None:
-        candidates = _candidates(code, own, reserved)
-        watched = _watchable(code, candidates)
+        watched = _watchable(code, reserved) if watch_own else {}
         self._tag = f"_h{secrets.token_hex(8)}"
         self.own_versions = {name: _sha(code, node) for name, node in watched.items()}
-        self.unseen_versions = {
-            name: _sha(code, node) for name, node in candidates.items() if name not in watched
-        }
+        self.unwatched = _unwatched(code, watched) if watch_own else []
         self.code = _renamed(code, watched, self._tag)
         self.stubs = "".join(f"{header(definition_source(code, node))}\n" for node in watched.values())
         self.loader = _loader(self._tag, shelf_versions, watched) if shelf_versions or watched else ""
@@ -108,30 +106,22 @@ class Watch:
         return re.sub(frame, "", text).replace(f"{self._tag}_", "")
 
 
-def _candidates(code: str, own: Collection[str], reserved: Collection[str]) -> dict[str, ast.FunctionDef]:
-    """The top-level definitions in `own` whose text the shelf could hold.
-
-    A name the loader defines itself is left out, because a wrapper under it would give
-    the loader's replacement the source's sha. So is a reserved name. The shelf refuses
-    both, so no version of them can be verified.
-    """
-    return {
-        name: node
-        for name, node in top_level_defs(code).items()
-        if name in own and name not in reserved and name not in SHADOWED
-    }
-
-
-def _sha(code: str, node: ast.FunctionDef) -> str:
+def _sha(code: str, node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     return source_sha(definition_source(code, node))
 
 
-def _watchable(code: str, defs: Mapping[str, ast.FunctionDef]) -> dict[str, ast.FunctionDef]:
-    """The definitions a wrapper can stand in for: bound once, on a line that reads `def name`.
+def _watchable(code: str, reserved: Collection[str]) -> dict[str, ast.FunctionDef]:
+    """The top-level definitions a wrapper can stand in for: bound once, on a line that reads `def name`.
 
-    Anything else could rebind the name past the wrapper, so it goes unwatched. Its run
-    earns no evidence, and the caller counts it as raised.
+    Anything else could rebind the name past the wrapper, so it goes unwatched. A name
+    the loader defines itself goes unwatched as well, because a wrapper under it would
+    give the loader's replacement the source's sha, and so does a reserved name.
     """
+    defs = {
+        name: node
+        for name, node in top_level_defs(code).items()
+        if name not in reserved and name not in SHADOWED
+    }
     if not defs:
         return {}
     bound: Counter[str] = Counter()
@@ -146,6 +136,28 @@ def _watchable(code: str, defs: Mapping[str, ast.FunctionDef]) -> dict[str, ast.
         for name, node in defs.items()
         if not node.decorator_list and bound[name] == 1 and re.match(rf"def\s+{name}\b", lines[node.lineno - 1])
     }
+
+
+def _unwatched(code: str, watched: Mapping[str, ast.FunctionDef]) -> list[tuple[str, str]]:
+    """Every other definition in the script, at any depth, as sorted (name, sha) pairs.
+
+    That covers a second definition of a name, one under an `if` or inside another
+    function, and a decorated one. Each may run and raise where no wrapper sees it,
+    and its text may match a shelf version, so the caller counts it as raised.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return []
+    kept = {(node.lineno, node.col_offset) for node in watched.values()}
+    return sorted(
+        {
+            (node.name, _sha(code, node))
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and (node.lineno, node.col_offset) not in kept
+        }
+    )
 
 
 def _renamed(code: str, own: Mapping[str, ast.FunctionDef], tag: str) -> str:

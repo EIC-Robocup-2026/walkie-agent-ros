@@ -10,7 +10,7 @@ import mahoraga.driver as driver
 from mahoraga.driver import Budgets, ScriptRunner
 from mahoraga.evidence import Watch
 from mahoraga.shelf import Shelf, source_sha, top_level_defs
-from mahoraga.tasks import _proven
+from mahoraga.tasks import _proven, script_record
 
 VALUE ="def value() -> int:\n    return 1\n"
 BAD = 'def bad() -> str:\n    return go_to("garage")\n'
@@ -53,28 +53,60 @@ def test_a_raise_in_a_failed_script_counts_against_the_version_it_ran(pool, tmp_
     assert _proven([{"returned": r.returned, "raised": r.raised} for r in (first, second)]) == {}
 
 
+DIVIDE = "def divide(divisor=1): return 1 / divisor\n"
+
+
+def _verify_after(pool, tmp_path, fns, second_code):
+    """Save and return DIVIDE in one script, run `second_code` unsaved, score both, freeze."""
+    shelf = Shelf(tmp_path / "shelf")
+    runner = ScriptRunner(pool, shelf=shelf)
+    first = runner.run(DIVIDE + "divide()", fns, save=["divide"])
+    second = runner.run(second_code, fns)
+    assert first.returned == {"divide": source_sha(DIVIDE)}
+    assert second.saved == []
+    proven = _proven([script_record("", first), script_record(second_code, second)])
+    shelf.mark_verified(proven)
+    return proven, Shelf(shelf.root, frozen=True).names()
+
+
 @pytest.mark.parametrize(
     "second_code",
     [
-        "divide(0)",
-        # Bound twice, so no wrapper can watch it: its raise is not seen, so it counts.
-        "divide = divide\ndivide(0)",
+        # Watched: the wrapper sees the raise.
+        DIVIDE + "divide(0)",
+        # The others go unwatched, so their versions count as raised.
+        DIVIDE + "divide = divide\ndivide(0)",
+        DIVIDE + "try:\n    divide(0)\nexcept ZeroDivisionError:\n    pass\n"
+        "def divide(divisor=1): return 2 / divisor\ndivide()",
+        "if True:\n    def divide(divisor=1): return 1 / divisor\ndivide(0)",
+        "def outer():\n    def divide(divisor=1): return 1 / divisor\n    return divide(0)\nouter()",
     ],
+    ids=["watched", "bound-twice", "redefined-later", "conditional", "nested"],
 )
 def test_a_raise_through_an_unsaved_copy_keeps_the_version_off_the_frozen_shelf(pool, tmp_path, fns, second_code):
     """The second script asks to save nothing, so only its raise can stop the verification."""
-    divide = "def divide(divisor=1):\n    return 1 / divisor\n"
-    shelf = Shelf(tmp_path / "shelf")
-    runner = ScriptRunner(pool, shelf=shelf)
+    proven, frozen = _verify_after(pool, tmp_path, fns, second_code)
 
-    first = runner.run(divide + "divide()", fns, save=["divide"])
-    second = runner.run(divide + second_code, fns)
+    assert "divide" not in proven
+    assert frozen == []
 
-    assert first.returned == {"divide": source_sha(divide)}
-    assert (second.ok, second.saved) == (False, [])
-    assert second.raised == first.returned
-    shelf.mark_verified(_proven([{"returned": r.returned, "raised": r.raised} for r in (first, second)]))
-    assert Shelf(shelf.root, frozen=True).names() == []
+
+def test_an_unsaved_copy_that_returns_does_not_block_the_verification(pool, tmp_path, fns):
+    proven, frozen = _verify_after(pool, tmp_path, fns, DIVIDE + "divide(2)")
+
+    assert proven == {"divide": source_sha(DIVIDE)}
+    assert frozen == ["divide"]
+
+
+def test_each_unwatched_version_of_a_name_is_kept(run):
+    code = "def mine() -> int:\n    return 1\n\nfirst = mine()\n\ndef mine() -> int:\n    return 2\n\nfirst + mine()"
+
+    result = run(code)
+
+    assert result.output == 3
+    assert result.raised == {}
+    assert [name for name, _ in result.unwatched] == ["mine", "mine"]
+    assert len({sha for _, sha in result.unwatched}) == 2
 
 
 def test_a_function_that_ran_is_used_and_returned(run, shelf):
@@ -436,7 +468,7 @@ _SHADOWED = ["locals", "eval", "exec"]
 def test_a_name_the_loader_defines_is_never_watched(name):
     code = f"def {name}() -> int:\n    return 73\n\n{name}()"
 
-    watch = Watch(code, {"value": "sha"}, [name])
+    watch = Watch(code, {"value": "sha"}, watch_own=True)
 
     assert watch.own_versions == {}
     assert watch.code == code
@@ -559,8 +591,9 @@ def test_a_definition_bound_twice_runs_as_written_and_earns_no_evidence(run, cod
 
     assert (result.ok, result.output) == (True, output), result.error
     assert result.returned == {}
-    # Unwatched, so a raise through it would go unseen: it counts as raised.
-    assert list(result.raised) == ["mine"]
+    # Unwatched, so a raise through it would go unseen: the scorer counts it as raised.
+    assert result.raised == {}
+    assert {name for name, _ in result.unwatched} == {"mine"}
 
 
 def test_a_saved_definition_keeps_its_line_numbers_and_name_in_errors(run):

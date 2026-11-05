@@ -12,6 +12,7 @@ import ast
 import hashlib
 import json
 import os
+import re
 import tempfile
 import threading
 import time
@@ -24,6 +25,8 @@ from mahoraga import home
 LEDGER = "ledger.jsonl"
 # The loader defines these itself, so a saved function under one could not run as saved.
 SHADOWED = frozenset({"locals", "eval", "exec"})
+# The line endings Python's parser counts, captured so a split keeps them.
+_LINE_END = re.compile(r"(\r\n|\r|\n)")
 
 
 def source_sha(source: str) -> str:
@@ -51,17 +54,27 @@ def definition_source(code: str, node: ast.FunctionDef | ast.AsyncFunctionDef) -
     """A definition's text without the indentation of the scope it sits in, as a file on the shelf holds it.
 
     The segment starts at the `def`, so its first line has no indentation, but each
-    later line keeps the scope's. Each later line loses the node's col_offset leading
-    characters when they are all whitespace, so a copy under an `if` or inside another
-    function has the text, and so the sha, it has at top level. A line with fewer, such
-    as a line of a multi-line string at a shallower indent, stays as it is. A top-level
-    definition sits at column 0, so it loses nothing and keeps every sha on a shelf valid.
+    later line keeps the scope's. Each later line loses as many leading characters as
+    the scope's indentation has, when they are all whitespace, so a copy under an `if`
+    or inside another function has the text, and so the sha, it has at top level. A line
+    with fewer, such as a line of a multi-line string at a shallower indent, stays as it
+    is. A top-level definition has no indentation, so it loses nothing and keeps every
+    sha on a shelf valid.
     """
-    # col_offset counts UTF-8 bytes, but only indentation, which is ASCII, precedes a def.
-    width = node.col_offset
-    first, *rest = ast.get_source_segment(code, node).split("\n")
-    rest = [line[width:] if len(line) >= width and line[:width].isspace() else line for line in rest]
-    return "\n".join([first, *rest]) + "\n"
+    # Only whitespace precedes a def on its line, and it is ASCII, so the UTF-8 byte
+    # count in col_offset is also a character count. Python resets the indentation
+    # column at a form feed, so the indentation is what follows the last one: a
+    # top-level def after a form feed has col_offset 1 and no indentation.
+    prefix = _LINE_END.split(code)[2 * (node.lineno - 1)][: node.col_offset]
+    width = len(prefix) - (prefix.rfind("\f") + 1)
+    # Lines end where the parser ends them, at \r\n, \r or \n. Even places hold the
+    # lines and odd places their endings, which are kept as written.
+    parts = _LINE_END.split(ast.get_source_segment(code, node))
+    for i in range(2, len(parts), 2):
+        line = parts[i]
+        if len(line) >= width and line[:width].isspace():
+            parts[i] = line[width:]
+    return "".join(parts) + "\n"
 
 
 def _defaults_are_literal(node: ast.FunctionDef) -> bool:

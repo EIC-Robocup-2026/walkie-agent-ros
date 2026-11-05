@@ -136,6 +136,19 @@ NOTE = 'def note() -> str:\n    return """first\nsecond"""\n'
             "divide",
         ),
         (DIVIDE_ON_TWO_LINES, "if True:\n\tdef divide(divisor=1):\n\t    return 1 / divisor\n", "divide"),
+        # Python counts indentation from the last form feed, so the \f is not part of it.
+        (DIVIDE_ON_TWO_LINES, "if True:\n\f    def divide(divisor=1):\n        return 1 / divisor\n", "divide"),
+        # A lone \r ends a line for the parser, and each ending is kept as written.
+        (
+            "def divide(divisor=1):\r    return 1 / divisor\n",
+            "if True:\r    def divide(divisor=1):\r        return 1 / divisor\r",
+            "divide",
+        ),
+        (
+            "def divide(divisor=1):\r\n    return 1 / divisor\n",
+            "if True:\r\n    def divide(divisor=1):\r\n        return 1 / divisor\r\n",
+            "divide",
+        ),
         # A line with less than the scope's indentation, here inside a string, stays as it is.
         (NOTE, 'if True:\n    def note() -> str:\n        return """first\nsecond"""\n', "note"),
         (NOTE, 'if True:\n    def note() -> str:\n        return """first\n    second"""\n', "note"),
@@ -145,6 +158,9 @@ NOTE = 'def note() -> str:\n    return """first\nsecond"""\n'
         "nested",
         "two-scopes-deep",
         "tab-indented",
+        "form-feed-before-the-indentation",
+        "lone-carriage-return-line-endings",
+        "crlf-line-endings",
         "string-line-at-column-0",
         "string-line-indented-with-the-rest",
     ],

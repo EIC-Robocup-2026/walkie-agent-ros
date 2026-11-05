@@ -723,6 +723,15 @@ def test_a_model_that_cannot_be_built_stops_before_ros_init(cli, capsys, monkeyp
     assert startup_error(cli, capsys) == "no API key"
 
 
+def test_a_bad_base_url_stops_with_one_line_before_ros_init(cli, capsys, monkeypatch):
+    # The real builder, since the client's own URL error is what would escape the catch.
+    monkeypatch.setattr(main, "build_model", build_model)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-real")
+    text = MODEL_CONFIG + 'base_url = "http://127.0.0.1:bad/v1"\n' + TEAM_CONFIG
+    message = startup_error(cli, capsys, config=broken_file(cli, text))
+    assert message.startswith("[openai].base_url has a bad port in 'http://127.0.0.1:bad/v1'")
+
+
 def test_a_message_of_several_lines_is_printed_as_one(cli, capsys, monkeypatch):
     # pydantic's ValidationError, from a model client given a bad setting, has this shape.
     def invalid(_config):
@@ -760,8 +769,9 @@ def test_a_missing_openai_key_stops_with_one_line_before_ros_init(cli, capsys, m
     assert "OPENAI_API_KEY" in startup_error(cli, capsys)
 
 
-def test_an_error_once_ros_has_started_is_not_a_startup_error(cli, capsys, monkeypatch):
-    # Only the reading before ROS starts ends in one line. After that, the traceback stays.
+def test_an_error_raised_by_ros_init_is_not_a_startup_error(cli, capsys, monkeypatch):
+    # Only the reading before ROS starts ends in one line. From rclpy.init on, the traceback
+    # stays. The partial start failure tests cover errors after a successful init.
     def fails(**_kwargs):
         raise ValueError("rcl could not start")
 

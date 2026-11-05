@@ -126,6 +126,34 @@ def test_a_missing_openai_key_is_a_value_error_that_names_it(monkeypatch):
     assert isinstance(caught.value.__cause__, openai.OpenAIError)
 
 
+@pytest.mark.parametrize("vendor", ["openai", "ollama"])
+@pytest.mark.parametrize(
+    ("base_url", "reason"),
+    [
+        ("http://127.0.0.1:bad/v1", "has a bad port"),
+        ("http://127.0.0.1:70000/v1", "has a bad port"),
+        ("127.0.0.1:1/v1", "must be an http or https URL with a host"),
+        ("ftp://127.0.0.1/v1", "must be an http or https URL with a host"),
+        ("http:///v1", "must be an http or https URL with a host"),
+        (42, "must be a string"),
+    ],
+    ids=["word-port", "port-out-of-range", "no-scheme", "other-scheme", "no-host", "not-a-string"],
+)
+def test_a_bad_base_url_is_a_value_error_that_names_the_setting(api_key, vendor, base_url, reason):
+    # The HTTP client's own URL error is neither a ValueError nor the SDK's error, so
+    # main() would print its traceback with code 1 instead of one line with code 2.
+    config = config_for(vendor)
+    config[vendor]["base_url"] = base_url
+    with pytest.raises(ValueError, match=rf"^\[{vendor}\]\.base_url {reason}"):
+        build_model(config)
+
+
+def test_the_repo_config_base_urls_pass_the_check(api_key):
+    config = load_config(REPO_CONFIG)
+    for vendor in ("openai", "ollama"):
+        build_model({**config, "vendor": {"complex_model": vendor}})
+
+
 # -- The fallback -----------------------------------------------------------------
 
 

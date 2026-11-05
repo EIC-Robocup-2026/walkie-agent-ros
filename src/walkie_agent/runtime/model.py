@@ -10,6 +10,7 @@ import os
 import tomllib
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
@@ -83,6 +84,8 @@ def _chat_model(config: dict[str, Any], vendor: str, name: str) -> BaseChatModel
     # budget, so they are off where the provider has any.
     timeout_s = agent_settings(config)["deadline_s"]
     base_url = config.get(vendor, {}).get("base_url")
+    if base_url is not None:
+        _check_base_url(vendor, base_url)
     if vendor == "openai":
         from langchain_openai import ChatOpenAI
         from openai import OpenAIError
@@ -97,3 +100,22 @@ def _chat_model(config: dict[str, Any], vendor: str, name: str) -> BaseChatModel
 
         return ChatOllama(model=name, base_url=base_url, client_kwargs={"timeout": timeout_s})
     raise ValueError(f"Unknown model vendor {vendor!r}; use openai or ollama.")
+
+
+def _check_base_url(vendor: str, base_url: object) -> None:
+    """Refuse a base_url the HTTP client would refuse, as a ValueError that main() reports in one line.
+
+    The client raises its own URL error class from inside the SDK, which is neither a
+    ValueError nor the SDK's error, so the check runs here, before the client is built.
+    It covers the scheme, the host and the port, not every rule of the client's parser.
+    """
+    where = f"[{vendor}].base_url"
+    if not isinstance(base_url, str):
+        raise ValueError(f"{where} must be a string, not {base_url!r}.")
+    parts = urlsplit(base_url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"{where} must be an http or https URL with a host, not {base_url!r}.")
+    try:
+        parts.port
+    except ValueError as e:
+        raise ValueError(f"{where} has a bad port in {base_url!r}: {e}.") from e

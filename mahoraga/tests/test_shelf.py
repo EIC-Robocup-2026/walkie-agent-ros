@@ -85,6 +85,17 @@ def test_a_top_level_definition_is_saved_with_its_text_exactly_as_written(shelf)
     assert events(shelf)[0]["sha"] == source_sha(REPORT)
 
 
+def test_a_form_feed_before_a_top_level_definition_takes_nothing_off_its_lines(shelf):
+    """The def's column offset is 1, but a form feed is not indentation, so the text and sha stay as written."""
+    note = 'def note():\n    return """first\n    second"""\n'
+    code = "\f" + note + "note()"
+
+    assert definition_source(code, top_level_defs(code)["note"]) == note
+    assert shelf.save(code, ["note"])[0] == ["note"]
+    assert (shelf.root / "note.py").read_text() == note
+    assert events(shelf)[0]["sha"] == source_sha(note)
+
+
 def test_a_failed_run_saves_nothing(shelf_runner, shelf, fns):
     result = shelf_runner.run(FETCH + '\ngo_to("garage")', fns, save=["to_shelf"])
 

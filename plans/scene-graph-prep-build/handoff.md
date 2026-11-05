@@ -161,3 +161,32 @@ agent's decision log records each fix and its cost as P32 to P41.
   this pairing. Brief line 145 says the same since agent commit `6418405`.
 - For walkie-agent-ros, the follow-up above now means walkie-vision `60721b6` and
   walkie-database `9ad2d36`, not `00a4fed` and `704eb24`.
+
+## After the re-check fixes, 2026-11-05
+
+The re-check of the review fixes found RV-F1 and RV-F2 in walkie-vision and R-F1
+in walkie-database, and the fixes moved both final commits again. The decision log
+records them as P42 to P44, and P39 is amended.
+
+| Repository | Worktree | Commit | Subject |
+|---|---|---|---|
+| walkie-vision | `/var/tmp/wv-prep` | `be126f6b9e48c0cdec1b299864d583453fe28205` | fix: drop the held images when the ROS clock jumps back |
+| walkie-database | `/var/tmp/wd-prep` | `08b0e4ce26acdbe644ebd370c81e565c42cef82e` | build: pin walkie-vision at the clock-jump fix |
+
+- walkie-vision `be126f6` reverts the wall-time bound of `60721b6` and clears the
+  held images on a backward clock jump instead (P42).
+- walkie-database `27e8391` refuses a reseed whose `--output` is its
+  `--previous-seed`, and the docs show a reseed to a second path (P43). `08b0e4c`
+  moves the pin to `be126f6` (P44).
+- `walkie_vision_msgs` did not change between `60721b6` and `be126f6`, and neither
+  `pixi.lock` nor `pixi.toml` changed in either repository.
+- On the final commits, walkie-vision's suite gave 1213 passed and 1 skipped (the
+  missing `buffalo_l` model), and walkie-database's gave 1640 passed. Both strict
+  docs builds passed.
+- The pair gate ran once at these commits with `--build` on domain 89 and passed
+  all 20 checks. Its report is `/var/tmp/wa-impl-prep/pair-gate-be126f6/report.json`,
+  and its summary is kept beside this file as `pair-gate-be126f6.log`.
+- Codex re-checks of both fixes are running. Until they report, treat these
+  commits as reviewed only by their tests.
+- For walkie-agent-ros, the follow-up above now means walkie-vision `be126f6` and
+  walkie-database `08b0e4c`.

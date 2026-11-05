@@ -397,6 +397,79 @@ def test_a_version_saved_and_returned_in_one_script_is_verified_and_frozen_whate
     assert Shelf(shelf.root, frozen=True).names() == ["divide"]
 
 
+@pytest.mark.parametrize("ending", ["\r", "\r\n"], ids=["lone-cr", "crlf"])
+def test_a_string_across_lines_holds_the_same_value_when_it_runs_and_once_it_is_saved(pool, tmp_path, fns, ending):
+    """Monty would keep the CR inside the string, while the shelf saves the definition with LF (M62)."""
+    shelf = Shelf(tmp_path / "shelf")
+    code = f'def note() -> str:{ending}    return """first{ending}second"""{ending}note()'
+
+    result = ScriptRunner(pool, shelf=shelf).run(code, fns, save=["note"])
+    shelf.mark_verified(_proven([script_record(code, result)]))
+    frozen = ScriptRunner(pool, shelf=Shelf(shelf.root, frozen=True)).run("note()", fns)
+
+    assert (result.ok, result.output, result.saved) == (True, "first\nsecond", ["note"]), result.error
+    assert (frozen.ok, frozen.output, frozen.shelf_used) == (True, "first\nsecond", ["note"]), frozen.error
+
+
+def test_a_string_across_lone_carriage_returns_compares_as_python_reads_it(pool, tmp_path, fns):
+    """The string holds LF, so it is not the escaped CR, and the division raises before anything is saved."""
+    code = "def f():\r    return 1 / (\"\"\"a\rb\"\"\" == 'a\\rb')\rf()"
+
+    result = ScriptRunner(pool, shelf=Shelf(tmp_path / "shelf")).run(code, fns, save=["f"])
+
+    assert result.phase == "runtime"
+    assert "ZeroDivisionError" in result.error
+    assert result.saved == [] and result.returned == {}
+
+
+def test_an_error_after_lone_carriage_returns_names_its_own_lines(pool, fns):
+    code = "# a\r# b\rdef divide(divisor=1):\r    return 1 / divisor\rdivide(0)"
+
+    result = ScriptRunner(pool).run(code, fns)
+
+    assert result.phase == "runtime"
+    assert "line 5" in result.error and "line 4" in result.error
+
+
+@pytest.mark.parametrize("line", ["# \x00", 's = "\x00"'], ids=["comment", "string"])
+def test_a_script_that_python_cannot_parse_does_not_run(pool, tmp_path, fns, line):
+    """Monty would run it, with none of its definitions seen by the evidence's parser (M63)."""
+    shelf = Shelf(tmp_path / "shelf")
+    runner = ScriptRunner(pool, shelf=shelf)
+    first = runner.run(DIVIDE_ON_TWO_LINES + "divide()", fns, save=["divide"])
+    code = DIVIDE_ON_TWO_LINES + 'go_to("kitchen")\n' + line + "\ntry:\n    divide(0)\nexcept ZeroDivisionError:\n    pass\n1"
+
+    second = runner.run(code, fns, save=["divide"])
+
+    assert (second.ok, second.phase) == (False, "syntax")
+    assert "null bytes" in second.error
+    assert second.calls == [] and second.returned == second.raised == {} and second.shelf_used == []
+    assert second.refused == {"divide": "The script did not succeed."}
+    assert _events(shelf, "divide") == {"run": 0, "fail": 0, "verified": 0}
+    assert first.ok
+
+
+def test_a_u_prefix_leaves_a_definition_its_shape():
+    saved = _definition('def divide(divisor=1):\n    return "s" * (1 // divisor)\n', "divide")
+    prefixed = _definition('def divide(divisor=1):\n    return u"s" * (1 // divisor)\n', "divide")
+
+    assert shape(prefixed) == shape(saved)
+    assert prefixed.body[0].value.left.kind == "u"
+
+
+def test_a_raise_through_a_copy_with_a_u_prefix_keeps_the_saved_version_off_the_frozen_shelf(pool, tmp_path, fns):
+    """The prefix changes no value, so the copy computes what the saved version does (M64)."""
+    saved = 'def divide(divisor=1):\n    return "s" * (1 // divisor)\n'
+    copy = 'def divide(divisor=1):\n    return u"s" * (1 // divisor)\n'
+    code = copy + "try:\n    divide(0)\nexcept ZeroDivisionError:\n    pass\n1"
+
+    second, proven, frozen = _episode(pool, tmp_path, fns, saved, code)
+
+    assert second.ok and second.raised == {"divide": source_sha(copy)}
+    assert "divide" not in proven
+    assert frozen == []
+
+
 def test_an_unsaved_copy_that_returns_does_not_block_the_verification(pool, tmp_path, fns):
     proven, frozen = _verify_after(pool, tmp_path, fns, DIVIDE + "divide(2)")
 

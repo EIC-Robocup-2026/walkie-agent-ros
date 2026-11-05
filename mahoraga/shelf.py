@@ -37,14 +37,20 @@ def shape(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     The tree keeps no positions, comments, line endings or layout, only the values the
     code holds, string values included, so a copy under an `if`, inside another
     function or laid out another way has the shape of the same definition at top
-    level, while a copy whose string holds other spaces does not. Decorators are left out, as a definition's text starts at
-    its `def`, so a decorated copy has its undecorated version's shape. `ast.dump`
-    differs between Python versions, so a shape is only compared within the episode
-    that recorded it.
+    level, while a copy whose string holds other spaces does not. A string's `u`
+    prefix is left out too, as it changes no value (M64). Decorators are left out, as
+    a definition's text starts at its `def`, so a decorated copy has its undecorated
+    version's shape. A copy matches only as a definition under the same name: one
+    bound to the name another way, as a lambda or a renamed definition, is not seen
+    (M65). `ast.dump` differs between Python versions, so a shape is only compared
+    within the episode that recorded it.
     """
-    # A shallow copy, so the caller's node keeps its decorators.
-    bare = copy.copy(node)
+    # A copy, so the caller's node keeps its decorators and its prefixes.
+    bare = copy.deepcopy(node)
     bare.decorator_list = []
+    for part in ast.walk(bare):
+        if isinstance(part, ast.Constant):
+            part.kind = None
     return source_sha(ast.dump(bare, include_attributes=False))
 
 
@@ -71,8 +77,10 @@ def definition_source(code: str, node: ast.FunctionDef | ast.AsyncFunctionDef) -
     Its sha names the version in the ledger. Each line ends in `\\n`, because the shelf
     reads its files with universal newlines, so the sha of a version saved from a
     script with `\\r` or `\\r\\n` endings must be the sha the shelf reports for it later.
-    Python reads those endings as `\\n` everywhere, inside strings too, so this changes
-    nothing the definition does. A top-level definition with `\\n` endings keeps the
+    The runner gives Monty the script with `\\n` endings already (M62), so this text is
+    the text that ran. Monty would keep a `\\r` inside a triple-quoted string, so a
+    caller that passes other endings gets the text Python reads, which may hold
+    another string than Monty ran. A top-level definition with `\\n` endings keeps the
     text it had before, so every sha on a shelf stays valid. A copy at another depth
     keeps the scope's indentation on its later lines, so its sha differs from the same
     definition's at top level. An episode's veto compares shapes, not shas, for that.

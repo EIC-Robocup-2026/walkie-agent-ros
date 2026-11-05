@@ -242,8 +242,8 @@ def test_a_type_error_is_reported_with_the_scripts_own_line(runner, fns):
 def test_broken_syntax_is_reported(runner, fns):
     result = runner.run("def (", fns)
 
-    assert not result.ok
-    assert "invalid-syntax" in result.error
+    assert (result.ok, result.phase) == (False, "syntax")
+    assert 'File "main.py", line 1' in result.error and "SyntaxError: invalid syntax" in result.error
 
 
 def test_no_state_crosses_from_one_script_to_the_next(pool, fns):

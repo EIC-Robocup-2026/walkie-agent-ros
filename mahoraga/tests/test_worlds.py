@@ -1,6 +1,7 @@
 """Every generated command has a world in which it can be done, over many seeds."""
 
 import json
+from datetime import datetime
 
 import pytest
 
@@ -71,6 +72,31 @@ def test_epochs_of_one_command_get_different_worlds():
     spec = commands("trial", 1)[0]["spec"]
 
     assert build_world(spec, world_seed(0, 1)) != build_world(spec, world_seed(0, 2))
+
+
+def test_the_clock_of_a_world_repeats_for_its_seed_and_differs_between_seeds():
+    records = commands("trial", 40)
+    clocks = {}
+    for record in records:
+        for epoch in (1, 2):
+            seed = world_seed(record["seed"], epoch)
+            facts = build_world(record["spec"], seed)["facts"]
+            # The clock comes from the seed alone, whatever the command.
+            assert build_world(records[0]["spec"], seed)["facts"] == facts
+            clocks[seed] = datetime.fromisoformat(facts["now"])
+
+    assert len(clocks) == 80
+    assert all(clock.year == 2026 for clock in clocks.values())
+    assert len({clock.date() for clock in clocks.values()}) > 60
+
+
+def test_the_start_snapshot_holds_the_clock_and_the_team():
+    record = commands("trial", 1)[0]
+    world = build_world(record["spec"], world_seed(record["seed"], 1))
+    start = FakeRobot(world).snapshot()
+
+    assert start["facts"] == world["facts"]
+    assert start["facts"]["team"] == {"name": "EIC", "country": "Thailand", "affiliation": "Chulalongkorn University"}
 
 
 def test_the_operator_never_fits_a_commands_selector():

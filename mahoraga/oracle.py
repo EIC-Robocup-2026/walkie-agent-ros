@@ -9,10 +9,21 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from mahoraga.checkers import MEASURES
+from mahoraga.checkers import ABOUT_YOURSELF, MEASURES
 from mahoraga.worlds import OPERATOR
 
 _INSTRUCTION_POINT = "instruction point"
+# Per talk topic, how the oracle's line starts and the get_facts key it ends with.
+_TALK_LINES = {
+    "the time": ("The time is", "time"),
+    "what day is today": ("Today is", "today"),
+    "what day is tomorrow": ("Tomorrow is", "tomorrow"),
+    "the day of the week": ("Today is", "day_of_week"),
+    "the day of the month": ("Today is day", "day_of_month"),
+    "your teams name": ("My team is", "team_name"),
+    "your teams country": ("My team is from", "team_country"),
+    "your teams affiliation": ("My team is from", "team_affiliation"),
+}
 
 
 def oracle_script(spec: Mapping[str, Any]) -> str:
@@ -123,7 +134,16 @@ def _approach(spec: Mapping[str, Any]) -> list[str]:
 
 
 def _talk(spec: Mapping[str, Any]) -> str:
-    return "\n".join([*_approach(spec), f"say({_q('About ' + spec['topic'])})"])
+    """Find the person, then say the fact the topic asks for, as get_facts returns it."""
+    topic = spec["topic"]
+    if topic == ABOUT_YOURSELF:
+        return "\n".join([*_approach(spec), 'say("I am Walkie, a home service robot.")'])
+    if topic not in _TALK_LINES:
+        raise ValueError(f"No oracle line for the talk topic {topic!r}.")
+    lead, key = _TALK_LINES[topic]
+    return "\n".join(
+        [*_approach(spec), "facts = get_facts()", f'say(f"{lead} {{facts[{_q(key)}]}}.")']
+    )
 
 
 def _escort(spec: Mapping[str, Any]) -> str:

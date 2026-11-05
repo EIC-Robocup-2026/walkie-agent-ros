@@ -10,6 +10,7 @@ from inspect_ai.log import resolve_sample_attachments
 from inspect_ai.model import ModelOutput, ModelUsage, get_model
 
 from mahoraga.arms import ARMS, INDUCT, PROMPT, ArmSetup
+from mahoraga.checkers import ABOUT_YOURSELF
 from mahoraga.commands import commands
 from mahoraga.gym import gpsr_task, run_episodes
 from mahoraga.oracle import oracle_script
@@ -29,6 +30,11 @@ def _first(kind, split="trial", **fields):
         if spec["kind"] == kind and all(spec[key] == value for key, value in fields.items()):
             return record
     raise AssertionError(f"No {kind} in the first 200 commands.")
+
+
+def _any_line_talk(split="trial"):
+    """A talk whose line is not checked, so a test about an arm can say anything there."""
+    return _first("talk", split, greet=False, topic=ABOUT_YOURSELF)
 
 
 def _index(record, split="trial"):
@@ -70,7 +76,7 @@ def _verified_shelf():
 
 
 def test_arm_a_gets_per_step_tools(gated):
-    record = _first("talk", greet=False)
+    record = _any_line_talk()
     spec = record["spec"]
     who = spec["person"].get("name") or spec["person"]["description"]
 
@@ -118,7 +124,7 @@ def _last_input(sample):
 
 def test_arm_c_calls_a_verified_function_from_the_frozen_shelf(gated):
     _verified_shelf()
-    record = _first("talk", greet=False)
+    record = _any_line_talk()
     spec = record["spec"]
     code = (
         f"go_to({json.dumps(spec['place'])})\n"
@@ -194,7 +200,7 @@ def test_arm_d_gets_atomics_and_bundles(gated):
 
 
 def test_the_induction_arm_saves_and_the_harness_verifies(gated):
-    record = _first("talk", "train", greet=False)
+    record = _any_line_talk("train")
     code = SPEAK + _talk_to(record["spec"], "speak_up()")
 
     _, sample = _induct(gated, record, ("run_script", {"code": code, "save": ["speak_up"]}))
@@ -246,11 +252,11 @@ def test_a_task_for_induction_takes_only_training_commands(gated, pool, split):
 
 
 def test_the_plans_flow_trains_first_then_evaluates_held_out_on_the_frozen_shelf(gated):
-    trained = _first("talk", "train", greet=False)
+    trained = _any_line_talk("train")
     _induct(gated, trained, ("run_script", {"code": SPEAK + _talk_to(trained["spec"], "speak_up()"), "save": ["speak_up"]}))
     assert Shelf(frozen=True).names() == ["speak_up"]
 
-    target = _first("talk", "heldout", greet=False)
+    target = _any_line_talk("heldout")
     log, sample = _run(
         gated,
         "C",
@@ -277,7 +283,7 @@ def test_a_function_saved_but_never_run_is_not_verified(gated):
 
 
 def test_a_function_saved_in_one_script_and_run_in_the_next_is_verified(gated):
-    record = _first("talk", "train", greet=False)
+    record = _any_line_talk("train")
 
     _, sample = _induct(
         gated,
@@ -292,7 +298,7 @@ def test_a_function_saved_in_one_script_and_run_in_the_next_is_verified(gated):
 
 
 def test_a_rewrite_that_never_ran_earns_nothing_from_the_version_that_did(gated):
-    record = _first("talk", "train", greet=False)
+    record = _any_line_talk("train")
     rewrite = 'def speak_up():\n    """Say goodbye."""\n    say("Goodbye.")\n'
 
     _, sample = _induct(
@@ -309,7 +315,7 @@ def test_a_rewrite_that_never_ran_earns_nothing_from_the_version_that_did(gated)
 
 
 def test_a_function_that_raised_once_is_not_verified_by_another_call_that_returned(gated):
-    record = _first("talk", "train", greet=False)
+    record = _any_line_talk("train")
     spec = record["spec"]
     code = (
         "def reach(place: str) -> str:\n    return go_to(place)\n\n"
@@ -328,7 +334,7 @@ def test_a_function_that_raised_once_is_not_verified_by_another_call_that_return
 # Each pair runs in both orders, so one order has the later version's sha sort first.
 @pytest.mark.parametrize(("first", "last"), [(2, 3), (3, 2)])
 def test_the_version_last_run_in_an_episode_is_verified_in_either_hash_order(gated, first, last):
-    record = _first("talk", "train", greet=False)
+    record = _any_line_talk("train")
     versioned = "def versioned() -> int:\n    return {}\n\nversioned()\n"
 
     _, sample = _induct(
@@ -448,6 +454,14 @@ def test_a_script_arm_describes_its_functions(pool):
     assert "go_to(place: str" in tool.description
     assert "key= lambda" in tool.description
     assert "ctx" not in tool.args
+
+
+def test_every_arm_can_read_the_facts_and_is_told_never_to_guess_one(pool):
+    ctx = FakeRobot(seed=1).ctx
+
+    assert "with get_facts, and never\nguess a fact" in PROMPT
+    assert "get_facts" in [tool.name for tool in ArmSetup("A", pool=pool).episode(ctx).tools]
+    assert "get_facts()" in ArmSetup("B", pool=pool).episode(ctx).tools[0].description
 
 
 def test_an_unknown_arm_is_refused():

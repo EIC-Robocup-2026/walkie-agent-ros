@@ -2,10 +2,10 @@
 
 import pytest
 
-from mahoraga.checkers import MEASURES, check
+from mahoraga.checkers import ABOUT_YOURSELF, MEASURES, check
 from mahoraga.commands import generator
 from mahoraga.worlds import OPERATOR, build_world
-from walkie_agent.capabilities.fake import GESTURES, OBJECTS, POSES, FakeRobot
+from walkie_agent.capabilities.fake import GESTURES, OBJECTS, POSES, TEAM, FakeRobot
 from walkie_agent.errors import StepError
 
 
@@ -644,7 +644,14 @@ def test_relay_within_one_room_needs_only_one_look():
     assert episode(spec, world(), ("go_to", "kitchen room"), ("people", ""), ("say", "Jane"))[0]
 
 
-TALK = {"kind": "talk", "person": {"room": "kitchen room", "name": "Jane"}, "place": "kitchen room", "topic": "the time", "greet": False}
+# "Something about yourself" takes any line, so this judges only the look and the room.
+TALK = {
+    "kind": "talk",
+    "person": {"room": "kitchen room", "name": "Jane"},
+    "place": "kitchen room",
+    "topic": ABOUT_YOURSELF,
+    "greet": False,
+}
 
 
 def test_talk_needs_a_look_then_a_line_in_the_room():
@@ -654,6 +661,157 @@ def test_talk_needs_a_look_then_a_line_in_the_room():
     assert not episode(TALK, world(), *look)[0]
     assert not episode(TALK, world(), ("go_to", "kitchen room"), ("say", "It is noon."), ("people", ""))[0]
     assert not episode(TALK, world(), *look, ("go_to", "living room"), ("say", "It is noon."))[0]
+
+
+# Thursday, 5 November 2026, at 14:05 in Bangkok, unless a row says otherwise.
+THURSDAY = "2026-11-05T14:05:00+07:00"
+TALK_LOOK = (("go_to", "kitchen room"), ("people", "Jane"))
+CHECKED_TOPICS = [
+    "the time",
+    "what day is today",
+    "what day is tomorrow",
+    "the day of the week",
+    "the day of the month",
+    "your teams name",
+    "your teams country",
+    "your teams affiliation",
+]
+RIGHT_LINES = {
+    "the time": "It is 14:05.",
+    "what day is today": "Today is Thursday.",
+    "what day is tomorrow": "Tomorrow is Friday.",
+    "the day of the week": "It is Thursday.",
+    "the day of the month": "It is the 5th.",
+    "your teams name": "We are team EIC.",
+    "your teams country": "We come from Thailand.",
+    "your teams affiliation": "We are from Chulalongkorn University.",
+}
+
+
+def at_clock(now=THURSDAY):
+    built = world()
+    built["facts"] = {"now": now, "team": dict(TEAM)}
+    return built
+
+
+def talk(topic, *lines, now=THURSDAY):
+    """Whether lines said in Jane's room, after a look that found her, pass a talk on `topic`."""
+    spec = {**TALK, "topic": topic}
+    return episode(spec, at_clock(now), *TALK_LOOK, *(("say", line) for line in lines))[0]
+
+
+@pytest.mark.parametrize("topic", CHECKED_TOPICS)
+def test_talk_passes_with_the_right_fact_and_fails_without_it(topic):
+    assert talk(topic, RIGHT_LINES[topic])
+    assert not talk(topic, "What day is tomorrow?")
+    assert not talk(topic, "Hello.")
+    assert not talk(topic)
+
+
+@pytest.mark.parametrize("topic", CHECKED_TOPICS)
+def test_talk_takes_any_line_in_the_room_that_says_the_fact_not_only_the_first(topic):
+    assert talk(topic, "Hello, Jane.", RIGHT_LINES[topic], "Goodbye.")
+
+
+@pytest.mark.parametrize("topic", [*CHECKED_TOPICS, ABOUT_YOURSELF])
+def test_talk_fails_when_the_right_line_is_said_in_another_room(topic):
+    line = RIGHT_LINES.get(topic, "I am Walkie.")
+    leave = ("go_to", "living room")
+
+    assert not episode({**TALK, "topic": topic}, at_clock(), *TALK_LOOK, leave, ("say", line))[0]
+
+
+@pytest.mark.parametrize(
+    ("topic", "line", "now", "passes"),
+    [
+        # The time: 24-hour, or 12-hour with an optional and then right am or pm.
+        ("the time", "The time is 14:05.", THURSDAY, True),
+        ("the time", "It is 2:05 pm.", THURSDAY, True),
+        ("the time", "It is 2:05 P.M.", THURSDAY, True),
+        ("the time", "It is 2:05PM now.", THURSDAY, True),
+        ("the time", "It is 2:05.", THURSDAY, True),
+        ("the time", "It is 2:05 am.", THURSDAY, False),
+        ("the time", "It is 02:05.", THURSDAY, False),
+        ("the time", "It is 14:06.", THURSDAY, False),
+        ("the time", "It is 4:05 pm.", THURSDAY, False),
+        ("the time", "It is five past two.", THURSDAY, False),
+        ("the time", "It is half past two.", "2026-11-05T14:30:00+07:00", False),
+        ("the time", "It is 2:30 in the afternoon.", "2026-11-05T14:30:00+07:00", True),
+        ("the time", "It is quarter past two.", "2026-11-05T14:15:00+07:00", False),
+        ("the time", "It is 2 o'clock.", "2026-11-05T14:00:00+07:00", True),
+        ("the time", "It is 2 o’clock in the afternoon.", "2026-11-05T14:00:00+07:00", True),
+        ("the time", "It is 2 o'clock.", THURSDAY, False),
+        ("the time", "It is 9:05 a.m.", "2026-11-05T09:05:00+07:00", True),
+        ("the time", "It is 09:05.", "2026-11-05T09:05:00+07:00", True),
+        ("the time", "It is 9:05 pm.", "2026-11-05T09:05:00+07:00", False),
+        ("the time", "It is 12:30 am.", "2026-11-05T00:30:00+07:00", True),
+        ("the time", "It is 00:30.", "2026-11-05T00:30:00+07:00", True),
+        ("the time", "It is 12:30 pm.", "2026-11-05T00:30:00+07:00", False),
+        # Today: the weekday, or the date in either order.
+        ("what day is today", "Today is thursday.", THURSDAY, True),
+        ("what day is today", "Today is 5 November.", THURSDAY, True),
+        ("what day is today", "It is November 5th, 2026.", THURSDAY, True),
+        ("what day is today", "It is the 5th of November.", THURSDAY, True),
+        ("what day is today", "Today is Friday.", THURSDAY, False),
+        ("what day is today", "Today is 15 November.", THURSDAY, False),
+        ("what day is today", "Today is the 5th.", THURSDAY, False),
+        # Tomorrow: tomorrow's weekday or date, never today's.
+        ("what day is tomorrow", "Tomorrow is November 6.", THURSDAY, True),
+        ("what day is tomorrow", "Tomorrow is Thursday.", THURSDAY, False),
+        ("what day is tomorrow", "Tomorrow is 5 November.", THURSDAY, False),
+        ("what day is tomorrow", "Tomorrow is 1 January.", "2026-12-31T23:59:00+07:00", True),
+        ("what day is tomorrow", "Tomorrow is Friday.", "2026-12-31T23:59:00+07:00", True),
+        # The day of the week: the name as a whole word.
+        ("the day of the week", "It is THURSDAY today.", THURSDAY, True),
+        ("the day of the week", "It is Wednesday.", THURSDAY, False),
+        ("the day of the week", "It is Friday.", THURSDAY, False),
+        # The day of the month: digits with an optional suffix, or a word from 1 to 31.
+        ("the day of the month", "Today is day 5.", THURSDAY, True),
+        ("the day of the month", "It is the fifth.", THURSDAY, True),
+        ("the day of the month", "It is day five.", THURSDAY, True),
+        ("the day of the month", "It is the 15th.", THURSDAY, False),
+        ("the day of the month", "It is 14:05.", THURSDAY, False),
+        ("the day of the month", "It is the twenty-first.", "2026-11-21T10:00:00+07:00", True),
+        ("the day of the month", "It is the twenty first.", "2026-11-21T10:00:00+07:00", True),
+        ("the day of the month", "It is the first.", "2026-11-21T10:00:00+07:00", False),
+        ("the day of the month", "It is the 31st.", "2026-12-31T10:00:00+07:00", True),
+        # The team: whole-word phrases, in any case.
+        ("your teams name", "We are team eic.", THURSDAY, True),
+        ("your teams name", "We are the EICs.", THURSDAY, False),
+        ("your teams country", "We come from THAILAND.", THURSDAY, True),
+        ("your teams country", "We come from Japan.", THURSDAY, False),
+        ("your teams affiliation", "We are from chulalongkorn  university.", THURSDAY, True),
+        ("your teams affiliation", "We are from Chulalongkorn.", THURSDAY, False),
+    ],
+)
+def test_talk_accepts_the_forms_of_its_fact(topic, line, now, passes):
+    assert talk(topic, line, now=now) is passes
+
+
+def test_talk_keeps_its_known_limits():
+    # A line that names both today and tomorrow passes for either.
+    both = "Today is Thursday and tomorrow is Friday."
+    assert talk("what day is today", both)
+    assert talk("what day is tomorrow", both)
+    # Any number in the line counts for the day of the month, even a pronoun.
+    assert talk("the day of the month", "It is the one you wanted.", now="2026-11-01T10:00:00+07:00")
+    # The year of a date is not read.
+    assert talk("what day is today", "Today is 5 November 1999.")
+
+
+def test_talk_judges_the_clock_of_the_start_snapshot():
+    assert talk("the day of the week", "It is Saturday.", now="2026-11-07T10:00:00+07:00")
+    assert not talk("the day of the week", "It is Thursday.", now="2026-11-07T10:00:00+07:00")
+
+
+def test_an_unknown_talk_topic_or_a_world_without_facts_raises():
+    with pytest.raises(ValueError, match="No check for the talk topic 'the weather'"):
+        talk("the weather", "It is sunny.")
+    no_facts = world()
+    del no_facts["facts"]
+    with pytest.raises(ValueError, match="no facts"):
+        episode({**TALK, "topic": "the time"}, no_facts, *TALK_LOOK, ("say", "It is 14:05."))
+    assert episode(TALK, no_facts, *TALK_LOOK, ("say", "I am Walkie."))[0]
 
 
 ESCORT = {"kind": "escort", "person": {"room": "kitchen room", "name": "Jane"}, "place": "bar", "dest": "sofa", "greet": False}

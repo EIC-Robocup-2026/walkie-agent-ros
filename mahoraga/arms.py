@@ -48,7 +48,8 @@ a location, the objects on it; at a room, the objects on the locations in that
 room; and everybody in the room you are in.
 
 To greet, talk to or tell something to a person, go to their room, look for them,
-then say it there. To follow or guide a person, find them, then go to the
+then say it there. Read the time, the date and your team with get_facts, and never
+guess a fact. To follow or guide a person, find them, then go to the
 destination yourself. Objects go down on a location, or to a person by hand.
 
 The command is complete, and nobody can answer a question. When it is done, stop

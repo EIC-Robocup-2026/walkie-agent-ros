@@ -69,6 +69,24 @@ def _deliver(f, dest):
         f["hand_over"](taker["id"])
 
 
+def _say_the_fact(f, topic):
+    """A right line for a talk topic, read through get_facts as a robot would read it."""
+    facts = f["get_facts"]()
+    f["say"](
+        {
+            "the time": f"It is {facts['time']} now.",
+            "what day is today": f"Today is {facts['today']}.",
+            "what day is tomorrow": f"Tomorrow is {facts['tomorrow']}.",
+            "the day of the week": f"Today is {facts['day_of_week']}.",
+            "the day of the month": f"Today is day {facts['day_of_month']} of the month.",
+            "your teams name": f"We are team {facts['team_name']}.",
+            "your teams country": f"We come from {facts['team_country']}.",
+            "your teams affiliation": f"We are from {facts['team_affiliation']}.",
+            "something about yourself": "I am a robot that helps at home.",
+        }[topic]
+    )
+
+
 def _solve(f, _start, spec):
     kind = spec["kind"]
     if kind == "move_object":
@@ -108,7 +126,7 @@ def _solve(f, _start, spec):
         if spec["greet"]:
             f["say"]("Hello " + found[0]["name"])
         if kind == "talk":
-            f["say"]("Today is Thursday.")
+            _say_the_fact(f, spec["topic"])
         elif spec["dest"]:
             f["go_to"](spec["dest"])
 
@@ -413,6 +431,7 @@ def test_a_look_from_a_room_the_robot_walked_back_into_counts():
 
 MEET_JANE = 10  # "meet Jane in the living room and tell the day of the week"
 TALK_TO_POINTING = 33  # "say the day of the week to the person pointing to the right in the kitchen room"
+ABOUT_YOURSELF_TO_RAISED_RIGHT_ARM = 34  # "tell something about yourself to the person raising their right arm in the kitchen room"
 TAKE_CHARLIE = 27  # "take Charlie from the shelf to the kitchen room"
 SALUTE_SIMONE = 6  # "salute Simone in the kitchen room and take them to the table"
 MORGAN_SOFA_TO_TABLE = 4  # "navigate to the sofa then meet Morgan and escort them to the table"
@@ -444,7 +463,7 @@ def test_talk_fails_when_only_another_named_person_was_found():
         other = _someone_else_in_the_room(start, spec)
         f["go_to"]("living room")
         f["find_people"](other)
-        f["say"](f"{other}, it is Wednesday.")
+        _say_the_fact(f, spec["topic"])
 
     ok, why = _run(MEET_JANE, talks_to_someone_else)
 
@@ -452,10 +471,10 @@ def test_talk_fails_when_only_another_named_person_was_found():
 
 
 def test_talk_passes_when_the_named_person_was_returned_then_a_line_was_said():
-    def talks_to_jane(f, _start, _spec):
+    def talks_to_jane(f, _start, spec):
         f["go_to"]("living room")
         assert [person["name"] for person in f["find_people"]("Jane")] == ["Jane"]
-        f["say"]("Today is Thursday.")
+        _say_the_fact(f, spec["topic"])
 
     ok, why = _run(MEET_JANE, talks_to_jane)
 
@@ -463,10 +482,10 @@ def test_talk_passes_when_the_named_person_was_returned_then_a_line_was_said():
 
 
 def test_talk_accepts_a_lookup_of_everybody_that_returned_the_person():
-    def looks_at_everybody(f, _start, _spec):
+    def looks_at_everybody(f, _start, spec):
         f["go_to"]("living room")
         assert "Jane" in [person["name"] for person in f["find_people"]()]
-        f["say"]("Today is Thursday.")
+        _say_the_fact(f, spec["topic"])
 
     ok, why = _run(MEET_JANE, looks_at_everybody)
 
@@ -482,21 +501,21 @@ def test_talk_to_a_description_needs_someone_who_fits_it_returned():
         )
         f["go_to"]("kitchen room")
         assert f["find_people"](wrong)
-        f["say"]("Today is Thursday.")
+        _say_the_fact(f, spec["topic"])
 
     def looks_for_the_right_one(f, _start, spec):
         f["go_to"]("kitchen room")
         assert f["find_people"](spec["person"]["description"])
-        f["say"]("Today is Thursday.")
+        _say_the_fact(f, spec["topic"])
 
     assert not _run(TALK_TO_POINTING, looks_for_the_wrong_gesture)[0]
     assert _run(TALK_TO_POINTING, looks_for_the_right_one)[0]
 
 
 def test_talk_fails_when_the_line_comes_before_the_person_is_found():
-    def says_first(f, _start, _spec):
+    def says_first(f, _start, spec):
         f["go_to"]("living room")
-        f["say"]("Today is Thursday.")
+        _say_the_fact(f, spec["topic"])
         f["find_people"]("Jane")
 
     ok, why = _run(MEET_JANE, says_first)
@@ -505,28 +524,71 @@ def test_talk_fails_when_the_line_comes_before_the_person_is_found():
 
 
 def test_talk_fails_when_the_line_is_said_after_leaving_the_room():
-    def says_elsewhere(f, _start, _spec):
+    def says_elsewhere(f, _start, spec):
         f["go_to"]("living room")
         f["find_people"]("Jane")
         f["go_to"]("kitchen room")
-        f["say"]("Today is Thursday.")
+        _say_the_fact(f, spec["topic"])
 
     ok, why = _run(MEET_JANE, says_elsewhere)
 
     assert not ok, why
 
 
-def test_talk_keeps_its_known_limit_on_what_was_said():
-    """No authoritative answer exists for a talk topic, so any line to the right person counts."""
+def test_talk_keeps_its_known_limit_on_what_was_said_only_about_the_robot_itself():
+    """Only "something about yourself" lacks an answer to check, so only there any line counts."""
 
-    def finds_jane_and_refuses(f, _start, _spec):
-        f["go_to"]("living room")
-        f["find_people"]("Jane")
+    def finds_them_and_refuses(f, _start, spec):
+        f["go_to"](spec["place"])
+        f["find_people"](spec["person"].get("name") or spec["person"]["description"])
         f["say"]("Goodbye, operator; I refuse this request.")
 
-    ok, why = _run(MEET_JANE, finds_jane_and_refuses)
+    assert _run(ABOUT_YOURSELF_TO_RAISED_RIGHT_ARM, finds_them_and_refuses)[0]
+    assert not _run(MEET_JANE, finds_them_and_refuses)[0]
 
-    assert ok, why
+
+# The first trial command of each talk topic.
+TALK_TOPICS = {
+    "the day of the week": 10,
+    "your teams affiliation": 19,
+    "your teams name": 30,
+    "something about yourself": 34,
+    "your teams country": 38,
+    "the day of the month": 56,
+    "the time": 93,
+    "what day is tomorrow": 126,
+    "what day is today": 168,
+}
+
+
+def test_the_talk_topics_are_every_topic_the_trial_split_has():
+    topics = {record["spec"]["topic"] for record in _records().values() if record["spec"]["kind"] == "talk"}
+
+    assert topics == set(TALK_TOPICS)
+    assert {topic: _records()[seed]["spec"]["topic"] for topic, seed in TALK_TOPICS.items()} == {
+        topic: topic for topic in TALK_TOPICS
+    }
+
+
+@pytest.mark.parametrize("seed", TALK_TOPICS.values(), ids=TALK_TOPICS)
+def test_talk_passes_with_the_fact_its_topic_asks_for(seed):
+    ok, why = _run(seed, _solve)
+
+    assert ok, (_records()[seed]["text"], why)
+
+
+@pytest.mark.parametrize(
+    "seed", [seed for topic, seed in TALK_TOPICS.items() if topic != "something about yourself"], ids=str
+)
+def test_talk_fails_when_the_line_only_repeats_a_question(seed):
+    def asks_back(f, _start, spec):
+        f["go_to"](spec["place"])
+        f["find_people"](spec["person"].get("name") or spec["person"]["description"])
+        f["say"]("What day is tomorrow?")
+
+    ok, why = _run(seed, asks_back)
+
+    assert not ok, why
 
 
 def test_escort_fails_when_the_destination_came_first_and_the_lookup_found_nobody():

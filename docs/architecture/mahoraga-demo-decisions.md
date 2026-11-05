@@ -165,8 +165,9 @@ What the third run showed:
   type annotation, so C cannot see either problem from its prompt. C2 reads whole
   scripts.
 - M29 held. `200017` in D, lost to an unfinished call in the second run, passed here
-  after 2 abandoned attempts. Across the run 11 attempts were abandoned, against 899
-  completed calls.
+  after 2 abandoned attempts. Across the run 11 attempts were abandoned at the 30 s
+  limit, and 1 more was cancelled when its episode ended, against 900 completed calls:
+  A 210, B 127, C 147, C2 101, D 185 and the shelf build 130.
 - Training `100021`: `throw_object_in_trash` searched the room, so the apple did not
   come from the shelf the command named. This is a fair failure.
 - Training `100030`: a false failure, which M31 fixes. The scores above predate M31.

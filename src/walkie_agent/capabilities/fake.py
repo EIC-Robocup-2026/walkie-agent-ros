@@ -17,9 +17,10 @@ import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from typing import Any, Concatenate, ParamSpec, TypeVar
 
-from walkie_agent.capabilities import Ctx, ObjectSeen, PersonSeen, Pose2D
+from walkie_agent.capabilities import Ctx, ObjectSeen, PersonSeen, Pose2D, Team
 from walkie_agent.capabilities.guards import (
     CancelToken,
     check_relative_move,
@@ -85,6 +86,12 @@ GESTURES = (
     "person pointing to the right",
 )
 
+# The team of config.toml's [team] table. The fake clock keeps Asia/Bangkok's
+# offset, which has no daylight saving time, and draws a minute of FACTS_YEAR.
+TEAM = {"name": "EIC", "country": "Thailand", "affiliation": "Chulalongkorn University"}
+FACTS_YEAR = 2026
+FACTS_OFFSET = timezone(timedelta(hours=7))
+
 # After a relative move the robot still counts as at its place within this
 # distance, which is enough for a small approach or a turn on the spot.
 NEAR_PLACE_M = 1.0
@@ -94,8 +101,21 @@ HELD = "robot"
 LOOKUPS = frozenset({"vision.objects", "vision.people"})
 
 
+def fake_facts(seed: int = 0) -> dict[str, Any]:
+    """The facts of one fake world: a clock fixed at a seeded minute of FACTS_YEAR, and TEAM.
+
+    It draws from its own stream, so the clutter and the people of a seed do
+    not change when this does. `now` is ISO 8601 text with its UTC offset.
+    """
+    rng = random.Random(f"facts:{seed}")
+    first = datetime(FACTS_YEAR, 1, 1, tzinfo=FACTS_OFFSET)
+    days = (datetime(FACTS_YEAR + 1, 1, 1, tzinfo=FACTS_OFFSET) - first).days
+    now = first + timedelta(days=rng.randrange(days), minutes=rng.randrange(24 * 60))
+    return {"now": now.isoformat(), "team": dict(TEAM)}
+
+
 def chula_pat14_6(seed: int = 0) -> dict[str, Any]:
-    """A world description of the arena: seeded clutter, two people per room and the operator."""
+    """A world description of the arena: seeded clutter, two people per room, the operator and the facts."""
     rng = random.Random(seed)
     objects = {
         f"{name.replace(' ', '_')}_{n + 1}": {"name": name, **item, "at": rng.choice(SURFACES)}
@@ -118,6 +138,7 @@ def chula_pat14_6(seed: int = 0) -> dict[str, Any]:
         "objects": objects,
         "people": people,
         "start": "instruction point",
+        "facts": fake_facts(seed),
     }
 
 
@@ -190,21 +211,43 @@ def _check_world(world: Mapping[str, Any]) -> None:
         for object_id, item in world["objects"].items()
         if item["at"] not in holders
     ]
+    if world.get("facts") is not None:
+        problems += _facts_problems(world["facts"])
     if problems:
         raise ValueError(f"Broken world: {'; '.join(problems)}.")
 
 
-class FakeRobot:
-    """Implements Base, Speech, Vision and Arms over one world description.
+def _facts_problems(facts: Mapping[str, Any]) -> list[str]:
+    """What is wrong with a world's facts: `now` must carry a UTC offset, and the team three texts."""
+    problems = []
+    try:
+        if datetime.fromisoformat(facts["now"]).utcoffset() is None:
+            problems.append(f"facts.now: {facts['now']!r} has no UTC offset")
+    except (KeyError, TypeError, ValueError):
+        problems.append(f"facts.now: {facts.get('now')!r} is not an ISO 8601 date and time")
+    team = facts.get("team")
+    problems += [
+        f"facts.team.{key}: not a non-blank text"
+        for key in TEAM
+        if not isinstance(team, Mapping)
+        or not isinstance(team.get(key), str)
+        or not team[key].strip()
+    ]
+    return problems
 
-    One object holds all four verb sets, since their names do not clash; `ctx`
+
+class FakeRobot:
+    """Implements Base, Speech, Vision, Arms and Facts over one world description.
+
+    One object holds all five verb sets, since their names do not clash; `ctx`
     is the Ctx that atomics take. `world=None` builds chula_pat14_6(seed), and a
-    world with a broken name or coordinate raises ValueError. `drive_s` makes a
-    drive take real seconds, for stop tests. `calls` logs every verb call with
-    the robot's place and room as it ended and, for a lookup, the ids returned.
-    `said` logs every line, and `faults` maps a verb name such as "base.go_to" to
-    the StepError that each call to it raises. base.stop takes no fault, since
-    it never raises.
+    world with a broken name, coordinate or fact raises ValueError. A world with
+    no "facts" has no fact source, so the facts verbs raise UNAVAILABLE.
+    `drive_s` makes a drive take real seconds, for stop tests. `calls` logs
+    every verb call with the robot's place and room as it ended and, for a
+    lookup, the ids returned. `said` logs every line, and `faults` maps a verb
+    name such as "base.go_to" to the StepError that each call to it raises.
+    base.stop takes no fault, since it never raises.
     """
 
     def __init__(
@@ -219,6 +262,7 @@ class FakeRobot:
         self._places: dict[str, dict[str, Any]] = described["places"]
         self._objects: dict[str, dict[str, Any]] = described["objects"]
         self._people: dict[str, dict[str, Any]] = described["people"]
+        self._facts: dict[str, Any] | None = described.get("facts")
         self._at: str | None = described["start"]
         self._pose = self._pose_of(described["start"])
         self.drive_s = drive_s
@@ -227,10 +271,15 @@ class FakeRobot:
         self.said: list[str] = []
         self.faults: dict[str, StepError] = {}
         self._stopped = threading.Event()
-        self.ctx = Ctx(cancel=self.cancel, base=self, speech=self, vision=self, arms=self)
+        self.ctx = Ctx(
+            cancel=self.cancel, base=self, speech=self, vision=self, arms=self, facts=self
+        )
 
     def snapshot(self) -> dict[str, Any]:
-        """The state a checker reads, as JSON-able data that shares nothing with the robot."""
+        """The state a checker reads, as JSON-able data that shares nothing with the robot.
+
+        "facts" is the world's facts, or None for a world without them.
+        """
         return copy.deepcopy(
             {
                 "at": self._at,
@@ -240,6 +289,7 @@ class FakeRobot:
                 "places": self._places,
                 "objects": self._objects,
                 "people": self._people,
+                "facts": self._facts,
                 "said": self.said,
                 "calls": self.calls,
             }
@@ -393,7 +443,25 @@ class FakeRobot:
         self._objects[held]["at"] = person_id
         return held
 
+    # ctx.facts. Neither verb checks the token, as SystemFacts does not.
+
+    @_verb("facts.now")
+    def now(self) -> datetime:
+        return datetime.fromisoformat(self._require_facts()["now"])
+
+    @_verb("facts.team")
+    def team(self) -> Team:
+        team = self._require_facts()["team"]
+        return Team(team["name"], team["country"], team["affiliation"])
+
     # Shared by the verbs.
+
+    def _require_facts(self) -> dict[str, Any]:
+        if self._facts is None:
+            raise StepError(
+                ErrorCode.UNAVAILABLE, "Walkie cannot read the time or its team: this world has no facts."
+            )
+        return self._facts
 
     def _begin(self, what: str, timeout_s: float) -> None:
         """The guards of a verb that does not wait in the fake: a bound, and the latch."""

@@ -1,8 +1,8 @@
 # Walkie
 
 Walkie is a home service robot built by the EIC team (Engineering Innovator Club) at
-Chulalongkorn University to compete in RoboCup@Home. This is the 4th generation of the
-Walkie robot series. Walkie presents as female.
+Chulalongkorn University in Thailand to compete in RoboCup@Home. This is the 4th
+generation of the Walkie robot series. Walkie presents as female.
 
 ## Hardware
 
@@ -20,6 +20,8 @@ Walkie robot series. Walkie presents as female.
 - Speak to people in the room, when a text-to-speech node is listening. Walkie knows
   a line was sent, not that it was heard.
 - Take requests as text, from speech recognition or from the operator.
+- Tell the time and the date from the computer's clock, and the team's name, country
+  and affiliation from the robot's settings.
 
 The camera and the arms are part of the robot, but are not connected to the agent. So
 Walkie cannot yet tell what or who is in view, and cannot pick up, place or hand over

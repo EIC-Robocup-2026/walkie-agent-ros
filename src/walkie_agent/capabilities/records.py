@@ -37,3 +37,12 @@ class PersonSeen:
     pose: str
     gesture: str
     room: str
+
+
+@dataclass(frozen=True)
+class Team:
+    """The team that built the robot, as the robot says it."""
+
+    name: str
+    country: str
+    affiliation: str

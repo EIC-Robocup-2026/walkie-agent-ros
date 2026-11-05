@@ -1,20 +1,28 @@
 """FakeRobot: every verb and guard over a small world, and the seeded arena."""
 
+import hashlib
 import json
 import math
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from walkie_agent.capabilities import Arms, Base, Speech, Vision
+from walkie_agent.capabilities import Arms, Base, Facts, Speech, Team, Vision
 from walkie_agent.capabilities.fake import (
     CHULA_PAT14_6_PLACES,
     OBJECTS,
+    TEAM,
     FakeRobot,
     chula_pat14_6,
 )
 from walkie_agent.errors import ErrorCode, StepError
+
+FACTS = {
+    "now": "2026-11-05T14:05:00+07:00",
+    "team": {"name": "EIC", "country": "Thailand", "affiliation": "Chulalongkorn University"},
+}
 
 
 def world() -> dict:
@@ -64,7 +72,7 @@ def holding_apple() -> FakeRobot:
 
 
 def test_it_implements_every_protocol_method(robot):
-    for protocol in (Base, Speech, Vision, Arms):
+    for protocol in (Base, Speech, Vision, Arms, Facts):
         for name in vars(protocol):
             if not name.startswith("_"):
                 assert callable(getattr(robot, name)), name
@@ -73,7 +81,7 @@ def test_it_implements_every_protocol_method(robot):
 def test_its_ctx_holds_the_robot_and_its_token(robot):
     ctx = robot.ctx
     assert ctx.cancel is robot.cancel
-    assert ctx.base is ctx.speech is ctx.vision is ctx.arms is robot
+    assert ctx.base is ctx.speech is ctx.vision is ctx.arms is ctx.facts is robot
 
 
 # ctx.base
@@ -556,6 +564,11 @@ def test_an_unexpected_exception_is_logged_as_internal_and_not_hidden(robot):
         (lambda w: w["places"]["desk"].update(x=float("nan")), "places['desk'].x"),
         (lambda w: w["places"]["desk"].update(yaw=float("inf")), "places['desk'].yaw"),
         (lambda w: w["places"]["desk"].update(y=True), "places['desk'].y"),
+        (lambda w: w.update(facts={**FACTS, "now": "2026-11-05T14:05:00"}), "facts.now"),
+        (lambda w: w.update(facts={**FACTS, "now": "next Thursday"}), "facts.now"),
+        (lambda w: w.update(facts={"team": FACTS["team"]}), "facts.now"),
+        (lambda w: w.update(facts={**FACTS, "team": {**TEAM, "country": " "}}), "facts.team.country"),
+        (lambda w: w.update(facts={"now": FACTS["now"]}), "facts.team.name"),
     ],
 )
 def test_a_broken_world_is_refused_and_the_message_names_the_field(break_it, named):
@@ -616,7 +629,9 @@ def test_the_arena_is_deterministic_per_seed():
 
 
 def test_seeds_change_the_clutter():
-    assert len({json.dumps(chula_pat14_6(seed), sort_keys=True) for seed in range(5)}) > 1
+    # Without the facts, which change with every seed whatever the clutter does.
+    clutter = [{**chula_pat14_6(seed), "facts": None} for seed in range(5)]
+    assert len({json.dumps(arena, sort_keys=True) for arena in clutter}) > 1
 
 
 def test_the_arena_is_json_able():
@@ -660,6 +675,62 @@ def test_the_arena_has_the_operator_at_the_start_and_two_people_per_room():
 def test_each_measure_is_unique_so_a_superlative_has_one_answer(measure):
     values = [item[measure] for item in OBJECTS.values()]
     assert len(set(values)) == len(values)
+
+
+def test_the_arena_fixes_a_clock_in_2026_and_the_configured_team_per_seed():
+    facts = chula_pat14_6(5)["facts"]
+    assert facts == chula_pat14_6(5)["facts"]
+    now = datetime.fromisoformat(facts["now"])
+    assert now.year == 2026 and now.second == 0
+    assert now.utcoffset() == timedelta(hours=7)
+    assert facts["team"] == TEAM == {
+        "name": "EIC",
+        "country": "Thailand",
+        "affiliation": "Chulalongkorn University",
+    }
+
+
+def test_the_arena_clock_spreads_over_the_year_and_the_day():
+    clocks = [datetime.fromisoformat(chula_pat14_6(seed)["facts"]["now"]) for seed in range(200)]
+    assert len({clock.date() for clock in clocks}) > 150
+    assert {clock.month for clock in clocks} == set(range(1, 13))
+    assert {clock.hour for clock in clocks} == set(range(24))
+    assert all(clock.year == 2026 for clock in clocks)
+
+
+@pytest.mark.parametrize(
+    ("seed", "digest"), [(0, "8a022dec3877aeba"), (1, "e296c775df38a464"), (7, "fa7c4e46c25d09d0")]
+)
+def test_the_arena_facts_draw_leaves_the_clutter_and_the_people_alone(seed, digest):
+    # The digests of these arenas before they had facts, which draw from their own stream.
+    arena = chula_pat14_6(seed)
+    del arena["facts"]
+    assert hashlib.sha256(json.dumps(arena, sort_keys=True).encode()).hexdigest()[:16] == digest
+
+
+# ctx.facts
+
+
+def test_the_facts_verbs_read_the_world_s_facts():
+    robot = FakeRobot({**world(), "facts": FACTS})
+    assert robot.now() == datetime(2026, 11, 5, 14, 5, tzinfo=timezone(timedelta(hours=7)))
+    assert robot.team() == Team("EIC", "Thailand", "Chulalongkorn University")
+    assert [call["verb"] for call in robot.calls] == ["facts.now", "facts.team"]
+    assert robot.snapshot()["facts"] == FACTS
+
+
+def test_a_world_without_facts_has_no_fact_source(robot):
+    assert code_of(robot.now) is ErrorCode.UNAVAILABLE
+    assert code_of(robot.team) is ErrorCode.UNAVAILABLE
+    assert robot.calls[-1]["error"] == "UNAVAILABLE"
+    assert robot.snapshot()["facts"] is None
+
+
+def test_the_facts_verbs_work_while_the_token_is_set():
+    robot = FakeRobot({**world(), "facts": FACTS})
+    robot.cancel.cancel()
+    assert robot.now().hour == 14
+    assert robot.team().name == "EIC"
 
 
 def test_a_seeded_robot_starts_at_the_instruction_point_and_can_see_the_operator():

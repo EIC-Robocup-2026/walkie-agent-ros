@@ -25,8 +25,9 @@ from runtime_harness import ScriptedModel, ai, call, wait_until
 from std_msgs.msg import Empty
 
 import walkie_agent.main as main
-from walkie_agent.atomics import DEFAULT, GPSR, HRI, list_places
-from walkie_agent.capabilities import UnavailableArms
+from walkie_agent.atomics import DEFAULT, GPSR, HRI, get_facts, list_places
+from walkie_agent.capabilities import Team, UnavailableArms, UnavailableFacts
+from walkie_agent.capabilities.facts import SystemFacts
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location, load_locations
 from walkie_agent.ros import RosBase, RosSpeech, UnavailableVision
@@ -43,6 +44,11 @@ ROBOT = "Walkie is a test robot with a unique marker 7f3a."
 MIDDLEWARE_TOOLS = {"update_todos", "wait_for_person"}
 TOOL_SET_LISTS = {"default": DEFAULT, "gpsr": GPSR, "hri": HRI}
 FIXTURE_LOCATIONS = PROJECT_ROOT / "tests" / "fixtures" / "locations.toml"
+MODEL_CONFIG = '[vendor]\ncomplex_model = "openai"\n[openai]\ncomplex_model = "m"\n'
+TEAM_CONFIG = (
+    '[team]\nname = "EIC"\ncountry = "Thailand"\naffiliation = "Chulalongkorn University"\n'
+    'timezone = "Asia/Bangkok"\n'
+)
 
 
 def tool_names(tool_set):
@@ -131,6 +137,7 @@ def test_assemble_uses_runtime_and_one_shared_token(build, monkeypatch):
     assert isinstance(app.ctx.speech, RosSpeech)
     assert isinstance(app.ctx.vision, UnavailableVision)
     assert isinstance(app.ctx.arms, UnavailableArms)
+    assert isinstance(app.ctx.facts, UnavailableFacts)
 
     # What config.toml and the caller chose reaches the runtime.
     assert built_with["ctx"] is app.ctx
@@ -172,6 +179,13 @@ def test_assemble_uses_runtime_and_one_shared_token(build, monkeypatch):
         {"name": "kitchen", "description": "Kitchen counter."},
         {"name": "door", "description": ""},
     ]
+
+
+def test_assemble_puts_the_facts_it_is_given_on_ctx(build):
+    facts = SystemFacts(Team("EIC", "Thailand", "Chulalongkorn University"), "Asia/Bangkok", clock=lambda: 0.0)
+    built = build(facts=facts)
+    assert built.app.ctx.facts is facts
+    assert get_facts(built.app.ctx)["time"] == "07:00"
 
 
 def test_assemble_never_spins_or_destroys_the_connector(build):
@@ -217,6 +231,7 @@ def test_each_tool_set_gets_a_matching_prompt(build, tool_set):
     assert ("`find_objects`" in system.content) == (tool_set != "hri")
     assert ("`pick`" in system.content) == (tool_set == "gpsr")
     assert "`find_people`" in system.content
+    assert ("`get_facts`" in system.content) == (tool_set != "hri")
 
     # GPSR cannot list places, so its prompt holds them as data. The others look them up.
     assert ("- kitchen: Kitchen counter." in system.content) == (tool_set == "gpsr")
@@ -258,6 +273,11 @@ def test_the_shipped_robot_description_claims_only_what_is_connected():
     assert "`" not in text
     for name in tool_names("default") | tool_names("gpsr") | tool_names("hri"):
         assert "_" not in name or name not in text, name
+    # It claims the facts get_facts reads, and names the team as config.toml does.
+    assert "the time and the date from the computer's clock" in text
+    team = main.load_config(PROJECT_ROOT / "config.toml")["team"]
+    for key in ("name", "country", "affiliation"):
+        assert team[key] in text, key
 
 
 def test_template_requirements_must_be_bound(build):
@@ -456,7 +476,7 @@ def cli(monkeypatch, tmp_path, nav):
     monkeypatch.setattr(main.Application, "start", start)
 
     config = tmp_path / "config.toml"
-    config.write_text('[vendor]\ncomplex_model = "openai"\n[openai]\ncomplex_model = "m"\n')
+    config.write_text(MODEL_CONFIG + TEAM_CONFIG)
     robot = tmp_path / "robot.md"
     robot.write_text(ROBOT)
     missing_templates = tmp_path / "no_templates.toml"
@@ -538,6 +558,9 @@ def test_cli_passes_files_and_flags_into_the_assembly(cli, monkeypatch):
     assert received["tool_set"] == "gpsr"
     assert isinstance(received["tool_log"], ToolLog)
     assert received["tool_log"].path == tool_log
+    assert isinstance(received["facts"], SystemFacts)
+    assert received["facts"].team() == Team("EIC", "Thailand", "Chulalongkorn University")
+    assert received["facts"].timezone == "Asia/Bangkok"
     assert (
         received["input_topic"],
         received["output_topic"],
@@ -590,6 +613,9 @@ def broken_file(cli, text, name="broken.toml"):
         ("config", "not toml = [", ()),
         ("config", '[agent]\nfallback_vendor = "openai"\n', ()),
         ("config", "[tracing.langfuse]\nuse_langfuse = true\n", ()),
+        ("config", MODEL_CONFIG, ()),
+        ("config", MODEL_CONFIG + TEAM_CONFIG.replace('"Thailand"', '"  "'), ()),
+        ("config", MODEL_CONFIG + TEAM_CONFIG.replace("Asia/Bangkok", "Asia/Atlantis"), ()),
         ("locations", None, ()),
         ("locations", "[locations.Kitchen]\nx = 1\ny = 2\n", ()),
         ("locations", "[locations.door]\nx = nan\ny = 2\n", ()),
@@ -606,6 +632,9 @@ def broken_file(cli, text, name="broken.toml"):
         "bad-toml",
         "half-a-fallback",
         "tracing-without-keys",
+        "no-team",
+        "blank-team-value",
+        "unknown-timezone",
         "no-locations",
         "noncanonical-place",
         "nan-place",
@@ -622,6 +651,24 @@ def test_config_errors_happen_before_ros_init(cli, monkeypatch, flag, text, extr
         cli.run(*extra, **{flag: path})
     assert "init" not in cli.events
     assert cli.connectors == []
+
+
+@pytest.mark.parametrize(
+    ("text", "match"),
+    [
+        (MODEL_CONFIG, r"needs a \[team\] table"),
+        (MODEL_CONFIG + '[team]\nname = "EIC"\n', r"for: country, affiliation, timezone\.$"),
+        (MODEL_CONFIG + TEAM_CONFIG.replace('"EIC"', "7"), r"for: name\.$"),
+        (MODEL_CONFIG + TEAM_CONFIG.replace("Asia/Bangkok", "asia/bangkok"), "Unknown timezone 'asia/bangkok'"),
+        (MODEL_CONFIG + TEAM_CONFIG.replace("Asia/Bangkok", "../etc/passwd"), "Unknown timezone"),
+    ],
+    ids=["no-team", "missing-values", "not-text", "wrong-case-timezone", "path-timezone"],
+)
+def test_a_bad_team_table_stops_with_one_line_before_ros_init(cli, text, match):
+    with pytest.raises(ValueError, match=match) as raised:
+        cli.run(config=broken_file(cli, text))
+    assert "\n" not in str(raised.value)
+    assert "init" not in cli.events
 
 
 def test_a_model_that_cannot_be_built_stops_before_ros_init(cli, monkeypatch):

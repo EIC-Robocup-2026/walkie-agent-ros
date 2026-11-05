@@ -3,6 +3,8 @@
 # Who reads what:
 # - The agent (walkie_agent.runtime.model): complex_model and base_url of the
 #   vendor that [vendor] names, [agent] if present, and [tracing.langfuse].
+# - The agent's get_facts tool (walkie_agent.capabilities.facts): [team]. The
+#   agent does not start without it.
 # - The voice entry points (walkie_agent.voice), through rai_s2s: [asr] and [tts].
 # - Nothing in this repository reads simple_model, embeddings_model, [tracing]'s
 #   project or [tracing.langsmith]. They stay so the file keeps the shape of RAI's
@@ -32,6 +34,15 @@ simple_model = "llama3.2"
 complex_model = "llama3.1:70b"
 embeddings_model = "llama3.2"
 base_url = "http://localhost:11434"
+
+# What get_facts says about the team, and the timezone of its time and date.
+# The time comes from the computer's wall clock, never from ROS or sim time.
+# timezone is an IANA name. Every value must be non-blank.
+[team]
+name = "EIC"
+country = "Thailand"
+affiliation = "Chulalongkorn University"
+timezone = "Asia/Bangkok"
 
 [tracing]
 project = "walkie-agent-ros"

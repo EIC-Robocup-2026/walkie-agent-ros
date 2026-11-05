@@ -1,4 +1,4 @@
-"""The robot's capabilities on ctx: ctx.base, ctx.speech, ctx.vision and ctx.arms.
+"""The robot's capabilities on ctx: ctx.base, ctx.speech, ctx.vision, ctx.arms and ctx.facts.
 
 Each capability is a Protocol here. An atomic calls its verbs as
 ctx.base.go_to("shelf") and never sees a topic or an action. A failure is a
@@ -12,10 +12,11 @@ verb. The ROS-backed verbs live in walkie_agent.ros.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import NoReturn, Protocol
 
 from walkie_agent.capabilities.guards import CancelToken
-from walkie_agent.capabilities.records import ObjectSeen, PersonSeen, Pose2D
+from walkie_agent.capabilities.records import ObjectSeen, PersonSeen, Pose2D, Team
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location
 
@@ -24,11 +25,14 @@ __all__ = [
     "Base",
     "CancelToken",
     "Ctx",
+    "Facts",
     "ObjectSeen",
     "PersonSeen",
     "Pose2D",
     "Speech",
+    "Team",
     "UnavailableArms",
+    "UnavailableFacts",
     "Vision",
 ]
 
@@ -122,6 +126,35 @@ class UnavailableArms:
         self._refuse()
 
 
+class Facts(Protocol):
+    """ctx.facts: the time, the date and the team, so the robot never guesses them.
+
+    now() returns a timezone-aware datetime in the robot's configured timezone.
+    Both verbs raise StepError UNAVAILABLE without a fact source. Neither
+    checks the cancel token, since neither moves anything.
+    """
+
+    def now(self) -> datetime: ...
+
+    def team(self) -> Team: ...
+
+
+class UnavailableFacts:
+    """The ctx.facts of a robot with no fact source: every verb refuses."""
+
+    def _refuse(self) -> NoReturn:
+        raise StepError(
+            ErrorCode.UNAVAILABLE,
+            "Walkie cannot read the time or its team here: no fact source is configured.",
+        )
+
+    def now(self) -> datetime:
+        self._refuse()
+
+    def team(self) -> Team:
+        self._refuse()
+
+
 @dataclass(frozen=True)
 class Ctx:
     """What an atomic runs against. Verbs hold the same `cancel` they are built with."""
@@ -131,3 +164,4 @@ class Ctx:
     speech: Speech
     vision: Vision
     arms: Arms = UnavailableArms()
+    facts: Facts = UnavailableFacts()

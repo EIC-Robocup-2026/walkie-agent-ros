@@ -1,4 +1,4 @@
-"""The shared guards, the cancel token, UnavailableArms and the Ctx container."""
+"""The shared guards, the cancel token, UnavailableArms, UnavailableFacts and the Ctx container."""
 
 import math
 import threading
@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from walkie_agent.capabilities import Ctx, ObjectSeen, Pose2D, UnavailableArms
+from walkie_agent.capabilities import Ctx, ObjectSeen, Pose2D, UnavailableArms, UnavailableFacts
 from walkie_agent.capabilities.guards import (
     MAX_MOVE_M,
     CancelToken,
@@ -215,6 +215,19 @@ def test_unavailable_arms_refuse_every_verb(call):
 def test_ctx_defaults_to_unavailable_arms():
     ctx = Ctx(cancel=CancelToken(), base=None, speech=None, vision=None)
     assert isinstance(ctx.arms, UnavailableArms)
+
+
+@pytest.mark.parametrize("call", [lambda facts: facts.now(), lambda facts: facts.team()])
+def test_unavailable_facts_refuse_every_verb(call):
+    with pytest.raises(StepError) as caught:
+        call(UnavailableFacts())
+    assert caught.value.code is ErrorCode.UNAVAILABLE
+    assert "no fact source" in str(caught.value)
+
+
+def test_ctx_defaults_to_unavailable_facts():
+    ctx = Ctx(cancel=CancelToken(), base=None, speech=None, vision=None)
+    assert isinstance(ctx.facts, UnavailableFacts)
 
 
 def test_records_are_frozen():

@@ -13,7 +13,9 @@ config/task_templates.toml when it exists.
 
 The LLM is selected by config.toml, which is read from the current working directory by
 default. API keys are read from the environment, or from a .env file in the working
-directory (see .env.example). PYTHON_DOTENV_DISABLED=1 turns the .env file off.
+directory (see .env.example). PYTHON_DOTENV_DISABLED=1 turns the .env file off. Its
+[team] table names the team and the timezone that `get_facts` reads, with the time from
+the computer's wall clock.
 
 A first SIGINT or SIGTERM starts an orderly shutdown. If that cannot finish, for example
 because Nav2 has not answered a cancel, the agent keeps ROS running and keeps trying. A
@@ -40,7 +42,8 @@ from rai.communication.ros2 import ROS2Connector
 from rclpy.signals import SignalHandlerOptions
 
 from walkie_agent.atomics import DEFAULT, GPSR, HRI
-from walkie_agent.capabilities import CancelToken, Ctx
+from walkie_agent.capabilities import CancelToken, Ctx, Facts, UnavailableFacts
+from walkie_agent.capabilities.facts import facts_from_config
 from walkie_agent.locations import Location, load_locations
 from walkie_agent.ros import RosBase, RosBridge, RosSpeech, UnavailableVision
 from walkie_agent.ros.io import (
@@ -103,6 +106,10 @@ _TOOL_RULES = {
         "- `pick`, `place_on` and `hand_over` need an arm commander client, which does\n"
         "  not exist yet, so they report UNAVAILABLE. Say that you cannot do it, and\n"
         "  never claim you moved an object.\n"
+    ),
+    "get_facts": (
+        "- For the time, the date, the day or your team's name, country or affiliation,\n"
+        "  call `get_facts` and say what it returns. Never guess a fact.\n"
     ),
 }
 
@@ -235,11 +242,13 @@ def assemble(
     todos_topic: str = TODOS_TOPIC,
     use_sim_time: bool = False,
     fallback: BaseChatModel | None = None,
+    facts: Facts = UnavailableFacts(),
 ) -> Application:
     """Wire the runtime and the ROS wrappers over a connector the caller already made.
 
     Nothing here builds a model or a tracer, initializes or spins ROS, or destroys the
     connector. A failure part of the way through closes what was built before it raises.
+    `facts` is ctx.facts. main() passes the SystemFacts of config.toml's [team] table.
     """
     check_templates(templates, tool_set)
     prompt = build_system_prompt(tool_set, locations, robot_description)
@@ -258,7 +267,13 @@ def assemble(
         built.append(base.close)
         speech = RosSpeech(connector)
         built.append(speech.close)
-        ctx = Ctx(cancel=cancel, base=base, speech=speech, vision=UnavailableVision(cancel))
+        ctx = Ctx(
+            cancel=cancel,
+            base=base,
+            speech=speech,
+            vision=UnavailableVision(cancel),
+            facts=facts,
+        )
         bridge = RosBridge(
             connector,
             templates,
@@ -463,6 +478,7 @@ def main(argv: list[str] | None = None) -> int:
     model = build_model(config)
     fallback = build_fallback(config)
     callbacks = build_callbacks(config)
+    facts = facts_from_config(config)
     tool_log = ToolLog(args.tool_log) if args.tool_log else None
 
     return _run(
@@ -475,6 +491,7 @@ def main(argv: list[str] | None = None) -> int:
         callbacks=callbacks,
         tool_log=tool_log,
         fallback=fallback,
+        facts=facts,
     )
 
 

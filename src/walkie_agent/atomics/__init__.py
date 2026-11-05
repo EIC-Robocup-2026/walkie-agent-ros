@@ -10,6 +10,7 @@ walkie_agent.adapter.
 from collections.abc import Callable
 from typing import Any
 
+from walkie_agent.atomics.facts import get_facts
 from walkie_agent.atomics.manipulation import hand_over, pick, place_on
 from walkie_agent.atomics.navigation import go_to, list_places, move_relative
 from walkie_agent.atomics.perception import find_objects, find_people, object_info
@@ -21,6 +22,7 @@ __all__ = [
     "HRI",
     "find_objects",
     "find_people",
+    "get_facts",
     "go_to",
     "hand_over",
     "list_places",
@@ -33,6 +35,7 @@ __all__ = [
 
 # The tool sets are plain lists in code (decision 3). Commands name their
 # places, so GPSR has no list_places, as in the spike it was measured with.
+# get_facts came after the spike, for the talk commands (decision M35).
 GPSR: list[Callable[..., Any]] = [
     go_to,
     move_relative,
@@ -43,6 +46,7 @@ GPSR: list[Callable[..., Any]] = [
     pick,
     place_on,
     hand_over,
+    get_facts,
 ]
 HRI: list[Callable[..., Any]] = [list_places, go_to, move_relative, say, find_people]
 # Every atomic that needs no arms, which the robot does not have yet.
@@ -54,4 +58,5 @@ DEFAULT: list[Callable[..., Any]] = [
     find_objects,
     object_info,
     find_people,
+    get_facts,
 ]

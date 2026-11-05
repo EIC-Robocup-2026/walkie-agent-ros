@@ -15,7 +15,8 @@ def names(tool_set) -> list[str]:
     return [fn.__name__ for fn in tool_set]
 
 
-def test_gpsr_is_the_set_the_spike_used():
+def test_gpsr_is_the_set_the_spike_used_and_get_facts():
+    # get_facts came after the spike, for the talk commands (decision M35).
     assert names(GPSR) == [
         "go_to",
         "move_relative",
@@ -26,6 +27,7 @@ def test_gpsr_is_the_set_the_spike_used():
         "pick",
         "place_on",
         "hand_over",
+        "get_facts",
     ]
 
 

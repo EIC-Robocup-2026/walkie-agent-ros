@@ -190,3 +190,37 @@ records them as P42 to P44, and P39 is amended.
   commits as reviewed only by their tests.
 - For walkie-agent-ros, the follow-up above now means walkie-vision `be126f6` and
   walkie-database `08b0e4c`.
+
+## After the second re-check, 2026-11-05
+
+The re-check of `be126f6` found RJ-F1 to RJ-F3 in walkie-vision, and the re-check
+of `08b0e4c` closed R-F1 and found R-F2 in walkie-database's setup docs. The
+decision log records the fixes as P45 to P48, and P42 and P43 are amended.
+
+| Repository | Worktree | Commit | Subject |
+|---|---|---|---|
+| walkie-vision | `/var/tmp/wv-prep` | `a8a76ef47ee7cd2991b9cc432244fc56323e59ed` | fix: drop the stream's pending frame on a clock jump, and keep far-ahead images out of the services |
+| walkie-database | `/var/tmp/wd-prep` | `f36a038c4e915673967fb88315cab3ce6e6e1ce8` | docs: restore the new seed after a reseed or a floor rebuild in setup step 11 |
+
+- walkie-vision `a8a76ef` makes a backward clock jump drop the stream's pending
+  frame instead of sending it on (P45). On sim time, the services keep no image
+  stamped more than 1 s ahead of the clock, so a previous run's packet delivered
+  after the jump is not answered from (P46). The docs give the corrected bound for
+  DetectObjects' second age check (RJ-F3, in P42).
+- walkie-database `06c9581` moves the pin to `a8a76ef` (P47), and `f36a038` adds
+  Step 3's restore of `seed-2.db` to setup step 11 (P48).
+- `walkie_vision_msgs` did not change between `be126f6` and `a8a76ef`, and neither
+  `pixi.lock` nor `pixi.toml` changed in either repository.
+- walkie-vision's suite gave 1222 passed and 1 skipped (the missing `buffalo_l`
+  model) at `a8a76ef`, and walkie-database's gave 1640 passed at `06c9581`.
+  `f36a038` changes one docs page. Both strict docs builds passed on the final
+  commits.
+- The pair gate ran once at `a8a76ef` and `06c9581`, and once more at `a8a76ef`
+  and `f36a038` so its report names the commit to pin (P48), both with `--build` on
+  domain 89. Both passed all 20 checks. The second report is
+  `/var/tmp/wa-impl-prep/pair-gate-f36a038/report.json`, and its summary is kept
+  beside this file as `pair-gate-f36a038.log`.
+- Codex re-checks of `a8a76ef` and `f36a038` follow. Until they report, treat these
+  commits as reviewed only by their tests.
+- For walkie-agent-ros, the follow-up above now means walkie-vision `a8a76ef` and
+  walkie-database `f36a038`.

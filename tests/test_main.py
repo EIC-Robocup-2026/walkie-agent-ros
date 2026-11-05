@@ -213,7 +213,9 @@ def test_a_later_stop_or_reset_asks_again_after_a_refused_cancel(build, nav, aga
 
     callbacks["/from_human"](HRIMessage(text="stop"))
     assert built.app.runner.wait_idle(WATCHDOG_S)
-    assert handle.cancel_asks == 1
+    # One ask, or two when the verb's refused ask lands before the stop's own.
+    refused = handle.cancel_asks
+    assert refused >= 1
     assert built.app.ctx.base.unresolved(), "a refused cancel leaves the goal live"
 
     # No verb waits on this goal any more, so only the Runner can ask again.
@@ -223,7 +225,7 @@ def test_a_later_stop_or_reset_asks_again_after_a_refused_cancel(build, nav, aga
     else:
         callbacks["/walkie/reset"](Empty())
     assert built.app.runner.wait_idle(WATCHDOG_S)
-    assert handle.cancel_asks == 2
+    assert handle.cancel_asks == refused + 1
     assert built.app.ctx.base.unresolved() == []
 
 

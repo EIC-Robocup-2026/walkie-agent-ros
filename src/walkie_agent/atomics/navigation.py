@@ -3,17 +3,17 @@
 import logging
 import math
 
-from walkie_agent.capabilities import Ctx
+from walkie_agent.capabilities import Ctx, Pose2D
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.perception.geometry import wrap_deg
 
 logger = logging.getLogger(__name__)
 
 # How far from straight ahead a person may be and still count as faced. A person
-# within it gets no turn, and a turn that Nav2 reports as ended without success
-# still faces the person if it ended within it: Nav2's progress checker can abort a
-# turn on the spot that is still settling on its 0.6 degree yaw tolerance
-# (decisions S2-4 and S2-9).
+# within it gets no turn, and a turn on the spot larger than it that Nav2 reports as
+# ended without success still counts as done if it ended within it of its goal:
+# Nav2's progress checker can abort a turn on the spot that is still settling on its
+# 0.6 degree yaw tolerance (decisions S2-4, S2-9 and S2-11).
 FACE_TOLERANCE_DEG = 10.0
 
 
@@ -53,7 +53,10 @@ def move_relative(
         left_m: Meters to move to the left. Negative moves right.
         turn_deg: Degrees to turn once there. Positive turns left, negative turns right.
     """
-    pose = ctx.base.move_relative(forward_m, left_m, turn_deg)
+    if not forward_m and not left_m and abs(turn_deg) > FACE_TOLERANCE_DEG:
+        pose = _turn(ctx, ctx.base.pose(), turn_deg, f"the turn of {turn_deg:g} degrees")
+    else:
+        pose = ctx.base.move_relative(forward_m, left_m, turn_deg)
     return (
         f"Moved {_describe_move(forward_m, left_m, turn_deg)}. "
         f"Now at x={_round(pose.x, 2):.2f} m, y={_round(pose.y, 2):.2f} m, "
@@ -82,23 +85,30 @@ def face_person(ctx: Ctx, person_id: str) -> str:
     if abs(bearing) <= FACE_TOLERANCE_DEG:
         return f"Already facing {person_id}, {_offset(bearing)}."
     start = ctx.base.pose()
+    end = _turn(ctx, start, bearing, f"the turn to {person_id}")
+    turned = wrap_deg(math.degrees(end.yaw - start.yaw))
+    return f"Turned {_round(abs(turned), 0):.0f} degrees {_side(turned)} to face {person_id}."
+
+
+def _turn(ctx: Ctx, start: Pose2D, turn_deg: float, what: str) -> Pose2D:
+    """Turn on the spot by turn_deg from start, and return the pose it ended at.
+
+    A turn that the base reports as ended without success still counts as done if it
+    ended within FACE_TOLERANCE_DEG of its goal. Only the callers' turns larger than
+    that tolerance come here, so a refused goal, which leaves the robot at start,
+    still raises.
+    """
     try:
-        end = ctx.base.move_relative(0.0, 0.0, bearing)
+        return ctx.base.move_relative(0.0, 0.0, turn_deg)
     except GoalFailed as error:
         # Only a goal known to have ended: with its state unknown the base may still
         # be turning, so a pose read now says nothing about where it stops (S2-9).
         end = ctx.base.pose()
-        missed = wrap_deg(math.degrees(start.yaw) + bearing - math.degrees(end.yaw))
+        missed = wrap_deg(math.degrees(start.yaw) + turn_deg - math.degrees(end.yaw))
         if abs(missed) > FACE_TOLERANCE_DEG:
             raise
-        logger.info(
-            "face_person counts the turn to %s as done, %.1f degrees off: %s",
-            person_id,
-            abs(missed),
-            error,
-        )
-    turned = wrap_deg(math.degrees(end.yaw - start.yaw))
-    return f"Turned {_round(abs(turned), 0):.0f} degrees {_side(turned)} to face {person_id}."
+        logger.info("Counting %s as done, %.1f degrees off: %s", what, abs(missed), error)
+        return end
 
 
 def _offset(bearing_deg: float) -> str:

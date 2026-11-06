@@ -288,7 +288,7 @@ def test_a_turn_reported_failed_that_ends_within_10_degrees_still_faces_the_pers
     robot = facing(40.0)
     with caplog.at_level(logging.INFO, logger="walkie_agent.atomics.navigation"):
         assert face_person(short_turns(robot, short), "jane") == reply
-    assert f"counts the turn to jane as done, {abs(short):.1f} degrees off" in caplog.text
+    assert f"Counting the turn to jane as done, {abs(short):.1f} degrees off" in caplog.text
 
 
 def test_a_turn_reported_failed_that_ends_further_off_raises_the_failure():
@@ -309,6 +309,48 @@ def test_a_turn_whose_end_is_unknown_raises_its_failure_even_within_10_degrees()
         face_person(ctx, "jane")
     assert raised.value is error
     assert len(reads) == 1  # The start only: the base may still be turning.
+
+
+@pytest.mark.parametrize(
+    ("turn", "short", "heading"),
+    [
+        # The Chula simulation's 180 degree turn: aborted with code 105, 4 degrees past.
+        (180.0, -4.0, -176.0),
+        (-90.0, 6.0, -84.0),
+    ],
+)
+def test_a_move_that_only_turns_and_ends_within_10_degrees_counts_as_done(
+    caplog, turn, short, heading
+):
+    robot = facing(40.0)
+    with caplog.at_level(logging.INFO, logger="walkie_agent.atomics.navigation"):
+        reply = move_relative(short_turns(robot, short), 0.0, 0.0, turn)
+    assert reply.startswith("Moved ")
+    assert reply.endswith(f"heading {heading:.0f} degrees.")
+    assert f"Counting the turn of {turn:g} degrees as done, {abs(short):.1f} degrees off" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("forward", "turn", "short"),
+    [
+        (0.0, 180.0, 15.0),  # Too far off.
+        (0.0, 8.0, 3.0),  # A turn within the tolerance: a refused one would also be "within".
+        (0.5, 90.0, 3.0),  # Not on the spot: where the base ended is not judged.
+    ],
+)
+def test_any_other_move_reported_failed_raises_the_failure(forward, turn, short):
+    error = aborted()
+    with pytest.raises(StepError) as raised:
+        move_relative(short_turns(facing(40.0), short, error), forward, 0.0, turn)
+    assert raised.value is error
+
+
+def test_a_turn_by_move_relative_whose_end_is_unknown_raises_its_failure():
+    robot = facing(40.0)
+    error = unknown()
+    with pytest.raises(StepError) as raised:
+        move_relative(short_turns(robot, 3.0, error), 0.0, 0.0, 180.0)
+    assert raised.value is error
 
 
 @pytest.mark.parametrize("code", [ErrorCode.CANCELLED, ErrorCode.TIMEOUT, ErrorCode.UNAVAILABLE])

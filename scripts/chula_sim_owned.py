@@ -13,11 +13,18 @@ the group and the token are read from /proc, then a null signal through the desc
 confirms that the process read is still the one it refers to, and only then is the
 signal sent through it. A process that exits at any of these steps is skipped.
 
+A listing of /proc is a snapshot. A process of the part can start a child after the
+listing and exit before it is read, and the child, in no listing yet, would be missed.
+/proc is therefore listed again until a listing adds no process that may be in the
+group: none in it, and none that exited before its group could be read, since that one
+may have started a child first.
+
     chula_sim_owned.py pids PGID TOKEN         print the part's process IDs, one a line
     chula_sim_owned.py signal PGID TOKEN SIG   send SIG (INT, TERM or KILL) to each
 
-Both exit 0 when no process matches; a non-zero exit is an error. Needs Linux 5.3 or
-newer on x86-64 or arm64, and Python 3.9 or newer. The two pidfd calls go through libc's
+Both exit 0 when no process matches, and 1 on an error, such as a failed system call or
+a group that still gains processes after MAX_LISTINGS listings. Needs Linux 5.3 or newer
+on x86-64 or arm64, and Python 3.9 or newer. The two pidfd calls go through libc's
 syscall(): a Python built against older kernel headers, such as Pixi's, has no
 os.pidfd_open. The script runs this with -I.
 """
@@ -27,6 +34,7 @@ import os
 import platform
 import signal
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 TOKEN_VARIABLE = b"CHULA_SIM_TOKEN"
@@ -34,6 +42,9 @@ SIGNALS = {"INT": signal.SIGINT, "TERM": signal.SIGTERM, "KILL": signal.SIGKILL}
 # The same numbers on x86-64 and arm64, from Linux's common system call table.
 SYSCALLS = {"pidfd_send_signal": 424, "pidfd_open": 434}
 MACHINES = ("x86_64", "aarch64")
+# A part has usually settled by the second listing; this many means it keeps starting
+# processes, and the caller is told so rather than given an answer that may be stale.
+MAX_LISTINGS = 100
 
 _libc = ctypes.CDLL(None, use_errno=True)
 _libc.syscall.restype = ctypes.c_long
@@ -88,17 +99,42 @@ def _is_member(pid: int, pgid: int, assignment: bytes) -> bool:
         return False
 
 
+def _in_group(pgid: int) -> Iterator[int]:
+    """Yield each process ID of group `pgid` once, listing /proc until no new one may be.
+
+    Each listing's new IDs are yielded before /proc is listed again, so a child that a
+    caller's signal makes a process start is in a later listing.
+    """
+    seen: set[int] = set()
+    for _ in range(MAX_LISTINGS):
+        new = [pid for pid in _process_ids() if pid not in seen]
+        seen.update(new)
+        again = False
+        for pid in new:
+            try:
+                in_group = _group_of(pid) == pgid
+            except (FileNotFoundError, ProcessLookupError):
+                again = True  # exited before it was read, perhaps after starting a child
+                continue
+            if in_group:
+                again = True
+                yield pid
+        if not again:
+            return
+    raise RuntimeError(f"group {pgid} still gained processes after {MAX_LISTINGS} listings of /proc")
+
+
 def members(pgid: int, token: str) -> list[int]:
     """The IDs of the part's processes now. For a report only: nothing is signalled."""
     assignment = TOKEN_VARIABLE + b"=" + token.encode()
-    return [pid for pid in _process_ids() if _is_member(pid, pgid, assignment)]
+    return [pid for pid in _in_group(pgid) if _is_member(pid, pgid, assignment)]
 
 
 def send(pgid: int, token: str, signum: int) -> int:
     """Send `signum` to each of the part's processes through a pidfd; return how many."""
     assignment = TOKEN_VARIABLE + b"=" + token.encode()
     sent = 0
-    for pid in _process_ids():
+    for pid in _in_group(pgid):
         try:
             pidfd = pidfd_open(pid)
         except (ProcessLookupError, PermissionError):
@@ -130,15 +166,19 @@ def main(argv: list[str]) -> int:
     if not group.isdigit() or int(group) < 1 or not token:
         print(usage, file=sys.stderr)
         return 2
-    if command == "pids":
-        for pid in members(int(group), token):
-            print(pid)
+    try:
+        if command == "pids":
+            for pid in members(int(group), token):
+                print(pid)
+            return 0
+        if platform.machine() not in MACHINES:
+            print(f"chula_sim_owned.py: the pidfd system calls are set up for {MACHINES} only", file=sys.stderr)
+            return 2
+        print(send(int(group), token, SIGNALS[name]))
         return 0
-    if platform.machine() not in MACHINES:
-        print(f"chula_sim_owned.py: the pidfd system calls are set up for {MACHINES} only", file=sys.stderr)
-        return 2
-    print(send(int(group), token, SIGNALS[name]))
-    return 0
+    except (OSError, RuntimeError) as error:
+        print(f"chula_sim_owned.py: {error}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

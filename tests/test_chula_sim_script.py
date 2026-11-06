@@ -7,6 +7,7 @@ shorten its timeouts, source it in a bash of their own.
 """
 
 import fcntl
+import importlib.util
 import os
 import shutil
 import signal
@@ -15,6 +16,7 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
@@ -127,21 +129,33 @@ def test_with_nothing_started_every_part_is_stopped(tmp_path):
     assert run("down", sim_dir=tmp_path).returncode == 0
 
 
+def sleep_with_token(token: str) -> subprocess.Popen:
+    """A sleep in a session and process group of its own, carrying `token`."""
+    return subprocess.Popen(
+        ["sleep", "60"], start_new_session=True, env={**os.environ, "CHULA_SIM_TOKEN": token}
+    )
+
+
 @pytest.fixture
 def stand_in() -> Iterator[subprocess.Popen]:
     """A process group of its own, carrying the token "agent-1"."""
-    process = subprocess.Popen(
-        ["sleep", "60"], start_new_session=True, env={**os.environ, "CHULA_SIM_TOKEN": "agent-1"}
-    )
+    process = sleep_with_token("agent-1")
     yield process
     process.kill()
     process.wait(timeout=10)
 
 
-def write_record(sim_dir: Path, record: str) -> Path:
-    path = sim_dir / "pids" / "agent"
-    path.parent.mkdir(parents=True)
+def write_record(sim_dir: Path, record: str, name: str = "agent") -> Path:
+    path = sim_dir / "pids" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(record + "\n")
+    return path
+
+
+def helper_stand_in(tmp_path: Path, body: str) -> Path:
+    """A bash script to put in OWNED's place; it gets the helper's arguments."""
+    path = tmp_path / "owned.sh"
+    path.write_text("#!/bin/bash\n" + body)
     return path
 
 
@@ -304,6 +318,192 @@ def test_a_start_up_gave_up_on_keeps_down_out_until_its_part_has_a_record(tmp_pa
         wait_for(lambda: not runs_sleep(leader))
     finally:
         down_once_no_start_is_pending(sim_dir)
+
+
+@pytest.mark.parametrize("failing", ["pids", "signal"])
+def test_down_goes_on_to_the_other_parts_when_the_helper_fails_for_one(tmp_path, failing):
+    helper = helper_stand_in(
+        tmp_path,
+        f'if [[ $1 == {failing} && $3 == agent-1 ]]; then echo "simulated failure" >&2; exit 1; fi\n'
+        f'exec python3 -I {OWNED} "$@"\n',
+    )
+    agent, speech = sleep_with_token("agent-1"), sleep_with_token("speech-1")
+    try:
+        agent_record = write_record(tmp_path, f"{agent.pid} {BOOT_ID} agent-1")
+        speech_record = write_record(tmp_path, f"{speech.pid} {BOOT_ID} speech-1", "speech")
+        result = sourced(f"OWNED=(bash {helper}); down", tmp_path)
+        assert result.returncode == 1
+        assert "could not look up or signal the processes of agent" in result.stderr
+        assert "stopped speech" in result.stdout
+        assert speech.wait(timeout=10) == -signal.SIGINT
+        assert agent.poll() is None
+        assert agent_record.exists()
+        assert not speech_record.exists()
+    finally:
+        for process in (agent, speech):
+            process.kill()
+            process.wait(timeout=10)
+
+
+def test_status_shows_a_part_whose_processes_cannot_be_looked_up(tmp_path, stand_in):
+    helper = helper_stand_in(tmp_path, 'echo "simulated failure" >&2\nexit 1\n')
+    write_record(tmp_path, f"{stand_in.pid} {BOOT_ID} agent-1")
+    result = sourced(f"OWNED=(bash {helper}); status", tmp_path)
+    assert result.returncode == 1
+    assert "agent: unknown, its processes could not be looked up" in result.stdout
+    assert "speech: stopped" in result.stdout
+
+
+def test_a_part_that_outlives_every_signal_keeps_its_record(tmp_path):
+    # The stand-in helper reports one process however often it is signalled.
+    helper = helper_stand_in(
+        tmp_path,
+        'case $1 in\n  pids) echo 4242 ;;\n  signal) echo "$4" >> "$SIM_DIR/sent"; echo 1 ;;\nesac\n',
+    )
+    record = write_record(tmp_path, f"4242 {BOOT_ID} agent-1")
+    result = sourced(f"STOP_INT_S=0 STOP_TERM_S=0 STOP_KILL_S=0; OWNED=(bash {helper}); down", tmp_path)
+    assert result.returncode == 1
+    assert "agent did not stop; its record stays" in result.stderr
+    assert (tmp_path / "sent").read_text().split() == ["INT", "TERM", "KILL", "KILL"]
+    assert record.exists()
+
+
+@pytest.fixture
+def owned() -> ModuleType:
+    """scripts/chula_sim_owned.py, loaded as a module, for tests that replace its /proc."""
+    spec = importlib.util.spec_from_file_location("chula_sim_owned", OWNED)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class FakeProc:
+    """Processes as the helper reads them from /proc, with an action on a first read.
+
+    `processes` maps each ID to its group and whether it carries the token. An action in
+    `on_read` runs the first time a process is read, before the read, as when a process
+    starts a child and exits just after /proc was listed.
+    """
+
+    def __init__(self, owned: ModuleType, monkeypatch, processes: dict[int, tuple[int, bool]]):
+        self.processes = dict(processes)
+        self.on_read: dict[int, Callable[[], None]] = {}
+        self.events: list[str] = []
+        self.descriptors: dict[int, int] = {}
+        monkeypatch.setattr(owned, "_process_ids", lambda: sorted(self.processes))
+        monkeypatch.setattr(owned, "_group_of", lambda pid: self._read(pid)[0])
+        monkeypatch.setattr(owned, "_is_member", self.is_member)
+        monkeypatch.setattr(owned, "pidfd_open", self.pidfd_open)
+        monkeypatch.setattr(owned, "pidfd_send_signal", self.pidfd_send_signal)
+
+    def _read(self, pid: int) -> tuple[int, bool]:
+        if action := self.on_read.pop(pid, None):
+            action()
+        if pid not in self.processes:
+            raise FileNotFoundError(pid)
+        return self.processes[pid]
+
+    def is_member(self, pid: int, pgid: int, assignment: bytes) -> bool:
+        self.events.append(f"check {pid}")
+        try:
+            group, carries_token = self._read(pid)
+        except FileNotFoundError:
+            return False
+        return group == pgid and carries_token
+
+    def pidfd_open(self, pid: int) -> int:
+        if pid not in self.processes:
+            raise ProcessLookupError(pid)
+        self.events.append(f"open {pid}")
+        descriptor = os.open(os.devnull, os.O_RDONLY)  # a real descriptor, for send to close
+        self.descriptors[descriptor] = pid
+        return descriptor
+
+    def pidfd_send_signal(self, descriptor: int, signum: int) -> None:
+        pid = self.descriptors[descriptor]
+        if pid not in self.processes:
+            raise ProcessLookupError(pid)
+        self.events.append(f"signal {pid} {signum}")
+
+
+def started_a_child_and_exited(fake: FakeProc, parent: int, child: int) -> Callable[[], None]:
+    def action() -> None:
+        fake.processes[child] = fake.processes.pop(parent)
+
+    return action
+
+
+def test_the_helper_finds_a_child_its_parent_started_as_it_exited(owned, monkeypatch):
+    fake = FakeProc(owned, monkeypatch, {1: (1, False), 10: (10, True)})
+    fake.on_read[10] = started_a_child_and_exited(fake, 10, 11)
+    assert owned.members(10, "agent-1") == [11]
+
+
+def test_the_helper_signals_a_child_its_parent_started_as_it_exited(owned, monkeypatch):
+    fake = FakeProc(owned, monkeypatch, {1: (1, False), 10: (10, True)})
+    fake.on_read[10] = started_a_child_and_exited(fake, 10, 11)
+    assert owned.send(10, "agent-1", signal.SIGINT) == 1
+    assert f"signal 11 {signal.SIGINT}" in fake.events
+
+
+def test_the_helper_signals_through_a_pidfd_opened_before_the_check(owned, monkeypatch):
+    def no_kill(*args):
+        raise AssertionError(f"kill{args}: a signal by ID can reach a later holder of the ID")
+
+    monkeypatch.setattr(owned.os, "kill", no_kill)
+    monkeypatch.setattr(owned.os, "killpg", no_kill)
+    # 12 is in the group but does not carry the token.
+    fake = FakeProc(owned, monkeypatch, {10: (10, True), 12: (10, False)})
+    assert owned.send(10, "agent-1", signal.SIGINT) == 1
+    assert fake.events == [
+        "open 10",
+        "check 10",
+        "signal 10 0",
+        f"signal 10 {signal.SIGINT}",
+        "open 12",
+        "check 12",
+    ]
+
+
+def test_the_helper_does_not_signal_a_process_that_exits_after_its_check(owned, monkeypatch):
+    fake = FakeProc(owned, monkeypatch, {10: (10, True)})
+    check = fake.is_member
+
+    def checked_then_exited(pid: int, pgid: int, assignment: bytes) -> bool:
+        member = check(pid, pgid, assignment)
+        del fake.processes[pid]
+        return member
+
+    monkeypatch.setattr(owned, "_is_member", checked_then_exited)
+    assert owned.send(10, "agent-1", signal.SIGINT) == 0
+    assert fake.events == ["open 10", "check 10"]
+
+
+def test_the_helper_signals_a_child_started_while_its_parent_was_signalled(owned, monkeypatch):
+    fake = FakeProc(owned, monkeypatch, {10: (10, True)})
+    signal_one = fake.pidfd_send_signal
+
+    def starts_a_child_on_sigint(descriptor: int, signum: int) -> None:
+        signal_one(descriptor, signum)
+        if signum == signal.SIGINT:
+            fake.processes.setdefault(11, (10, True))
+
+    monkeypatch.setattr(owned, "pidfd_send_signal", starts_a_child_on_sigint)
+    assert owned.send(10, "agent-1", signal.SIGINT) == 2
+    assert f"signal 11 {signal.SIGINT}" in fake.events
+
+
+def test_the_helper_gives_up_on_a_group_that_keeps_starting_processes(owned, monkeypatch, capsys):
+    fake = FakeProc(owned, monkeypatch, {10: (10, True)})
+    new_ids = iter(range(11, 1000))
+
+    def a_new_member_each_listing() -> list[int]:
+        fake.processes[next(new_ids)] = (10, True)
+        return sorted(fake.processes)
+
+    monkeypatch.setattr(owned, "_process_ids", a_new_member_each_listing)
+    assert owned.main(["pids", "10", "agent-1"]) == 1
+    assert "still gained processes" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

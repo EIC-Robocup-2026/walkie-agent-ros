@@ -54,8 +54,9 @@ AGENT_READY="Walkie's agent is running"
 PART_TIMEOUT_S=120
 # The speech listener logs nothing until a line arrives; a bad start exits within this.
 SETTLE_S=3
-# How long start waits for a part's record, and stop for a part to exit after each signal.
-# Stop's waits are minimums: each of its ten checks a second also starts the helper.
+# How long start waits for a part's record, and stop for a part to exit after each signal
+# before it sends the next. Each of stop's ten checks a second also starts the helper, so
+# its waits run a little longer.
 START_TIMEOUT_S=5
 STOP_INT_S=10
 STOP_TERM_S=5
@@ -106,25 +107,42 @@ owner() {
     echo "$pgid $token"
 }
 
-# running NAME: NAME's process group still holds a process that carries NAME's token.
-# A group ID that the system has since given to another group, after a reboot or after
-# the part exited, does not count.
-running() {
+# state NAME: print "running" while NAME's process group holds a process that carries
+# NAME's token, "stopped" when it holds none or NAME has no record from this boot, and
+# "unknown" when the helper fails. A group ID that the system has since given to another
+# group, after a reboot or after the part exited, does not count.
+state() {
     local who pids
-    who=$(owner "$1") || return 1
+    if ! who=$(owner "$1"); then
+        echo stopped
     # shellcheck disable=SC2086 # owner prints two words, a group ID and a token
-    pids=$("${OWNED[@]}" pids $who) || die "could not look up the processes of $1"
-    [[ -n $pids ]]
+    elif ! pids=$("${OWNED[@]}" pids $who); then
+        echo unknown
+    elif [[ -n $pids ]]; then
+        echo running
+    else
+        echo stopped
+    fi
+}
+
+# running NAME: NAME's state is running. For up, which stops when the state is unknown;
+# stop and status read the state themselves, so that they can go on to the other parts.
+running() {
+    case $(state "$1") in
+        running) return 0 ;;
+        stopped) return 1 ;;
+        *) die "could not look up the processes of $1" ;;
+    esac
 }
 
 # signal_part NAME SIGNAL: send SIGNAL to each of NAME's processes, each through a pidfd,
 # so that a process that exits meanwhile never passes the signal to a later holder of
-# its ID.
+# its ID. Fails when the helper does.
 signal_part() {
     local who
     who=$(owner "$1") || return 0
     # shellcheck disable=SC2086 # owner prints two words, a group ID and a token
-    "${OWNED[@]}" signal $who "$2" > /dev/null || die "could not signal the processes of $1"
+    "${OWNED[@]}" signal $who "$2" > /dev/null
 }
 
 # start NAME DIR COMMAND...: run COMMAND in DIR as the leader of a new process group,
@@ -150,40 +168,62 @@ start() {
     echo "started $name, process group $(pgid_of "$name"), log $SIM_DIR/logs/$name.log"
 }
 
-# gone_within NAME SECONDS: NAME stops running within SECONDS.
-gone_within() {
-    local name=$1 seconds=$2
+# settle NAME SECONDS: print NAME's state once it is no longer running, or after
+# SECONDS, whichever comes first.
+settle() {
+    local name=$1 seconds=$2 now
     for _ in $(seq $((seconds * 10))); do
-        running "$name" || return 0
+        now=$(state "$name")
+        if [[ $now != running ]]; then
+            echo "$now"
+            return 0
+        fi
         sleep 0.1
     done
-    ! running "$name"
+    state "$name"
 }
 
 # stop NAME: SIGINT to every process of NAME, as Ctrl+C sends it to every process of a
-# terminal's foreground group, then SIGTERM, then SIGKILL. SIGKILL goes twice, for a
-# child started during the first. A part that outlives them all keeps its record.
+# terminal's foreground group, then SIGTERM, then SIGKILL. Each signal goes only if NAME
+# still runs after the wait for the one before. SIGKILL goes twice, for a child started
+# during the first. A part that outlives them all, or whose processes the helper cannot
+# look up or signal, keeps its record, and stop fails.
 stop() {
-    local name=$1
-    if running "$name"; then
-        signal_part "$name" INT
-        gone_within "$name" "$STOP_INT_S" ||
-            { signal_part "$name" TERM && gone_within "$name" "$STOP_TERM_S"; } ||
-            { signal_part "$name" KILL && gone_within "$name" "$STOP_KILL_S"; } ||
-            { signal_part "$name" KILL && gone_within "$name" "$STOP_KILL_S"; } || {
+    local name=$1 now step signalled=false
+    now=$(state "$name")
+    for step in "INT $STOP_INT_S" "TERM $STOP_TERM_S" "KILL $STOP_KILL_S" "KILL $STOP_KILL_S"; do
+        [[ $now == running ]] || break
+        if ! signal_part "$name" "${step% *}"; then
+            now=unknown
+            break
+        fi
+        signalled=true
+        now=$(settle "$name" "${step#* }")
+    done
+    case $now in
+        stopped)
+            if $signalled; then
+                echo "stopped $name"
+            fi
+            rm -f "$SIM_DIR/pids/$name"
+            ;;
+        running)
             echo "chula-sim: $name did not stop; its record stays in $SIM_DIR/pids" >&2
             return 1
-        }
-        echo "stopped $name"
-    fi
-    rm -f "$SIM_DIR/pids/$name"
+            ;;
+        *)
+            echo "chula-sim: could not look up or signal the processes of $name; its record stays in $SIM_DIR/pids" >&2
+            return 1
+            ;;
+    esac
 }
 
-# fail MESSAGE: stop up with MESSAGE, and say which parts it leaves running.
+# fail MESSAGE: stop up with MESSAGE, and say which parts it leaves running, counting a
+# part whose state is unknown as running.
 fail() {
     local name left=()
     for name in "${PARTS[@]}"; do
-        if running "$name"; then
+        if [[ $(state "$name") != stopped ]]; then
             left+=("$name")
         fi
     done
@@ -308,15 +348,20 @@ check() {
     "$PIXI" run --frozen --manifest-path "$REPO/pixi.toml" python -m walkie_agent.sim.sim_check "$@"
 }
 
+# status: one line for each part. Exits 1 if the state of any is unknown.
 status() {
-    local name
+    local name result=0
     for name in "${PARTS[@]}"; do
-        if running "$name"; then
-            echo "$name: running, process group $(pgid_of "$name"), log $SIM_DIR/logs/$name.log"
-        else
-            echo "$name: stopped"
-        fi
+        case $(state "$name") in
+            running) echo "$name: running, process group $(pgid_of "$name"), log $SIM_DIR/logs/$name.log" ;;
+            stopped) echo "$name: stopped" ;;
+            *)
+                echo "$name: unknown, its processes could not be looked up"
+                result=1
+                ;;
+        esac
     done
+    return "$result"
 }
 
 print_env() {
@@ -325,8 +370,9 @@ print_env() {
     echo "export ZENOH_CONFIG_OVERRIDE='$ZENOH_CONFIG_OVERRIDE'"
 }
 
-# down: stop every part, in reverse order. A part that does not stop does not keep down
-# from stopping the others; down then exits 1.
+# down: stop every part, in reverse order. A part that does not stop, or whose processes
+# cannot be looked up or signalled, does not keep down from stopping the others; down
+# then exits 1.
 down() {
     local i result=0
     lock

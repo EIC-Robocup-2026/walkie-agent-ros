@@ -135,15 +135,26 @@ scripts/chula-sim.sh down
 ```
 
 `down` stops the parts in reverse order. It sends each process of a part SIGINT,
-as Ctrl+C would, and gives the part at least 10 s to exit. Then it sends SIGTERM
-with at least 5 s, then SIGKILL, twice if need be. A part still running after that keeps its record, and `down`
-exits 1 once it has tried every part. `status` shows which parts are running.
+as Ctrl+C would. If the part still runs 10 s later, it sends SIGTERM, and 5 s
+after that SIGKILL, then SIGKILL again 2 s later. Each check starts the helper,
+so these waits run a little longer.
+
+A part keeps its record if it is still running after all that, or if its
+processes could not be looked up or signalled. `down` still goes on to the other
+parts, then exits 1. `status` shows which parts are running, and says `unknown`
+for a part whose processes it could not look up.
 
 Each signal goes through a pidfd, a descriptor that refers to one process and
 never to a later one with the same ID. `chula_sim_owned.py` opens it, checks the
 process's group and token, and only then signals it. Without it, a part that
 exits just after the check could pass its group's number to another program
 before the signal arrives.
+
+The helper lists `/proc` again until a listing shows no new process that might
+be in the part's group. Otherwise a child that a part's process starts just as
+it exits would appear in no listing, and `down` would remove the record of a
+part still running. If the group keeps gaining processes for 100 listings, the
+helper reports an error rather than a list that may be stale.
 
 ## Where things go
 
@@ -224,6 +235,9 @@ kitchen table, succeeded from the living room and from the shelf.
   `down` took 11.8 s, 10.3 s of them for `bringup`. Nav2's `planner_server` and
   `controller_server` outlived SIGINT and SIGTERM until `ros2 launch` sent them
   SIGKILL, inside `down`'s 10 s SIGINT wait. `down` sent nothing after SIGINT.
+  With the repeated listings and the unknown state (G4-9), a second run gave
+  the same result. `status` showed all five parts running, and `down` exited 0
+  in 12.5 s with no record left.
 - One more task with the real model, "Please say hello.". The agent called
   `say("Hello!")`, and `speech.log` showed the line. The log also begins with
   two of Zenoh's configuration warnings, which `ros2 topic echo` prints at

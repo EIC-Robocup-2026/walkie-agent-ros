@@ -103,7 +103,7 @@ agent with `--use-sim-time` and the Chula places. For the arms it adds
 `use_sim_time:=true`. For memory it runs `db-seed-sim`, `db-restore` (P22)
 and `db-memory`, retrying until `/clock` arrives (P25). Voice goes to a
 null sink, so nothing is audible.
-Built as G4-1 to G4-8: `scripts/chula-sim.sh up` starts the router, the
+Built as G4-1 to G4-9: `scripts/chula-sim.sh up` starts the router, the
 world from a worktree that builds only the branch's two changed packages, the
 oracle, a text log of `/to_human` and, with `--agent`, the agent. `check`
 reports what the graph provides. Arms join with S6 and memory with S3, and

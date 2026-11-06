@@ -30,7 +30,7 @@ until Nav2 reports an end.
 | --- | --- | --- |
 | `ctx.base` | `FakeRobot` | `RosBase`, on `/navigate_to_pose` and TF `map` to `base_footprint` |
 | `ctx.speech` | `FakeRobot` | `RosSpeech`, on `/to_human`, with `/voice_commands` rotating the speech id |
-| `ctx.vision` | `FakeRobot` | `UnavailableVision`: every verb raises `UNAVAILABLE` |
+| `ctx.vision` | `FakeRobot` | `UnavailableVision`: every verb raises `UNAVAILABLE`. With `--vision`, `RosVision`, whose `people` reads `/walkie_vision/people` and whose `objects` raises `UNAVAILABLE` |
 | `ctx.arms` | `FakeRobot` | `UnavailableArms`: every verb raises `UNAVAILABLE` |
 
 An unavailable verb never returns an empty list, because that would say nothing is in

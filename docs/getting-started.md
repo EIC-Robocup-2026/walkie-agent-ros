@@ -178,9 +178,11 @@ The `default` tool set has `list_places`, `go_to`, `move_relative`, `say`,
 `find_objects`, `object_info`, `find_people` and `get_facts`, which reads the time, the
 date and the team from `config.toml`'s `[team]`. The agent also has `update_todos` and
 `wait_for_person`. `--tool-set gpsr` and `--tool-set hri` pick the other fixed sets.
-`find_objects`, `object_info` and `find_people` answer `UNAVAILABLE`, because live vision
-is not connected. In the `gpsr` set, `pick`, `place_on` and `hand_over` answer
-`UNAVAILABLE` as well.
+`find_objects` and `object_info` answer `UNAVAILABLE`, because live object vision is not
+connected. `find_people` answers `UNAVAILABLE` too, unless you add `--vision`: it then
+reads the people on `/walkie_vision/people`, from walkie-vision or the simulation's
+oracle. `pixi run agent-sim-chula` adds it. In the `gpsr` set, `pick`, `place_on` and
+`hand_over` answer `UNAVAILABLE` as well.
 
 | Topic             | Direction  | What it carries                                                          |
 | ----------------- | ---------- | ------------------------------------------------------------------------ |

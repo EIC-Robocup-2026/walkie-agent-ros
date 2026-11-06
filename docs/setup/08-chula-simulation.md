@@ -75,6 +75,10 @@ scripts/chula-sim.sh check --agent
 
 - Running `up` again starts only the parts that are not running.
 - `--gui` opens MuJoCo's viewer and RViz.
+- Arguments after `--` go to the agent, and need `--agent`:
+  `scripts/chula-sim.sh up --agent -- --tool-set hri` runs the HRI tool set.
+  `agent-sim-chula` already passes `--vision`, so `find_people` reads the
+  oracle's people.
 - `up` refuses to start beside another `nav_mujoco_omnibot.launch.py`, on any
   graph, because two simulations compete for the CPU.
 - `up` returns only when the oracle and the agent have logged that they are up,
@@ -127,6 +131,10 @@ tail -f /var/tmp/walkie-chula-sim/logs/speech.log
 `-w 1` waits for one subscriber before it publishes, so the task is not lost
 while discovery is still running. Each tool call is a line of
 `logs/agent-tools.jsonl`.
+
+With `up --agent -- --tool-set hri`, the agent also has the HRI tools, and
+`find_people` reads the oracle's two guests. Ask "Is anyone waving at you?" and
+the tool log shows `find_people` returning `person_1`.
 
 ## Stop it
 
@@ -261,6 +269,17 @@ kitchen table, succeeded from the living room and from the shelf.
   `say("Hello!")`, and `speech.log` showed the line. The log also begins with
   two of Zenoh's configuration warnings, which `ros2 topic echo` prints at
   startup.
+- With people perception (S1), on 2026-11-07: `up --agent -- --tool-set hri`
+  and `check --agent` passed. Two tasks with the real model:
+    - "Is anyone waving at you?" The agent called
+      `find_people("waving person")`, which returned in 0.05 s with `person_1`,
+      a standing person raising their left arm, in the living room. It said
+      "Yes, I can see one person standing in front of me with a hand raised."
+    - "Who can you see right now?" `find_people()` returned `person_1` and
+      `person_2`, a sitting person with no gesture, both in the living room.
+      The agent said both.
+
+    `down` left no record, and only the user's own router kept running.
 
 ## Not in the recipe
 

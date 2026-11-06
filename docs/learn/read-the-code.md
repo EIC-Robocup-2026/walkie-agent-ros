@@ -31,7 +31,8 @@ connector, against a fake robot on a private domain. None of them is the robot's
 | ---- | ------------- | ----- |
 | `src/walkie_agent/ros/base.py` | `RosBase`: goals, TF, cancels and their limits | `tests/test_ros_base.py` |
 | `src/walkie_agent/ros/speech.py` | `RosSpeech`, which publishes on `/to_human` | `tests/test_ros_speech.py` |
-| `src/walkie_agent/ros/vision.py` | `UnavailableVision`, which refuses | `tests/test_ros_base.py` |
+| `src/walkie_agent/ros/vision.py` | `UnavailableVision`, which refuses, and `RosVision`, which reads `/walkie_vision/people` with `--vision` | `tests/test_ros_vision.py`, `tests/test_ros_base.py` |
+| `src/walkie_agent/perception/people.py` | The pose and gesture phrases `find_people` gives, from the gesture rules' names | `tests/test_ros_vision.py` |
 | `src/walkie_agent/ros/io.py` | `RosBridge`, for the operator's topics | `tests/test_ros_bridge.py` |
 | `src/walkie_agent/ros/policy.py` | `FORBIDDEN_NAMES`, and the check on every endpoint | `tests/test_ros_base.py` |
 | `src/walkie_agent/main.py` | Assembly, flags, signals, exit codes | `tests/test_main.py` |
@@ -86,9 +87,10 @@ tests it without audio hardware, so a pass doesn't prove the speaker behaves.
 
 These parts are proposed but not built.
 
-- **Live vision.** `UnavailableVision` answers `UNAVAILABLE` for `find_objects` and
-  `find_people`. The old tool that read remembered rows is retired. A real vision backend
-  is a later slice.
+- **Live object vision.** `find_objects` answers `UNAVAILABLE`, and so does
+  `find_people` unless the agent runs with `--vision`, when `RosVision` reads
+  walkie-vision's people. The old tool that read remembered rows is retired. Reading
+  objects live is a later slice.
 - **Arms.** `UnavailableArms` refuses every arm verb. Only `FakeRobot` can pick.
 - **Real places.** `config/locations.toml` ships empty until the team measures them.
 - **A fallback model.** The code can load one. Nobody has selected one, and `run_limit` and

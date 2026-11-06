@@ -17,6 +17,10 @@ directory (see .env.example). PYTHON_DOTENV_DISABLED=1 turns the .env file off. 
 [team] table names the team and the timezone that `get_facts` reads, with the time from
 the computer's wall clock.
 
+With --vision, `find_people` reads walkie-vision's people on /walkie_vision/people,
+which the simulation's oracle_perception publishes too. Without it, `find_people` reports
+UNAVAILABLE and the prompt says so.
+
 A missing or broken file, a missing setting or API key, or a bad [team] table stops the
 agent before ROS starts, with one line on stderr and exit code 2.
 
@@ -48,7 +52,7 @@ from walkie_agent.atomics import DEFAULT, GPSR, HRI
 from walkie_agent.capabilities import CancelToken, Ctx, Facts, UnavailableFacts
 from walkie_agent.capabilities.facts import facts_from_config
 from walkie_agent.locations import Location, load_locations
-from walkie_agent.ros import RosBase, RosBridge, RosSpeech, UnavailableVision
+from walkie_agent.ros import RosBase, RosBridge, RosSpeech, RosVision, UnavailableVision
 from walkie_agent.ros.io import (
     CONSOLE_TOPIC,
     INPUT_TOPIC,
@@ -126,6 +130,16 @@ _TOOL_RULES = {
     ),
 }
 
+# The find_people rule of a run with --vision, in place of the one above.
+_LIVE_PEOPLE_RULE = (
+    "- `find_people` reports the people your camera sees now, left to right, each with\n"
+    "  a pose and a gesture. It sees only what is in front of you, so turn to look\n"
+    "  elsewhere. A raised hand also counts as waving. In a pointing gesture, left and\n"
+    "  right are as you see them. An id names the same person only while they stay in\n"
+    "  view. If it reports UNAVAILABLE, say that you cannot see people right now, and\n"
+    "  never guess who is there.\n"
+)
+
 _RULES_END = """\
 - If a tool reports a failure, tell the person what went wrong with `say`
   and do not pretend the action succeeded. When one call of a message fails,
@@ -149,15 +163,21 @@ _RULES_END = """\
 
 
 def build_system_prompt(
-    tool_set: str, locations: Mapping[str, Location], robot_description: str
+    tool_set: str,
+    locations: Mapping[str, Location],
+    robot_description: str,
+    *,
+    vision: bool = False,
 ) -> str:
     """The rules for one tool set, then the static robot description, once.
 
     GPSR lacks `list_places`, so its prompt carries the configured places as data.
+    `vision` says that find_people reads live people perception.
     """
     names = _atomic_names(tool_set)
+    rules = {**_TOOL_RULES, "find_people": _LIVE_PEOPLE_RULE} if vision else _TOOL_RULES
     prompt = _RULES_START
-    prompt += "".join(rule for tool, rule in _TOOL_RULES.items() if tool in names)
+    prompt += "".join(rule for tool, rule in rules.items() if tool in names)
     prompt += _RULES_END
     if "list_places" not in names:
         prompt += "\n" + _places_section(locations)
@@ -195,13 +215,20 @@ class Application:
     """
 
     def __init__(
-        self, ctx: Ctx, runner: Runner, bridge: RosBridge, base: RosBase, speech: RosSpeech
+        self,
+        ctx: Ctx,
+        runner: Runner,
+        bridge: RosBridge,
+        base: RosBase,
+        speech: RosSpeech,
+        vision: RosVision | None = None,
     ) -> None:
         self.ctx = ctx
         self.runner = runner
         self.bridge = bridge
         self._base = base
         self._speech = speech
+        self._vision = vision
         self._run_ended = True
 
     def start(self) -> None:
@@ -228,6 +255,8 @@ class Application:
             return False
         # After the Runner's join, so a stop line in flight can still be published.
         self._speech.close()
+        if self._vision is not None:
+            self._vision.close()
         self.bridge.close()
         return True
 
@@ -256,15 +285,17 @@ def assemble(
     use_sim_time: bool = False,
     fallback: BaseChatModel | None = None,
     facts: Facts = UnavailableFacts(),
+    vision: bool = False,
 ) -> Application:
     """Wire the runtime and the ROS wrappers over a connector the caller already made.
 
     Nothing here builds a model or a tracer, initializes or spins ROS, or destroys the
     connector. A failure part of the way through closes what was built before it raises.
     `facts` is ctx.facts. main() passes the SystemFacts of config.toml's [team] table.
+    `vision` makes ctx.vision a RosVision, which reads people from walkie-vision.
     """
     check_templates(templates, tool_set)
-    prompt = build_system_prompt(tool_set, locations, robot_description)
+    prompt = build_system_prompt(tool_set, locations, robot_description, vision=vision)
     clock = connector.node.get_parameter("use_sim_time").value
     if bool(clock) != use_sim_time:
         raise ValueError(
@@ -280,11 +311,14 @@ def assemble(
         built.append(base.close)
         speech = RosSpeech(connector)
         built.append(speech.close)
+        live = RosVision(connector, base, cancel) if vision else None
+        if live is not None:
+            built.append(live.close)
         ctx = Ctx(
             cancel=cancel,
             base=base,
             speech=speech,
-            vision=UnavailableVision(cancel),
+            vision=live or UnavailableVision(cancel),
             facts=facts,
         )
         bridge = RosBridge(
@@ -319,7 +353,7 @@ def assemble(
         for close in reversed(built):
             close()
         raise
-    return Application(ctx, runner, bridge, base, speech)
+    return Application(ctx, runner, bridge, base, speech, live)
 
 
 class _Signals:
@@ -422,6 +456,7 @@ def _run(args: argparse.Namespace, **assembly: Any) -> int:
             task_topic=args.task_topic,
             todos_topic=args.todos_topic,
             use_sim_time=args.use_sim_time,
+            vision=args.vision,
             **assembly,
         )
         app.start()
@@ -485,6 +520,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--use-sim-time",
         action="store_true",
         help="Use the simulator's /clock, so goal timestamps match the simulated robot.",
+    )
+    parser.add_argument(
+        "--vision",
+        action="store_true",
+        help="Let find_people read walkie-vision's people, or the simulation's oracle.",
     )
     return parser.parse_args(argv)
 

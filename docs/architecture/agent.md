@@ -57,10 +57,12 @@ still a proposal: see [Self-Evolving Agent (Proposed)](self-evolving-agent.md).
   ([ADR-0015](decisions/0015-repository-boundary.md),
   [ADR-0016](decisions/0016-talk-to-walkie-ros-directly.md)). The vision models run
   in walkie-vision ([ADR-0034](decisions/0034-vision-models-in-walkie-vision.md)).
-- **Not connected: memory, vision and arms.** The agent does not read walkie-database.
-  The old remembered-object tool is retired, because a remembered row is not a
-  current view. `find_objects`, `object_info`, `find_people`, `pick`, `place_on` and
-  `hand_over` all answer `UNAVAILABLE` on the robot's `ctx`.
+- **Not connected: memory, object vision and arms.** The agent does not read
+  walkie-database. The old remembered-object tool is retired, because a remembered
+  row is not a current view. `find_objects`, `object_info`, `pick`, `place_on` and
+  `hand_over` all answer `UNAVAILABLE` on the robot's `ctx`. So does `find_people`,
+  unless the agent runs with `--vision`: it then reads walkie-vision's people
+  ([Perception](perception.md#what-is-built)).
 
 ## Layers
 
@@ -96,7 +98,7 @@ flowchart TB
     voice["voice-asr and voice-tts<br/>speech in and out"]
     bridge["RosBridge<br/>the operator's topics"]
     runner["Runner and create_agent<br/>middlewares and todo list"]
-    verbs["RosBase, RosSpeech<br/>UnavailableVision, UnavailableArms"]
+    verbs["RosBase, RosSpeech<br/>RosVision or UnavailableVision, UnavailableArms"]
     robotmd[("robot.md")]
   end
 
@@ -390,7 +392,7 @@ come from the todo middleware, in every set.
 | `say` | default, gpsr, hri | Publishes one line on `/to_human` |
 | `find_objects` | default, gpsr | `UNAVAILABLE`: live object perception is not connected |
 | `object_info` | default, gpsr | `UNAVAILABLE`, for the same reason |
-| `find_people` | default, gpsr, hri | `UNAVAILABLE`: live people perception is not connected |
+| `find_people` | default, gpsr, hri | With `--vision`, the people in the newest `/walkie_vision/people` array, left to right, with a pose, a gesture and the room. Without it, `UNAVAILABLE`: live people perception is not connected |
 | `pick`, `place_on`, `hand_over` | gpsr | `UNAVAILABLE`: no arm commander client exists |
 | `get_facts` | default, gpsr | Reads the time and the date from the computer's clock, in the timezone of `config.toml`'s `[team]`, and the team's name, country and affiliation from that table |
 | `update_todos` | always | Adds, updates and removes steps by id, all or nothing |

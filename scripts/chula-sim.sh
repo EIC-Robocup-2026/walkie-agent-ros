@@ -5,6 +5,7 @@
 # it neither sees nor disturbs a robot or another simulation on this computer.
 #
 #   scripts/chula-sim.sh up [--agent] [--gui]   router, MuJoCo with Nav2, oracle, speech log, agent
+#       [-- ARGS]                               ARGS go to the agent, such as --tool-set hri
 #   scripts/chula-sim.sh check [--agent]        wait for the clock, TF, head camera and arrays
 #   scripts/chula-sim.sh status                 which parts are running, and their logs
 #   scripts/chula-sim.sh env                    the exports that put a shell on the private graph
@@ -273,15 +274,18 @@ check_prerequisites() {
 }
 
 up() {
-    local with_agent=false headless=true rviz=false
+    local with_agent=false headless=true rviz=false agent_args=()
     while (($#)); do
         case $1 in
             --agent) with_agent=true ;;
             --gui) headless=false rviz=true ;;
+            --) shift; agent_args=("$@"); break ;;
             *) die "unknown option for up: $1" ;;
         esac
         shift
     done
+    ((${#agent_args[@]} == 0)) || $with_agent ||
+        die "the arguments after -- are the agent's, so up needs --agent with them"
     check_prerequisites
     lock
     mkdir -p "$SIM_DIR"/{logs,pids,worlds,ros/log}
@@ -323,7 +327,7 @@ up() {
         --manifest-path "$REPO/pixi.toml" ros2 topic echo /to_human rai_interfaces/msg/HRIMessage --field text
     if $with_agent && ! running agent; then
         start agent "$REPO" "$PIXI" run --frozen --manifest-path "$REPO/pixi.toml" agent-sim-chula \
-            --tool-log "$SIM_DIR/logs/agent-tools.jsonl"
+            --tool-log "$SIM_DIR/logs/agent-tools.jsonl" "${agent_args[@]}"
     fi
 
     wait_for_log oracle "$ORACLE_READY" "$PART_TIMEOUT_S" ||
@@ -390,6 +394,6 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
         status) status ;;
         env) print_env ;;
         down) down ;;
-        *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+        *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
     esac
 fi

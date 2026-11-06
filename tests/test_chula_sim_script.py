@@ -85,6 +85,7 @@ def test_without_a_known_command_it_prints_the_usage(tmp_path, args):
     result = run(*args, sim_dir=tmp_path)
     assert result.returncode == 2
     assert "up [--agent] [--gui]" in result.stdout
+    assert "[-- ARGS]" in result.stdout
     assert "down" in result.stdout
 
 
@@ -118,6 +119,17 @@ def test_up_refuses_an_unknown_option(tmp_path):
     result = run("up", "--arms", sim_dir=tmp_path)
     assert result.returncode == 1
     assert "unknown option for up: --arms" in result.stderr
+
+
+def test_up_takes_the_agents_arguments_after_two_dashes_only_with_the_agent(tmp_path):
+    result = run("up", "--", "--tool-set", "hri", sim_dir=tmp_path)
+    assert result.returncode == 1
+    assert "so up needs --agent with them" in result.stderr
+    # With --agent the options parse, and up goes on to its prerequisites.
+    result = run("up", "--agent", "--", "--tool-set", "hri", "--arms", sim_dir=tmp_path)
+    assert result.returncode == 1
+    assert "set WALKIE_ROS" in result.stderr
+    assert not (tmp_path / "pids").exists()
 
 
 def test_with_nothing_started_every_part_is_stopped(tmp_path):

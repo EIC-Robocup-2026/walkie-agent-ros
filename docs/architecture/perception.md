@@ -1,12 +1,14 @@
 # Perception (Proposed)
 
 !!! note "Status: Proposed"
-    Apart from the simulation's oracle ([In simulation](#in-simulation)),
+    Apart from the simulation's oracle ([In simulation](#in-simulation)) and
+    the live people reader behind `find_people` ([What is built](#what-is-built)),
     nothing on this page is built yet. It is the design for team review. Each
     of the [open questions](#open-questions) says what it blocks.
 
-    Today `find_objects` is a live-view atomic, and on the robot it answers `UNAVAILABLE`,
-    as does `find_people`. The old tool that read remembered rows is retired. Where this page
+    Today `find_objects` is a live-view atomic, and on the robot it answers `UNAVAILABLE`.
+    `find_people` reads `/walkie_vision/people` when the agent runs with `--vision`, and
+    answers `UNAVAILABLE` otherwise. The old tool that read remembered rows is retired. Where this page
     describes a memory stage named `find_objects`, read it as a proposed tool that needs its
     own name. A remembered row is never presented as a current view
     ([The Agent](agent.md#tools)).
@@ -198,6 +200,42 @@ sequenceDiagram
 | `recognize_person(person)` | R | walkie-database's face table, then its appearance table | A name and stored facts, or `UNKNOWN`. Fails when the handle has no face. Also takes a whole set, giving each name to one person at most ([HRI Task](hri.md#atomics)) |
 | `remember_person(person, name, facts={})` | write ([question 3](#open-questions)) | Writes the person, its facts such as a drink, and every face and appearance vector kept for the track, through walkie-database | Confirmation. The person is forgotten with the session (walkie-database ADR-0010) |
 
+### What is built
+
+S1 of the [see, remember and act roadmap](see-remember-act.md) built the first
+step of this table, in a simpler form than the design above: `ctx.vision.people`
+on the robot, which the existing `find_people(description="")` atomic calls. There
+are no handles yet, and no vectors are kept. `RosVision` in `ros/vision.py` does it,
+and the agent uses it only when started with `--vision`
+([mahoraga-demo-decisions.md](mahoraga-demo-decisions.md#see-remember-and-act), S1-1 to S1-8).
+
+- **The feed.** One subscription to `/walkie_vision/people`, best effort, depth 5
+  and volatile, so it hears a reliable or a best-effort publisher. The callback
+  keeps only the array with the newest header stamp. An array stamped more than
+  5 s before it replaces it, since only a clock that went back, as in a simulation
+  restart, stamps that far behind.
+- **Freshness.** An array counts while its stamp is within 1 s of the node's
+  clock ([ADR-0050](decisions/0050-perception-atomics-over-walkie-vision.md)).
+  A call waits up to 1 s, or its `timeout_s` if that is shorter, then answers
+  `UNAVAILABLE` with the reason: no array, an old one, or a stamp ahead of the
+  clock, which means the two sides disagree on sim time.
+- **People.** Left to right by the box's centre. The id is `person_<track_id>`,
+  which lasts while walkie-vision's tracker keeps the track. An untracked person
+  is `person_untracked_<n>`, numbered in that one image. The name is always
+  null, because nothing identifies people yet.
+- **Words.** The gesture rules give a set of names, which `perception/people.py`
+  turns into FakeRobot's phrases: one pose, the most specific of lying, sitting
+  and standing, and one gesture, pointing before a raised arm before waving. A
+  query matches any of the person's phrases, ignoring case, so someone raising
+  their left arm is reported with that gesture and is found as a "waving person"
+  too. Left and right in a pointing gesture are the image's.
+- **Room.** The room of the configured place nearest the robot's pose, read
+  only when someone matches. A pose that cannot be read gives an empty room, and
+  the people are still reported.
+- **Not built.** `refind_person`, `localize_person`, the face and appearance
+  vectors, and `NOT_FOUND` for nobody: the atomic returns an empty list, as
+  FakeRobot does.
+
 - **Why gestures live in the agent.** They are task words, not model
   output. Keeping them agent-side needs no message change, and the
   predicates run in tests without a GPU, as they did in walkie-agent-v2.
@@ -255,9 +293,10 @@ every image of the head camera it publishes both arrays, in
   `scripts/chula-sim.sh` start both
   ([Run the Chula simulation](../setup/08-chula-simulation.md)). Against
   MuJoCo, from the living room place, it draws both people with the scene's
-  gestures, and the sofa, the table and the mug. Nothing in the agent reads it
-  yet: S1 of the [see, remember and act roadmap](see-remember-act.md) adds the
-  reader.
+  gestures, and the sofa, the table and the mug. `find_people` reads its
+  people when the agent runs with `--vision`, which `pixi run agent-sim-chula`
+  passes ([What is built](#what-is-built)). Nothing in the agent reads its
+  objects yet.
 
 Unit tests use `mock_vision.py` with walkie-vision's `hash_vector`, so
 rankings are deterministic. Hash vectors match only on equal input, so a sim

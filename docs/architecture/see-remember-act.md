@@ -181,6 +181,15 @@ decision, and it can run beside the vision chain.
   unknown (Perception Q8). The keypoint gesture rules are unvalidated on real
   walkie-vision output. On the robot, `head_tilt_near_goal` points the camera
   down near goals. The oracle has no occlusion, so sim is optimistic.
+- **Built** as S1-1 to S1-9. `RosVision` keeps only the newest array, and the
+  phrases live in `perception/people.py`, which imports no ROS. The plan
+  changed in one place: the robot-only notes, including that an ID can
+  expire, are in the `--vision` prompt rule, not in the docstring. So the
+  docstring and the gate's digest are unchanged, and the gate did not rerun
+  (S1-8). In sim, with `--tool-set hri`, "Is anyone waving at you?" got
+  `find_people("waving person")` returning `person_1` in the living room, and
+  "Who can you see right now?" got both guests
+  ([What has been run](../setup/08-chula-simulation.md#what-has-been-run)).
 
 ### S2: Turn to face a person
 

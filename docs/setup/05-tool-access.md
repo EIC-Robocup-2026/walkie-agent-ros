@@ -15,8 +15,10 @@
   `/voice_commands`.
 - A verb checks its own arguments, through `walkie_agent.capabilities.guards`. A
   relative move is limited to 3 m, and every wait has a bound.
-- Vision and arm verbs have no ROS endpoint yet. `UnavailableVision` and
-  `UnavailableArms` raise `UNAVAILABLE`.
+- Arm verbs have no ROS endpoint yet, and `UnavailableArms` raises `UNAVAILABLE`.
+  Vision verbs raise `UNAVAILABLE` through `UnavailableVision`, unless the agent runs
+  with `--vision`. Then `RosVision` subscribes to `/walkie_vision/people`, a name that
+  goes through the same forbidden-name check, and only reads.
 
 !!! warning "This is a guard rail, not security"
     These are ordinary Python checks in one process. They are no sandbox, and they

@@ -5,8 +5,10 @@
     [open questions](#open-questions) says what it blocks.
 
     The runtime, the todo list, `wait_for_person`, `go_to` and `say` are built, and have run
-    on fakes only. The `hri` tool set binds `find_people`, which answers `UNAVAILABLE` on the
-    robot. The people, seat, gaze and arm atomics below do not exist. So **this task cannot
+    on fakes only. The `hri` tool set binds `find_people`, which reads walkie-vision's
+    people when the agent runs with `--vision`, and answers `UNAVAILABLE` on the robot
+    otherwise. The other people atomics, and the seat, gaze and arm atomics below, do not
+    exist. So **this task cannot
     run end to end today**, in simulation or on the robot.
 
     HRI input is text only. A message with an image or audio payload is refused.

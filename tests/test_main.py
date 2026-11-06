@@ -34,7 +34,8 @@ from walkie_agent.capabilities import Team, UnavailableArms, UnavailableFacts
 from walkie_agent.capabilities.facts import SystemFacts
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location, load_locations
-from walkie_agent.ros import RosBase, RosSpeech, UnavailableVision
+from walkie_agent.perception import PEOPLE_TOPIC
+from walkie_agent.ros import RosBase, RosSpeech, RosVision, UnavailableVision
 from walkie_agent.runtime import Runner, ToolLog, build_model
 from walkie_agent.tasks import TaskTemplate
 
@@ -192,6 +193,34 @@ def test_assemble_puts_the_facts_it_is_given_on_ctx(build):
     assert get_facts(built.app.ctx)["time"] == "07:00"
 
 
+@pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri"])
+def test_with_vision_find_people_reads_people_and_the_prompt_says_so(build, tool_set):
+    built = build(tool_set=tool_set, vision=True)
+    app, node = built.app, built.node
+    assert isinstance(app.ctx.vision, RosVision)
+    [people] = [s for s in node.subscriptions if s.topic == PEOPLE_TOPIC]
+    app.start()
+    run_one(built)
+
+    system = built.model.received[0][0].content
+    assert "`find_people` reports the people your camera sees now" in system
+    assert "live people perception, which is not connected" not in system
+    assert system == main.build_system_prompt(tool_set, PLACES, ROBOT, vision=True)
+    named = set(re.findall(r"`(\w+)`", system))
+    assert named <= set(built.model.bound[0])
+    # Only find_people's rule changes. Objects and arms stay unconnected.
+    assert ("live object perception, which is not" in system) == (tool_set != "hri")
+
+    # Closed with the rest, after the Runner, and once.
+    assert app.close(WATCHDOG_S)
+    assert app.close(WATCHDOG_S)
+    assert node.destroyed.count(people) == 1
+    app.ctx.cancel.reset()  # close set the latch, which a verb checks first
+    with pytest.raises(StepError) as raised:
+        app.ctx.vision.people()
+    assert str(raised.value) == "UNAVAILABLE: Live people perception has shut down."
+
+
 def test_assemble_never_spins_or_destroys_the_connector(build):
     # FakeConnector has no spin or shutdown, so a call to either would raise here.
     built = build()
@@ -265,6 +294,7 @@ def test_each_tool_set_gets_a_matching_prompt(build, tool_set):
     assert ("`find_objects`" in system.content) == (tool_set != "hri")
     assert ("`pick`" in system.content) == (tool_set == "gpsr")
     assert "`find_people`" in system.content
+    assert "live people perception, which is not connected" in system.content
     assert ("`get_facts`" in system.content) == (tool_set != "hri")
 
     # GPSR cannot list places, so its prompt holds them as data. The others look them up.
@@ -302,6 +332,8 @@ def test_the_shipped_robot_description_claims_only_what_is_connected():
     assert "Chulalongkorn" in text and "polite, patient and brief" in text
     assert "Two robot arms" in text
     assert "not connected" in text
+    # Seeing people depends on the run, so it defers to the prompt's rules.
+    assert "when the agent runs with people perception" in text
     # It describes the robot. How to use a tool is the prompt's job, set by set. Some tool
     # names are plain English ("pick up"), so only the unmistakable ones are looked for.
     assert "`" not in text
@@ -578,9 +610,11 @@ def test_cli_passes_files_and_flags_into_the_assembly(cli, monkeypatch):
         "/k",
         "--todos-topic",
         "/t",
+        "--vision",
     )
 
     assert code == 0
+    assert received["vision"] is True
     assert received["connector"] is cli.connectors[0]
     assert received["model"] is cli.model
     assert received["fallback"] is None
@@ -621,6 +655,7 @@ def test_cli_defaults_keep_the_existing_paths_and_topics():
         args.todos_topic,
     ) == ("/from_human", "/walkie/console", "/walkie/reset", "/walkie/task", "/walkie/todos")
     assert args.use_sim_time is False
+    assert args.vision is False
     assert main._parse_args(["--tool-set", "hri"]).tool_set == "hri"
     with pytest.raises(SystemExit):
         main._parse_args(["--tool-set", "garage"])

@@ -98,7 +98,9 @@ A query of `""` matches everything. Otherwise it matches an object's name,
 category or plural category, or a person's name, pose or gesture, ignoring
 case. The vision verbs and the arm verbs work only on `FakeRobot`. On the robot's
 `ctx`, `UnavailableVision` and `UnavailableArms` raise `UNAVAILABLE`, until a live
-perception backend and an arm commander client exist.
+perception backend and an arm commander client exist. S1 later added `RosVision`,
+whose `people` reads walkie-vision's people when the agent runs with `--vision`
+([Perception](perception.md#what-is-built)).
 
 `ctx.facts` answers the talk commands that ask for the time, the date or the team
 (decision M35). Its verbs never wait, so they do not check the cancel token.
@@ -762,6 +764,10 @@ class RosSpeech:  # Speech over /to_human, with the speech id rotated on /voice_
 class UnavailableVision:  # Vision: checks its arguments and the latch, then UNAVAILABLE
     def __init__(self, cancel): ...
 
+class RosVision:  # Vision with --vision: people from /walkie_vision/people (added in S1)
+    def __init__(self, connector, base, cancel, *, topic=..., max_age_s=1.0, wait_s=1.0, ...): ...
+    def close(self) -> None: ...
+
 class RosBridge:  # the operator's topics; see the topic table on The Agent
     def __init__(self, connector, templates, *, input_topic=..., output_topic=..., ...): ...
     def open(self, runner) -> None: ...
@@ -825,14 +831,16 @@ class Application:
     def unresolved(self) -> list[str]: ...
 ```
 
-`assemble` builds `RosBase`, `RosSpeech`, `UnavailableVision` and `RosBridge`, then
+`assemble` builds `RosBase`, `RosSpeech`, `UnavailableVision`, or `RosVision` when asked
+with `vision=True`, and `RosBridge`, then
 `build_agent` and `Runner`. `Ctx.arms` stays `UnavailableArms`. `Ctx.facts` is the `facts`
 it is given, and `main` gives it the `SystemFacts` of `[team]`. It builds no model or tracer,
 and it does not start or destroy ROS. A failure part of the way through closes what was built
 before it raises.
 
 `Application.close` runs in one order: close the input, cancel and stop the base, shut down
-the Runner, drain the base, close speech, close the bridge. Only then does `main` shut down
+the Runner, drain the base, close speech, close a `RosVision` if there is one, close the
+bridge. Only then does `main` shut down
 the connector and the context, on a thread of its own.
 
 Signals use `SignalHandlerOptions.NO`, because rclpy's own handler would shut the context
@@ -860,7 +868,7 @@ The cutover settled a few forks of its own, also provisionally:
 
 | Fork | Pick |
 | --- | --- |
-| Vision | `objects` and `people` raise `UNAVAILABLE`. The remembered-object tool is retired, and a remembered row is never presented as a current view. |
+| Vision | `objects` and `people` raise `UNAVAILABLE`. The remembered-object tool is retired, and a remembered row is never presented as a current view. S1 later let `people` read the live view with `--vision`. |
 | HRI input | Text only. A message with an image or audio payload is logged and refused. |
 | Shutdown that cannot settle | Keep the executor alive and input closed, retry within bounds, and report what is unresolved. A second signal forces the exit. |
 | Larger proposals | Mark what is obsolete and record exact partial supersessions. Withdraw none of them. |

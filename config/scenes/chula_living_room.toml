@@ -1,0 +1,66 @@
+# A fixed scene for walkie-ros's MuJoCo world chula_pat14_6, drawn by
+# `pixi run oracle-chula` (walkie_agent.sim.oracle_scene). Map frame, meters
+# and degrees. walkie_agent.sim.scene_file describes the keys.
+#
+# Two people in the living room, both in view of the head camera from the
+# `living room` place of config/locations.chula_pat14_6.toml (the base at
+# 1.7629, -1.483, facing +x): a guest standing north of the sofa with a hand
+# raised, and the host sitting on the sofa's left place. The furniture comes
+# from the world's scene.xml on walkie-ros feat/chula-pat14-6-simulation at
+# adb9725; tests/test_scene_file.py checks the views and the clearances.
+#
+# The oracle has no occlusion model, so this scene holds only the living room:
+# a kitchen object would be drawn through the room divider.
+
+world = "chula_pat14_6"
+# The seat classes the oracle uses by default, and the living room's other objects.
+classes = ["chair", "sofa", "armchair", "stool", "table", "mug"]
+
+# The guest. The figure's wave raises the right hand, which from here lies
+# outside the image, so the guest raises the left arm. The gesture rules take
+# any raised hand for a wave, so find_people sees them waving.
+[[people]]
+track_id = 1
+x = 3.25
+y = -0.42
+facing_deg = -140.0  # Towards the head camera at the living room place.
+height = 1.70
+gesture = "raising_left_arm"
+face = "guest1"
+appearance = "guest1"
+
+# The host, on the sofa's left place, facing the TV desk as the sofa does.
+[[people]]
+track_id = 2
+x = 3.115
+y = -1.10
+facing_deg = 180.0
+height = 1.75
+posture = "sitting"
+seat_top = 0.4575  # The top of the sofa's cushions.
+face = "host"
+appearance = "host"
+
+# chula_sofa: its frame, back and arm boxes.
+[[objects]]
+track_id = 11
+label = "sofa"
+center = [3.1675, -1.65, 0.4175]
+size = [0.575, 1.88, 0.835]
+color = "grey"
+
+# chula_coffee_table: its top and legs.
+[[objects]]
+track_id = 12
+label = "table"
+center = [2.715, -1.67, 0.21]
+size = [0.30, 1.14, 0.42]
+color = "grey"
+
+# task_mug_2, on the coffee table, with its handle towards +x.
+[[objects]]
+track_id = 13
+label = "mug"
+center = [2.735, -1.80, 0.472]
+size = [0.12, 0.08, 0.10]
+color = "blue"

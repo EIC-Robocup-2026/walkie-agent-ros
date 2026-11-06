@@ -63,7 +63,7 @@ only on `FakeRobot`. The gaps this plan closes:
 | --- | --- | --- | --- | --- |
 | G1 | Pin walkie-vision 64811fe and walkie-database 522ab92, and build `walkie_vision_msgs` ([Local message pins](../setup/03-ros-and-rai.md#local-message-pins)) | S | S1, S3, S8 | Built |
 | G2 | A Chula place list with rooms, an optional `room` on `Location`, and an `agent-sim-chula` task | S | S1, S8 | Built |
-| G3 | A sim perception source: port `oracle_perception` with a small scene driver | M | S1, S4 | Planned |
+| G3 | A sim perception source: port `oracle_perception` with a small scene driver | M | S1, S4 | Built |
 | G4 | A scripted, isolated Chula simulation recipe | S | Every sim test | Planned |
 | G5 | Pin walkie-ros `my_robot_interfaces` at 6b26daa and build it | S | S6 | Planned |
 | G6 | Record the prototype's position on decisions 12 and 14 | S | S6, S11 | Planned |
@@ -81,11 +81,17 @@ MuJoCo yet.
 **G3.** Port `sim/oracle_perception.py`, `scene.py`, `projection.py` and
 `fake_vectors.py` and rebuild them against 64811fe. Person messages are
 unchanged since 1576d6f. The seat and object arrays need a UUID
-`stream_id`, `view_quality` and `color_shares` (P13). A small YAML scene
+`stream_id`, `view_quality` and `color_shares` (P13). A small scene
 driver places static people, with gesture and posture, and seats and table
 objects in the Chula room, instead of the experiment's full HRI scenario
 driver. The oracle publishes on the plain `/walkie_vision/people` and
 `/walkie_vision/objects` topics, as the vision contract requires in sim.
+Built as G3-1 to G3-6: the scene is TOML, `sim/scene_file.py` loads it, and
+`pixi run oracle-chula` (`sim/oracle_scene.py`) draws
+`config/scenes/chula_living_room.toml`, the living room only, with a guest
+raising the left arm and the host on the sofa. `perception/gestures.py`
+came with it. Not yet run against MuJoCo; G4 does that
+([In simulation](perception.md#in-simulation)).
 
 **G4.** One recipe that never joins another running ROS graph: a private
 Zenoh router on port 7499 and `ROS_DOMAIN_ID` 77. It launches
@@ -141,12 +147,13 @@ decision, and it can run beside the vision chain.
   `FakeRobot` phrases them. `objects()` stays unavailable. `main.py` gets an
   opt-in `--vision` flag, and `UnavailableVision` stays the default.
 - **Ported from `experiment/hri-agent`.** `perception/vision_feed.py` (the
-  people path), `perception/gestures.py`, the `RosVision` shape in
-  `tools/atomic/_perception.py` and `FakeVision` in `testing/__init__.py`.
+  people path), the `RosVision` shape in `tools/atomic/_perception.py` and
+  `FakeVision` in `testing/__init__.py`. `perception/gestures.py` came with
+  G3.
 - **Test.** The `FakeRobot` and `find_people` tests stay green, and the
   Mahoraga gate reruns. Unit tests feed recorded `PersonDetectionArray`
   messages on Fast DDS: gestures, the age cutoff, query filters, room. In
-  sim, an oracle scene of two guests in the living room, one waving and one
+  sim, G3's oracle scene of two people in the living room, one waving and one
   sitting; the agent runs with `--tool-set hri --vision`, and "is anyone
   waving?" must show `find_people` returning the waving guest in the tool log.
 - **Defaults (delegated).** A person ID is an opaque string per track,

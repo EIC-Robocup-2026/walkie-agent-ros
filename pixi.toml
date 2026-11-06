@@ -179,6 +179,13 @@ description = "Run the agent against walkie-ros's MuJoCo simulation (the shell's
 cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.chula_pat14_6.toml"
 description = "Run the agent on the chula_pat14_6 world's places (the shell's ROS_DOMAIN_ID)"
 
+# Stands in for walkie-vision in the chula_pat14_6 simulation: publishes the
+# people and object arrays of a fixed scene for every head camera image. It
+# is a simulated scene, not perception. See docs/agent/perception.md.
+[tasks.oracle-chula]
+cmd = "python -m walkie_agent.sim.oracle_scene --use-sim-time config/scenes/chula_living_room.toml"
+description = "Publish walkie-vision's arrays for the chula_pat14_6 living room scene (simulation only)"
+
 # The tests run on Fast DDS, which tests/conftest.py sets, so they need no
 # Zenoh router (ADR-0019).
 [tasks.test]

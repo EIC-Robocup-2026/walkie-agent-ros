@@ -70,6 +70,7 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | `pixi run fake-walkie`           | Run a fake robot for testing without hardware.         |
 | `pixi run agent-sim`             | Run the agent against walkie-ros's MuJoCo simulation. Not yet run with this runtime. |
 | `pixi run agent-sim-chula`       | The same, on the places of the `chula_pat14_6` world. Not yet run. |
+| `pixi run oracle-chula`          | Publish simulated people and objects for the `chula_pat14_6` living room, in walkie-vision's messages. Simulation only; not yet run against MuJoCo. |
 | `pixi run test`                  | Run the tests. They need no API key and no hardware.   |
 | `pixi run voice-asr`             | Listen on the microphone and send speech to the agent. |
 | `pixi run voice-tts`             | Speak what the agent says through the speaker.         |
@@ -89,13 +90,15 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | `src/walkie_agent/runtime/`  | `create_agent`, the middlewares, the todo list and the Runner. No ROS. |
 | `src/walkie_agent/ros/`      | The ROS-backed verbs and the operator's topics                    |
 | `src/walkie_agent/voice.py`  | The voice entry points, on RAI's `AgentRunner`                    |
-| `src/walkie_agent/sim/`      | The fake robot node                                               |
+| `src/walkie_agent/perception/` | Rules that read walkie-vision's detections, such as gestures. No ROS. |
+| `src/walkie_agent/sim/`      | The fake robot node, and the oracle that stands in for walkie-vision in a simulation |
 | `tests/`                     | Tests with a scripted LLM. Some use real rclpy with a fake robot. |
 | `mahoraga/`                  | The research gym, in its own Pixi environment. Fake world only.   |
 | `config.toml`                | LLM vendor and models, the team and its timezone, voice, tracing  |
 | `config/locations.toml`      | The robot's real places. Ships empty until they are measured.     |
 | `config/locations.sim.toml`  | Test points for the blank simulation map                          |
 | `config/locations.chula_pat14_6.toml` | Places and rooms of the `chula_pat14_6` simulation world |
+| `config/scenes/`             | Fixed scenes of people and objects that the simulation's oracle draws |
 | `tests/fixtures/locations.toml` | Invented places for tests and the fake robot                   |
 | `config/task_templates.toml` | Fixed tasks by name. Ships with none.                             |
 | `robot.md`                   | What Walkie is and can do today, for the system prompt            |

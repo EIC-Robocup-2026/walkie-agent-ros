@@ -337,9 +337,22 @@ the simulation. Run the agent on them with:
 pixi run agent-sim-chula
 ```
 
+The simulation has no people in it, so walkie-vision would see no one. For that world,
+an oracle can stand in for walkie-vision: it publishes the people and objects of
+`config/scenes/chula_living_room.toml`, a guest raising a hand and the host on the sofa,
+for every image of the head camera
+([In simulation](architecture/perception.md#in-simulation)). Start it after the
+simulation, in the same terminal setup as the agent:
+
+```bash
+pixi run oracle-chula
+```
+
+Nothing in the agent reads its messages yet, and it has not been run against MuJoCo.
+
 `tests/ros_demo.py --robot external` could report on a run against that world
 with no real model, but that run has not happened. Even when it does, it can prove
-navigation and the runtime only: that launch has no vision or text-to-speech, and vision
+navigation and the runtime only: that launch has no text-to-speech, and vision
 and arms are unavailable in the agent. So it cannot prove the full HRI task. The
 [see, remember and act roadmap](architecture/see-remember-act.md) lists the steps that
 add them.

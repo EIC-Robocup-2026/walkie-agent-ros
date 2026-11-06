@@ -19,9 +19,13 @@ SRC = ROOT / "src"
 
 IMPORT_EVERY_NEW_MODULE = """
 import importlib, json, pkgutil, sys
-import walkie_agent.atomics, walkie_agent.capabilities, walkie_agent.runtime
+import walkie_agent.atomics, walkie_agent.capabilities, walkie_agent.perception, walkie_agent.runtime
 names = ["walkie_agent.errors", "walkie_agent.adapter", "walkie_agent.tasks", "walkie_agent.locations"]
-for package in (walkie_agent.capabilities, walkie_agent.atomics, walkie_agent.runtime):
+# The simulation's scene, its file and its projection; the sim package's ROS nodes are left out.
+names += ["walkie_agent.sim." + name for name in ("scene", "scene_file", "projection", "fake_vectors")]
+for package in (
+    walkie_agent.capabilities, walkie_agent.atomics, walkie_agent.perception, walkie_agent.runtime
+):
     names.append(package.__name__)
     names += [found.name for found in pkgutil.iter_modules(package.__path__, package.__name__ + ".")]
 files = {name: importlib.import_module(name).__file__ for name in names}
@@ -87,6 +91,12 @@ def test_importing_every_new_module_loads_no_ros():
         "walkie_agent.runtime.model",
         "walkie_agent.runtime.runner",
         "walkie_agent.runtime.todos",
+        "walkie_agent.perception",
+        "walkie_agent.perception.gestures",
+        "walkie_agent.sim.scene",
+        "walkie_agent.sim.scene_file",
+        "walkie_agent.sim.projection",
+        "walkie_agent.sim.fake_vectors",
     } <= set(files)
     assert all(Path(file).is_relative_to(SRC) for file in files.values())
 

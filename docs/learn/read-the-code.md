@@ -20,6 +20,8 @@ The first group imports no ROS, and most of the tests for it need no ROS either.
 | `src/walkie_agent/runtime/model.py` | Loads the model and the optional fallback from `config.toml` | `tests/test_runtime_model.py` |
 | `src/walkie_agent/tasks.py` | Templates and `/walkie/task` messages | `tests/test_tasks.py` |
 | `src/walkie_agent/locations.py` | The places file, with its name rules | `tests/test_locations.py` |
+| `src/walkie_agent/perception/gestures.py` | Gesture and posture names from COCO keypoints | `tests/test_perception_gestures.py` |
+| `src/walkie_agent/sim/scene.py`, `scene_file.py`, `projection.py` | The simulation's people and objects, their TOML file, and how the head camera sees them | `tests/test_projection.py`, `tests/test_scene_file.py` |
 
 The second group is where ROS comes in. Most of these tests use fake ROS objects.
 `tests/test_ros_integration.py` runs the assembled agent on real rclpy and RAI's real
@@ -35,6 +37,7 @@ connector, against a fake robot on a private domain. None of them is the robot's
 | `src/walkie_agent/main.py` | Assembly, flags, signals, exit codes | `tests/test_main.py` |
 | `src/walkie_agent/voice.py`, `half_duplex.py` | The voice processes, on RAI | `tests/test_voice.py`, `tests/test_half_duplex.py` |
 | `src/walkie_agent/sim/fake_walkie.py` | A fake robot as a ROS node | `tests/test_ros_integration.py` |
+| `src/walkie_agent/sim/oracle_perception.py`, `oracle_scene.py` | The oracle that publishes walkie-vision's arrays from a scene, and its runner | `tests/test_oracle_perception.py`, `tests/test_scene_file.py` |
 
 ## A reading order
 

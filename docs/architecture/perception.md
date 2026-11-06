@@ -1,7 +1,8 @@
 # Perception (Proposed)
 
 !!! note "Status: Proposed"
-    Nothing on this page is built yet. It is the design for team review. Each
+    Apart from the simulation's oracle ([In simulation](#in-simulation)),
+    nothing on this page is built yet. It is the design for team review. Each
     of the [open questions](#open-questions) says what it blocks.
 
     Today `find_objects` is a live-view atomic, and on the robot it answers `UNAVAILABLE`,
@@ -223,14 +224,41 @@ caption text at Competition. Whether reviewed atomics do is
 
 ## In simulation
 
-Until the walkie-vision nodes exist, `oracle_perception` in
-`src/walkie_agent/sim/` publishes both arrays from the scenario's spec, in
-`walkie_vision_msgs` types ([Sim Harvest](harvest.md)). People come only
-from it, because the sim world has no person bodies, so the gesture ids and
-keypoints come from the spec too. Unit tests use `mock_vision.py` with
-walkie-vision's `hash_vector`, so rankings are deterministic. Hash vectors
-match only on equal input, so a sim detection's embedding and the query
-text must hash the same key (walkie-vision's open question 7).
+The sim world has no person bodies, so walkie-vision's models would find no
+one in it. `oracle_perception` in `src/walkie_agent/sim/` stands in: for
+every image of the head camera it publishes both arrays, in
+`walkie_vision_msgs` types, drawn from a scene it is given
+([Sim Harvest](harvest.md)). It is a simulated scene, not perception.
+
+- **The scene.** A TOML file of static people and objects in the map frame,
+  loaded by `sim/scene_file.py`. A person has a position, a facing, a height,
+  a gesture, a posture and face and appearance keys; an object has a label, a
+  box, and optionally a view quality and a colour.
+  `config/scenes/chula_living_room.toml` places a guest raising the left arm
+  north of the sofa and the host sitting on it, with the sofa, the coffee
+  table and a blue mug.
+- **The drawing.** Each image's camera pose comes from TF at the image's
+  stamp. People are drawn as COCO keypoints from a stick figure that the
+  ported gesture rules (`perception/gestures.py`) classify as the scene
+  says. Faces are drawn only for a person turned within 60° of the camera.
+  Boxes and keypoints get pixel noise; face and appearance vectors are
+  walkie-vision's `hash_vector` of the person's keys, with a little noise
+  and a few random outliers. There is no occlusion: anything that projects
+  into the image is seen, so a scene stays in one room.
+- **The contract.** The object arrays follow walkie-vision 64811fe: a UUID
+  `stream_id` per run, `classes` (the four seat classes unless the scene
+  names others), empty point clouds in walkie-vision's layout, and one-hot
+  `color_shares`. Tests check every array against those rules.
+- **Running it.** `pixi run oracle-chula` starts it on sim time for the
+  Chula scene; `python -m walkie_agent.sim.oracle_scene --help` lists the
+  options. Start it after the simulation, in the same ROS graph. Nothing in
+  the agent reads it yet: S1 of the
+  [see, remember and act roadmap](see-remember-act.md) adds the reader.
+
+Unit tests use `mock_vision.py` with walkie-vision's `hash_vector`, so
+rankings are deterministic. Hash vectors match only on equal input, so a sim
+detection's embedding and the query text must hash the same key
+(walkie-vision's open question 7).
 
 ## Delivery order
 

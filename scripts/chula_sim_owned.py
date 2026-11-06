@@ -19,24 +19,40 @@ therefore reads the ID that the kernel gave last to a new process or thread, fro
 /proc/sys/kernel/ns_last_pid, before it lists /proc and again once it has read every
 listed process. Linux gives out IDs in turn, so each process started in between has an
 ID above the first reading and up to the second. Those IDs are read directly, and the
-last ID read again, until it has not moved. Every process alive at that moment was then
-either alive through the whole listing, and so listed and read, or started since, and
-read by its ID. A process that exits before it is read needs no second look: any child
-it started is among those. Processes of other programs that start and exit cost a read
-of their IDs, not another listing.
+last ID read again, until it has not moved. A process that exits before it is read needs
+no second look: any child it started is among those IDs. Processes of other programs
+that start and exit cost a read of their IDs, not another listing.
 
-A process is told from a later one with the same ID by its start time. Two processes can
-share both only if the IDs went round the whole range, up to pid_max, within one 10 ms
-tick of the start-time clock. When the IDs pass pid_max and start again from the bottom,
-or more than MAX_RANGE are given out between two readings, /proc is listed again. A
-process started with an ID of its choice, through clone3()'s set_tid, takes no ID in
-turn and could be missed; that needs CAP_SYS_ADMIN or CAP_CHECKPOINT_RESTORE.
+This finds most such children, not all. Linux gives a new process its ID, and moves the
+last ID, before /proc shows the process. A child read in that moment looks absent, and
+if its parent then exits and the last ID stays put, the helper misses it.
+scripts/chula-sim.sh therefore reads a part that looks stopped a second time, a moment
+later, before it removes the part's record. A strict answer needs the kernel to keep the
+part's processes together, as a cgroup does, not a reading of IDs.
+
+A process is told from a later one with the same ID by its start time, in 10 ms ticks.
+When the last ID reads below the one before, the IDs went past pid_max and began again
+from the bottom, and /proc is listed again, as it is when more than MAX_RANGE IDs were
+given out between two readings. A wrap that brings the last ID back to, or past, the
+earlier reading goes unseen. Any wrap takes one new process for each free ID, since the
+kernel skips IDs in use: about four million on a desktop with the default pid_max of
+4194304, but only a few when nearly every ID is taken. A process that gets the ID of one
+already read, in the same tick, is taken for it and skipped.
+
+Two things defeat the reading of IDs, and both need CAP_SYS_ADMIN or
+CAP_CHECKPOINT_RESTORE: a process started with an ID of its choice, through clone3()'s
+set_tid, and a write to ns_last_pid, which can start a process below the earlier reading
+and put the last ID back.
+
+A thread group whose first thread has exited while others run is missed too. The first
+thread stays a zombie, its environment reads empty, so the token is not found, and the
+other threads' IDs are not listed. None of the simulation's programs exit that way.
 
     chula_sim_owned.py pids PGID TOKEN         print the part's process IDs, one a line
     chula_sim_owned.py signal PGID TOKEN SIG   send SIG (INT, TERM or KILL) to each
 
 Both exit 0 when no process matches, and 1 on an error, such as a failed system call or
-a last ID that still moved after MAX_READINGS readings. Needs Linux 5.3 or newer on
+a last ID that still moved after MAX_READINGS rounds. Needs Linux 5.3 or newer on
 x86-64 or arm64, built with CONFIG_CHECKPOINT_RESTORE for ns_last_pid, as Ubuntu's
 kernels are, and Python 3.9 or newer. The two pidfd calls go through libc's syscall(): a
 Python built against older kernel headers, such as Pixi's, has no os.pidfd_open. The
@@ -57,9 +73,10 @@ SIGNALS = {"INT": signal.SIGINT, "TERM": signal.SIGTERM, "KILL": signal.SIGKILL}
 SYSCALLS = {"pidfd_send_signal": 424, "pidfd_open": 434}
 MACHINES = ("x86_64", "aarch64")
 LAST_PID = Path("/proc/sys/kernel/ns_last_pid")
-# The last ID usually stops moving within a few readings, as each reads only the IDs
-# given out since the one before. This many means processes kept starting throughout,
-# and the caller is told so rather than given an answer that may be stale.
+# The last ID usually stops moving within a few rounds, as each reads only the IDs given
+# out since the round before. A round reads the last ID once, or twice when it lists
+# /proc. This many rounds means processes kept starting throughout, and the caller is
+# told so rather than given an answer that may be stale.
 MAX_READINGS = 1000
 # More IDs given out between two readings than this are cheaper to find by a listing.
 MAX_RANGE = 4096
@@ -140,7 +157,8 @@ def _in_group(pgid: int) -> Iterator[int]:
 
     A process is its ID and its start time, as an ID can pass to a later process. A
     process is yielded as soon as it is read, before the last ID is read again, so a
-    child that a caller's signal makes it start is read in turn.
+    child that a caller's signal makes it start is read in turn. A child that /proc
+    does not show yet when its ID is read is missed (see the module docstring).
     """
     seen: set[tuple[int, int]] = set()
     ids: Iterable[int] | None = None
@@ -169,7 +187,7 @@ def _in_group(pgid: int) -> Iterator[int]:
         else:
             ids = None  # the IDs went past pid_max and began again, or very many started
     raise RuntimeError(
-        f"processes kept starting through {MAX_READINGS} readings of {LAST_PID}, "
+        f"processes kept starting through {MAX_READINGS} rounds of reading {LAST_PID}, "
         f"so the processes of group {pgid} could not all be found"
     )
 

@@ -23,6 +23,8 @@ import pytest
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "chula-sim.sh"
 OWNED = SCRIPT.parent / "chula_sim_owned.py"
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+# The lowest ID Linux gives out once the IDs have gone past pid_max.
+RESERVED_PIDS = 300
 
 
 def environment(sim_dir: Path, **env: str) -> dict[str, str]:
@@ -380,6 +382,26 @@ def test_a_part_that_outlives_every_signal_keeps_its_record(tmp_path):
     assert record.exists()
 
 
+def test_a_part_that_looks_stopped_once_is_read_again_before_its_record_goes(tmp_path):
+    # The stand-in helper finds no process on its second look only, as when a child's ID
+    # was given out but /proc did not show it yet, and the part never stops.
+    helper = helper_stand_in(
+        tmp_path,
+        "case $1 in\n"
+        '  pids) n=$(( $(cat "$SIM_DIR/looks" 2>/dev/null || echo 0) + 1 ))\n'
+        '        echo $n > "$SIM_DIR/looks"\n'
+        "        (( n == 2 )) || echo 4242 ;;\n"
+        '  signal) echo "$4" >> "$SIM_DIR/sent"; echo 1 ;;\n'
+        "esac\n",
+    )
+    record = write_record(tmp_path, f"4242 {BOOT_ID} agent-1")
+    result = sourced(f"STOP_INT_S=0 STOP_TERM_S=0 STOP_KILL_S=0; OWNED=(bash {helper}); down", tmp_path)
+    assert result.returncode == 1
+    assert "agent did not stop; its record stays" in result.stderr
+    assert (tmp_path / "sent").read_text().split() == ["INT", "TERM", "KILL", "KILL"]
+    assert record.exists()
+
+
 @pytest.fixture
 def owned() -> ModuleType:
     """scripts/chula_sim_owned.py, loaded as a module, for tests that replace its /proc."""
@@ -394,10 +416,12 @@ class FakeProc:
 
     `processes` maps each ID to its group and whether it carries the token. Like Linux,
     the fake gives a new process or thread the next free ID after the last one it gave,
-    `last_pid`, and goes back to 1 after `pid_max`. A process's start time is the count
-    of processes started before it; those given at first all started at 0. An action in
-    `on_read` runs the first time an ID is read, before the read, as when a process
-    starts a child and exits just after /proc was listed.
+    `last_pid`, below `pid_max`, and goes back to RESERVED_PIDS after the highest. A
+    process's start time is the count of processes started before it; those given at
+    first all started at 0. An action in `on_read` runs the first time an ID is read,
+    before the read, as when a process starts a child and exits just after /proc was
+    listed. `reserve` gives out an ID that /proc does not show until `publish`, as Linux
+    gives a child its ID before it shows the child.
     """
 
     def __init__(
@@ -411,6 +435,7 @@ class FakeProc:
     ):
         self.processes = {pid: (group, token, 0) for pid, (group, token) in processes.items()}
         self.threads: dict[int, int] = {}  # each thread's ID, and its process's
+        self.reserved: dict[int, tuple[int, bool]] = {}  # given out, not shown yet
         self.last_pid = max(processes) if last_pid is None else last_pid
         self.pid_max = pid_max
         self.started = 0
@@ -433,14 +458,24 @@ class FakeProc:
     def _next_id(self) -> int:
         pid = self.last_pid
         while True:
-            pid = pid + 1 if pid < self.pid_max else 1
-            if pid not in self.processes and pid not in self.threads:
+            pid = pid + 1 if pid + 1 < self.pid_max else RESERVED_PIDS
+            if pid not in self.processes and pid not in self.threads and pid not in self.reserved:
                 self.last_pid = pid
                 return pid
 
     def start(self, group: int, carries_token: bool) -> int:
         """Start a process in `group`, and return its ID."""
+        return self.publish(self.reserve(group, carries_token))
+
+    def reserve(self, group: int, carries_token: bool) -> int:
+        """Give a process in `group` an ID, and return it; /proc does not show it yet."""
         pid = self._next_id()
+        self.reserved[pid] = (group, carries_token)
+        return pid
+
+    def publish(self, pid: int) -> int:
+        """Show the process given `pid` by `reserve` in /proc, and return its ID."""
+        group, carries_token = self.reserved.pop(pid)
         self.started += 1
         self.processes[pid] = (group, carries_token, self.started)
         return pid
@@ -507,33 +542,51 @@ def test_the_helper_finds_a_child_its_parent_started_as_it_exited(owned, monkeyp
 
 
 def test_the_helper_finds_a_child_that_got_the_id_of_a_process_already_read(owned, monkeypatch):
-    # The IDs have gone round once, so the next free one, 5, is below running processes.
-    # 5, of another group, is read first. Then 5 exits, and 10 starts a child that gets
-    # ID 5, and exits before the helper reads it.
-    fake = FakeProc(owned, monkeypatch, {5: (99, False), 10: (10, True)}, last_pid=4)
+    # The IDs have gone round once, so the next free one, 305, is below running
+    # processes. 305, of another group, is read first. Then 305 exits, and 310 starts a
+    # child that gets ID 305, and exits before the helper reads it.
+    fake = FakeProc(owned, monkeypatch, {305: (99, False), 310: (310, True)}, last_pid=304)
 
-    def a_child_got_5_and_its_parent_exited() -> None:
-        del fake.processes[5]
-        started_a_child_and_exited(fake, 10)()
+    def a_child_got_305_and_its_parent_exited() -> None:
+        del fake.processes[305]
+        started_a_child_and_exited(fake, 310)()
 
-    fake.on_read[10] = a_child_got_5_and_its_parent_exited
-    assert owned.members(10, "agent-1") == [5]
+    fake.on_read[310] = a_child_got_305_and_its_parent_exited
+    assert owned.members(310, "agent-1") == [305]
 
 
 def test_the_helper_lists_proc_again_when_the_ids_go_past_pid_max(owned, monkeypatch):
-    # IDs 1 to 11 are taken, and 15 of 16 was the last given. 12 is a process of group
-    # 10, whose leader has exited. Once listed, it starts a child, which gets 16, and
-    # exits. The IDs go back to the bottom, and a process of another group gets 12.
-    processes = {pid: (99, False) for pid in range(1, 12)} | {12: (10, True)}
-    fake = FakeProc(owned, monkeypatch, processes, last_pid=15, pid_max=16)
+    # IDs 300 to 311 are taken, 314 was the last given, and 315 is the highest below a
+    # pid_max of 316. 312 is a process of group 10, whose leader has exited. Once listed,
+    # it starts a child, which gets 315, and exits. The IDs go back to 300, and a process
+    # of another group gets 312.
+    processes = {pid: (99, False) for pid in range(300, 312)} | {312: (10, True)}
+    fake = FakeProc(owned, monkeypatch, processes, last_pid=314, pid_max=316)
 
     def started_a_child_exited_and_its_id_passed_on() -> None:
-        started_a_child_and_exited(fake, 12)()
-        assert fake.start(99, False) == 12
+        started_a_child_and_exited(fake, 312)()
+        assert fake.start(99, False) == 312
 
-    fake.on_read[12] = started_a_child_exited_and_its_id_passed_on
-    assert owned.members(10, "agent-1") == [16]
+    fake.on_read[312] = started_a_child_exited_and_its_id_passed_on
+    assert owned.members(10, "agent-1") == [315]
     assert fake.listings == 2
+
+
+def test_the_helper_misses_a_child_proc_does_not_show_yet_and_finds_it_once_shown(owned, monkeypatch):
+    # Once listed, 10 starts a child and exits. The child has ID 11, but /proc does not
+    # show it when the helper reads 11. This is why chula-sim.sh reads a part that looks
+    # stopped a second time before it removes its record.
+    fake = FakeProc(owned, monkeypatch, {1: (1, False), 10: (10, True)})
+    child: list[int] = []
+
+    def gave_a_child_its_id_and_exited() -> None:
+        del fake.processes[10]
+        child.append(fake.reserve(10, True))
+
+    fake.on_read[10] = gave_a_child_its_id_and_exited
+    assert owned.members(10, "agent-1") == []
+    fake.publish(child[0])
+    assert owned.members(10, "agent-1") == [11]
 
 
 def test_the_helper_does_not_take_a_thread_for_a_process(owned, monkeypatch):
@@ -643,15 +696,22 @@ def test_the_helper_signals_a_child_started_while_its_parent_was_signalled(owned
 
 
 def test_the_helper_gives_up_when_processes_keep_starting(owned, monkeypatch, capsys):
-    fake = FakeProc(owned, monkeypatch, {10: (10, True)})
+    # Linux's default pid_max, so that the IDs do not go round during the test.
+    fake = FakeProc(owned, monkeypatch, {10: (10, True)}, pid_max=4194304)
+    readings = []
 
     def a_process_started_and_ended_before_each_reading() -> int:
         del fake.processes[fake.start(99, False)]
+        readings.append(fake.last_pid)
         return fake.last_pid
 
     monkeypatch.setattr(owned, "_last_pid", a_process_started_and_ended_before_each_reading)
     assert owned.main(["pids", "10", "agent-1"]) == 1
-    assert "processes kept starting through 1000 readings" in capsys.readouterr().err
+    assert "processes kept starting through 1000 rounds" in capsys.readouterr().err
+    # The first round lists /proc and reads the last ID twice; each later round reads
+    # only the IDs given out since, and the last ID once.
+    assert fake.listings == 1
+    assert len(readings) == owned.MAX_READINGS + 1
 
 
 @pytest.mark.parametrize(

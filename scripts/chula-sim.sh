@@ -62,6 +62,8 @@ START_TIMEOUT_S=5
 STOP_INT_S=10
 STOP_TERM_S=5
 STOP_KILL_S=2
+# How long stop waits before it reads a part that looked stopped a second time (settled).
+CONFIRM_S=0.2
 # Every process a part starts carries CHULA_SIM_TOKEN, and the part's record keeps it.
 TOKEN_VARIABLE=CHULA_SIM_TOKEN
 # Lists and signals a part's processes through pidfds (scripts/chula_sim_owned.py).
@@ -169,29 +171,47 @@ start() {
     echo "started $name, process group $(pgid_of "$name"), log $SIM_DIR/logs/$name.log"
 }
 
-# settle NAME SECONDS: print NAME's state once it is no longer running, or after
+# settled NAME: print NAME's state, but read a part with a record that looks stopped
+# again after CONFIRM_S. Linux gives a new process its ID before /proc shows it, so a
+# child that the part's last process started just before it exited can look absent to
+# the helper for a moment. Its parent is gone, so no later listing would find it, and
+# stop would remove the record of a part still running. It shows within microseconds
+# as a rule, so the second reading finds it. A child held back longer than CONFIRM_S
+# could still be missed: this is a margin, not a proof.
+settled() {
+    local now
+    now=$(state "$1")
+    if [[ $now == stopped ]] && owner "$1" > /dev/null; then
+        sleep "$CONFIRM_S"
+        now=$(state "$1")
+    fi
+    echo "$now"
+}
+
+# settle NAME SECONDS: print NAME's settled state once it is no longer running, or after
 # SECONDS, whichever comes first.
 settle() {
     local name=$1 seconds=$2 now
     for _ in $(seq $((seconds * 10))); do
-        now=$(state "$name")
+        now=$(settled "$name")
         if [[ $now != running ]]; then
             echo "$now"
             return 0
         fi
         sleep 0.1
     done
-    state "$name"
+    settled "$name"
 }
 
 # stop NAME: SIGINT to every process of NAME, as Ctrl+C sends it to every process of a
 # terminal's foreground group, then SIGTERM, then SIGKILL. Each signal goes only if NAME
 # still runs after the wait for the one before. SIGKILL goes twice, for a child started
 # during the first. A part that outlives them all, or whose processes the helper cannot
-# look up or signal, keeps its record, and stop fails.
+# look up or signal, keeps its record, and stop fails. Every state it acts on is
+# settled, so a record is removed only after two readings found no process.
 stop() {
     local name=$1 now step signalled=false
-    now=$(state "$name")
+    now=$(settled "$name")
     for step in "INT $STOP_INT_S" "TERM $STOP_TERM_S" "KILL $STOP_KILL_S" "KILL $STOP_KILL_S"; do
         [[ $now == running ]] || break
         if ! signal_part "$name" "${step% *}"; then

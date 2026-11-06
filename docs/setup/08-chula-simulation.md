@@ -168,11 +168,20 @@ those IDs one by one, and reads the last ID again, until it has stopped moving.
 Processes that other programs start and end, as a parallel build does, cost a
 read of their IDs, not another listing.
 
+That finds most children, not every one. Linux gives a new process its ID before
+`/proc` shows it, so a child read in that moment looks absent. `stop` therefore
+reads a part that looks stopped a second time, 0.2 s later (`CONFIRM_S`), before
+it removes the record. That is a margin, not a proof. A strict answer would need
+the kernel to hold the part's processes together, as a cgroup does.
+
 The helper tells a process from a later one with the same ID by its start time.
 So a child also counts when it takes the ID of a process already read. If the
 IDs pass `pid_max` and start again from the bottom, the helper lists `/proc`
-again. If the last ID still moves after 1000 readings, the helper reports an
-error rather than a list that may be stale.
+again. A wrap that brings the last ID back past the earlier reading goes unseen.
+The kernel skips IDs in use, so that takes one new process for each free ID:
+about four million on this laptop, but few when nearly every ID is taken. If the
+last ID still moves after 1000 rounds of reading, the helper reports an error
+rather than a list that may be stale.
 
 ## Where things go
 

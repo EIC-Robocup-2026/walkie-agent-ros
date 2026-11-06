@@ -345,6 +345,18 @@ def test_any_other_move_reported_failed_raises_the_failure(forward, turn, short)
     assert raised.value is error
 
 
+@pytest.mark.parametrize("turn", [355.0, 360.0, -355.0, 720.0])
+def test_a_refused_turn_whose_goal_wraps_to_within_10_degrees_raises_the_refusal(turn):
+    robot = facing(40.0)
+    error = GoalFailed(ErrorCode.SKILL_FAILED, "Nav2 rejected the goal for the move.")
+    # A refused goal leaves the robot where it was.
+    robot.faults["base.move_relative"] = error
+    with pytest.raises(StepError) as raised:
+        move_relative(robot.ctx, 0.0, 0.0, turn)
+    assert raised.value is error
+    assert robot.pose().yaw == 0.0
+
+
 def test_a_turn_by_move_relative_whose_end_is_unknown_raises_its_failure():
     robot = facing(40.0)
     error = unknown()

@@ -53,7 +53,9 @@ def move_relative(
         left_m: Meters to move to the left. Negative moves right.
         turn_deg: Degrees to turn once there. Positive turns left, negative turns right.
     """
-    if not forward_m and not left_m and abs(turn_deg) > FACE_TOLERANCE_DEG:
+    # Wrapped, since a 355 degree goal is 5 degrees from where a refused turn leaves
+    # the robot.
+    if not forward_m and not left_m and abs(wrap_deg(turn_deg)) > FACE_TOLERANCE_DEG:
         pose = _turn(ctx, ctx.base.pose(), turn_deg, f"the turn of {turn_deg:g} degrees")
     else:
         pose = ctx.base.move_relative(forward_m, left_m, turn_deg)
@@ -94,9 +96,9 @@ def _turn(ctx: Ctx, start: Pose2D, turn_deg: float, what: str) -> Pose2D:
     """Turn on the spot by turn_deg from start, and return the pose it ended at.
 
     A turn that the base reports as ended without success still counts as done if it
-    ended within FACE_TOLERANCE_DEG of its goal. Only the callers' turns larger than
-    that tolerance come here, so a refused goal, which leaves the robot at start,
-    still raises.
+    ended within FACE_TOLERANCE_DEG of its goal. The callers send only turns whose
+    goal, wrapped to [-180, 180), is further than that tolerance from start, so a
+    refused goal, which leaves the robot at start, still raises.
     """
     try:
         return ctx.base.move_relative(0.0, 0.0, turn_deg)

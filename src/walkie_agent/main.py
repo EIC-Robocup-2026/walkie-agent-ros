@@ -119,6 +119,10 @@ _TOOL_RULES = {
         "  it reports UNAVAILABLE. Say that you cannot see people, and never guess who\n"
         "  is there.\n"
     ),
+    "face_person": (
+        "- To look at someone, as in \"look at me\", find them with `find_people`, then\n"
+        "  call `face_person` with their id. It turns you once and does not follow them.\n"
+    ),
     "pick": (
         "- `pick`, `place_on` and `hand_over` need an arm commander client, which does\n"
         "  not exist yet, so they report UNAVAILABLE. Say that you cannot do it, and\n"

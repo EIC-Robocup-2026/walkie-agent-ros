@@ -208,6 +208,7 @@ on the robot, which the existing `find_people(description="")` atomic calls. The
 are no handles yet, and no vectors are kept. `RosVision` in `ros/vision.py` does it,
 and the agent uses it only when started with `--vision`
 ([mahoraga-demo-decisions.md](mahoraga-demo-decisions.md#see-remember-and-act), S1-1 to S1-8).
+S2 added each person's bearing, below.
 
 - **The feed.** One subscription to `/walkie_vision/people`, best effort, depth 5
   and volatile, so it hears a reliable or a best-effort publisher. The callback
@@ -232,6 +233,18 @@ and the agent uses it only when started with `--vision`
 - **Room.** The room of the configured place nearest the robot's pose, read
   only when someone matches. A pose that cannot be read gives an empty room, and
   the people are still reported.
+- **Bearing.** S2 adds `bearing_deg` to each person: degrees from straight ahead
+  of the base, positive to the left. The rays through the shoulders and hips, or
+  the box's centre when fewer than two are seen, are turned into the map frame
+  with `camera_info` and TF at the image's stamp, and their mean yaw is the
+  person's direction from the camera (`perception/geometry.py`, S2-1 to S2-3).
+  The camera is 0.275 m ahead of the base's turning centre, so with an ankle in
+  view the rays through the ankles, where they meet the plane 0.08 m above the
+  floor, give the person's distance, and the bearing is their direction from the
+  base's centre less its yaw now. With no ankle seen, it is the camera's
+  direction less the base's yaw, a few degrees too wide for a person to the side.
+  `find_people` does not show it; `face_person` turns by it. A transform that
+  cannot be read gives None, and the people are still reported.
 - **Not built.** `refind_person`, `localize_person`, the face and appearance
   vectors, and `NOT_FOUND` for nobody: the atomic returns an empty list, as
   FakeRobot does.

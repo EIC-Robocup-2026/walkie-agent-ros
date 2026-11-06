@@ -233,13 +233,14 @@ def say(ctx: Ctx, text: str) -> str
 def find_objects(ctx: Ctx, what: str = "") -> list[dict[str, Any]]
 def object_info(ctx: Ctx, object_id: str) -> dict[str, Any]
 def find_people(ctx: Ctx, description: str = "") -> list[dict[str, Any]]
+def face_person(ctx: Ctx, person_id: str) -> str
 def pick(ctx: Ctx, object_id: str) -> str
 def place_on(ctx: Ctx, place: str) -> str
 def hand_over(ctx: Ctx, person_id: str) -> str
 def get_facts(ctx: Ctx) -> dict[str, Any]
 
-GPSR: list[Callable[..., Any]]     # the nine the spike used, every atomic but list_places, then get_facts
-HRI: list[Callable[..., Any]]      # list_places, go_to, move_relative, say, find_people
+GPSR: list[Callable[..., Any]]     # the nine the spike used, every atomic but list_places and face_person, then get_facts
+HRI: list[Callable[..., Any]]      # list_places, go_to, move_relative, say, find_people, face_person
 DEFAULT: list[Callable[..., Any]]  # every atomic that needs no arms, get_facts included
 ```
 

@@ -10,6 +10,7 @@ what the robot refuses.
 
 import copy
 import functools
+import hashlib
 import inspect
 import math
 import random
@@ -31,6 +32,7 @@ from walkie_agent.capabilities.guards import (
 )
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location
+from walkie_agent.perception.geometry import wrap_deg
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -113,6 +115,16 @@ def fake_facts(seed: int = 0) -> dict[str, Any]:
     days = (datetime(FACTS_YEAR + 1, 1, 1, tzinfo=FACTS_OFFSET) - first).days
     now = first + timedelta(days=rng.randrange(days), minutes=rng.randrange(24 * 60))
     return {"now": now.isoformat(), "team": dict(TEAM)}
+
+
+def person_heading_deg(person_id: str) -> float:
+    """The map-frame direction of a person with no "heading_deg", in degrees in [-180, 180).
+
+    From a hash of the id rather than the world's rng, so the people and the clutter
+    of every seed stay as they were before people had a direction.
+    """
+    digest = hashlib.sha256(f"heading:{person_id}".encode()).digest()
+    return round(int.from_bytes(digest[:4], "big") / 2**32 * 360.0 - 180.0, 1)
 
 
 def chula_pat14_6(seed: int = 0) -> dict[str, Any]:
@@ -208,6 +220,11 @@ def _check_world(world: Mapping[str, Any]) -> None:
         if who["room"] not in rooms
     ]
     problems += [
+        f"people[{person!r}].heading_deg: {who['heading_deg']!r} is not a finite number"
+        for person, who in people.items()
+        if "heading_deg" in who and not is_finite_number(who["heading_deg"])
+    ]
+    problems += [
         f"objects[{object_id!r}].at: nothing called {item['at']!r}"
         for object_id, item in world["objects"].items()
         if item["at"] not in holders
@@ -244,6 +261,8 @@ class FakeRobot:
     is the Ctx that atomics take. `world=None` builds chula_pat14_6(seed), and a
     world with a broken name, coordinate or fact raises ValueError. A world with
     no "facts" has no fact source, so the facts verbs raise UNAVAILABLE.
+    A person's bearing is their "heading_deg", a fixed direction in the map, or one
+    from a hash of their id, less the robot's yaw, so a turn by it faces them.
     `drive_s` makes a drive take real seconds, for stop tests. `calls` logs
     every verb call with the robot's place and room as it ended and, for a
     lookup, the ids returned. `said` logs every line, and `faults` maps a verb
@@ -335,7 +354,8 @@ class FakeRobot:
         self.calls.append({"verb": "base.stop", "args": {}, "error": None, **self._where()})
 
     @_verb("base.pose")
-    def pose(self) -> Pose2D:
+    def pose(self, *, timeout_s: float = 1.0) -> Pose2D:
+        require_timeout(timeout_s)
         return self._pose
 
     # ctx.speech
@@ -380,7 +400,14 @@ class FakeRobot:
         require_text(query=query)
         room = self._room()
         return [
-            PersonSeen(person_id, who["name"], who["pose"], who["gesture"], who["room"])
+            PersonSeen(
+                person_id,
+                who["name"],
+                who["pose"],
+                who["gesture"],
+                who["room"],
+                self._bearing_deg(person_id, who),
+            )
             for person_id, who in sorted(self._people.items())
             if who["room"] == room and _matches(query, who["name"], who["pose"], who["gesture"])
         ]
@@ -524,6 +551,12 @@ class FakeRobot:
             return False
         standing_at_room = self._places[self._at]["room"] == self._at
         return at == self._at or (standing_at_room and self._places[at]["room"] == self._at)
+
+    def _bearing_deg(self, person_id: str, who: Mapping[str, Any]) -> float:
+        """The person's direction from the base's heading, so a turn by it faces them."""
+        heading = who["heading_deg"] if "heading_deg" in who else person_heading_deg(person_id)
+        # + 0.0 turns -0.0 into 0.0, so a person straight ahead never reads as "-0".
+        return round(wrap_deg(heading - math.degrees(self._pose.yaw)), 1) + 0.0
 
     def _holding(self) -> str | None:
         return next((key for key, item in self._objects.items() if item["at"] == HELD), None)

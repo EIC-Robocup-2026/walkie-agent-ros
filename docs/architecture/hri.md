@@ -7,8 +7,9 @@
     The runtime, the todo list, `wait_for_person`, `go_to` and `say` are built, and have run
     on fakes only. The `hri` tool set binds `find_people`, which reads walkie-vision's
     people when the agent runs with `--vision`, and answers `UNAVAILABLE` on the robot
-    otherwise. The other people atomics, and the seat, gaze and arm atomics below, do not
-    exist. So **this task cannot
+    otherwise. It also binds `face_person`, which turns the robot once to face a person
+    but does not keep looking at them. The other people atomics, and the seat, gaze and
+    arm atomics below, do not exist. So **this task cannot
     run end to end today**, in simulation or on the robot.
 
     HRI input is text only. A message with an image or audio payload is refused.

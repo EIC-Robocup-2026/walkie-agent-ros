@@ -29,7 +29,11 @@ class ObjectSeen:
 
 @dataclass(frozen=True)
 class PersonSeen:
-    """One person in view. `pose` is a posture, such as "sitting person"."""
+    """One person in view. `pose` is a posture, such as "sitting person".
+
+    `bearing_deg` is where the person is from straight ahead of the base, in degrees,
+    positive to the left as a turn is, and None when the backend cannot tell.
+    """
 
     id: str
     # None until the person has been identified.
@@ -37,6 +41,7 @@ class PersonSeen:
     pose: str
     gesture: str
     room: str
+    bearing_deg: float | None = None
 
 
 @dataclass(frozen=True)

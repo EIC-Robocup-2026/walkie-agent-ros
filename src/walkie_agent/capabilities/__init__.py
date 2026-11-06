@@ -44,6 +44,10 @@ class Base(Protocol):
     REFUSED for a value that is not finite, an empty move or one over the 3 m
     cap; CANCELLED on a stop; TIMEOUT past `timeout_s`, UNAVAILABLE without a
     navigation backend and SKILL_FAILED when the goal fails.
+
+    pose waits at most `timeout_s` for the robot's pose in the map. It raises
+    REFUSED for a `timeout_s` that is not positive, CANCELLED on a stop, and
+    TIMEOUT, UNAVAILABLE or SKILL_FAILED when no usable pose comes in time.
     """
 
     def places(self) -> Mapping[str, Location]: ...
@@ -63,7 +67,7 @@ class Base(Protocol):
         """Cancel the active goal. Never raises."""
         ...
 
-    def pose(self) -> Pose2D: ...
+    def pose(self, *, timeout_s: float = 1.0) -> Pose2D: ...
 
 
 class Speech(Protocol):

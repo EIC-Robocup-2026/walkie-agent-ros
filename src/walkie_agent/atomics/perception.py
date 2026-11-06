@@ -52,4 +52,15 @@ def find_people(ctx: Ctx, description: str = "") -> list[dict[str, Any]]:
         description: A name, pose or gesture, such as "Jane", "sitting person" or
             "waving person". Empty means everybody.
     """
-    return [asdict(seen) for seen in ctx.vision.people(description)]
+    # Not asdict: the bearing stays out, so the tool text and the result the Mahoraga
+    # runs measured are unchanged, and face_person reads it itself (decision S2-6).
+    return [
+        {
+            "id": seen.id,
+            "name": seen.name,
+            "pose": seen.pose,
+            "gesture": seen.gesture,
+            "room": seen.room,
+        }
+        for seen in ctx.vision.people(description)
+    ]

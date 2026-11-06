@@ -87,6 +87,18 @@ def test_its_ctx_holds_the_robot_and_its_token(robot):
 # ctx.base
 
 
+def test_a_pose_read_takes_a_timeout_and_logs_only_what_was_given(robot):
+    robot.pose()
+    robot.pose(timeout_s=0.5)
+    assert [call["args"] for call in robot.calls if call["verb"] == "base.pose"] == [
+        {},
+        {"timeout_s": 0.5},
+    ]
+    with pytest.raises(StepError) as raised:
+        robot.pose(timeout_s=0.0)
+    assert raised.value.code is ErrorCode.REFUSED
+
+
 def test_go_to_moves_the_robot_to_the_place(robot):
     pose = robot.go_to("shelf")
     assert (pose.x, pose.y, pose.yaw) == (11.0, 0.0, 1.5)
@@ -304,6 +316,31 @@ def test_people_are_those_in_the_robot_s_room(robot):
 )
 def test_people_match_a_name_pose_or_gesture(robot, query, expected):
     assert [seen.id for seen in robot.people(query)] == expected
+
+
+def test_a_bearing_is_the_persons_heading_less_the_robots_yaw_and_a_turn_by_it_faces_them():
+    facing = world()
+    facing["people"]["ann"]["heading_deg"] = 170.0
+    facing["places"]["lobby"]["yaw"] = math.radians(-160.0)
+    robot = FakeRobot(facing)
+    [ann] = robot.people()
+    # 170 - (-160) = 330, the same direction as 30 degrees to the left.
+    assert ann.bearing_deg == pytest.approx(-30.0)
+    robot.move_relative(0.0, 0.0, ann.bearing_deg)
+    assert robot.people()[0].bearing_deg == 0.0
+    assert math.copysign(1.0, robot.people()[0].bearing_deg) == 1.0
+
+
+def test_a_person_with_no_heading_gets_one_from_their_id_that_leaves_the_world_as_it_was(robot):
+    first, again = robot.people()[0].bearing_deg, FakeRobot(world()).people()[0].bearing_deg
+    assert first == again
+    assert -180.0 <= first < 180.0
+    assert "heading_deg" not in robot.snapshot()["people"]["ann"]
+    robot.go_to("shelf")
+    # bob's own heading less the shelf's yaw of 1.5 rad.
+    bob = robot.people()[0].bearing_deg
+    assert bob != first
+    assert -180.0 <= bob < 180.0
 
 
 def test_vision_refuses_while_the_token_is_set(robot):
@@ -560,6 +597,8 @@ def test_an_unexpected_exception_is_logged_as_internal_and_not_hidden(robot):
         (lambda w: w.update(start="lobbby"), "start"),
         (lambda w: w["places"]["desk"].update(room="lobbby"), "places['desk'].room"),
         (lambda w: w["people"]["ann"].update(room="lobbby"), "people['ann'].room"),
+        (lambda w: w["people"]["ann"].update(heading_deg=float("nan")), "people['ann'].heading_deg"),
+        (lambda w: w["people"]["ann"].update(heading_deg="left"), "people['ann'].heading_deg"),
         (lambda w: w["objects"]["mug_1"].update(at="dsek"), "objects['mug_1'].at"),
         (lambda w: w["places"]["desk"].update(x=float("nan")), "places['desk'].x"),
         (lambda w: w["places"]["desk"].update(yaw=float("inf")), "places['desk'].yaw"),

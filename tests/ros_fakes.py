@@ -20,6 +20,7 @@ from nav2_msgs.action import NavigateToPose
 from rclpy.task import Future
 from rclpy.time import Time
 from tf2_ros import LookupException
+from tf_transformations import quaternion_from_euler, quaternion_multiply
 
 from walkie_agent.errors import StepError
 
@@ -61,6 +62,44 @@ def bounded(call: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
 
 def missing_tf() -> TransformStamped:
     raise LookupException("map does not exist")
+
+
+# The rotation base <- optical frame of a level camera that looks forward: the optical
+# z is the base's x, the optical x the base's -y and the optical y the base's -z.
+LEVEL_CAMERA = (-0.5, 0.5, -0.5, 0.5)
+
+
+def camera_transform(
+    yaw: float = 0.0, pitch: float = 0.0, *, stamp_ns: int = 0, frame: str = "camera_optical"
+) -> TransformStamped:
+    """map <- `frame` of a camera turned `yaw` left and pitched `pitch` down, in radians."""
+    stamped = TransformStamped()
+    stamped.header.frame_id = "map"
+    stamped.child_frame_id = frame
+    stamped.header.stamp = Time(nanoseconds=stamp_ns).to_msg()
+    q = quaternion_multiply(quaternion_from_euler(0.0, pitch, yaw), LEVEL_CAMERA)
+    rotation = stamped.transform.rotation
+    rotation.x, rotation.y, rotation.z, rotation.w = (float(v) for v in q)
+    return stamped
+
+
+class FakeTfBuffer:
+    """The connector's tf2 Buffer. `lookup` decides what each lookup_transform returns or raises.
+
+    By default the camera is level and faces along the map's x axis. `lookups` logs the
+    frames, the stamp in nanoseconds and the timeout in seconds of each call.
+    """
+
+    def __init__(self) -> None:
+        self.lookup: Callable[[], TransformStamped] = camera_transform
+        self.lookups: list[tuple[str, str, int, float]] = []
+
+    def lookup_transform(
+        self, target_frame: str, source_frame: str, time: Time, timeout: Any = None
+    ) -> TransformStamped:
+        waited = timeout.nanoseconds / 1e9 if timeout is not None else 0.0
+        self.lookups.append((target_frame, source_frame, time.nanoseconds, waited))
+        return self.lookup()
 
 
 def transform(
@@ -179,13 +218,18 @@ class FakeNode:
 
 
 class FakeConnector:
-    """The connector's node and TF read. `tf` decides what each read returns or raises."""
+    """The connector's node and TF read. `tf` decides what each read returns or raises.
+
+    `_tf_buffer` stands in for the private Buffer of RAI's connector, which RosVision
+    reads transforms at a stamp from.
+    """
 
     def __init__(self, node: FakeNode | None = None) -> None:
         self.node = node or FakeNode()
         self.robot = (0.0, 0.0, 0.0)
         self.tf: Callable[[], TransformStamped] = self.fresh_sample
         self.tf_reads: list[tuple[str, str, float]] = []
+        self._tf_buffer = FakeTfBuffer()
 
     def fresh_sample(self) -> TransformStamped:
         """The robot now, stamped newer than any read that has already begun."""

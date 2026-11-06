@@ -18,7 +18,22 @@ objects() stays UNAVAILABLE, since nothing reads the object arrays yet.
   the track lasts. A person the tracker has not taken up has track_id 0 and gets
   person_untracked_<n>, numbered left to right in that one array.
 - The room is the room of the configured place nearest the robot, read once per call,
-  and only when someone matches.
+  and only when someone matches. The pose read and the TF lookup wait only for what
+  is left of the call's timeout_s; past it, the people come with no room and no
+  bearing, so a call ends close to its timeout_s.
+- A person's direction from the camera is the mean map-frame yaw of the rays through
+  their shoulders and hips, or through their box's centre with fewer than two of
+  those seen, from the array's camera_info and TF map <- the array's frame at its
+  stamp. TF is looked up once per call, waiting up to TF_WAIT_S, and with no
+  transform every bearing is None.
+- The camera sits 0.28 m ahead of the base's turning centre, so a turn by that
+  direction alone ends past a person to the side: 4 degrees past the simulated
+  guest, 1.8 m away and 36 degrees to the left. With an ankle in view, the rays
+  through the ankles meet the plane ANKLE_HEIGHT_M above the map's floor at the
+  person's distance, and the bearing is the direction of that point from the base's
+  pose now, less its yaw. So a turn or a move since the image counts. Without an
+  ankle, or with a distance past MAX_FLOOR_RANGE_M, the bearing is the camera's
+  direction less the base's yaw now.
 
 Ported in part from the experiment/hri-agent branch at 61d30e8 (its perception
 vision_feed module and the people half of its RosVision). The feed there also collected
@@ -30,17 +45,30 @@ import math
 import threading
 import time
 from collections.abc import Iterable
-from typing import TYPE_CHECKING
+from dataclasses import replace
+from typing import TYPE_CHECKING, Any
 
+from rclpy.duration import Duration
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
+from tf2_ros import TransformException
 from walkie_vision_msgs.msg import PersonDetectionArray
 
-from walkie_agent.capabilities import Base, ObjectSeen, PersonSeen
+from walkie_agent.capabilities import Base, ObjectSeen, PersonSeen, Pose2D
 from walkie_agent.capabilities.guards import CancelToken, require_text, require_timeout
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.perception import PEOPLE_TOPIC
+from walkie_agent.perception.geometry import (
+    ankle_pixels,
+    floor_range,
+    mean_yaw,
+    torso_pixels,
+    wrap_deg,
+    yaw_from,
+)
 from walkie_agent.perception.gestures import DEFAULT_GESTURE_CONFIG, GestureConfig, classify_gestures
 from walkie_agent.perception.people import gesture_phrase, phrases, pose_phrase
+from walkie_agent.ros.base import MAP_FRAME
 from walkie_agent.ros.policy import FORBIDDEN_NAMES, check_endpoint, ros_failure
 
 if TYPE_CHECKING:
@@ -65,10 +93,16 @@ WAIT_S = 1.0
 # simulation restart does. It replaces the newest, which would otherwise hide the new
 # run's arrays until their stamps passed it.
 EPOCH_JUMP_S = 5.0
+# How long people() waits for TF to reach an array's stamp before it gives no bearings.
+TF_WAIT_S = 0.2
 PUBLISHER_HINT = "Is walkie-vision or oracle_perception running?"
 
 _POLL_S = 0.02
 _NS_PER_S = 1_000_000_000
+
+# The map <- camera transform at an array's stamp: the rotation as x, y, z, w, and the
+# optical centre's position as x, y, z.
+_Camera = tuple[tuple[float, float, float, float], tuple[float, float, float]]
 
 
 class UnavailableVision:
@@ -88,8 +122,9 @@ class UnavailableVision:
 class RosVision:
     """people() from walkie-vision's newest people array. objects() stays UNAVAILABLE.
 
-    `base` gives the pose and the places that name the room. Thread-safe: verbs run on
-    LangChain workers, the callback on the executor and close() on any thread.
+    `base` gives the pose and the places that name the room. `tf_buffer` is a tf2 Buffer
+    and defaults to the connector's own. Thread-safe: verbs run on LangChain workers,
+    the callback on the executor and close() on any thread.
     """
 
     def __init__(
@@ -103,12 +138,20 @@ class RosVision:
         max_age_s: float = MAX_AGE_S,
         wait_s: float = WAIT_S,
         epoch_jump_s: float = EPOCH_JUMP_S,
+        tf_wait_s: float = TF_WAIT_S,
         gestures: GestureConfig = DEFAULT_GESTURE_CONFIG,
+        tf_buffer: Any = None,
     ) -> None:
         self._cancel = cancel
         self._node = connector.node
         self._base = base
         self._topic = check_endpoint(self._node, topic, forbidden)
+        # RAI's get_transform reads only the latest transform, and a bearing needs the
+        # one at the image's stamp. So this reads the Buffer that the connector's own
+        # listener fills, a private attribute of the pinned RAI: a RAI that renames it
+        # fails here, at start, and a second listener would subscribe to TF twice.
+        self._tf = connector._tf_buffer if tf_buffer is None else tf_buffer
+        self._tf_wait_s = tf_wait_s
         self._max_age_s = max_age_s
         self._wait_s = wait_s
         self._epoch_jump_ns = round(epoch_jump_s * _NS_PER_S)
@@ -128,15 +171,27 @@ class RosVision:
     def people(self, query: str = "", *, timeout_s: float = 5.0) -> list[PersonSeen]:
         what = "looking for people"
         _begin(self._cancel, query, timeout_s, what)
+        deadline = time.monotonic() + timeout_s
         message = self._fresh_array(min(self._wait_s, timeout_s), what)
         seen = self._people_in(message, query.strip().lower())
+        # Before the empty answer too, so a stop during the classification is not
+        # reported as nobody in view.
+        self._cancel.check(what)
         if not seen:
             return []
-        room = self._room()
+        pose = self._pose(deadline)
+        room = self._room(pose)
+        camera = None
+        if pose is not None:
+            wait_s = min(self._tf_wait_s, max(deadline - time.monotonic(), 0.0))
+            camera = self._camera_transform(message, wait_s)
         self._cancel.check(what)
+        k = list(message.camera_info.k)
         return [
-            PersonSeen(person.id, person.name, person.pose, person.gesture, room)
-            for person in seen
+            replace(
+                person, room=room, bearing_deg=_bearing_deg(pixels, ankles, k, camera, pose)
+            )
+            for person, pixels, ankles in seen
         ]
 
     def close(self) -> None:
@@ -186,8 +241,15 @@ class RosVision:
             raise ros_failure(error, "Looking for people") from error
         return (now_ns - stamp_ns) / _NS_PER_S
 
-    def _people_in(self, message: PersonDetectionArray, wanted: str) -> list[PersonSeen]:
-        """The people of `message` that match `wanted`, left to right, without a room."""
+    def _people_in(
+        self, message: PersonDetectionArray, wanted: str
+    ) -> list[tuple[PersonSeen, list[tuple[float, float]], list[tuple[float, float]]]]:
+        """The people of `message` that match `wanted`, left to right, with two lists of pixels.
+
+        The first is the torso's keypoints, or the box's centre with fewer than two of
+        them seen, and the second the ankles seen. The records have no room and no
+        bearing yet.
+        """
         order = sorted(
             range(len(message.people)),
             key=lambda i: (message.people[i].bbox.center.position.x, i),
@@ -204,24 +266,72 @@ class RosVision:
             names = classify_gestures(person.keypoints, person.keypoint_scores, self._gestures)
             if wanted and wanted not in phrases(names):
                 continue
-            seen.append(PersonSeen(person_id, None, pose_phrase(names), gesture_phrase(names), ""))
+            record = PersonSeen(person_id, None, pose_phrase(names), gesture_phrase(names), "")
+            min_score = self._gestures.min_keypoint_score
+            pixels = torso_pixels(person.keypoints, person.keypoint_scores, min_score)
+            if not pixels:
+                box = person.bbox.center.position
+                pixels = [(box.x, box.y)]
+            ankles = ankle_pixels(person.keypoints, person.keypoint_scores, min_score)
+            seen.append((record, pixels, ankles))
         return seen
 
-    def _room(self) -> str:
-        """The room of the place nearest the robot, or "" when the pose cannot be read."""
+    def _pose(self, deadline: float) -> Pose2D | None:
+        """The base's pose now, or None when it cannot be read by `deadline`.
+
+        A stop still ends the call.
+        """
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            logger.warning(
+                "find_people reports no room and no bearings: the call's time ran out "
+                "before the pose was read."
+            )
+            return None
         try:
-            pose = self._base.pose()
+            return self._base.pose(timeout_s=remaining)
         except StepError as error:
             if error.code is ErrorCode.CANCELLED:
                 raise
-            # The people are still in view, so they are reported without a room.
-            logger.warning("find_people reports no room: %s", error)
+            # The people are still in view, so they are reported without a room or a bearing.
+            logger.warning("find_people reports no room and no bearings: %s", error)
+            return None
+
+    def _room(self, pose: Pose2D | None) -> str:
+        """The room of the place nearest `pose`, or "" without a pose or a place."""
+        if pose is None:
             return ""
         places = self._base.places().values()
         if not places:
             return ""
         nearest = min(places, key=lambda place: math.hypot(place.x - pose.x, place.y - pose.y))
         return nearest.room
+
+    def _camera_transform(self, message: PersonDetectionArray, wait_s: float) -> _Camera | None:
+        """The map <- camera transform at the array's stamp; None without one."""
+        frame = message.header.frame_id
+        if not frame:
+            logger.warning("find_people reports no bearings: the people array names no frame.")
+            return None
+        try:
+            transform = self._tf.lookup_transform(
+                MAP_FRAME,
+                frame,
+                Time.from_msg(message.header.stamp),
+                timeout=Duration(seconds=wait_s),
+            )
+        except TransformException as error:
+            # The people are still in view, so they are reported without a bearing.
+            logger.warning("find_people reports no bearings: %s", error)
+            return None
+        except Exception as error:
+            raise ros_failure(error, "Looking for people") from error
+        rotation = transform.transform.rotation
+        origin = transform.transform.translation
+        return (
+            (rotation.x, rotation.y, rotation.z, rotation.w),
+            (origin.x, origin.y, origin.z),
+        )
 
     # -- The callback, on the executor --------------------------------------------
 
@@ -245,6 +355,33 @@ def _begin(cancel: CancelToken, query: str, timeout_s: float, what: str) -> None
     require_timeout(timeout_s)
     require_text(query=query)
     cancel.check(what)
+
+
+def _bearing_deg(
+    pixels: list[tuple[float, float]],
+    ankles: list[tuple[float, float]],
+    k: list[float],
+    camera: _Camera | None,
+    pose: Pose2D | None,
+) -> float | None:
+    """The person's direction from the base's centre and heading, in degrees, or None.
+
+    The direction of the rays through `pixels`, at the distance of the floor under
+    `ankles`; the rays' own direction from the camera without that distance.
+    """
+    if camera is None or pose is None:
+        return None
+    rotation, origin = camera
+    yaw = mean_yaw(pixels, k, rotation)
+    if yaw is None:
+        return None
+    distance = floor_range(ankles, k, rotation, origin) if ankles else None
+    if distance is not None:
+        centred = yaw_from((pose.x, pose.y), origin, yaw, distance)
+        if centred is not None:
+            yaw = centred
+    # + 0.0 turns -0.0 into 0.0, so a person straight ahead never reads as "-0".
+    return round(wrap_deg(math.degrees(yaw - pose.yaw)), 1) + 0.0
 
 
 def _no_objects(cancel: CancelToken, query: str, timeout_s: float) -> list[ObjectSeen]:

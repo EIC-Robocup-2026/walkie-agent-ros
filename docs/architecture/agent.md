@@ -393,6 +393,7 @@ come from the todo middleware, in every set.
 | `find_objects` | default, gpsr | `UNAVAILABLE`: live object perception is not connected |
 | `object_info` | default, gpsr | `UNAVAILABLE`, for the same reason |
 | `find_people` | default, gpsr, hri | With `--vision`, the people in the newest `/walkie_vision/people` array, left to right, with a pose, a gesture and the room. Without it, `UNAVAILABLE`: live people perception is not connected |
+| `face_person` | default, hri | Turns once, on the spot, by the person's bearing from the newest people array, through Nav2. No turn within 10°. With no `--vision`, `UNAVAILABLE`, as for `find_people` |
 | `pick`, `place_on`, `hand_over` | gpsr | `UNAVAILABLE`: no arm commander client exists |
 | `get_facts` | default, gpsr | Reads the time and the date from the computer's clock, in the timezone of `config.toml`'s `[team]`, and the team's name, country and affiliation from that table |
 | `update_todos` | always | Adds, updates and removes steps by id, all or nothing |

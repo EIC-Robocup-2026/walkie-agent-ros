@@ -373,6 +373,23 @@ def test_pose_is_fresh_and_finite():
     assert len(rig.connector.tf_reads) == reads
 
 
+def test_a_pose_read_waits_no_longer_than_its_timeout():
+    rig = Rig()
+    rig.connector.tf = missing_tf
+    started = time.monotonic()
+    with pytest.raises(StepError) as raised:
+        rig.base.pose(timeout_s=0.05)
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+    assert time.monotonic() - started < 1.0
+
+    reads = len(rig.connector.tf_reads)
+    for timeout_s in (0.0, -1.0, math.nan):
+        with pytest.raises(StepError) as raised:
+            rig.base.pose(timeout_s=timeout_s)
+        assert raised.value.code is ErrorCode.REFUSED
+    assert len(rig.connector.tf_reads) == reads
+
+
 def test_stale_missing_and_wrong_frame_tf_errors():
     rig = Rig(tf_s=0.05)
 

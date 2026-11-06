@@ -32,7 +32,14 @@ def test_gpsr_is_the_set_the_spike_used_and_get_facts():
 
 
 def test_hri_has_no_object_or_arm_tools():
-    assert names(HRI) == ["list_places", "go_to", "move_relative", "say", "find_people"]
+    assert names(HRI) == [
+        "list_places",
+        "go_to",
+        "move_relative",
+        "say",
+        "find_people",
+        "face_person",
+    ]
 
 
 def test_default_is_every_atomic_that_needs_no_arms():

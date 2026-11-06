@@ -289,6 +289,29 @@ kitchen table, succeeded from the living room and from the shelf.
       The agent said both.
 
     `down` left no record, and only the user's own router kept running.
+- Turns on the spot (S2), on 2026-11-07, as direct `RosBase.move_relative(0,
+  0, angle)` calls with no model: 17 turns from 4° to 90°, left and right. 15
+  succeeded, each within 0.72° of the goal, in 1.6 s to 4.9 s, with the base
+  drifting 0.002 m to 0.067 m. Two aborted with Nav2 error code 105, a 40° turn
+  after 9.6 s and a 4° turn after 10.1 s, 2.90° and 2.97° past the goal, with
+  0.080 m and 0.093 m of drift.
+- "Look at me, I am the one waving." with the real model and the `hri` tool
+  set, twice. The guest stands 1.83 m from the base's centre, 35.6° to the left.
+    - Before the floor distance (S2-3), the agent called
+      `find_people("waving person")`, then `face_person("person_1")`, which
+      turned the base 41° in 11.1 s, by the camera's direction of 39.6°, and
+      said "Here I am, looking right at you. Nice wave!". Nav2 aborted 1.3°
+      off the goal, which `face_person` counted as done, and the base drifted
+      0.08 m. The guest ended 6.4° to the right of the base's heading.
+    - With the floor distance, the same calls. `face_person` turned 39.3° in
+      9.1 s; Nav2 aborted with code 105 3.0° past the goal, which `face_person`
+      counted as done. The agent said "All right, I am looking at you now.".
+      The base drifted 0.08 m again, and the guest ended 4.0° to the right of
+      its heading. Five readings of `RosVision.people()` after the turn, with
+      no model, gave the guest's bearing as -3.4° to -4.2° against a true
+      -3.99°, so what is left is Nav2's overshoot.
+
+    `down` left no record.
 
 ## Not in the recipe
 

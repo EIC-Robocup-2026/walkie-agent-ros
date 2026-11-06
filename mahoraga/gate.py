@@ -92,9 +92,12 @@ def _digested_files() -> list[Path]:
         [
             *(path for path in package.glob("*.py") if path.name not in _NOT_DIGESTED),
             *(path.resolve() for path in DATA_DIR.rglob("*") if path.is_file()),
-            *(walkie / name for name in ("errors.py", "adapter.py", "locations.py")),
+            *(walkie / name for name in ("__init__.py", "errors.py", "adapter.py", "locations.py")),
             *(walkie / "capabilities").glob("*.py"),
             *(walkie / "atomics").glob("*.py"),
+            # FakeRobot and face_person import the angle wrap from geometry.py, which
+            # imports gestures.py. people.py serves only RosVision.
+            *(walkie / "perception" / name for name in ("__init__.py", "geometry.py", "gestures.py")),
             _REPO / "pixi.lock",
         ]
     )

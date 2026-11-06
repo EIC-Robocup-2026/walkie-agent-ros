@@ -208,12 +208,17 @@ class RosBase:
         except Exception:
             logger.exception("base.stop failed.")
 
-    def pose(self) -> Pose2D:
+    def pose(self, *, timeout_s: float = TF_S) -> Pose2D:
+        """The pose from a sample stamped after this call, waited for at most `timeout_s`.
+
+        The wait is also no longer than the base's own `tf_s`.
+        """
+        require_timeout(timeout_s)
         what = "reading the pose"
         self._cancel.check(what)
         with self._lock:
             self._require_open()
-        return self._fresh_pose(self._tf_s, what)
+        return self._fresh_pose(min(self._tf_s, timeout_s), what)
 
     # -- Lifecycle -------------------------------------------------------------
 

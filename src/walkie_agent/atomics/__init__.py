@@ -12,7 +12,7 @@ from typing import Any
 
 from walkie_agent.atomics.facts import get_facts
 from walkie_agent.atomics.manipulation import hand_over, pick, place_on
-from walkie_agent.atomics.navigation import go_to, list_places, move_relative
+from walkie_agent.atomics.navigation import face_person, go_to, list_places, move_relative
 from walkie_agent.atomics.perception import find_objects, find_people, object_info
 from walkie_agent.atomics.speech import say
 
@@ -20,6 +20,7 @@ __all__ = [
     "DEFAULT",
     "GPSR",
     "HRI",
+    "face_person",
     "find_objects",
     "find_people",
     "get_facts",
@@ -48,7 +49,8 @@ GPSR: list[Callable[..., Any]] = [
     hand_over,
     get_facts,
 ]
-HRI: list[Callable[..., Any]] = [list_places, go_to, move_relative, say, find_people]
+# face_person is not in GPSR, whose tool text the Mahoraga runs measured (decision S2-6).
+HRI: list[Callable[..., Any]] = [list_places, go_to, move_relative, say, find_people, face_person]
 # Every atomic that needs no arms, which the robot does not have yet.
 DEFAULT: list[Callable[..., Any]] = [
     list_places,
@@ -58,5 +60,6 @@ DEFAULT: list[Callable[..., Any]] = [
     find_objects,
     object_info,
     find_people,
+    face_person,
     get_facts,
 ]

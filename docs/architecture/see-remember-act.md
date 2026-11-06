@@ -208,6 +208,21 @@ decision, and it can run beside the vision chain.
 - **Risks.** Whether Nav2's controller turns in place for a goal with no
   translation, and its yaw tolerance, are untested. One turn is not
   continuous gaze, so it does not meet HRI's gaze criterion (S11).
+- **Built** as S2-1 to S2-8. The plan changed in four places. The ray goes
+  through the pixel's row as well as its column, and through the shoulders and
+  hips before the box's centre, since the camera's pitch and a raised arm each
+  move the box-centre bearing by up to a few degrees (S2-1). The bearing is
+  from the base's turning centre, not the camera 0.275 m ahead of it: the
+  ankles' rays meet the floor at the person's distance, and the oracle's Chula
+  guest reads 35.6° against a true 35.56°, where the camera saw 39.6° (S2-3).
+  A person within 10° gets no turn, and a turn Nav2 aborts within 10° of its
+  goal counts as done (S2-4). Nav2 does turn in place: in 17 turns from 4° to
+  90°, 15 succeeded within 0.72° and two aborted with code 105 about 3° past
+  the goal. In sim, "Look at me, I am the one waving." with the real model
+  found the guest and turned to them. With the floor distance, the guest ended
+  4.0° off the base's heading, within the test's 10°; Nav2 had aborted 3.0°
+  past the goal, and the live bearing after the turn matched the truth within
+  0.6° ([What has been run](../setup/08-chula-simulation.md#what-has-been-run)).
 
 ### S3: Remember people by name
 

@@ -1,5 +1,6 @@
 """The oracle gate passes only on two identical, complete runs, and it holds the LLM arms back."""
 
+import ast
 import json
 from pathlib import Path
 
@@ -217,6 +218,7 @@ def test_the_digest_covers_the_files_an_oracle_pass_depends_on():
         "mahoraga/worlds.py",
         "mahoraga/data/chula_pat14_6/objects/objects.md",
         "mahoraga/data/chula_pat14_6/names/names.md",
+        "src/walkie_agent/__init__.py",
         "src/walkie_agent/adapter.py",
         "src/walkie_agent/errors.py",
         "src/walkie_agent/locations.py",
@@ -226,10 +228,46 @@ def test_the_digest_covers_the_files_an_oracle_pass_depends_on():
         "src/walkie_agent/capabilities/records.py",
         "src/walkie_agent/atomics/__init__.py",
         "src/walkie_agent/atomics/navigation.py",
+        "src/walkie_agent/perception/__init__.py",
+        "src/walkie_agent/perception/geometry.py",
+        "src/walkie_agent/perception/gestures.py",
         "pixi.lock",
     } <= paths
     assert not {"mahoraga/report.py", "mahoraga/__main__.py"} & paths
     assert len(code_digest()) == 16
+
+
+def _walkie_imports(path: Path) -> set[str]:
+    """The walkie_agent modules `path` imports, wherever in the file, with their packages."""
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(path.read_text(), str(path))):
+        if isinstance(node, ast.Import):
+            names |= {alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            # `from walkie_agent import atomics` imports a module by its last name.
+            names |= {node.module, *(f"{node.module}.{alias.name}" for alias in node.names)}
+    found = set()
+    for name in names:
+        parts = name.split(".")
+        if parts[0] == "walkie_agent":
+            found |= {".".join(parts[: i + 1]) for i in range(len(parts))}
+    return found
+
+
+def test_the_digest_holds_every_walkie_agent_module_that_digested_code_imports():
+    """A module imported from outside the digest could change an oracle pass unseen."""
+    src = gate._REPO / "src"
+    digested = {path.resolve() for path in gate._digested_files()}
+    missing = set()
+    for path in digested:
+        if path.suffix != ".py":
+            continue
+        for name in _walkie_imports(path):
+            module = src.joinpath(*name.split("."))
+            for candidate in (module / "__init__.py", module.with_suffix(".py")):
+                if candidate.is_file() and candidate.resolve() not in digested:
+                    missing.add(f"{candidate.relative_to(gate._REPO)}, imported by {path.name}")
+    assert not missing, sorted(missing)
 
 
 def test_an_edit_to_a_guard_stales_the_gate(gated, tmp_path, monkeypatch):

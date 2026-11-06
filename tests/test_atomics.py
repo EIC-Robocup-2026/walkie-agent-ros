@@ -1,11 +1,14 @@
 """The atomics over FakeRobot: what they return and how they fail."""
 
+import copy
 import json
+import logging
 import math
 
 import pytest
 
 from walkie_agent.atomics import (
+    face_person,
     find_objects,
     find_people,
     go_to,
@@ -17,7 +20,7 @@ from walkie_agent.atomics import (
     place_on,
     say,
 )
-from walkie_agent.capabilities import CancelToken, Ctx
+from walkie_agent.capabilities import CancelToken, Ctx, PersonSeen
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.capabilities.guards import MAX_MOVE_M
 from walkie_agent.errors import ErrorCode, StepError
@@ -161,6 +164,128 @@ def test_find_people_lists_who_is_in_the_room(robot):
     assert find_people(robot.ctx, "lying person") == []
 
 
+def facing(heading_deg: float, start_deg: float = 0.0) -> FakeRobot:
+    """WORLD with jane at `heading_deg` in the map and the robot starting at `start_deg`."""
+    world = copy.deepcopy(WORLD)
+    world["people"]["jane"]["heading_deg"] = heading_deg
+    world["places"]["kitchen room"]["yaw"] = math.radians(start_deg)
+    return FakeRobot(world)
+
+
+def moves(robot: FakeRobot) -> list[dict]:
+    return [call["args"] for call in robot.calls if call["verb"] == "base.move_relative"]
+
+
+class ShortTurns:
+    """A base whose turns end `short_deg` before their goal, or past it when negative,
+    and then report a failure.
+
+    As Nav2 does when its progress checker aborts a turn on the spot that is still
+    settling: the robot has turned, and the action reports SKILL_FAILED. Both such
+    aborts in the Chula simulation ended about 3 degrees past the goal.
+    """
+
+    def __init__(self, robot: FakeRobot, short_deg: float) -> None:
+        self.robot, self.short_deg = robot, short_deg
+
+    def move_relative(self, forward_m=0.0, left_m=0.0, turn_deg=0.0, *, timeout_s=60.0):
+        ended = turn_deg - self.short_deg * math.copysign(1.0, turn_deg)
+        self.robot.move_relative(forward_m, left_m, ended)
+        raise StepError(ErrorCode.SKILL_FAILED, "Navigation failed for the move (ABORTED, error code 105).")
+
+    def __getattr__(self, name):
+        return getattr(self.robot, name)
+
+
+def short_turns(robot: FakeRobot, short_deg: float) -> Ctx:
+    return Ctx(cancel=robot.cancel, base=ShortTurns(robot, short_deg), speech=robot, vision=robot)
+
+
+def test_find_people_leaves_the_bearing_out():
+    assert "bearing_deg" not in find_people(facing(40.0).ctx)[0]
+
+
+@pytest.mark.parametrize(
+    ("heading", "start", "reply", "turn"),
+    [
+        (40.0, 0.0, "Turned 40 degrees left to face jane.", 40.0),
+        (-75.5, 0.0, "Turned 76 degrees right to face jane.", -75.5),
+        # The short way round: -150 from 170 is 40 to the left, not 320 to the right.
+        (-150.0, 170.0, "Turned 40 degrees left to face jane.", 40.0),
+    ],
+)
+def test_face_person_turns_on_the_spot_by_the_bearing(heading, start, reply, turn):
+    robot = facing(heading, start)
+    assert face_person(robot.ctx, "jane") == reply
+    assert moves(robot) == [{"forward_m": 0.0, "left_m": 0.0, "turn_deg": pytest.approx(turn)}]
+    assert robot.people()[0].bearing_deg == pytest.approx(0.0, abs=0.06)
+    assert robot.snapshot()["at"] == "kitchen room"
+
+
+@pytest.mark.parametrize(
+    ("heading", "reply"),
+    [
+        (10.0, "Already facing jane, 10 degrees to the left."),
+        (-3.4, "Already facing jane, 3 degrees to the right."),
+        (0.4, "Already facing jane, straight ahead."),
+    ],
+)
+def test_a_person_within_10_degrees_gets_no_turn(heading, reply):
+    robot = facing(heading)
+    assert face_person(robot.ctx, "jane") == reply
+    assert moves(robot) == []
+
+
+def test_a_person_not_in_view_is_not_found_and_nothing_moves(robot):
+    with pytest.raises(StepError) as raised:
+        face_person(robot.ctx, "bob")
+    assert raised.value.code is ErrorCode.NOT_FOUND
+    assert "Call find_people first" in str(raised.value)
+    assert moves(robot) == []
+
+
+def test_a_person_whose_direction_is_unknown_is_unavailable(robot):
+    class NoBearings:
+        def people(self, query="", *, timeout_s=5.0):
+            return [PersonSeen("person_1", None, "standing person", "", "living room")]
+
+    ctx = Ctx(cancel=robot.cancel, base=robot, speech=robot, vision=NoBearings())
+    with pytest.raises(StepError) as raised:
+        face_person(ctx, "person_1")
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+    assert moves(robot) == []
+
+
+@pytest.mark.parametrize(
+    ("short", "reply"),
+    [
+        (3.0, "Turned 37 degrees left to face jane."),
+        (-2.9, "Turned 43 degrees left to face jane."),
+    ],
+)
+def test_a_turn_reported_failed_that_ends_within_10_degrees_still_faces_the_person(caplog, short, reply):
+    robot = facing(40.0)
+    with caplog.at_level(logging.INFO, logger="walkie_agent.atomics.navigation"):
+        assert face_person(short_turns(robot, short), "jane") == reply
+    assert f"counts the turn to jane as done, {abs(short):.1f} degrees off" in caplog.text
+
+
+def test_a_turn_reported_failed_that_ends_further_off_raises_the_failure():
+    robot = facing(40.0)
+    with pytest.raises(StepError) as raised:
+        face_person(short_turns(robot, 15.0), "jane")
+    assert raised.value.code is ErrorCode.SKILL_FAILED
+
+
+@pytest.mark.parametrize("code", [ErrorCode.CANCELLED, ErrorCode.TIMEOUT, ErrorCode.UNAVAILABLE])
+def test_any_other_failure_of_the_turn_is_raised_as_it_is(code):
+    robot = facing(40.0)
+    robot.faults["base.move_relative"] = StepError(code, "The turn did not happen.")
+    with pytest.raises(StepError) as raised:
+        face_person(robot.ctx, "jane")
+    assert raised.value.code is code
+
+
 def test_every_return_value_is_json_able(robot):
     ctx = robot.ctx
     replies = [
@@ -171,6 +296,7 @@ def test_every_return_value_is_json_able(robot):
         find_objects(ctx),
         object_info(ctx, "apple_1"),
         find_people(ctx),
+        face_person(ctx, "jane"),
         pick(ctx, "apple_1"),
         place_on(ctx, "shelf"),
         pick(ctx, "apple_1"),

@@ -508,7 +508,10 @@ flowchart LR
 
 `config/locations.toml` ships empty, because no real place has been measured. Until an
 operator adds reviewed map poses, `go_to` answers `NOT_FOUND` on the robot. Place names are
-stored as trimmed lowercase keys, and lookup ignores case.
+stored as trimmed lowercase keys, and lookup ignores case. A place may name its `room`,
+which must be a place in the same file whose own `room` is itself, as the two rooms of
+`config/locations.chula_pat14_6.toml` are. The room is not shown to the model yet; the
+vision backend will use it to say which room a person is in.
 
 Only the LLM calls leave the robot PC. The tests stay on Fast DDS, with fakes, so they
 need neither a router nor a robot, and running them on the robot PC does not touch the

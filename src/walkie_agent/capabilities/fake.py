@@ -306,6 +306,7 @@ class FakeRobot:
                 place["y"],
                 place["yaw"],
                 "A room." if place["room"] == name else f"In the {place['room']}.",
+                place["room"],
             )
             for name, place in self._places.items()
         }

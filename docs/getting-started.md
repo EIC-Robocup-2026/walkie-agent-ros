@@ -325,12 +325,24 @@ pixi run ros2 topic pub --once /from_human rai_interfaces/msg/HRIMessage \
 the robot's start pose, so all points are relative to where it started.
 
 Those points belong to the **blank map** only. walkie-ros also has a world of the real
-lab room, `chula_pat14_6`, launched with `world:=chula_pat14_6`. The points in
-`config/locations.sim.toml` are not waypoints in that world, and no Chula place list
-exists here. `tests/ros_demo.py --robot external` could report on a run against that world
+lab room, `chula_pat14_6`, launched with `world:=chula_pat14_6` from its
+`feat/chula-pat14-6-simulation` branch. Its places are in
+`config/locations.chula_pat14_6.toml`: the two rooms, the shelf, bar, table, TV, sofa
+and entrance, and two invented places that generated commands assume. Each place names
+its room. They are the nav approach goals of the world's authoring file and the same
+places `FakeRobot` uses, but no goal has yet been checked for furniture clearance in
+the simulation. Run the agent on them with:
+
+```bash
+pixi run agent-sim-chula
+```
+
+`tests/ros_demo.py --robot external` could report on a run against that world
 with no real model, but that run has not happened. Even when it does, it can prove
 navigation and the runtime only: that launch has no vision or text-to-speech, and vision
-and arms are unavailable in the agent. So it cannot prove the full HRI task.
+and arms are unavailable in the agent. So it cannot prove the full HRI task. The
+[see, remember and act roadmap](architecture/see-remember-act.md) lists the steps that
+add them.
 
 ## 7. Open the docs locally
 

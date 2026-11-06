@@ -62,7 +62,7 @@ only on `FakeRobot`. The gaps this plan closes:
 | ID | Item | Size | Needed by | Status |
 | --- | --- | --- | --- | --- |
 | G1 | Pin walkie-vision 64811fe and walkie-database 522ab92, and build `walkie_vision_msgs` ([Local message pins](../setup/03-ros-and-rai.md#local-message-pins)) | S | S1, S3, S8 | Built |
-| G2 | A Chula place list with rooms, an optional `room` on `Location`, and an `agent-sim-chula` task | S | S1, S8 | Planned |
+| G2 | A Chula place list with rooms, an optional `room` on `Location`, and an `agent-sim-chula` task | S | S1, S8 | Built |
 | G3 | A sim perception source: port `oracle_perception` with a small scene driver | M | S1, S4 | Planned |
 | G4 | A scripted, isolated Chula simulation recipe | S | Every sim test | Planned |
 | G5 | Pin walkie-ros `my_robot_interfaces` at 6b26daa and build it | S | S6 | Planned |
@@ -75,6 +75,8 @@ walkie-ros world. The same file serves walkie-database's sim seed, which
 reads stand poses under the rooms' display names (P23). An optional `room`
 field on `Location` lets the vision backend fill `PersonSeen.room`.
 `agent-sim-chula` runs beside `agent-sim`, which keeps the blank-map points.
+Built as G2-1 and G2-2; no goal has been checked for furniture clearance in
+MuJoCo yet.
 
 **G3.** Port `sim/oracle_perception.py`, `scene.py`, `projection.py` and
 `fake_vectors.py` and rebuild them against 64811fe. Person messages are

@@ -69,6 +69,7 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | `pixi run agent`                 | Run the agent. It reads tasks from `/from_human` and `/walkie/task`. |
 | `pixi run fake-walkie`           | Run a fake robot for testing without hardware.         |
 | `pixi run agent-sim`             | Run the agent against walkie-ros's MuJoCo simulation. Not yet run with this runtime. |
+| `pixi run agent-sim-chula`       | The same, on the places of the `chula_pat14_6` world. Not yet run. |
 | `pixi run test`                  | Run the tests. They need no API key and no hardware.   |
 | `pixi run voice-asr`             | Listen on the microphone and send speech to the agent. |
 | `pixi run voice-tts`             | Speak what the agent says through the speaker.         |
@@ -94,6 +95,7 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | `config.toml`                | LLM vendor and models, the team and its timezone, voice, tracing  |
 | `config/locations.toml`      | The robot's real places. Ships empty until they are measured.     |
 | `config/locations.sim.toml`  | Test points for the blank simulation map                          |
+| `config/locations.chula_pat14_6.toml` | Places and rooms of the `chula_pat14_6` simulation world |
 | `tests/fixtures/locations.toml` | Invented places for tests and the fake robot                   |
 | `config/task_templates.toml` | Fixed tasks by name. Ships with none.                             |
 | `robot.md`                   | What Walkie is and can do today, for the system prompt            |

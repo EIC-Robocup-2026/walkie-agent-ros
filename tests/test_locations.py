@@ -2,7 +2,7 @@ import pytest
 
 from conftest import PROJECT_ROOT
 from walkie_agent.atomics import list_places
-from walkie_agent.capabilities.fake import FakeRobot
+from walkie_agent.capabilities.fake import CHULA_PAT14_6_PLACES, FakeRobot
 from walkie_agent.locations import Location, load_locations
 
 
@@ -36,6 +36,35 @@ def test_sim_locations_fit_the_blank_map():
     for loc in sim.values():
         assert abs(loc.x) < 10 and abs(loc.y) < 10, loc.name
         assert loc.description, loc.name
+
+
+def test_chula_locations_match_fake_robot_s_world():
+    # FakeRobot and the simulation must agree, or a command that works in the gym
+    # drives somewhere else in MuJoCo.
+    chula = load_locations(PROJECT_ROOT / "config" / "locations.chula_pat14_6.toml")
+    assert {
+        name: {"x": place.x, "y": place.y, "yaw": place.yaw, "room": place.room}
+        for name, place in chula.items()
+    } == CHULA_PAT14_6_PLACES
+    assert all(place.description for place in chula.values())
+
+
+def test_a_place_names_its_room(tmp_path):
+    places = load_locations(
+        write(
+            tmp_path,
+            '[locations.den]\nx = 0\ny = 0\nroom = "den"\n'
+            '[locations.desk]\nx = 1\ny = 0\nroom = "den"\n'
+            "[locations.hall]\nx = 2\ny = 0\n",
+        )
+    )
+    assert [places[name].room for name in ("den", "desk", "hall")] == ["den", "den", ""]
+
+
+def test_fake_robot_places_carry_their_room():
+    places = FakeRobot().places()
+    assert places["shelf"].room == "kitchen room"
+    assert places["living room"].room == "living room"
 
 
 def test_production_locations_ship_empty():
@@ -77,6 +106,17 @@ def test_a_file_with_no_locations_table_means_no_places(tmp_path):
             "must be written 'kitchen'",
         ),
         ("[locations.door\n", "locations.toml"),
+        ("[locations.door]\nx = 1\ny = 2\nroom = 3\n", "locations.door.room"),
+        ('[locations.door]\nx = 1\ny = 2\nroom = "hall"\n', "door.room 'hall' is not a place"),
+        (
+            '[locations.door]\nx = 1\ny = 2\nroom = "Hall"\n[locations.hall]\nx = 0\ny = 0\n',
+            "door.room 'Hall' must be written 'hall'",
+        ),
+        # A room must name itself, so a place cannot be put in another plain place.
+        (
+            '[locations.door]\nx = 1\ny = 2\nroom = "hall"\n[locations.hall]\nx = 0\ny = 0\n',
+            "door.room 'hall' is not a room",
+        ),
     ],
 )
 def test_a_broken_file_is_refused_with_its_path_and_reason(tmp_path, text, error):

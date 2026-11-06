@@ -1,0 +1,94 @@
+# Named places for walkie-ros's MuJoCo world chula_pat14_6, a copy of the
+# lab room (pixi run agent-sim-chula).
+#
+# Launch the world with world:=chula_pat14_6 from walkie-ros
+# feat/chula-pat14-6-simulation. Its map frame is the captured occupancy map of
+# the room, not the start pose, and AMCL localizes in it.
+#
+# The poses are the nav approach goals of the world's authoring file,
+# simulation/mujoco/worlds/chula_pat14_6/authoring/source/
+# 30_16102026_ChulaPat14_6_world.toml on that branch: its [rooms], [locations]
+# and [doors] entrance_door, which this file calls "entrance". The world spells
+# its rooms living_room and kitchen_room; these names use a space, as the GPSR
+# command data and FakeRobot do, and as walkie-database's sim seed requires
+# for a room's stand pose (seed_sim --locations). "trash" and
+# "instruction point" are invented: the arena data has neither, and generated
+# commands assume both (decision 26). The same names and coordinates are in
+# FakeRobot's CHULA_PAT14_6_PLACES, and tests/test_locations.py keeps the two
+# equal.
+#
+# Not yet checked in the simulation: whether each goal keeps the footprint
+# clear of furniture, which the occupancy map does not show.
+#
+# A room is a place whose room is itself. x, y in meters; yaw in radians
+# (0 = facing +x).
+
+[locations."living room"]
+x = 1.7629
+y = -1.483
+yaw = 0.0
+room = "living room"
+description = "A room: the living room, with the sofa and the TV. The entrance door opens into it."
+
+[locations."kitchen room"]
+x = 1.3176
+y = -4.0123
+yaw = -1.5605
+room = "kitchen room"
+description = "A room: the kitchen, past the room divider, with the table, the shelf and the bar."
+
+[locations.shelf]
+x = 2.4868
+y = -6.4086
+yaw = -1.5697
+room = "kitchen room"
+description = "In front of the shelf in the kitchen room."
+
+[locations.bar]
+x = 0.2148
+y = -6.3009
+yaw = -1.5855
+room = "kitchen room"
+description = "In front of the bar in the kitchen room."
+
+[locations.table]
+x = 1.7023
+y = -3.957
+yaw = -1.556
+room = "kitchen room"
+description = "At the kitchen table in the kitchen room."
+
+[locations.tv]
+x = 1.6071
+y = -1.6133
+yaw = 3.1328
+room = "living room"
+description = "Facing the TV in the living room."
+
+[locations.sofa]
+x = 2.252
+y = -1.4753
+yaw = 0.0
+room = "living room"
+description = "By the sofa in the living room, where guests sit."
+
+[locations.entrance]
+x = 1.9935
+y = -0.0069
+yaw = -3.1227
+room = "living room"
+description = "At the entrance door of the living room."
+
+[locations.trash]
+x = 3.0
+y = -5.5
+yaw = 0.0
+room = "kitchen room"
+description = "Invented for generated commands: where the trash bin would be, in the kitchen room."
+
+[locations."instruction point"]
+x = 2.8
+y = -2.5
+yaw = 3.14
+room = "living room"
+description = "Invented for generated commands: where the operator gives instructions, in the living room."

@@ -3,6 +3,10 @@
 A place name is stored as a trimmed lowercase key, so a lookup that ignores case can
 never be ambiguous. A file with any other name, an unknown key or a coordinate that is
 not a finite number raises ValueError, which stops the agent at startup.
+
+A place may name its `room`. A room is itself a place whose `room` is its own name,
+as in FakeRobot's world, so a room named by another place must be listed and must
+name itself. A place with no `room` is in no known room.
 """
 
 import math
@@ -30,6 +34,7 @@ class Location:
     y: float
     yaw: float
     description: str = ""
+    room: str = ""
 
 
 def _finite(value: int | float) -> float:
@@ -55,6 +60,7 @@ class _Entry(BaseModel):
     y: _Coordinate
     yaw: _Coordinate = 0.0
     description: StrictStr = ""
+    room: StrictStr = ""
 
 
 class _File(BaseModel):
@@ -82,10 +88,25 @@ def load_locations(path: str | Path) -> dict[str, Location]:
         raise ValueError(f"{path}: {reason}.") from e
     for name in entries:
         _check_name(path, name)
+    for name, entry in entries.items():
+        _check_room(path, name, entry.room, entries)
     return {
-        name: Location(name, entry.x, entry.y, entry.yaw, entry.description)
+        name: Location(name, entry.x, entry.y, entry.yaw, entry.description, entry.room)
         for name, entry in entries.items()
     }
+
+
+def _check_room(path: str | Path, name: str, room: str, entries: dict[str, _Entry]) -> None:
+    if not room:
+        return
+    where = f"{path}: {name}.room {room!r}"
+    canonical = room.strip().casefold()
+    if room != canonical:
+        raise ValueError(f"{where} must be written {canonical!r}.")
+    if room not in entries:
+        raise ValueError(f"{where} is not a place in this file.")
+    if entries[room].room != room:
+        raise ValueError(f"{where} is not a room: its own room must be {room!r}.")
 
 
 def _check_name(path: str | Path, name: str) -> None:

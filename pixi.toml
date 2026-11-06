@@ -175,6 +175,10 @@ description = "Run the Walkie agent (takes input from /from_human, tasks from /w
 cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.sim.toml"
 description = "Run the agent against walkie-ros's MuJoCo simulation (the shell's ROS_DOMAIN_ID)"
 
+[tasks.agent-sim-chula]
+cmd = "python -m walkie_agent.main --use-sim-time --locations config/locations.chula_pat14_6.toml"
+description = "Run the agent on the chula_pat14_6 world's places (the shell's ROS_DOMAIN_ID)"
+
 # The tests run on Fast DDS, which tests/conftest.py sets, so they need no
 # Zenoh router (ADR-0019).
 [tasks.test]

@@ -150,14 +150,21 @@ process's group and token, and only then signals it. Without it, a part that
 exits just after the check could pass its group's number to another program
 before the signal arrives.
 
-The helper lists `/proc` again until a listing shows no new process that might
-be in the part's group. Otherwise a child that a part's process starts just as
-it exits would appear in no listing, and `down` would remove the record of a
-part still running. The helper tells a process from a later one with the same ID
-by its start time. So a child also counts when its parent's ID passes to another
-program before the helper reads it, or when the child takes the ID of a process
-already read. If the group keeps gaining processes for 100 listings, the helper
-reports an error rather than a list that may be stale.
+A listing of `/proc` is not a snapshot. A child that a part's process starts
+just as it exits could appear in no listing, and `down` would then remove the
+record of a part still running. So the helper reads the last process ID the
+kernel gave out, from `/proc/sys/kernel/ns_last_pid`, before it lists `/proc`
+and again after it has read every listed process. Linux gives out IDs in turn,
+so every process started in between has an ID in that range. The helper reads
+those IDs one by one, and reads the last ID again, until it has stopped moving.
+Processes that other programs start and end, as a parallel build does, cost a
+read of their IDs, not another listing.
+
+The helper tells a process from a later one with the same ID by its start time.
+So a child also counts when it takes the ID of a process already read. If the
+IDs pass `pid_max` and start again from the bottom, the helper lists `/proc`
+again. If the last ID still moves after 1000 readings, the helper reports an
+error rather than a list that may be stale.
 
 ## Where things go
 
@@ -241,6 +248,15 @@ kitchen table, succeeded from the living room and from the shelf.
   With the repeated listings and the unknown state (G4-9), a second run gave
   the same result. `status` showed all five parts running, and `down` exited 0
   in 12.5 s with no record left.
+- The helper of G4-10 failed while another program started about 200 short
+  processes a second. 20 calls out of 20 on an empty group reported an error
+  after about 1 s each. With the last-ID reading (G4-11), all 20 calls exited 0
+  in 37 ms on average. Under a tighter loop of `/bin/true` on two CPUs, the old
+  helper failed 2 calls of 20 and took 721 ms on average; the new one passed all
+  20 at 59 ms. With nothing else running, a call takes 35 ms. On the real
+  stack, `up` and `check` passed, the helper found 22 processes for `bringup`,
+  3 for `router`, 3 for `speech` and 2 for `oracle`, and `down` exited 0 in
+  11.1 s with no record left.
 - One more task with the real model, "Please say hello.". The agent called
   `say("Hello!")`, and `speech.log` showed the line. The log also begins with
   two of Zenoh's configuration warnings, which `ros2 topic echo` prints at

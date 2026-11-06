@@ -13,22 +13,34 @@ the group and the token are read from /proc, then a null signal through the desc
 confirms that the process read is still the one it refers to, and only then is the
 signal sent through it. A process that exits at any of these steps is skipped.
 
-A listing of /proc is a snapshot. A process of the part can start a child after the
-listing and exit before it is read, and the child, in no listing yet, would be missed.
-/proc is therefore listed again until a listing gives no reason to: no process of the
-group not read before, and no listed process that exited before it was read, since that
-one may have started a child first. A process is told from a later one with the same ID
-by its start time. One that started at or after the listing is not the process listed,
-which has exited, and one already read under its ID counts as new.
+A listing of /proc is no snapshot. A process of the part can start a child and exit
+while /proc is listed and read, and the child would be in no listing. The helper
+therefore reads the ID that the kernel gave last to a new process or thread, from
+/proc/sys/kernel/ns_last_pid, before it lists /proc and again once it has read every
+listed process. Linux gives out IDs in turn, so each process started in between has an
+ID above the first reading and up to the second. Those IDs are read directly, and the
+last ID read again, until it has not moved. Every process alive at that moment was then
+either alive through the whole listing, and so listed and read, or started since, and
+read by its ID. A process that exits before it is read needs no second look: any child
+it started is among those. Processes of other programs that start and exit cost a read
+of their IDs, not another listing.
+
+A process is told from a later one with the same ID by its start time. Two processes can
+share both only if the IDs went round the whole range, up to pid_max, within one 10 ms
+tick of the start-time clock. When the IDs pass pid_max and start again from the bottom,
+or more than MAX_RANGE are given out between two readings, /proc is listed again. A
+process started with an ID of its choice, through clone3()'s set_tid, takes no ID in
+turn and could be missed; that needs CAP_SYS_ADMIN or CAP_CHECKPOINT_RESTORE.
 
     chula_sim_owned.py pids PGID TOKEN         print the part's process IDs, one a line
     chula_sim_owned.py signal PGID TOKEN SIG   send SIG (INT, TERM or KILL) to each
 
 Both exit 0 when no process matches, and 1 on an error, such as a failed system call or
-a group that still gains processes after MAX_LISTINGS listings. Needs Linux 5.3 or newer
-on x86-64 or arm64, and Python 3.9 or newer. The two pidfd calls go through libc's
-syscall(): a Python built against older kernel headers, such as Pixi's, has no
-os.pidfd_open. The script runs this with -I.
+a last ID that still moved after MAX_READINGS readings. Needs Linux 5.3 or newer on
+x86-64 or arm64, built with CONFIG_CHECKPOINT_RESTORE for ns_last_pid, as Ubuntu's
+kernels are, and Python 3.9 or newer. The two pidfd calls go through libc's syscall(): a
+Python built against older kernel headers, such as Pixi's, has no os.pidfd_open. The
+script runs this with -I.
 """
 
 import ctypes
@@ -36,8 +48,7 @@ import os
 import platform
 import signal
 import sys
-import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 
 TOKEN_VARIABLE = b"CHULA_SIM_TOKEN"
@@ -45,9 +56,13 @@ SIGNALS = {"INT": signal.SIGINT, "TERM": signal.SIGTERM, "KILL": signal.SIGKILL}
 # The same numbers on x86-64 and arm64, from Linux's common system call table.
 SYSCALLS = {"pidfd_send_signal": 424, "pidfd_open": 434}
 MACHINES = ("x86_64", "aarch64")
-# A part has usually settled by the second listing; this many means it keeps starting
-# processes, and the caller is told so rather than given an answer that may be stale.
-MAX_LISTINGS = 100
+LAST_PID = Path("/proc/sys/kernel/ns_last_pid")
+# The last ID usually stops moving within a few readings, as each reads only the IDs
+# given out since the one before. This many means processes kept starting throughout,
+# and the caller is told so rather than given an answer that may be stale.
+MAX_READINGS = 1000
+# More IDs given out between two readings than this are cheaper to find by a listing.
+MAX_RANGE = 4096
 
 _libc = ctypes.CDLL(None, use_errno=True)
 _libc.syscall.restype = ctypes.c_long
@@ -80,9 +95,17 @@ def _process_ids() -> list[int]:
     return [int(entry) for entry in os.listdir("/proc") if entry.isdigit()]
 
 
-def _boot_ticks() -> int:
-    """Now, in the clock ticks since boot in which /proc/PID/stat gives start times."""
-    return int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
+def _last_pid() -> int:
+    """The ID the kernel gave last to a new process or thread in this PID namespace."""
+    return int(LAST_PID.read_bytes())
+
+
+def _is_thread(pid: int) -> bool:
+    """`pid` is a thread of another process. /proc reads such an ID but does not list it."""
+    for line in Path(f"/proc/{pid}/status").read_bytes().splitlines():
+        if line.startswith(b"Tgid:"):
+            return int(line.split()[1]) != pid
+    raise OSError(f"/proc/{pid}/status has no Tgid line")
 
 
 def _stat_of(pid: int) -> tuple[int, int]:
@@ -113,35 +136,42 @@ def _is_member(pid: int, pgid: int, assignment: bytes) -> bool:
 
 
 def _in_group(pgid: int) -> Iterator[int]:
-    """Yield the ID of each process of group `pgid` once, listing /proc until no new one may be.
+    """Yield the ID of each process of group `pgid` once, until the last ID given out stays put.
 
-    A process is its ID and its start time, as an ID can pass to a later process. Each
-    listing's processes are yielded before /proc is listed again, so a child that a
-    caller's signal makes a process start is in a later listing.
+    A process is its ID and its start time, as an ID can pass to a later process. A
+    process is yielded as soon as it is read, before the last ID is read again, so a
+    child that a caller's signal makes it start is read in turn.
     """
     seen: set[tuple[int, int]] = set()
-    for _ in range(MAX_LISTINGS):
-        listed_at = _boot_ticks()
-        again = False
-        for pid in _process_ids():
+    ids: Iterable[int] | None = None
+    listed = True
+    for _ in range(MAX_READINGS):
+        if ids is None:
+            last = _last_pid()
+            ids, listed = _process_ids(), True
+        for pid in ids:
             try:
+                if not listed and _is_thread(pid):
+                    continue
                 group, started = _stat_of(pid)
             except (FileNotFoundError, ProcessLookupError):
-                again = True  # exited before it was read, perhaps after starting a child
-                continue
-            if started >= listed_at:
-                # Perhaps not the process listed, which then exited, perhaps after
-                # starting a child. A start in the listing's own tick counts too.
-                again = True
+                continue  # exited, or the ID was free; a child it started is read in turn
             if (pid, started) in seen:
                 continue
             seen.add((pid, started))
             if group == pgid:
-                again = True
                 yield pid
-        if not again:
+        newest = _last_pid()
+        if newest == last:
             return
-    raise RuntimeError(f"group {pgid} still gained processes after {MAX_LISTINGS} listings of /proc")
+        if last < newest <= last + MAX_RANGE:
+            ids, listed, last = range(last + 1, newest + 1), False, newest
+        else:
+            ids = None  # the IDs went past pid_max and began again, or very many started
+    raise RuntimeError(
+        f"processes kept starting through {MAX_READINGS} readings of {LAST_PID}, "
+        f"so the processes of group {pgid} could not all be found"
+    )
 
 
 def members(pgid: int, token: str) -> list[int]:

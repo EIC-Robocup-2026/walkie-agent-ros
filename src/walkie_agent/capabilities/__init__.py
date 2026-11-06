@@ -43,9 +43,12 @@ class Base(Protocol):
     go_to and move_relative raise StepError NOT_FOUND for an unknown place;
     REFUSED for a value that is not finite, an empty move or one over the 3 m
     cap; CANCELLED on a stop; TIMEOUT past `timeout_s`, UNAVAILABLE without a
-    navigation backend and SKILL_FAILED when the goal fails.
+    navigation backend and SKILL_FAILED when the goal fails. That SKILL_FAILED
+    is a GoalFailed when the backend reports that the goal ended or was refused,
+    and a plain StepError when the goal's state is unknown.
 
-    pose waits at most `timeout_s` for the robot's pose in the map. It raises
+    pose waits at most `timeout_s`, plus one read of the backend that has begun,
+    for the robot's pose in the map. It raises
     REFUSED for a `timeout_s` that is not positive, CANCELLED on a stop, and
     TIMEOUT, UNAVAILABLE or SKILL_FAILED when no usable pose comes in time.
     """

@@ -23,7 +23,7 @@ from walkie_agent.atomics import (
 from walkie_agent.capabilities import CancelToken, Ctx, PersonSeen
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.capabilities.guards import MAX_MOVE_M
-from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 
 WORLD = {
     "places": {
@@ -176,29 +176,37 @@ def moves(robot: FakeRobot) -> list[dict]:
     return [call["args"] for call in robot.calls if call["verb"] == "base.move_relative"]
 
 
+ABORTED = GoalFailed(ErrorCode.SKILL_FAILED, "Navigation failed for the move (ABORTED, error code 105).")
+# What RosBase raises when the result request fails: the goal's state is unknown.
+UNKNOWN = StepError(
+    ErrorCode.SKILL_FAILED, "Navigation failed for the move: the request for its result failed."
+)
+
+
 class ShortTurns:
     """A base whose turns end `short_deg` before their goal, or past it when negative,
-    and then report a failure.
+    and then raise `error`.
 
     As Nav2 does when its progress checker aborts a turn on the spot that is still
     settling: the robot has turned, and the action reports SKILL_FAILED. Both such
     aborts in the Chula simulation ended about 3 degrees past the goal.
     """
 
-    def __init__(self, robot: FakeRobot, short_deg: float) -> None:
-        self.robot, self.short_deg = robot, short_deg
+    def __init__(self, robot: FakeRobot, short_deg: float, error: StepError) -> None:
+        self.robot, self.short_deg, self.error = robot, short_deg, error
 
     def move_relative(self, forward_m=0.0, left_m=0.0, turn_deg=0.0, *, timeout_s=60.0):
         ended = turn_deg - self.short_deg * math.copysign(1.0, turn_deg)
         self.robot.move_relative(forward_m, left_m, ended)
-        raise StepError(ErrorCode.SKILL_FAILED, "Navigation failed for the move (ABORTED, error code 105).")
+        raise self.error
 
     def __getattr__(self, name):
         return getattr(self.robot, name)
 
 
-def short_turns(robot: FakeRobot, short_deg: float) -> Ctx:
-    return Ctx(cancel=robot.cancel, base=ShortTurns(robot, short_deg), speech=robot, vision=robot)
+def short_turns(robot: FakeRobot, short_deg: float, error: StepError = ABORTED) -> Ctx:
+    base = ShortTurns(robot, short_deg, error)
+    return Ctx(cancel=robot.cancel, base=base, speech=robot, vision=robot)
 
 
 def test_find_people_leaves_the_bearing_out():
@@ -274,7 +282,18 @@ def test_a_turn_reported_failed_that_ends_further_off_raises_the_failure():
     robot = facing(40.0)
     with pytest.raises(StepError) as raised:
         face_person(short_turns(robot, 15.0), "jane")
-    assert raised.value.code is ErrorCode.SKILL_FAILED
+    assert raised.value is ABORTED
+
+
+def test_a_turn_whose_end_is_unknown_raises_its_failure_even_within_10_degrees():
+    robot = facing(40.0)
+    reads = []
+    ctx = short_turns(robot, 3.0, UNKNOWN)
+    ctx.base.pose = lambda **kwargs: reads.append(kwargs) or robot.pose(**kwargs)
+    with pytest.raises(StepError) as raised:
+        face_person(ctx, "jane")
+    assert raised.value is UNKNOWN
+    assert len(reads) == 1  # The start only: the base may still be turning.
 
 
 @pytest.mark.parametrize("code", [ErrorCode.CANCELLED, ErrorCode.TIMEOUT, ErrorCode.UNAVAILABLE])

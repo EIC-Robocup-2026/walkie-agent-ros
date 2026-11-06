@@ -1,8 +1,9 @@
-"""The one failure type of capability verbs and atomics.
+"""The failure type of capability verbs and atomics.
 
 A failed step raises StepError with a code from a small fixed set, so a caller
 can act on the code instead of parsing a sentence. Its text is what the LLM
 reads: the adapter's error formatter passes str(error) to the ToolMessage.
+GoalFailed is a StepError that also says a motion goal is known to have ended.
 """
 
 from enum import StrEnum
@@ -39,3 +40,13 @@ class StepError(Exception):
 
     def __str__(self) -> str:
         return f"{self.code}: {self.message}"
+
+
+class GoalFailed(StepError):
+    """SKILL_FAILED for a motion goal that the backend reports as ended or refused.
+
+    The backend saw the goal's final state, so the robot is no longer moving under
+    it, and a caller may judge the motion by where the robot ended up. A plain
+    StepError SKILL_FAILED can also mean that the goal's state is unknown and the
+    robot may still be moving. Raise it with ErrorCode.SKILL_FAILED.
+    """

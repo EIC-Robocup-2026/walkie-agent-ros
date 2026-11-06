@@ -33,7 +33,7 @@ from ros_fakes import (
 )
 
 from walkie_agent.capabilities.guards import CancelToken
-from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location
 from walkie_agent.ros import FORBIDDEN_NAMES, RosBase, UnavailableVision
 
@@ -280,6 +280,8 @@ def test_rejected_aborted_and_error_results_fail(answer, code, text):
     error = verb.step_error()
     assert error.code is code
     assert text in error.message
+    # Nav2 ended the goal, so the failure says so.
+    assert isinstance(error, GoalFailed) is (code is ErrorCode.SKILL_FAILED)
     assert handle.cancel_asks == 0
     rig.assert_gate_free()
 
@@ -288,6 +290,7 @@ def test_rejected_aborted_and_error_results_fail(answer, code, text):
     rig.client.wait_for_goals()
     handle = rig.accept(accepted=False)
     error = verb.step_error()
+    assert isinstance(error, GoalFailed)
     assert error.code is ErrorCode.SKILL_FAILED
     assert "rejected" in error.message
     assert (handle.result_asks, handle.cancel_asks) == (0, 0)
@@ -388,6 +391,26 @@ def test_a_pose_read_waits_no_longer_than_its_timeout():
             rig.base.pose(timeout_s=timeout_s)
         assert raised.value.code is ErrorCode.REFUSED
     assert len(rig.connector.tf_reads) == reads
+
+
+def test_a_pose_read_ends_at_most_one_rai_miss_past_its_timeout():
+    # RAI's get_transform sleeps 0.1 s before it gives up on a missing transform, and
+    # a read that has begun runs to its end.
+    rai_miss_s = 0.1
+
+    def slow_miss():
+        time.sleep(rai_miss_s)
+        return missing_tf()
+
+    rig = Rig()
+    rig.connector.tf = slow_miss
+    started = time.monotonic()
+    with pytest.raises(StepError) as raised:
+        rig.base.pose(timeout_s=0.01)
+    elapsed = time.monotonic() - started
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+    assert len(rig.connector.tf_reads) == 1
+    assert rai_miss_s <= elapsed < 0.01 + rai_miss_s + 0.2
 
 
 def test_stale_missing_and_wrong_frame_tf_errors():
@@ -1010,7 +1033,9 @@ def test_unsettled_old_goal_blocks_new_motion(ending):
         assert verb.step_error().code is ErrorCode.CANCELLED
     elif ending == "acceptance_future_fails":
         bounded(rig.client.send_futures[0].set_exception, RuntimeError("lost"))
-        assert verb.step_error().code is ErrorCode.SKILL_FAILED
+        error = verb.step_error()
+        assert error.code is ErrorCode.SKILL_FAILED
+        assert not isinstance(error, GoalFailed)
     else:
         handle = rig.accept()
         assert handle.result_asked.wait(WATCHDOG_S)
@@ -1024,7 +1049,9 @@ def test_unsettled_old_goal_blocks_new_motion(ending):
             else:
                 bounded(handle.result_future.set_exception, RuntimeError("lost"))
             # The goal's state is unknown, so the verb fails and cancels it for safety.
-            assert verb.step_error().code is ErrorCode.SKILL_FAILED
+            error = verb.step_error()
+            assert error.code is ErrorCode.SKILL_FAILED
+            assert not isinstance(error, GoalFailed)
             assert handle.cancel_asks == 1
 
     rig.assert_gate_held("the drive to kitchen")

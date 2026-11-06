@@ -4,15 +4,16 @@ import logging
 import math
 
 from walkie_agent.capabilities import Ctx
-from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.perception.geometry import wrap_deg
 
 logger = logging.getLogger(__name__)
 
 # How far from straight ahead a person may be and still count as faced. A person
-# within it gets no turn, and a turn that Nav2 reports as failed still faces the
-# person if it ended within it: Nav2's progress checker can abort a turn on the
-# spot that is still settling on its 0.6 degree yaw tolerance (decision S2-4).
+# within it gets no turn, and a turn that Nav2 reports as ended without success
+# still faces the person if it ended within it: Nav2's progress checker can abort a
+# turn on the spot that is still settling on its 0.6 degree yaw tolerance
+# (decisions S2-4 and S2-9).
 FACE_TOLERANCE_DEG = 10.0
 
 
@@ -83,9 +84,9 @@ def face_person(ctx: Ctx, person_id: str) -> str:
     start = ctx.base.pose()
     try:
         end = ctx.base.move_relative(0.0, 0.0, bearing)
-    except StepError as error:
-        if error.code is not ErrorCode.SKILL_FAILED:
-            raise
+    except GoalFailed as error:
+        # Only a goal known to have ended: with its state unknown the base may still
+        # be turning, so a pose read now says nothing about where it stops (S2-9).
         end = ctx.base.pose()
         missed = wrap_deg(math.degrees(start.yaw) + bearing - math.degrees(end.yaw))
         if abs(missed) > FACE_TOLERANCE_DEG:

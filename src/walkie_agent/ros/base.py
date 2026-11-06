@@ -50,7 +50,7 @@ from walkie_agent.capabilities.guards import (
     require_timeout,
 )
 from walkie_agent.capabilities.records import Pose2D
-from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location
 from walkie_agent.ros.policy import FORBIDDEN_NAMES, check_endpoint, ros_failure
 
@@ -211,7 +211,9 @@ class RosBase:
     def pose(self, *, timeout_s: float = TF_S) -> Pose2D:
         """The pose from a sample stamped after this call, waited for at most `timeout_s`.
 
-        The wait is also no longer than the base's own `tf_s`.
+        The wait is also no longer than the base's own `tf_s`. A TF read that has begun
+        is not cut short, and while TF has no transform between the two frames each
+        read takes RAI's 0.1 s sleep, so the call can end up to 0.1 s past `timeout_s`.
         """
         require_timeout(timeout_s)
         what = "reading the pose"
@@ -387,18 +389,22 @@ class RosBase:
 
     @staticmethod
     def _check_outcome(operation: _Operation, what: str) -> None:
-        """Raise unless Nav2 reports success with error code zero."""
+        """Raise unless Nav2 reports success with error code zero.
+
+        A goal Nav2 rejected or ended raises GoalFailed. A goal whose state is unknown
+        raises a plain StepError, since the robot may still be moving under it.
+        """
         if operation.error is not None:
             raise StepError(ErrorCode.SKILL_FAILED, f"Navigation failed for {what}: {operation.error}.")
         if operation.rejected:
-            raise StepError(ErrorCode.SKILL_FAILED, f"Nav2 rejected the goal for {what}.")
+            raise GoalFailed(ErrorCode.SKILL_FAILED, f"Nav2 rejected the goal for {what}.")
         status = operation.response.status
         result = operation.response.result
         if status == GoalStatus.STATUS_CANCELED:
             raise StepError(ErrorCode.CANCELLED, f"Nav2 cancelled {what}.")
         if status != GoalStatus.STATUS_SUCCEEDED or result.error_code != 0:
             detail = f" {result.error_msg}" if result.error_msg else ""
-            raise StepError(
+            raise GoalFailed(
                 ErrorCode.SKILL_FAILED,
                 f"Navigation failed for {what} ({_STATUS_NAMES[status]}, "
                 f"error code {result.error_code}).{detail}",

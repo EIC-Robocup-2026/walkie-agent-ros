@@ -380,33 +380,48 @@ def owned() -> ModuleType:
 class FakeProc:
     """Processes as the helper reads them from /proc, with an action on a first read.
 
-    `processes` maps each ID to its group and whether it carries the token. An action in
-    `on_read` runs the first time a process is read, before the read, as when a process
-    starts a child and exits just after /proc was listed.
+    `processes` maps each ID to its group, whether it carries the token, and its start
+    time; those given at first started at tick 0. The clock moves on a tick each time the
+    helper reads it, once a listing, and a process started later starts at the clock's
+    tick. An action in `on_read` runs the first time a process is read, before the read,
+    as when a process starts a child and exits just after /proc was listed.
     """
 
     def __init__(self, owned: ModuleType, monkeypatch, processes: dict[int, tuple[int, bool]]):
-        self.processes = dict(processes)
+        self.clock = 100
+        self.processes = {pid: (group, token, 0) for pid, (group, token) in processes.items()}
         self.on_read: dict[int, Callable[[], None]] = {}
         self.events: list[str] = []
         self.descriptors: dict[int, int] = {}
+        monkeypatch.setattr(owned, "_boot_ticks", self.tick)
         monkeypatch.setattr(owned, "_process_ids", lambda: sorted(self.processes))
-        monkeypatch.setattr(owned, "_group_of", lambda pid: self._read(pid)[0])
+        monkeypatch.setattr(owned, "_stat_of", self.stat_of)
         monkeypatch.setattr(owned, "_is_member", self.is_member)
         monkeypatch.setattr(owned, "pidfd_open", self.pidfd_open)
         monkeypatch.setattr(owned, "pidfd_send_signal", self.pidfd_send_signal)
 
-    def _read(self, pid: int) -> tuple[int, bool]:
+    def tick(self) -> int:
+        self.clock += 1
+        return self.clock
+
+    def start(self, pid: int, group: int, carries_token: bool) -> None:
+        self.processes[pid] = (group, carries_token, self.clock)
+
+    def _read(self, pid: int) -> tuple[int, bool, int]:
         if action := self.on_read.pop(pid, None):
             action()
         if pid not in self.processes:
             raise FileNotFoundError(pid)
         return self.processes[pid]
 
+    def stat_of(self, pid: int) -> tuple[int, int]:
+        group, _, started = self._read(pid)
+        return group, started
+
     def is_member(self, pid: int, pgid: int, assignment: bytes) -> bool:
         self.events.append(f"check {pid}")
         try:
-            group, carries_token = self._read(pid)
+            group, carries_token, _ = self._read(pid)
         except FileNotFoundError:
             return False
         return group == pgid and carries_token
@@ -428,7 +443,8 @@ class FakeProc:
 
 def started_a_child_and_exited(fake: FakeProc, parent: int, child: int) -> Callable[[], None]:
     def action() -> None:
-        fake.processes[child] = fake.processes.pop(parent)
+        group, carries_token, _ = fake.processes.pop(parent)
+        fake.start(child, group, carries_token)
 
     return action
 
@@ -437,6 +453,32 @@ def test_the_helper_finds_a_child_its_parent_started_as_it_exited(owned, monkeyp
     fake = FakeProc(owned, monkeypatch, {1: (1, False), 10: (10, True)})
     fake.on_read[10] = started_a_child_and_exited(fake, 10, 11)
     assert owned.members(10, "agent-1") == [11]
+
+
+def test_the_helper_finds_a_child_whose_parent_s_id_passed_to_another_process(owned, monkeypatch):
+    # 12 is a process of group 10, whose leader has exited. Once listed, it starts 13 and
+    # exits, and a process of another group gets its ID before the helper reads it.
+    fake = FakeProc(owned, monkeypatch, {1: (1, False), 12: (10, True)})
+
+    def started_a_child_exited_and_its_id_passed_on() -> None:
+        started_a_child_and_exited(fake, 12, 13)()
+        fake.start(12, 99, False)
+
+    fake.on_read[12] = started_a_child_exited_and_its_id_passed_on
+    assert owned.members(10, "agent-1") == [13]
+
+
+def test_the_helper_finds_a_child_that_got_the_id_of_a_process_already_read(owned, monkeypatch):
+    # 5, of another group, is read first. Then 5 exits, and 10 starts a child that gets
+    # ID 5, and exits before the helper reads it.
+    fake = FakeProc(owned, monkeypatch, {5: (99, False), 10: (10, True)})
+
+    def a_child_got_5_and_its_parent_exited() -> None:
+        del fake.processes[5]
+        started_a_child_and_exited(fake, 10, 5)()
+
+    fake.on_read[10] = a_child_got_5_and_its_parent_exited
+    assert owned.members(10, "agent-1") == [5]
 
 
 def test_the_helper_signals_a_child_its_parent_started_as_it_exited(owned, monkeypatch):
@@ -485,8 +527,8 @@ def test_the_helper_signals_a_child_started_while_its_parent_was_signalled(owned
 
     def starts_a_child_on_sigint(descriptor: int, signum: int) -> None:
         signal_one(descriptor, signum)
-        if signum == signal.SIGINT:
-            fake.processes.setdefault(11, (10, True))
+        if signum == signal.SIGINT and 11 not in fake.processes:
+            fake.start(11, 10, True)
 
     monkeypatch.setattr(owned, "pidfd_send_signal", starts_a_child_on_sigint)
     assert owned.send(10, "agent-1", signal.SIGINT) == 2
@@ -498,7 +540,7 @@ def test_the_helper_gives_up_on_a_group_that_keeps_starting_processes(owned, mon
     new_ids = iter(range(11, 1000))
 
     def a_new_member_each_listing() -> list[int]:
-        fake.processes[next(new_ids)] = (10, True)
+        fake.start(next(new_ids), 10, True)
         return sorted(fake.processes)
 
     monkeypatch.setattr(owned, "_process_ids", a_new_member_each_listing)

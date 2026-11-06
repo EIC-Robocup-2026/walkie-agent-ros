@@ -153,8 +153,11 @@ before the signal arrives.
 The helper lists `/proc` again until a listing shows no new process that might
 be in the part's group. Otherwise a child that a part's process starts just as
 it exits would appear in no listing, and `down` would remove the record of a
-part still running. If the group keeps gaining processes for 100 listings, the
-helper reports an error rather than a list that may be stale.
+part still running. The helper tells a process from a later one with the same ID
+by its start time. So a child also counts when its parent's ID passes to another
+program before the helper reads it, or when the child takes the ID of a process
+already read. If the group keeps gaining processes for 100 listings, the helper
+reports an error rather than a list that may be stale.
 
 ## Where things go
 

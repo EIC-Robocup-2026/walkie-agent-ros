@@ -15,9 +15,11 @@ signal sent through it. A process that exits at any of these steps is skipped.
 
 A listing of /proc is a snapshot. A process of the part can start a child after the
 listing and exit before it is read, and the child, in no listing yet, would be missed.
-/proc is therefore listed again until a listing adds no process that may be in the
-group: none in it, and none that exited before its group could be read, since that one
-may have started a child first.
+/proc is therefore listed again until a listing gives no reason to: no process of the
+group not read before, and no listed process that exited before it was read, since that
+one may have started a child first. A process is told from a later one with the same ID
+by its start time. One that started at or after the listing is not the process listed,
+which has exited, and one already read under its ID counts as new.
 
     chula_sim_owned.py pids PGID TOKEN         print the part's process IDs, one a line
     chula_sim_owned.py signal PGID TOKEN SIG   send SIG (INT, TERM or KILL) to each
@@ -34,6 +36,7 @@ import os
 import platform
 import signal
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -77,15 +80,25 @@ def _process_ids() -> list[int]:
     return [int(entry) for entry in os.listdir("/proc") if entry.isdigit()]
 
 
-def _group_of(pid: int) -> int:
-    """The process group of `pid`, from /proc/PID/stat.
+def _boot_ticks() -> int:
+    """Now, in the clock ticks since boot in which /proc/PID/stat gives start times."""
+    return int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
 
-    The command name, the second field, is in parentheses and may itself hold spaces or
-    parentheses, so the fields are counted from the last closing parenthesis: state,
-    parent ID, then the group ID.
+
+def _stat_of(pid: int) -> tuple[int, int]:
+    """The process group of `pid`, and its start time in clock ticks since boot.
+
+    Both come from /proc/PID/stat. The command name, the second field, is in parentheses
+    and may itself hold spaces or parentheses, so the fields are counted from the last
+    closing parenthesis: the group ID is the third, the start time the twentieth.
     """
     stat = Path(f"/proc/{pid}/stat").read_bytes()
-    return int(stat[stat.rindex(b")") + 2 :].split()[2])
+    fields = stat[stat.rindex(b")") + 2 :].split()
+    return int(fields[2]), int(fields[19])
+
+
+def _group_of(pid: int) -> int:
+    return _stat_of(pid)[0]
 
 
 def _is_member(pid: int, pgid: int, assignment: bytes) -> bool:
@@ -100,23 +113,30 @@ def _is_member(pid: int, pgid: int, assignment: bytes) -> bool:
 
 
 def _in_group(pgid: int) -> Iterator[int]:
-    """Yield each process ID of group `pgid` once, listing /proc until no new one may be.
+    """Yield the ID of each process of group `pgid` once, listing /proc until no new one may be.
 
-    Each listing's new IDs are yielded before /proc is listed again, so a child that a
+    A process is its ID and its start time, as an ID can pass to a later process. Each
+    listing's processes are yielded before /proc is listed again, so a child that a
     caller's signal makes a process start is in a later listing.
     """
-    seen: set[int] = set()
+    seen: set[tuple[int, int]] = set()
     for _ in range(MAX_LISTINGS):
-        new = [pid for pid in _process_ids() if pid not in seen]
-        seen.update(new)
+        listed_at = _boot_ticks()
         again = False
-        for pid in new:
+        for pid in _process_ids():
             try:
-                in_group = _group_of(pid) == pgid
+                group, started = _stat_of(pid)
             except (FileNotFoundError, ProcessLookupError):
                 again = True  # exited before it was read, perhaps after starting a child
                 continue
-            if in_group:
+            if started >= listed_at:
+                # Perhaps not the process listed, which then exited, perhaps after
+                # starting a child. A start in the listing's own tick counts too.
+                again = True
+            if (pid, started) in seen:
+                continue
+            seen.add((pid, started))
+            if group == pgid:
                 again = True
                 yield pid
         if not again:

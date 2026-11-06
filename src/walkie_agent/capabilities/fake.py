@@ -41,7 +41,8 @@ R = TypeVar("R")
 # rooms living_room and kitchen_room; the GPSR command generator's data spells
 # them with a space. "entrance" is its [doors] entrance_door. "trash" and
 # "instruction point" are invented: the arena data has neither, and generated
-# commands assume both (decision 26).
+# commands assume both (decision 26). Their poses are where Nav2 finished a goal
+# in the MuJoCo world (decision G4-6).
 CHULA_PAT14_6_PLACES: dict[str, dict[str, Any]] = {
     "living room": {"x": 1.7629, "y": -1.483, "yaw": 0.0, "room": "living room"},
     "kitchen room": {"x": 1.3176, "y": -4.0123, "yaw": -1.5605, "room": "kitchen room"},
@@ -51,8 +52,8 @@ CHULA_PAT14_6_PLACES: dict[str, dict[str, Any]] = {
     "tv": {"x": 1.6071, "y": -1.6133, "yaw": 3.1328, "room": "living room"},
     "sofa": {"x": 2.252, "y": -1.4753, "yaw": 0.0, "room": "living room"},
     "entrance": {"x": 1.9935, "y": -0.0069, "yaw": -3.1227, "room": "living room"},
-    "trash": {"x": 3.0, "y": -5.5, "yaw": 0.0, "room": "kitchen room"},
-    "instruction point": {"x": 2.8, "y": -2.5, "yaw": 3.14, "room": "living room"},
+    "trash": {"x": 2.75, "y": -4.2, "yaw": 0.0, "room": "kitchen room"},
+    "instruction point": {"x": 2.2, "y": -2.45, "yaw": 3.14, "room": "living room"},
 }
 # The placement locations of the arena's GPSR data, where objects start.
 SURFACES = ("shelf", "bar", "table", "sofa")

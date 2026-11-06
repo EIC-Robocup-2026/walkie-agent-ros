@@ -14,6 +14,7 @@ steps in your own project or when you add a new ROS package.
 | [4. Trace with local Langfuse](04-langfuse.md)       | Runs a Langfuse server in Docker to see what the agent does     |
 | [5. Limit what tools can touch](05-tool-access.md)   | Keeps every tool away from topics such as `/cmd_vel`            |
 | [6. Talk to Walkie by voice](07-voice.md)            | Adds speech recognition and text-to-speech with RAI's `rai_s2s` |
+| [7. Run the Chula simulation](08-chula-simulation.md) | Runs MuJoCo, the oracle and the agent on a private ROS graph   |
 
 The robot's description is one file, `robot.md`, with no setup step. See
 [What Walkie knows about itself](../architecture/agent.md#what-walkie-knows-about-itself).

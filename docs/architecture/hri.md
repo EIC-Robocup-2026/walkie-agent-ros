@@ -398,9 +398,10 @@ flowchart LR
 
 ## In simulation
 
-Nothing in this section has run, and the runtime has not run in the simulator at all.
-The Chula recipe in [Getting Started](../getting-started.md) launches navigation and
-physics. It starts no HRI vision and no TTS. `oracle_perception` does not exist yet.
+Nothing in this section has run. The Chula recipe
+([Run the Chula Simulation](../setup/08-chula-simulation.md)) runs navigation, physics,
+the oracle and the agent, and logs speech instead of voicing it. Its oracle draws one
+fixed scene of the living room, not the scenarios below.
 
 `oracle_perception` gets HRI scenarios
 ([Perception](perception.md#in-simulation)):

@@ -13,12 +13,13 @@
 # command data and FakeRobot do, and as walkie-database's sim seed requires
 # for a room's stand pose (seed_sim --locations). "trash" and
 # "instruction point" are invented: the arena data has neither, and generated
-# commands assume both (decision 26). The same names and coordinates are in
-# FakeRobot's CHULA_PAT14_6_PLACES, and tests/test_locations.py keeps the two
-# equal.
+# commands assume both (decision 26). They sit in the most open floor of their
+# rooms, because Nav2 could not finish a goal at their first poses (decision
+# G4-6). The same names and coordinates are in FakeRobot's
+# CHULA_PAT14_6_PLACES, and tests/test_locations.py keeps the two equal.
 #
-# Not yet checked in the simulation: whether each goal keeps the footprint
-# clear of furniture, which the occupancy map does not show.
+# On 2026-11-06 Nav2 reached every place here in MuJoCo, from the living room
+# spawn of scripts/chula-sim.sh (docs/setup/08-chula-simulation.md).
 #
 # A room is a place whose room is itself. x, y in meters; yaw in radians
 # (0 = facing +x).
@@ -80,15 +81,15 @@ room = "living room"
 description = "At the entrance door of the living room."
 
 [locations.trash]
-x = 3.0
-y = -5.5
+x = 2.75
+y = -4.2
 yaw = 0.0
 room = "kitchen room"
 description = "Invented for generated commands: where the trash bin would be, in the kitchen room."
 
 [locations."instruction point"]
-x = 2.8
-y = -2.5
+x = 2.2
+y = -2.45
 yaw = 3.14
 room = "living room"
 description = "Invented for generated commands: where the operator gives instructions, in the living room."

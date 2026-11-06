@@ -280,9 +280,11 @@ current view. A real backend is a later slice
 
 ### Drive walkie-ros's simulation instead
 
-!!! warning "Not yet run with this runtime"
-    Nobody has run the new runtime against the simulator. Follow these steps as a recipe
-    to try, and expect to find problems. It also calls your real model.
+!!! warning "The blank map is not yet run with this runtime"
+    Nobody has run the new runtime against the blank map. The Chula world has run, through
+    `scripts/chula-sim.sh` ([Run the Chula Simulation](setup/08-chula-simulation.md)).
+    Follow these steps as a recipe to try, and expect to find problems. It also calls your
+    real model.
 
 walkie-ros has a MuJoCo simulation of Walkie with Nav2 on a blank map
 ([ADR-0030](architecture/decisions/0030-mujoco-sim-first.md)). Its Pixi
@@ -330,8 +332,9 @@ lab room, `chula_pat14_6`, launched with `world:=chula_pat14_6` from its
 `config/locations.chula_pat14_6.toml`: the two rooms, the shelf, bar, table, TV, sofa
 and entrance, and two invented places that generated commands assume. Each place names
 its room. They are the nav approach goals of the world's authoring file and the same
-places `FakeRobot` uses, but no goal has yet been checked for furniture clearance in
-the simulation. Run the agent on them with:
+places `FakeRobot` uses. Nav2 reached each of them in the simulation
+([What has been run](setup/08-chula-simulation.md#what-has-been-run)). Run the agent on
+them with:
 
 ```bash
 pixi run agent-sim-chula
@@ -348,7 +351,11 @@ simulation, in the same terminal setup as the agent:
 pixi run oracle-chula
 ```
 
-Nothing in the agent reads its messages yet, and it has not been run against MuJoCo.
+Nothing in the agent reads its messages yet.
+
+`scripts/chula-sim.sh` starts that world, the oracle and the agent together, on a
+Zenoh router and domain of their own, and its `check` shows what the oracle draws
+([Run the Chula simulation](setup/08-chula-simulation.md)).
 
 `tests/ros_demo.py --robot external` could report on a run against that world
 with no real model, but that run has not happened. Even when it does, it can prove

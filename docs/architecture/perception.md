@@ -251,9 +251,13 @@ every image of the head camera it publishes both arrays, in
   `color_shares`. Tests check every array against those rules.
 - **Running it.** `pixi run oracle-chula` starts it on sim time for the
   Chula scene; `python -m walkie_agent.sim.oracle_scene --help` lists the
-  options. Start it after the simulation, in the same ROS graph. Nothing in
-  the agent reads it yet: S1 of the
-  [see, remember and act roadmap](see-remember-act.md) adds the reader.
+  options. Start it after the simulation, in the same ROS graph, or let
+  `scripts/chula-sim.sh` start both
+  ([Run the Chula simulation](../setup/08-chula-simulation.md)). Against
+  MuJoCo, from the living room place, it draws both people with the scene's
+  gestures, and the sofa, the table and the mug. Nothing in the agent reads it
+  yet: S1 of the [see, remember and act roadmap](see-remember-act.md) adds the
+  reader.
 
 Unit tests use `mock_vision.py` with walkie-vision's `hash_vector`, so
 rankings are deterministic. Hash vectors match only on equal input, so a sim

@@ -38,6 +38,7 @@ connector, against a fake robot on a private domain. None of them is the robot's
 | `src/walkie_agent/voice.py`, `half_duplex.py` | The voice processes, on RAI | `tests/test_voice.py`, `tests/test_half_duplex.py` |
 | `src/walkie_agent/sim/fake_walkie.py` | A fake robot as a ROS node | `tests/test_ros_integration.py` |
 | `src/walkie_agent/sim/oracle_perception.py`, `oracle_scene.py` | The oracle that publishes walkie-vision's arrays from a scene, and its runner | `tests/test_oracle_perception.py`, `tests/test_scene_file.py` |
+| `src/walkie_agent/sim/sim_check.py`, `scripts/chula-sim.sh` | The Chula simulation on a private graph, and the check of what its graph provides | `tests/test_sim_check.py`, `tests/test_chula_sim_script.py` |
 
 ## A reading order
 
@@ -100,9 +101,9 @@ These parts are proposed but not built.
 - **The HRI template.** It isn't in `config/task_templates.toml`, because it needs proposed
   atomics such as `find_seats` ([HRI Task](../architecture/hri.md#the-template)).
 
-Nor has the new runtime run on real Nav2, in the simulator, on the robot or with a real
-model yet. [What has been tested](../architecture/agent.md#what-has-been-tested) has the
-evidence.
+Nor has the new runtime run on the robot, or with a real model beyond two one-step tasks in
+the Chula simulation. [What has been tested](../architecture/agent.md#what-has-been-tested)
+has the evidence.
 
 ## Exercises
 

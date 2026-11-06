@@ -8,9 +8,9 @@ it over ROS 2.
 
 !!! warning "A provisional cutover, not a proven robot"
     The code described here replaces the old agent, but its evidence is limited.
-    See [What has been tested](#what-has-been-tested). It has never run on real
-    Nav2, in the simulator, on the robot or with a real model. Live vision and
-    the arms are not connected.
+    See [What has been tested](#what-has-been-tested). It has run two one-step
+    tasks with a real model, on real Nav2 in walkie-ros's MuJoCo simulation of the
+    Chula room, and never on the robot. Live vision and the arms are not connected.
 
 For a guided tour with runnable examples, start at
 [Learn the Agent](../learn/index.md). The public signatures of each layer are in
@@ -467,13 +467,13 @@ its `whoami-build` task are gone.
 | Integration tests (`tests/test_ros_integration.py`) | The assembled agent on real rclpy and RAI's real connector, against a `FakeWalkie` node, on Fast DDS random domains | Real Nav2, real TF, rmw_zenoh |
 | Silent demo (`tests/ros_demo.py`) | The same agent as separate processes on rmw_zenoh and a private router, with a scripted model and no audio | Real Nav2, real model, real speech |
 | Provider test (`tests/test_runtime_model.py`) | Timeout and retry settings, against a local fake provider | Any real provider |
+| Chula simulation ([Run the Chula Simulation](../setup/08-chula-simulation.md)), 2026-11-06 | The agent on rmw_zenoh and a private router, against MuJoCo, Nav2 and AMCL in the `chula_pat14_6` world, with a real model: one `go_to` and one `say`. Nav2 alone reached every Chula place | Long tasks, stops and cancels on real Nav2, the robot's graph, arms, memory, voice |
 
 These have **not** run with this runtime:
 
-- Real Nav2, or the robot's real ROS graph.
-- walkie-ros's MuJoCo simulator. Both the blank map and the Chula recipe are unrun.
-- The robot's hardware.
-- A real LLM.
+- The robot's real ROS graph or its hardware.
+- walkie-ros's blank-map simulation (`agent-sim`).
+- A real LLM on more than the two one-step tasks above.
 - Live vision or arms, which do not exist as backends.
 
 So real Nav2 races, TF freshness on hardware and physical stop latency are all unknown.

@@ -64,7 +64,7 @@ only on `FakeRobot`. The gaps this plan closes:
 | G1 | Pin walkie-vision 64811fe and walkie-database 522ab92, and build `walkie_vision_msgs` ([Local message pins](../setup/03-ros-and-rai.md#local-message-pins)) | S | S1, S3, S8 | Built |
 | G2 | A Chula place list with rooms, an optional `room` on `Location`, and an `agent-sim-chula` task | S | S1, S8 | Built |
 | G3 | A sim perception source: port `oracle_perception` with a small scene driver | M | S1, S4 | Built |
-| G4 | A scripted, isolated Chula simulation recipe | S | Every sim test | Planned |
+| G4 | A scripted, isolated Chula simulation recipe | S | Every sim test | Built |
 | G5 | Pin walkie-ros `my_robot_interfaces` at 6b26daa and build it | S | S6 | Planned |
 | G6 | Record the prototype's position on decisions 12 and 14 | S | S6, S11 | Planned |
 
@@ -75,8 +75,8 @@ walkie-ros world. The same file serves walkie-database's sim seed, which
 reads stand poses under the rooms' display names (P23). An optional `room`
 field on `Location` lets the vision backend fill `PersonSeen.room`.
 `agent-sim-chula` runs beside `agent-sim`, which keeps the blank-map points.
-Built as G2-1 and G2-2; no goal has been checked for furniture clearance in
-MuJoCo yet.
+Built as G2-1 and G2-2. G4 drove Nav2 to every place in MuJoCo; the two
+invented places moved to more open floor before they were reached (G4-6).
 
 **G3.** Port `sim/oracle_perception.py`, `scene.py`, `projection.py` and
 `fake_vectors.py` and rebuild them against 64811fe. Person messages are
@@ -90,7 +90,8 @@ Built as G3-1 to G3-6: the scene is TOML, `sim/scene_file.py` loads it, and
 `pixi run oracle-chula` (`sim/oracle_scene.py`) draws
 `config/scenes/chula_living_room.toml`, the living room only, with a guest
 raising the left arm and the host on the sofa. `perception/gestures.py`
-came with it. Not yet run against MuJoCo; G4 does that
+came with it. G4 ran it against MuJoCo: from the living room place it draws
+both people with the scene's gestures, and the sofa, the table and the mug
 ([In simulation](perception.md#in-simulation)).
 
 **G4.** One recipe that never joins another running ROS graph: a private
@@ -102,6 +103,13 @@ agent with `--use-sim-time` and the Chula places. For the arms it adds
 `use_sim_time:=true`. For memory it runs `db-seed-sim`, `db-restore` (P22)
 and `db-memory`, retrying until `/clock` arrives (P25). Voice goes to a
 null sink, so nothing is audible.
+Built as G4-1 to G4-6: `scripts/chula-sim.sh up` starts the router, the
+world from a worktree that builds only the branch's two changed packages, the
+oracle, a text log of `/to_human` and, with `--agent`, the agent. `check`
+reports what the graph provides. Arms join with S6 and memory with S3, and
+speech is logged rather than voiced
+([Run the Chula simulation](../setup/08-chula-simulation.md)). Nav2 reached
+every Chula place once `trash` and `instruction point` moved.
 
 **G5.** 6b26daa is the commit the experiment's `robot_model.toml` snapshot and
 arm tests were built on. `my_robot_interfaces` is unchanged from there to

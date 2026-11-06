@@ -699,10 +699,12 @@ def test_the_arena_clock_spreads_over_the_year_and_the_day():
 
 
 @pytest.mark.parametrize(
-    ("seed", "digest"), [(0, "8a022dec3877aeba"), (1, "e296c775df38a464"), (7, "fa7c4e46c25d09d0")]
+    ("seed", "digest"), [(0, "c97c2229378293df"), (1, "1e72e263fc77770f"), (7, "764f472db3d0e6e8")]
 )
 def test_the_arena_facts_draw_leaves_the_clutter_and_the_people_alone(seed, digest):
     # The digests of these arenas before they had facts, which draw from their own stream.
+    # Re-pinned when decision G4-6 moved "trash" and "instruction point"; with the old
+    # coordinates put back, each arena still hashes to its earlier digest.
     arena = chula_pat14_6(seed)
     del arena["facts"]
     assert hashlib.sha256(json.dumps(arena, sort_keys=True).encode()).hexdigest()[:16] == digest

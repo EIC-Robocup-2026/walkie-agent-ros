@@ -2069,6 +2069,35 @@ def test_a_set_token_sends_nothing(client, fake_commander, token):
     assert client.read_arms().travel_safe is True
 
 
+@pytest.mark.parametrize("gripper", [False, True], ids=["arm", "gripper"])
+def test_a_stop_once_the_action_server_is_found_sends_no_goal(
+    client, fake_commander, poses, monkeypatch, gripper
+):
+    # The stop comes from another thread after the call found the action server and
+    # before it sent the goal. Once stop() has returned, no goal may go out, since
+    # "stop" does not reach a gripper and the goal would run with nobody waiting.
+    client.joint_names("left_arm")
+    wait_ready = client._wait_ready
+
+    def found_then_stopped(ready, name, *args, **kwargs):
+        wait_ready(ready, name, *args, **kwargs)
+        if name.endswith(" action"):
+            client.stop()
+
+    monkeypatch.setattr(client, "_wait_ready", found_then_stopped)
+
+    with pytest.raises(StepError) as error:
+        if gripper:
+            client.control_gripper("left_gripper", 0.0)
+        else:
+            move(client, "left_arm", table(poses, "standby", "left"))
+
+    assert error.value.code == "CANCELLED"
+    assert fake_commander.joint_goals == []
+    assert fake_commander.gripper_goals == []
+    assert client._goal is None
+
+
 def test_a_read_or_a_second_goal_during_a_move_is_refused(client, fake_commander, poses):
     # The move plans until the test lets it go on, so it holds the call lock
     # meanwhile, and a call that waited for that lock would not return.

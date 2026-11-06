@@ -1332,7 +1332,12 @@ class CommanderClient:
         # commander accepts late either makes the arms unverified before
         # this goal is sent, which refuses it, or finds its record, which it
         # marks disturbed. send_goal_async() calls no callback of ours.
-        with self._state_lock:
+        # Inside the token's fence, as RosBase sends its goals: a stop that
+        # comes first refuses the send, and one that comes later waits until
+        # the goal is recorded, so its call then cancels it. stop() takes the
+        # fence and the state lock one after the other, never one inside the
+        # other.
+        with self._cancel.unless_cancelled(what), self._state_lock:
             cause = self._unverified
             if cause is None:
                 # The id made here, so that the goal can be cancelled by it

@@ -19,14 +19,14 @@ reset on /walkie/reset ends a task:
 
 - By default it forgets: the first call or clear() after start-up sends resume false,
   and so does every later clear().
-- With `resume_session`, the first task after a restart keeps the open session: the
-  first clear() or the first call, whichever comes first, sends resume true. The first
-  task needs no reset, so a call can come before any clear(). Every later clear()
-  forgets.
+- With `resume_session`, the first task after a restart keeps the open session: its
+  first call sends resume true, and a resume that fails is tried again at the next
+  call. The first task begins without a reset, so every clear() ends a task, also one
+  that comes before any call, and forgets.
 - A forget that fails stays pending: the next call sends resume false before it
   matches or stores, and fails if that start fails, so the guests of an earlier task
-  are never matched in a later one. A failed forget also uses up the resume, so a
-  failed resume followed by a failed forget still starts fresh.
+  are never matched in a later one. A clear() uses up the resume, so a reset after a
+  failed resume still starts fresh.
 - clear() never waits for discovery, waits at most `clear_timeout_s` in all, and never
   raises StepError. Without a discovered start_session it leaves the forget pending at
   once. A start that fails or times out leaves it pending too, and so does another
@@ -180,10 +180,9 @@ class RosPeopleMemory:
         # Guarded by _lock. A start is needed before the next call: at start-up, and
         # after a new task whose forget has not happened yet.
         self._need_start = True
-        # The next start resumes the open session instead of forgetting it.
+        # The next start resumes the open session instead of forgetting it. Only the
+        # first start can: every clear() ends a task, so it forgets.
         self._resume_pending = resume_session
-        # The next clear() is the first task's, which keeps the open session.
-        self._adopt_next = resume_session
         # Set by a clear() that could not take the lock, and taken under it by the next
         # call or clear(), which then forgets first.
         self._forget_asked = threading.Event()
@@ -300,48 +299,32 @@ class RosPeopleMemory:
     # -- With the lock held ---------------------------------------------------------
 
     def _clear(self, deadline: float) -> None:
-        """Resume at the first task's clear() in resume mode, and forget at any other."""
+        """Forget the last task's guests: every clear() ends a task, also the first."""
         self._take_asked_forget()
-        adopt = self._adopt_next
-        self._adopt_next = False
-        if not adopt:
-            # Set first, so a failure leaves the forget pending, and a pending resume
-            # can never come back in a later task.
-            self._resume_pending = False
-            self._need_start = True
+        # Set first, so a failure leaves the forget pending, and a resume that the
+        # first task never used can never come back in a later one.
+        self._resume_pending = False
+        self._need_start = True
         try:
             if not self._is_ready(self._start_client):
-                if not adopt:
-                    self._warn_once(
-                        "no node",
-                        f"People memory is unavailable: no node offers "
-                        f"{self._start_client.srv_name}. The new task's forget stays "
-                        "pending until the next people call.",
-                    )
-                # A resume stays pending for the first call, which waits for discovery.
+                self._warn_once(
+                    "no node",
+                    f"People memory is unavailable: no node offers "
+                    f"{self._start_client.srv_name}. The new task's forget stays "
+                    "pending until the next people call.",
+                )
                 return
-            self._start(
-                self._resume_pending, deadline, "starting a people session", cancellable=False
-            )
+            self._start(False, deadline, "starting a people session", cancellable=False)
         except StepError as error:
-            if adopt:
-                self._warn_once(
-                    "resume",
-                    f"People memory could not resume the open session ({error}). "
-                    "The next people call tries again.",
-                )
-            else:
-                self._warn_once(
-                    "forget",
-                    f"People memory could not forget the last task's guests ({error}). "
-                    "The forget stays pending until the next people call.",
-                )
+            self._warn_once(
+                "forget",
+                f"People memory could not forget the last task's guests ({error}). "
+                "The forget stays pending until the next people call.",
+            )
 
     def _ready(self, deadline: float | None, what: str) -> None:
         """Start the session the next call needs."""
         self._take_asked_forget()
-        # This call belongs to the first task, so a later clear() forgets.
-        self._adopt_next = False
         if self._need_start:
             self._start(self._resume_pending, deadline, what)
 
@@ -349,7 +332,6 @@ class RosPeopleMemory:
         """Turn a forget that clear() could not make into a pending one."""
         if self._forget_asked.is_set():
             self._forget_asked.clear()
-            self._adopt_next = False
             self._resume_pending = False
             self._need_start = True
 

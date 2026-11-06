@@ -21,7 +21,13 @@ from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.perception import memory as memory_module
 from walkie_agent.perception.memory import MAY_HAVE_STORED, TrackMemory, VectorSource
-from walkie_agent.perception.people_memory import InMemoryPeopleMemory, ModelVector, Stored
+from walkie_agent.perception import people_memory as people_memory_module
+from walkie_agent.perception.people_memory import (
+    NOTHING_STORED,
+    InMemoryPeopleMemory,
+    ModelVector,
+    Stored,
+)
 from walkie_agent.perception.track_vectors import Collected, Sighting, TrackVectors
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, FAKE_REID_MODEL, hash_vector
 
@@ -367,6 +373,29 @@ def test_a_stop_while_the_samples_are_read_stores_nobody(vision, store, cancel):
     assert error.code is ErrorCode.CANCELLED
     assert error.message == "Cancelled remembering person_1: a stop is in effect."
     assert len(store) == 0 and store.calls == []
+
+
+def test_a_stop_while_the_mock_store_writes_stores_nobody(vision, cancel, monkeypatch):
+    # The stop lands after TrackMemory's last check, while the mock copies the samples.
+    # The mock's fence refuses the write, and the error keeps its "nothing stored".
+    store = InMemoryPeopleMemory(cancel)
+    memory = TrackMemory(vision, store, cancel)
+    vision.show(seen(1, "sam"))
+    add_samples = people_memory_module._add_samples
+
+    def stop_then_add(*args):
+        cancel.cancel()
+        add_samples(*args)
+
+    monkeypatch.setattr(people_memory_module, "_add_samples", stop_then_add)
+
+    error = fails(memory.remember_person, "person_1", "Sam")
+
+    assert error.code is ErrorCode.CANCELLED
+    assert error.message == (
+        f"Cancelled remembering a person: a stop is in effect. {NOTHING_STORED}"
+    )
+    assert len(store) == 0
 
 
 def test_a_stop_during_the_matching_ends_recognize(vision, memory, store, cancel):

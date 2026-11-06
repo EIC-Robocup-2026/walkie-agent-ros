@@ -32,7 +32,7 @@ from walkie_agent.capabilities.guards import (
 from walkie_agent.capabilities.records import Recognized, Remembered
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.perception.identity import DEFAULT_IDENTITY_CONFIG, IdentityConfig
-from walkie_agent.perception.people_memory import PeopleMemory
+from walkie_agent.perception.people_memory import NOTHING_STORED, PeopleMemory
 from walkie_agent.perception.recognition import name_people, without_outliers
 from walkie_agent.perception.track_vectors import Collected
 
@@ -95,7 +95,8 @@ class TrackMemory:
         Raises StepError REFUSED for a bad argument; NOT_FOUND for a person not in
         view now; CANCELLED on a stop, also one that came while the samples were read,
         so a stop never stores anyone; and the store's errors. A TIMEOUT or CANCELLED
-        from the store says that the person may have been stored already. A
+        from the store says that the person may have been stored already, unless the
+        store says that nothing was. A
         ValueError from the store is a bug and propagates.
         """
         require_timeout(timeout_s)
@@ -110,15 +111,15 @@ class TrackMemory:
         # Again just before the write: the guest's answer may come long after the
         # question, and a stop since then must not store them.
         self._cancel.check(what)
-        left = _left(deadline, timeout_s, what, " Nothing was stored.")
+        left = _left(deadline, timeout_s, what, f" {NOTHING_STORED}")
         try:
             stored = self._store.remember(
                 name, kept_facts, faces, appearances, timeout_s=left
             )
         except StepError as error:
-            if (
-                error.code in (ErrorCode.TIMEOUT, ErrorCode.CANCELLED)
-                and "may have been stored" not in error.message
+            # A store that already says whether anything was stored is left as it is.
+            if error.code in (ErrorCode.TIMEOUT, ErrorCode.CANCELLED) and not (
+                "may have been stored" in error.message or error.message.endswith(NOTHING_STORED)
             ):
                 raise StepError(error.code, f"{error.message} {MAY_HAVE_STORED}") from error
             raise

@@ -9,7 +9,10 @@ import threading
 import numpy as np
 import pytest
 
+from walkie_agent.capabilities.guards import CancelToken
+from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.perception.people_memory import (
+    NOTHING_STORED,
     InMemoryPeopleMemory,
     Match,
     ModelVector,
@@ -214,6 +217,23 @@ def test_a_refused_remember_stores_nobody_and_uses_no_id():
         memory.remember("Sam", {}, [face("sam")], [ModelVector(FAKE_REID_MODEL, np.zeros(4))])
 
     assert len(memory) == 0
+    assert memory.remember("Ana", {}, [face("ana")], []).person_id == "stored_1"
+
+
+def test_a_set_token_refuses_the_write_and_uses_no_id():
+    cancel = CancelToken()
+    memory = InMemoryPeopleMemory(cancel)
+    cancel.cancel()
+
+    with pytest.raises(StepError) as error:
+        memory.remember("Sam", {}, [face("sam")], [])
+
+    assert (error.value.code, error.value.message) == (
+        ErrorCode.CANCELLED,
+        f"Cancelled remembering a person: a stop is in effect. {NOTHING_STORED}",
+    )
+    assert len(memory) == 0
+    cancel.reset()
     assert memory.remember("Ana", {}, [face("ana")], []).person_id == "stored_1"
 
 

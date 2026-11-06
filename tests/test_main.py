@@ -262,6 +262,8 @@ def test_a_mock_people_memory_remembers_from_the_vision_and_forgets_at_a_reset(b
     assert memory._cancel is app.ctx.cancel
     store = memory._store
     assert isinstance(store, InMemoryPeopleMemory)
+    # The mock writes through the runtime's fence, so a stop never stores anyone.
+    assert store._cancel is app.ctx.cancel
     assert app.ctx.vision._namer == memory.names
     assert app.runner._on_reset == memory.clear
     app.start()

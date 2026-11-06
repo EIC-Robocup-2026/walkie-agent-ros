@@ -405,7 +405,7 @@ def assemble(
         on_reset = None
         if live is not None and remembers:
             store: PeopleMemory = (
-                InMemoryPeopleMemory()
+                InMemoryPeopleMemory(cancel)
                 if people_memory == "mock"
                 else RosPeopleMemory(connector, cancel, resume_session=resume_people_session)
             )

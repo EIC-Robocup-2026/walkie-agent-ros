@@ -14,12 +14,18 @@ only ever reads the live ids that find_people gives.
 import itertools
 import threading
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import NamedTuple, Protocol
 
 import numpy as np
 
+from walkie_agent.capabilities.guards import CancelToken
+from walkie_agent.errors import StepError
 from walkie_agent.perception.identity import cosine_distance
+
+# Ends a remember's TIMEOUT or CANCELLED that came before anything could be stored.
+NOTHING_STORED = "Nothing was stored."
 
 
 class ModelVector(NamedTuple):
@@ -80,7 +86,8 @@ class PeopleMemory(Protocol):
     missing or failed in a way that may pass, so the same call may work later;
     REFUSED when the store refused the call, with its message; TIMEOUT when it
     did not answer in time, after which a remember may have stored the person
-    already; and CANCELLED on a stop. A ValueError is a bug in the caller, such
+    already; and CANCELLED on a stop. A remember's TIMEOUT or CANCELLED whose
+    message ends with NOTHING_STORED stored nobody. A ValueError is a bug in the caller, such
     as a remember without any vector, or an empty, zero or non-finite vector.
     """
 
@@ -138,13 +145,18 @@ class InMemoryPeopleMemory:
 
     Ids are `stored_<n>`, from 1, and are never reused, as in the database.
     clear() forgets everyone, as walkie-database forgets a session's guests
-    (its ADR-0010). Every method answers at once and ignores `timeout_s`. It
-    never raises StepError; a ValueError is a bug in the caller, as in
-    PeopleMemory, and so is a query whose length differs from the stored
-    vectors of its model.
+    (its ADR-0010). Every method answers at once and ignores `timeout_s`.
+
+    Given the runtime's `cancel` token, remember writes through its
+    unless_cancelled() fence, as FakeRobot's verbs commit: a stop that comes
+    first raises StepError CANCELLED ending with NOTHING_STORED, and one that
+    comes later waits for the write. That is its only StepError; a ValueError
+    is a bug in the caller, as in PeopleMemory, and so is a query whose length
+    differs from the stored vectors of its model.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, cancel: CancelToken | None = None) -> None:
+        self._cancel = cancel
         self._lock = threading.Lock()
         self._people: dict[str, _Person] = {}
         self._ids = itertools.count(1)
@@ -165,9 +177,18 @@ class InMemoryPeopleMemory:
         person = _Person(name=name, facts=dict(facts))
         _add_samples(person.faces, faces)
         _add_samples(person.appearances, appearances)
-        with self._lock:
-            person_id = f"stored_{next(self._ids)}"
-            self._people[person_id] = person
+        commit = (
+            nullcontext()
+            if self._cancel is None
+            else self._cancel.unless_cancelled("remembering a person")
+        )
+        try:
+            with commit, self._lock:
+                person_id = f"stored_{next(self._ids)}"
+                self._people[person_id] = person
+        except StepError as error:
+            # Only the fence raises it, before the write.
+            raise StepError(error.code, f"{error.message} {NOTHING_STORED}") from error
         # The mock takes every model.
         return Stored(person_id, len(faces), len(appearances))
 

@@ -308,16 +308,18 @@ def test_default_mode_forgets_at_the_first_call_and_at_each_new_task(database, m
     assert len(database.requests["match_faces"]) == 2
 
 
-def test_resume_mode_resumes_once_and_the_next_new_task_forgets(database, make_memory):
+def test_a_reset_before_any_call_forgets_in_resume_mode(database, make_memory):
+    # The first task begins without a reset, so a reset that comes before any people
+    # call ends it, and the next task must not see the guests from before the restart.
     memory = make_memory(resume_session=True)
     discovered(memory)
 
     memory.clear()
-    assert resumes(database) == [True]
+    assert resumes(database) == [False]
     memory.match_faces([vector()])
-    assert resumes(database) == [True]
-    memory.clear()
-    assert resumes(database) == [True, False]
+
+    assert resumes(database) == [False]
+    assert len(database.requests["match_faces"]) == 1
 
 
 def test_a_first_task_without_a_reset_uses_up_the_resume(database, make_memory):
@@ -352,13 +354,15 @@ def test_a_failed_resume_then_a_failed_forget_starts_fresh(database, make_memory
     discovered(memory)
     database.failure["start_session"] = DATABASE_FAILURE
 
-    memory.clear()  # the first task's resume fails
-    memory.clear()  # the second task's forget fails
+    error = fails(memory.match_faces, [vector()])  # the first task's resume fails
+    memory.clear()  # the reset's forget fails
     del database.failure["start_session"]
     memory.match_faces([vector()])
 
     # The second task must not resume the session from before the restart.
+    assert error.code is ErrorCode.UNAVAILABLE
     assert resumes(database) == [True, False, False]
+    assert len(database.requests["match_faces"]) == 1
 
 
 def test_clear_without_a_database_returns_at_once_and_warns_once(no_database, caplog):
@@ -373,9 +377,10 @@ def test_clear_without_a_database_returns_at_once_and_warns_once(no_database, ca
     assert "forget stays pending" in warning
 
 
-def test_a_resume_before_the_node_is_found_stays_pending(connector, cancel, caplog):
-    # The agent and the node restart together, so the first new task comes before
-    # start_session is discovered. It must not wait, warn, or lose the resume.
+def test_a_reset_before_the_node_is_found_forgets_once_it_is(connector, cancel, caplog):
+    # The agent and the node restart together, and the operator resets before
+    # start_session is discovered. The reset must not wait, and its forget, not the
+    # resume, waits for the next call.
     name = unique_name("fake_walkie_database")
     options = {**TIMEOUTS, "server_timeout_s": 5.0}
     memory = RosPeopleMemory(
@@ -388,10 +393,26 @@ def test_a_resume_before_the_node_is_found_stays_pending(connector, cancel, capl
         elapsed = time.monotonic() - start
     with serving(name) as database:
         memory.match_faces([vector()])
-        memory.clear()
 
     assert elapsed < 0.5
-    assert warnings(caplog) == []
+    [warning] = warnings(caplog)
+    assert "forget stays pending" in warning
+    assert resumes(database) == [False]
+
+
+def test_the_first_call_waits_for_the_node_and_resumes(connector, cancel):
+    # The agent and the node restart together, and the first task's first call
+    # comes before start_session is discovered: it waits for it and resumes.
+    name = unique_name("fake_walkie_database")
+    options = {**TIMEOUTS, "server_timeout_s": 5.0}
+    memory = RosPeopleMemory(
+        connector, cancel, namespace=f"/{name}", resume_session=True, **options
+    )
+
+    with serving(name) as database:
+        memory.match_faces([vector()])
+        memory.clear()
+
     assert resumes(database) == [True, False]
 
 
@@ -435,25 +456,23 @@ def test_clear_waits_at_most_its_timeout_on_a_silent_node(
     assert len(database.requests["match_faces"]) == 1
 
 
-def test_each_kind_of_failure_warns_once_until_a_start_succeeds(
+def test_a_failed_forget_warns_once_until_a_start_succeeds(
     database, make_memory, caplog, no_retries
 ):
-    memory = make_memory(resume_session=True)
+    memory = make_memory()
     discovered(memory)
     database.failure["start_session"] = DATABASE_FAILURE
 
     with caplog.at_level(logging.WARNING, logger=LOGGER):
-        memory.clear()  # the first task's resume fails
-        memory.clear()  # the second task's forget fails: another kind, so a warning
-        memory.clear()  # the third task's forget fails: no second warning
+        memory.clear()  # the first reset's forget fails: a warning
+        memory.clear()  # the second reset's forget fails: no second warning
         del database.failure["start_session"]
         memory.match_faces([vector()])  # a start succeeds
         database.failure["start_session"] = DATABASE_FAILURE
         memory.clear()  # a failed forget warns again
 
-    assert resumes(database) == [True, False, False, False, False]
+    assert resumes(database) == [False, False, False, False]
     assert [warning.split(" (")[0] for warning in warnings(caplog)] == [
-        "People memory could not resume the open session",
         "People memory could not forget the last task's guests",
         "People memory could not forget the last task's guests",
     ]

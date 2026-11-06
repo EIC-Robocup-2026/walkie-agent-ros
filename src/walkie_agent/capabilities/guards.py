@@ -8,7 +8,7 @@ fake refuses exactly what the robot refuses.
 import math
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 
 from walkie_agent.capabilities.records import Pose2D
@@ -17,6 +17,14 @@ from walkie_agent.errors import ErrorCode, StepError
 # The longest single relative move, from main's tools/navigation.py. It bounds
 # the damage of a misread unit, such as centimeters taken as meters.
 MAX_MOVE_M = 3.0
+
+# The limits of a remembered person, from experiment/hri-agent's remember_person. The
+# name is short enough to say back to a guest and long enough for any popular name.
+# All four lie inside walkie-database's own limits: 100, 32, 64 and 256.
+MAX_NAME_CHARS = 40
+MAX_FACTS = 8
+MAX_FACT_KEY_CHARS = 30
+MAX_FACT_VALUE_CHARS = 80
 
 
 class CancelToken:
@@ -124,6 +132,54 @@ def require_timeout(timeout_s: float) -> None:
     require_finite(timeout_s=timeout_s)
     if timeout_s <= 0:
         raise StepError(ErrorCode.REFUSED, f"Refused: timeout_s must be positive, not {timeout_s:g}.")
+
+
+def require_person_details(
+    name: str, facts: Mapping[str, str] | None
+) -> tuple[str, dict[str, str]]:
+    """The name and facts of a person to remember, stripped, or StepError REFUSED.
+
+    The name must hold 1 to MAX_NAME_CHARS characters once stripped. `facts` is None
+    or a mapping of at most MAX_FACTS text keys to text values, each 1 to
+    MAX_FACT_KEY_CHARS or MAX_FACT_VALUE_CHARS characters once stripped, with no two
+    keys equal once stripped.
+    """
+    require_text(name=name)
+    stripped = name.strip()
+    if not 1 <= len(stripped) <= MAX_NAME_CHARS:
+        raise StepError(
+            ErrorCode.REFUSED,
+            f"Refused: name must hold 1 to {MAX_NAME_CHARS} characters, not {len(stripped)}.",
+        )
+    if facts is None:
+        return stripped, {}
+    if not isinstance(facts, Mapping):
+        raise StepError(ErrorCode.REFUSED, "Refused: facts must map text keys to text values.")
+    if len(facts) > MAX_FACTS:
+        raise StepError(
+            ErrorCode.REFUSED, f"Refused: at most {MAX_FACTS} facts, not {len(facts)}."
+        )
+    kept: dict[str, str] = {}
+    for key, value in facts.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise StepError(
+                ErrorCode.REFUSED, "Refused: facts must map text keys to text values."
+            )
+        key, value = key.strip(), value.strip()
+        if not 1 <= len(key) <= MAX_FACT_KEY_CHARS:
+            raise StepError(
+                ErrorCode.REFUSED,
+                f"Refused: a fact's key must hold 1 to {MAX_FACT_KEY_CHARS} characters.",
+            )
+        if not 1 <= len(value) <= MAX_FACT_VALUE_CHARS:
+            raise StepError(
+                ErrorCode.REFUSED,
+                f"Refused: the fact {key!r} must hold 1 to {MAX_FACT_VALUE_CHARS} characters.",
+            )
+        if key in kept:
+            raise StepError(ErrorCode.REFUSED, f"Refused: the fact {key!r} is given twice.")
+        kept[key] = value
+    return stripped, kept
 
 
 def check_relative_move(forward_m: float, left_m: float, turn_deg: float) -> None:

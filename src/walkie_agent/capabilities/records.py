@@ -45,6 +45,39 @@ class PersonSeen:
 
 
 @dataclass(frozen=True)
+class Remembered:
+    """What ctx.memory.remember_person stored for one person in view.
+
+    `person_id` is the live id the call named, as find_people gives it; the memory's
+    own id for the stored person never leaves the backend. `faces` and `appearances`
+    count the samples stored. `unstored_models` names the models whose samples the
+    memory has no table for and left out, so those models can never recognize them.
+    """
+
+    person_id: str
+    name: str
+    facts: dict[str, str]
+    faces: int
+    appearances: int
+    unstored_models: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Recognized:
+    """Who one person in view is, from ctx.memory.recognize.
+
+    `name` is None for someone Walkie has not remembered, or cannot recognize; `facts`
+    is then empty and `matched_by` None. Otherwise `matched_by` is "face" or
+    "appearance", whichever named them.
+    """
+
+    person_id: str
+    name: str | None
+    facts: dict[str, str]
+    matched_by: str | None
+
+
+@dataclass(frozen=True)
 class Team:
     """The team that built the robot, as the robot says it."""
 

@@ -21,12 +21,21 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Concatenate, ParamSpec, TypeVar
 
-from walkie_agent.capabilities import Ctx, ObjectSeen, PersonSeen, Pose2D, Team
+from walkie_agent.capabilities import (
+    Ctx,
+    ObjectSeen,
+    PersonSeen,
+    Pose2D,
+    Recognized,
+    Remembered,
+    Team,
+)
 from walkie_agent.capabilities.guards import (
     CancelToken,
     check_relative_move,
     is_finite_number,
     relative_goal,
+    require_person_details,
     require_text,
     require_timeout,
 )
@@ -255,14 +264,19 @@ def _facts_problems(facts: Mapping[str, Any]) -> list[str]:
 
 
 class FakeRobot:
-    """Implements Base, Speech, Vision, Arms and Facts over one world description.
+    """Implements Base, Speech, Vision, Arms, Facts and Memory over one world description.
 
-    One object holds all five verb sets, since their names do not clash; `ctx`
+    One object holds all six verb sets, since their names do not clash; `ctx`
     is the Ctx that atomics take. `world=None` builds chula_pat14_6(seed), and a
     world with a broken name, coordinate or fact raises ValueError. A world with
     no "facts" has no fact source, so the facts verbs raise UNAVAILABLE.
     A person's bearing is their "heading_deg", a fixed direction in the map, or one
     from a hash of their id, less the robot's yaw, so a turn by it faces them.
+    The memory keeps each person remembered by their world id, apart from the
+    world's names that the people verb shows. recognize gives back the name and
+    facts remembered, matched by face, and no name for anyone else; remembering a
+    person again replaces what was kept, and forget() clears it all. The memory
+    stays out of snapshot(), so a run that remembers nobody reads as before.
     `drive_s` makes a drive take real seconds, for stop tests. `calls` logs
     every verb call with the robot's place and room as it ended and, for a
     lookup, the ids returned. `said` logs every line, and `faults` maps a verb
@@ -291,8 +305,16 @@ class FakeRobot:
         self.said: list[str] = []
         self.faults: dict[str, StepError] = {}
         self._stopped = threading.Event()
+        # The name and facts of each person remembered, by world person id.
+        self._remembered: dict[str, tuple[str, dict[str, str]]] = {}
         self.ctx = Ctx(
-            cancel=self.cancel, base=self, speech=self, vision=self, arms=self, facts=self
+            cancel=self.cancel,
+            base=self,
+            speech=self,
+            vision=self,
+            arms=self,
+            facts=self,
+            memory=self,
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -483,6 +505,40 @@ class FakeRobot:
         team = self._require_facts()["team"]
         return Team(team["name"], team["country"], team["affiliation"])
 
+    # ctx.memory
+
+    @_verb("memory.remember_person")
+    def remember_person(
+        self,
+        person_id: str,
+        name: str,
+        facts: Mapping[str, str] | None = None,
+        *,
+        timeout_s: float = 15.0,
+    ) -> Remembered:
+        what = f"remembering {person_id}"
+        self._begin(what, timeout_s)
+        require_text(person_id=person_id)
+        name, kept = require_person_details(name, facts)
+        self._require_person_here(person_id)
+        with self.cancel.unless_cancelled(what):
+            self._remembered[person_id] = (name, kept)
+        return Remembered(person_id, name, dict(kept), faces=1, appearances=1)
+
+    @_verb("memory.recognize")
+    def recognize(self, person_id: str, *, timeout_s: float = 15.0) -> Recognized:
+        self._begin(f"recognizing {person_id}", timeout_s)
+        require_text(person_id=person_id)
+        self._require_person_here(person_id)
+        if person_id not in self._remembered:
+            return Recognized(person_id, None, {}, None)
+        name, facts = self._remembered[person_id]
+        return Recognized(person_id, name, dict(facts), "face")
+
+    def forget(self) -> None:
+        """Forget every person remembered, as the robot does at the next task. Never raises."""
+        self._remembered.clear()
+
     # Shared by the verbs.
 
     def _require_facts(self) -> dict[str, Any]:
@@ -561,6 +617,18 @@ class FakeRobot:
     def _holding(self) -> str | None:
         return next((key for key, item in self._objects.items() if item["at"] == HELD), None)
 
+    def _require_person_here(self, person_id: str) -> None:
+        """Raise NOT_FOUND unless `person_id` is a person the people verb shows here."""
+        who = self._people.get(person_id)
+        if who is None:
+            raise StepError(
+                ErrorCode.NOT_FOUND, f"No person '{person_id}'. Call find_people first."
+            )
+        if who["room"] != self._room():
+            raise StepError(
+                ErrorCode.NOT_FOUND, f"{person_id} is not in view here. Call find_people first."
+            )
+
     def _require_held(self) -> str:
         held = self._holding()
         if held is None:
@@ -578,5 +646,21 @@ def _matches(query: str, *fields: str | None) -> bool:
 
 
 def _json_safe(value: Any) -> Any:
-    """A refused NaN or infinity stays in the call log as text, since JSON has no such number."""
-    return repr(value) if isinstance(value, float) and not math.isfinite(value) else value
+    """An argument as the call log keeps it: a copy that JSON can hold.
+
+    A refused NaN or infinity stays as text, since JSON has no such number, and so
+    does a value of a type JSON lacks. A mapping, such as the facts of a person to
+    remember, is copied with text keys, so the record shares nothing with the caller.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else repr(value)
+    if value is None or isinstance(value, str | int):
+        return value
+    if isinstance(value, Mapping):
+        return {
+            key if isinstance(key, str) else repr(key): _json_safe(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list | tuple):
+        return [_json_safe(item) for item in value]
+    return repr(value)

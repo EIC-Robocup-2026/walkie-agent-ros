@@ -21,6 +21,16 @@ With --vision, `find_people` reads walkie-vision's people on /walkie_vision/peop
 which the simulation's oracle_perception publishes too. Without it, `find_people` reports
 UNAVAILABLE and the prompt says so.
 
+--people-memory chooses where `remember_person` and `recognize_person` keep the people
+the robot meets, from the faces and appearances that --vision collects (ADR-0070):
+`unavailable`, the default, where both report UNAVAILABLE and the prompt says so;
+`mock`, a store inside this process, for the simulation; or `ros`, walkie-database's
+people services. With a memory, `find_people` also shows the names of the people in
+view. A message on /walkie/reset ends the task, and forgets the people remembered in it.
+--resume-people-session, with `ros` only, keeps the database's open session at the
+first task instead, so an agent restarted mid-task still knows its guests. `mock` and
+`ros` need --vision: a bad combination stops the agent at once, with exit code 2.
+
 A missing or broken file, a missing setting or API key, or a bad [team] table stops the
 agent before ROS starts, with one line on stderr and exit code 2.
 
@@ -49,10 +59,26 @@ from rai.communication.ros2 import ROS2Connector
 from rclpy.signals import SignalHandlerOptions
 
 from walkie_agent.atomics import DEFAULT, GPSR, HRI
-from walkie_agent.capabilities import CancelToken, Ctx, Facts, UnavailableFacts
+from walkie_agent.capabilities import (
+    CancelToken,
+    Ctx,
+    Facts,
+    Memory,
+    UnavailableFacts,
+    UnavailableMemory,
+)
 from walkie_agent.capabilities.facts import facts_from_config
 from walkie_agent.locations import Location, load_locations
-from walkie_agent.ros import RosBase, RosBridge, RosSpeech, RosVision, UnavailableVision
+from walkie_agent.perception.memory import TrackMemory
+from walkie_agent.perception.people_memory import InMemoryPeopleMemory, PeopleMemory
+from walkie_agent.ros import (
+    RosBase,
+    RosBridge,
+    RosPeopleMemory,
+    RosSpeech,
+    RosVision,
+    UnavailableVision,
+)
 from walkie_agent.ros.io import (
     CONSOLE_TOPIC,
     INPUT_TOPIC,
@@ -74,6 +100,8 @@ logger = logging.getLogger(__name__)
 
 NODE_NAME = "walkie_agent"
 TOOL_SETS = {"default": DEFAULT, "gpsr": GPSR, "hri": HRI}
+# --people-memory's choices: none, a store in this process, or walkie-database.
+PEOPLE_MEMORIES = ("unavailable", "mock", "ros")
 # A todo step can require this one too. It cannot require update_todos, because the
 # ledger that proves a step's work leaves that tool out.
 WAIT_TOOL = "wait_for_person"
@@ -123,6 +151,11 @@ _TOOL_RULES = {
         "- To look at someone, as in \"look at me\", find them with `find_people`, then\n"
         "  call `face_person` with their id. It turns you once and does not follow them.\n"
     ),
+    "remember_person": (
+        "- `remember_person` and `recognize_person` need a people memory, which is not\n"
+        "  connected in this run, so they report UNAVAILABLE. Say that you cannot\n"
+        "  remember people, and never pretend that you remembered or know someone.\n"
+    ),
     "pick": (
         "- `pick`, `place_on` and `hand_over` need an arm commander client, which does\n"
         "  not exist yet, so they report UNAVAILABLE. Say that you cannot do it, and\n"
@@ -142,6 +175,14 @@ _LIVE_PEOPLE_RULE = (
     "  right are as you see them. An id names the same person only while they stay in\n"
     "  view. If it reports UNAVAILABLE, say that you cannot see people right now, and\n"
     "  never guess who is there.\n"
+)
+
+# The remember_person rule of a run with a people memory, in place of the one above.
+_LIVE_MEMORY_RULE = (
+    "- When someone tells you their name, call `remember_person` with their id from\n"
+    "  `find_people`, their name and any facts they told you, while they are still in\n"
+    "  view. `find_people` and `recognize_person` give the names of the people you\n"
+    "  remembered. A null name is someone you do not know, so never guess it.\n"
 )
 
 _RULES_END = """\
@@ -172,14 +213,20 @@ def build_system_prompt(
     robot_description: str,
     *,
     vision: bool = False,
+    memory: bool = False,
 ) -> str:
     """The rules for one tool set, then the static robot description, once.
 
     GPSR lacks `list_places`, so its prompt carries the configured places as data.
-    `vision` says that find_people reads live people perception.
+    `vision` says that find_people reads live people perception, and `memory` that
+    remember_person and recognize_person have a people memory.
     """
     names = _atomic_names(tool_set)
-    rules = {**_TOOL_RULES, "find_people": _LIVE_PEOPLE_RULE} if vision else _TOOL_RULES
+    rules = dict(_TOOL_RULES)
+    if vision:
+        rules["find_people"] = _LIVE_PEOPLE_RULE
+    if memory:
+        rules["remember_person"] = _LIVE_MEMORY_RULE
     prompt = _RULES_START
     prompt += "".join(rule for tool, rule in rules.items() if tool in names)
     prompt += _RULES_END
@@ -210,6 +257,29 @@ def _atomic_names(tool_set: str) -> set[str]:
 def check_templates(templates: Mapping[str, TaskTemplate], tool_set: str) -> None:
     """Raise ValueError for a template step that this tool set could never complete."""
     check_required_tools(templates, _atomic_names(tool_set) | {WAIT_TOOL})
+
+
+def check_people_memory(people_memory: str, *, vision: bool, resume: bool) -> None:
+    """Raise ValueError for a people memory that this run could never use.
+
+    A memory stores the samples that RosVision collects, so mock and ros need vision.
+    Only ros has sessions, so only ros can resume one.
+    """
+    if people_memory not in PEOPLE_MEMORIES:
+        known = ", ".join(PEOPLE_MEMORIES)
+        raise ValueError(
+            f"There is no people memory {people_memory!r}. Known people memories: {known}."
+        )
+    if people_memory != "unavailable" and not vision:
+        raise ValueError(
+            f"--people-memory {people_memory} needs --vision, which collects the faces "
+            "and appearances it remembers people by."
+        )
+    if resume and people_memory != "ros":
+        raise ValueError(
+            "--resume-people-session needs --people-memory ros, the only memory with a "
+            "session to resume."
+        )
 
 
 class Application:
@@ -290,6 +360,8 @@ def assemble(
     fallback: BaseChatModel | None = None,
     facts: Facts = UnavailableFacts(),
     vision: bool = False,
+    people_memory: str = "unavailable",
+    resume_people_session: bool = False,
 ) -> Application:
     """Wire the runtime and the ROS wrappers over a connector the caller already made.
 
@@ -297,9 +369,20 @@ def assemble(
     connector. A failure part of the way through closes what was built before it raises.
     `facts` is ctx.facts. main() passes the SystemFacts of config.toml's [team] table.
     `vision` makes ctx.vision a RosVision, which reads people from walkie-vision.
+
+    `people_memory` is one of PEOPLE_MEMORIES. With mock or ros, ctx.memory is a
+    TrackMemory over the RosVision's samples and an InMemoryPeopleMemory or a
+    RosPeopleMemory, which `resume_people_session` tells to keep the open session. The
+    RosVision then names the people find_people reports, and the Runner forgets the
+    people remembered at each reset. Raises ValueError for an unknown memory, a memory
+    without `vision`, or a resume without ros, before anything is built.
     """
     check_templates(templates, tool_set)
-    prompt = build_system_prompt(tool_set, locations, robot_description, vision=vision)
+    check_people_memory(people_memory, vision=vision, resume=resume_people_session)
+    remembers = people_memory != "unavailable"
+    prompt = build_system_prompt(
+        tool_set, locations, robot_description, vision=vision, memory=remembers
+    )
     clock = connector.node.get_parameter("use_sim_time").value
     if bool(clock) != use_sim_time:
         raise ValueError(
@@ -318,12 +401,24 @@ def assemble(
         live = RosVision(connector, base, cancel) if vision else None
         if live is not None:
             built.append(live.close)
+        memory: Memory = UnavailableMemory()
+        on_reset = None
+        if live is not None and remembers:
+            store: PeopleMemory = (
+                InMemoryPeopleMemory()
+                if people_memory == "mock"
+                else RosPeopleMemory(connector, cancel, resume_session=resume_people_session)
+            )
+            tracks = TrackMemory(live, store, cancel)
+            live.set_namer(tracks.names)
+            memory, on_reset = tracks, tracks.clear
         ctx = Ctx(
             cancel=cancel,
             base=base,
             speech=speech,
             vision=live or UnavailableVision(cancel),
             facts=facts,
+            memory=memory,
         )
         bridge = RosBridge(
             connector,
@@ -352,6 +447,7 @@ def assemble(
             on_reply=bridge.on_reply,
             callbacks=callbacks,
             tool_log=tool_log,
+            on_reset=on_reset,
         )
     except BaseException:
         for close in reversed(built):
@@ -461,6 +557,8 @@ def _run(args: argparse.Namespace, **assembly: Any) -> int:
             todos_topic=args.todos_topic,
             use_sim_time=args.use_sim_time,
             vision=args.vision,
+            people_memory=args.people_memory,
+            resume_people_session=args.resume_people_session,
             **assembly,
         )
         app.start()
@@ -530,7 +628,28 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         action="store_true",
         help="Let find_people read walkie-vision's people, or the simulation's oracle.",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--people-memory",
+        choices=PEOPLE_MEMORIES,
+        default="unavailable",
+        help="Where remember_person keeps people: nowhere, in this process, or "
+        "walkie-database. mock and ros need --vision.",
+    )
+    parser.add_argument(
+        "--resume-people-session",
+        action="store_true",
+        help="With --people-memory ros, keep the database's open session at the first "
+        "task instead of forgetting it.",
+    )
+    args = parser.parse_args(argv)
+    try:
+        check_people_memory(
+            args.people_memory, vision=args.vision, resume=args.resume_people_session
+        )
+    except ValueError as error:
+        # Exit code 2 and the usage line, as for any other bad command line.
+        parser.error(str(error))
+    return args
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -1,5 +1,9 @@
 """RosVision: find_people over walkie-vision's people arrays, and the words it uses.
 
+It also collects each track's face and appearance samples for TrackMemory, and names
+the people in view through a namer; tests/test_ros_people_names.py runs it with
+TrackMemory itself.
+
 Most tests drive RosVision over tests/ros_fakes.py's FakeConnector: a test calls the
 subscription's callback itself and moves the node's clock, so no test needs a graph.
 The last one publishes the oracle's arrays of config/scenes/chula_living_room.toml on
@@ -49,14 +53,18 @@ from walkie_agent.perception.people import (
     phrases,
     pose_phrase,
 )
+from walkie_agent.perception.track_vectors import Collected, TrackVectorsConfig
 from walkie_agent.ros import RosVision, UnavailableVision
 from walkie_agent.ros import vision as vision_module
-from walkie_agent.ros.vision import TF_WAIT_S
+from walkie_agent.ros.vision import NAME_WAIT_S, TF_WAIT_S
+from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, FAKE_REID_MODEL, hash_vector
 from walkie_agent.sim.oracle_perception import ORACLE_QOS, OracleConfig, draw_detections
 from walkie_agent.sim.projection import camera_position
 from walkie_agent.sim.scene_file import load_scene
 
 CAMERA_FRAME = "camera_optical"
+# The length of the test's fake vectors; walkie-vision's fakes are longer.
+VECTOR_DIM = 16
 # A person whose keypoints are all unseen, so only the box's centre places them.
 BOX_ONLY = ([0.0] * 34, [0.0] * 17)
 ANKLES = tuple(COCO_KEYPOINTS.index(name) for name in ("left_ankle", "right_ankle"))
@@ -103,10 +111,19 @@ class Rig:
         [self.subscription] = self.node.subscriptions
 
     def deliver(
-        self, *people: PersonDetection, age_s: float = 0.0, frame: str = CAMERA_FRAME
+        self,
+        *people: PersonDetection,
+        age_s: float = 0.0,
+        frame: str = CAMERA_FRAME,
+        info: CameraInfo | None = None,
     ) -> PersonDetectionArray:
-        """An array of the Chula camera's image stamped `age_s` before the node's clock, given to the callback."""
-        array = PersonDetectionArray(people=list(people), camera_info=camera_info())
+        """An array of the Chula camera's image stamped `age_s` before the node's clock, given to the callback.
+
+        `info` replaces the Chula camera's calibration.
+        """
+        array = PersonDetectionArray(
+            people=list(people), camera_info=camera_info() if info is None else info
+        )
         array.header.frame_id = frame
         array.header.stamp = Time(nanoseconds=self.node.clock.nanoseconds - round(age_s * 1e9)).to_msg()
         self.subscription.callback(array)
@@ -141,6 +158,53 @@ def person(x: float, body=STANDING, track_id: int = 0) -> PersonDetection:
 
 def seen(people) -> list[tuple]:
     return [(p.id, p.name, p.pose, p.gesture, p.room) for p in people]
+
+
+def with_vectors(
+    detection: PersonDetection,
+    face: str = "",
+    appearance: str = "",
+    *,
+    score: float = 0.9,
+    size_px: float = 40.0,
+) -> PersonDetection:
+    """`detection` with the fake models' vectors of the keys `face` and `appearance`.
+
+    The face box is `size_px` square, 0.18 rad in the Chula camera at the default,
+    and the detector's confidence in it is `score`. An empty key leaves that part out.
+    """
+    if face:
+        detection.face_bbox.size_x = detection.face_bbox.size_y = size_px
+        detection.face_det_score = score
+        detection.face_model = FAKE_FACE_MODEL
+        detection.face_embedding = hash_vector("face:" + face, VECTOR_DIM)
+    if appearance:
+        detection.appearance_model = FAKE_REID_MODEL
+        detection.appearance_embedding = hash_vector("reid:" + appearance, VECTOR_DIM)
+    return detection
+
+
+def vectors(samples) -> list[list[float]]:
+    return [sample.vector.tolist() for sample in samples]
+
+
+def key_vectors(kind: str, *keys: str) -> list[list[float]]:
+    return [hash_vector(f"{kind}:{key}", VECTOR_DIM).tolist() for key in keys]
+
+
+class StubNamer:
+    """A namer that gives `names`, or raises `error`, and logs each call's ids and wait."""
+
+    def __init__(self, names: dict[str, str] | None = None, error: StepError | None = None):
+        self.names = names or {}
+        self.error = error
+        self.calls: list[tuple[list[str], float]] = []
+
+    def __call__(self, person_ids, *, timeout_s: float) -> dict[str, str]:
+        self.calls.append((list(person_ids), timeout_s))
+        if self.error is not None:
+            raise self.error
+        return self.names
 
 
 def transform_of(camera_from_map: np.ndarray):
@@ -723,6 +787,257 @@ def test_reads_and_arrivals_on_two_threads_never_mix_arrays(rig):
     finally:
         stop.set()
         publisher.join(WATCHDOG_S)
+
+
+# -- Face and appearance samples ---------------------------------------------------------
+
+
+def test_a_tracked_persons_face_and_appearance_are_collected_as_read_only_copies(rig):
+    made = rig()
+    detection = with_vectors(person(100, track_id=3), face="sam", appearance="sam")
+    made.deliver(detection)
+    collected = made.vision.collected("person_3")
+    [face] = collected.faces
+    [appearance] = collected.appearances
+    assert (face.model, appearance.model) == (FAKE_FACE_MODEL, FAKE_REID_MODEL)
+    assert vectors([face]) == key_vectors("face", "sam")
+    assert vectors([appearance]) == key_vectors("reid", "sam")
+    for sample in (face, appearance):
+        assert sample.vector.dtype == np.float32
+        assert not sample.vector.flags.writeable
+    # A change to the message later does not reach the sample.
+    detection.face_embedding = np.zeros(VECTOR_DIM, dtype=np.float32)
+    assert vectors(made.vision.collected("person_3").faces) == key_vectors("face", "sam")
+
+
+@pytest.mark.parametrize(
+    ("score", "size_px", "filled"),
+    [(0.3, 40.0, True), (0.9, 8.0, True), (0.9, 40.0, False)],
+    ids=["doubtful", "small", "no-calibration"],
+)
+def test_an_untrusted_face_is_not_collected_but_the_appearance_is(rig, score, size_px, filled):
+    made = rig()
+    detection = with_vectors(
+        person(100, track_id=3), face="sam", appearance="sam", score=score, size_px=size_px
+    )
+    made.deliver(detection, info=None if filled else CameraInfo())
+    collected = made.vision.collected("person_3")
+    assert collected.faces == ()
+    assert vectors(collected.appearances) == key_vectors("reid", "sam")
+
+
+def test_untracked_people_and_unusable_vectors_are_never_collected(rig):
+    made = rig()
+    unusable = person(200, track_id=4)
+    unusable.face_bbox.size_x = unusable.face_bbox.size_y = 40.0
+    unusable.face_det_score = 0.9
+    unusable.face_model = FAKE_FACE_MODEL
+    unusable.face_embedding = np.zeros(VECTOR_DIM, dtype=np.float32)
+    # An appearance vector with no model name.
+    unusable.appearance_embedding = hash_vector("reid:kim", VECTOR_DIM)
+    made.deliver(with_vectors(person(100), face="sam", appearance="sam"), unusable)
+    assert made.vision.collected("person_untracked_1") is None
+    assert made.vision.collected("person_4") == Collected()
+    assert not made.vision.collected("person_4")
+
+
+@pytest.mark.parametrize(
+    "person_id",
+    [
+        "person_untracked_1",
+        "person_0",
+        "person_03",
+        "person_",
+        "person_x",
+        "PERSON_3",
+        " person_3",
+        "person_3 ",
+        "person_3.1",
+        "robot_3",
+        "person_٣",
+        3,
+    ],
+)
+def test_an_id_that_names_no_track_gives_no_samples(rig, person_id):
+    made = rig()
+    made.deliver(with_vectors(person(100, track_id=3), appearance="sam"))
+    assert made.vision.collected("person_3")
+    assert made.vision.collected(person_id) is None
+
+
+def test_a_track_never_seen_is_tracked_but_has_no_samples(rig):
+    made = rig()
+    assert made.vision.collected("person_9") == Collected()
+
+
+def test_late_arrays_add_samples_in_stamp_order_and_one_array_counts_once(rig):
+    made = rig()
+    newer = made.deliver(with_vectors(person(100, track_id=3), face="new"), age_s=0.1)
+    made.deliver(with_vectors(person(100, track_id=3), face="old"), age_s=0.5)
+    made.subscription.callback(newer)
+    assert vectors(made.vision.collected("person_3").faces) == key_vectors("face", "old", "new")
+
+
+def test_a_track_unseen_for_the_ttl_has_no_samples(rig):
+    made = rig(vectors=TrackVectorsConfig(track_ttl_s=0.05))
+    made.deliver(with_vectors(person(100, track_id=3), face="sam"))
+    assert made.vision.collected("person_3")
+    time.sleep(0.1)
+    assert made.vision.collected("person_3") == Collected()
+
+
+def test_a_clock_that_jumps_back_drops_the_samples(rig):
+    made = rig()
+    made.deliver(with_vectors(person(100, track_id=1), face="before"))
+    made.deliver(with_vectors(person(300, track_id=2), face="before"))
+    # The simulation restarted, and its tracker gives track 1 to someone else.
+    made.advance(-60.0)
+    made.deliver(with_vectors(person(100, track_id=1), face="after"))
+    assert vectors(made.vision.collected("person_1").faces) == key_vectors("face", "after")
+    assert made.vision.collected("person_2") == Collected()
+
+
+def test_close_drops_the_samples_and_later_reads_give_none(rig):
+    made = rig()
+    made.deliver(with_vectors(person(100, track_id=1), face="sam"))
+    made.vision.close()
+    assert made.vision.collected("person_1") is None
+    assert made.vision.tracked_in_view() == []
+    made.deliver(with_vectors(person(100, track_id=1), face="sam"))
+    # The buffer itself, which no public read can reach after close.
+    assert made.vision._vectors.tracks(time.monotonic()) == []
+
+
+def test_tracked_in_view_is_the_newest_arrays_tracked_people_left_to_right(rig):
+    made = rig(wait_s=SHORT_WAIT_S)
+    assert made.vision.tracked_in_view() == []
+    made.deliver(
+        person(500, track_id=1), person(100, track_id=2), person(300), person(400, track_id=2)
+    )
+    assert made.vision.tracked_in_view() == ["person_2", "person_1"]
+    # However old the newest is, and a late array does not replace it.
+    made.advance(30.0)
+    made.deliver(person(100, track_id=7), age_s=31.0)
+    unavailable(made)
+    assert made.vision.tracked_in_view() == ["person_2", "person_1"]
+    made.deliver(person(100))
+    assert made.vision.tracked_in_view() == []
+
+
+# -- Names -------------------------------------------------------------------------------
+
+
+def test_people_shows_the_names_of_the_tracked_people_asked_before_the_query(rig):
+    made = rig()
+    namer = StubNamer({"person_2": "Sam"})
+    made.vision.set_namer(namer)
+    made.deliver(person(500, RAISING_LEFT, 1), person(100, SITTING, 2), person(300))
+
+    assert seen(made.vision.people()) == [
+        ("person_2", "Sam", "sitting person", "", "living room"),
+        ("person_untracked_1", None, "standing person", "", "living room"),
+        ("person_1", None, "standing person", "person raising their left arm", "living room"),
+    ]
+    assert seen(made.vision.people("waving person")) == [
+        ("person_1", None, "standing person", "person raising their left arm", "living room"),
+    ]
+    assert [ids for ids, _ in namer.calls] == [["person_2", "person_1"]] * 2
+
+
+@pytest.mark.parametrize(
+    ("query", "ids"),
+    [
+        ("Sam", ["person_2"]),
+        ("  sAM ", ["person_2"]),
+        ("mary ann", ["person_1"]),
+        ("MARY ANN ", ["person_1"]),
+        ("sa", []),
+        ("mary", []),
+        ("sam smith", []),
+        ("sitting person", ["person_2"]),
+        ("waving person", ["person_1"]),
+    ],
+)
+def test_a_query_matches_a_name_ignoring_case_and_spaces_or_a_phrase(rig, query, ids):
+    made = rig()
+    made.vision.set_namer(StubNamer({"person_2": "Sam", "person_1": "Mary Ann"}))
+    made.deliver(person(500, RAISING_LEFT, 1), person(100, SITTING, 2), person(300))
+    assert [p.id for p in made.vision.people(query)] == ids
+
+
+def test_without_a_namer_or_anyone_tracked_nobody_is_named(rig):
+    made = rig()
+    namer = StubNamer({"person_untracked_1": "Sam", "person_1": "Sam"})
+    made.vision.set_namer(namer)
+    made.deliver(person(100))
+    assert [p.name for p in made.vision.people()] == [None]
+    made.deliver()
+    assert made.vision.people() == []
+    assert namer.calls == []
+
+    made.vision.set_namer(None)
+    made.deliver(person(100, track_id=1))
+    assert [p.name for p in made.vision.people()] == [None]
+    assert namer.calls == []
+
+
+def test_a_blank_name_is_no_name(rig):
+    made = rig()
+    made.vision.set_namer(StubNamer({"person_1": ""}))
+    made.deliver(person(100, track_id=1))
+    assert [p.name for p in made.vision.people()] == [None]
+
+
+def test_the_names_are_waited_for_two_seconds_at_most_and_never_past_the_call(rig):
+    made = rig()
+    namer = StubNamer()
+    made.vision.set_namer(namer)
+    made.deliver(person(100, track_id=1))
+    made.vision.people()
+    made.vision.people(timeout_s=0.5)
+    [(_, first), (_, second)] = namer.calls
+    assert NAME_WAIT_S == 2.0
+    assert first == NAME_WAIT_S
+    assert 0.0 < second <= 0.5
+
+
+def test_a_call_out_of_time_before_the_names_shows_none(rig, caplog):
+    made = rig()
+    namer = StubNamer({"person_1": "Sam"})
+    made.vision.set_namer(namer)
+    made.deliver(person(100, track_id=1))
+    # The freshness check reads the clock, and that read takes the call's whole time.
+    made.node.clock.on_now = lambda: time.sleep(0.06)
+    with caplog.at_level(logging.WARNING):
+        [found] = made.vision.people(timeout_s=0.05)
+    assert (found.id, found.name) == ("person_1", None)
+    assert namer.calls == []
+    assert "find_people shows no names: the call's time ran out" in caplog.text
+
+
+@pytest.mark.parametrize("code", [ErrorCode.UNAVAILABLE, ErrorCode.TIMEOUT, ErrorCode.REFUSED])
+def test_a_namer_that_fails_leaves_the_names_null_with_a_warning(rig, caplog, code):
+    made = rig()
+    made.vision.set_namer(StubNamer(error=StepError(code, "The database is down.")))
+    made.deliver(person(100, track_id=1))
+    with caplog.at_level(logging.WARNING):
+        [found] = made.vision.people()
+    assert seen([found]) == [("person_1", None, "standing person", "", "living room")]
+    assert "find_people shows no names: " in caplog.text
+    assert "The database is down." in caplog.text
+
+
+def test_a_stop_while_people_are_named_ends_the_call(rig):
+    made = rig()
+    stopped = StepError(
+        ErrorCode.CANCELLED, "Cancelled naming the people in view: a stop is in effect."
+    )
+    made.vision.set_namer(StubNamer(error=stopped))
+    made.deliver(person(100, track_id=1))
+    with pytest.raises(StepError) as raised:
+        made.vision.people()
+    assert raised.value is stopped
+    assert made.base.poses == 0
 
 
 # -- Over Fast DDS -----------------------------------------------------------------------

@@ -18,11 +18,19 @@ from walkie_agent.atomics import (
     object_info,
     pick,
     place_on,
+    recognize_person,
+    remember_person,
     say,
 )
-from walkie_agent.capabilities import CancelToken, Ctx, PersonSeen
+from walkie_agent.capabilities import CancelToken, Ctx, PersonSeen, Recognized, Remembered
 from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.capabilities.guards import MAX_MOVE_M
+from walkie_agent.capabilities.guards import (
+    MAX_FACT_KEY_CHARS,
+    MAX_FACT_VALUE_CHARS,
+    MAX_FACTS,
+    MAX_MOVE_M,
+    MAX_NAME_CHARS,
+)
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 
 WORLD = {
@@ -327,6 +335,9 @@ def test_every_return_value_is_json_able(robot):
         place_on(ctx, "shelf"),
         pick(ctx, "apple_1"),
         hand_over(ctx, "jane"),
+        recognize_person(ctx, "jane"),
+        remember_person(ctx, "jane", "Jane", {"drink": "tea"}),
+        recognize_person(ctx, "jane"),
     ]
     assert json.loads(json.dumps(replies, allow_nan=False)) == replies
 
@@ -376,3 +387,138 @@ def test_a_set_token_stops_the_atomics_but_not_say(robot):
 def test_a_verb_fault_reaches_the_caller(robot):
     robot.faults["vision.people"] = StepError(ErrorCode.TIMEOUT, "The camera went quiet.")
     assert code_of(find_people, robot.ctx) is ErrorCode.TIMEOUT
+
+
+# The people memory
+
+
+def test_remember_person_then_recognize_person_gives_the_name_and_facts_back(robot):
+    assert remember_person(robot.ctx, "jane", " Jane ", {"drink": " tea "}) == {
+        "id": "jane",
+        "name": "Jane",
+        "facts": {"drink": "tea"},
+        "faces": 1,
+        "appearances": 1,
+    }
+    assert recognize_person(robot.ctx, "jane") == {
+        "id": "jane",
+        "name": "Jane",
+        "facts": {"drink": "tea"},
+        "matched_by": "face",
+    }
+
+
+def test_remember_person_takes_no_facts(robot):
+    assert remember_person(robot.ctx, "jane", "Jane")["facts"] == {}
+    assert recognize_person(robot.ctx, "jane")["facts"] == {}
+
+
+def test_a_stranger_has_a_null_name_and_no_facts(robot):
+    assert recognize_person(robot.ctx, "jane") == {
+        "id": "jane",
+        "name": None,
+        "facts": {},
+        "matched_by": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda ctx, person: remember_person(ctx, person, "Sam"),
+        lambda ctx, person: recognize_person(ctx, person),
+    ],
+    ids=["remember", "recognize"],
+)
+def test_the_memory_atomics_do_not_find_an_unknown_or_absent_person(call):
+    world = copy.deepcopy(WORLD)
+    world["places"]["hall"] = {"x": 5.0, "y": 0.0, "yaw": 0.0, "room": "hall"}
+    world["people"]["sam"] = {
+        "name": "Sam",
+        "room": "hall",
+        "pose": "standing person",
+        "gesture": "waving person",
+    }
+    robot = FakeRobot(world)
+    for person in ("bob", "sam"):
+        with pytest.raises(StepError) as raised:
+            call(robot.ctx, person)
+        assert raised.value.code is ErrorCode.NOT_FOUND
+        assert "Call find_people first" in str(raised.value)
+    go_to(robot.ctx, "hall")
+    call(robot.ctx, "sam")
+
+
+@pytest.mark.parametrize(
+    ("name", "facts"),
+    [
+        ("", None),
+        ("   ", None),
+        ("A" * (MAX_NAME_CHARS + 1), None),
+        ("Jane", {f"fact_{n}": "yes" for n in range(MAX_FACTS + 1)}),
+        ("Jane", {" ": "tea"}),
+        ("Jane", {"k" * (MAX_FACT_KEY_CHARS + 1): "tea"}),
+        ("Jane", {"drink": ""}),
+        ("Jane", {"drink": "t" * (MAX_FACT_VALUE_CHARS + 1)}),
+        ("Jane", {"drink": "tea", "drink ": "milk"}),
+    ],
+)
+def test_remember_person_raises_the_guards_refusal_and_stores_nothing(robot, name, facts):
+    assert code_of(remember_person, robot.ctx, "jane", name, facts) is ErrorCode.REFUSED
+    assert recognize_person(robot.ctx, "jane")["name"] is None
+
+
+def test_remember_person_takes_details_at_every_limit(robot):
+    name = "A" * MAX_NAME_CHARS
+    facts = {str(n).zfill(MAX_FACT_KEY_CHARS): "v" * MAX_FACT_VALUE_CHARS for n in range(MAX_FACTS)}
+    remembered = remember_person(robot.ctx, "jane", name, facts)
+    assert (remembered["name"], remembered["facts"]) == (name, facts)
+
+
+def test_a_set_token_stops_the_memory_atomics_and_stores_nothing(robot):
+    robot.cancel.cancel()
+    assert code_of(remember_person, robot.ctx, "jane", "Jane") is ErrorCode.CANCELLED
+    assert code_of(recognize_person, robot.ctx, "jane") is ErrorCode.CANCELLED
+    robot.cancel.reset()
+    assert recognize_person(robot.ctx, "jane")["name"] is None
+
+
+def test_the_memory_atomics_are_unavailable_on_a_ctx_built_without_memory(robot):
+    ctx = Ctx(cancel=CancelToken(), base=robot, speech=robot, vision=robot)
+    for call in (lambda: remember_person(ctx, "jane", "Jane"), lambda: recognize_person(ctx, "jane")):
+        with pytest.raises(StepError) as raised:
+            call()
+        assert raised.value.code is ErrorCode.UNAVAILABLE
+        assert "no people memory is configured" in str(raised.value)
+    assert [call["verb"] for call in robot.calls] == []
+
+
+def test_a_memory_timeout_reaches_the_caller(robot):
+    robot.faults["memory.remember_person"] = StepError(
+        ErrorCode.TIMEOUT, "The people memory did not answer."
+    )
+    assert code_of(remember_person, robot.ctx, "jane", "Jane") is ErrorCode.TIMEOUT
+
+
+def test_the_memory_atomics_return_only_their_keys_from_the_backend_s_records(robot):
+    class Backend:
+        def remember_person(self, person_id, name, facts=None, *, timeout_s=15.0):
+            return Remembered(person_id, name, {"drink": "tea"}, 3, 5, ("fake_reid",))
+
+        def recognize(self, person_id, *, timeout_s=15.0):
+            return Recognized(person_id, "Jane", {"drink": "tea"}, "appearance")
+
+    ctx = Ctx(cancel=robot.cancel, base=robot, speech=robot, vision=robot, memory=Backend())
+    assert remember_person(ctx, "person_4", "Jane") == {
+        "id": "person_4",
+        "name": "Jane",
+        "facts": {"drink": "tea"},
+        "faces": 3,
+        "appearances": 5,
+    }
+    assert recognize_person(ctx, "person_4") == {
+        "id": "person_4",
+        "name": "Jane",
+        "facts": {"drink": "tea"},
+        "matched_by": "appearance",
+    }

@@ -42,7 +42,7 @@ def serve():
 
     def start(
         *script, then=None, delay_s=0.0, robot=None, tool_log=None, callbacks=(), on_reply=None,
-        **build,
+        on_reset=None, **build,
     ):
         stack = make_stack(
             *script, then=then, delay_s=delay_s, robot=robot, tool_log=tool_log, **build
@@ -54,6 +54,7 @@ def serve():
             on_reply=on_reply or stack.replies.append,
             callbacks=callbacks,
             tool_log=tool_log,
+            on_reset=on_reset,
         )
         runners.append(stack.runner)
         stack.runner.start()
@@ -636,6 +637,80 @@ def test_consecutive_sessions_log_distinct_ids(serve, tmp_path):
     second = stack.runner.session.thread_id
     assert first != second
     assert [(r["call_id"], r["session"]) for r in log_records(log)] == [("a", first), ("b", second)]
+
+
+def test_on_reset_runs_in_a_worker_thread_after_the_new_session_and_the_empty_list(serve):
+    seen = []
+    stack = None
+
+    def on_reset():
+        seen.append(
+            (
+                threading.current_thread().name,
+                stack.runner.session,
+                list(stack.published),
+                stack.robot.cancel.cancelled,
+            )
+        )
+
+    stack = serve(ai(todo_call(add("Wave"))), DONE, DONE, on_reset=on_reset)
+    stack.runner.submit("Go.")
+    idle(stack)
+    stack.runner.stop()
+    idle(stack)
+    assert seen == []  # neither a task nor a stop is the end of one
+
+    old = stack.runner.session
+    published = len(stack.published)
+    stack.runner.reset()
+    idle(stack)
+    [(thread, session, so_far, cancelled)] = seen
+    assert thread != "walkie-runtime"
+    assert session == stack.runner.session != old
+    assert so_far[published:] == [([], [])]
+    assert cancelled  # the reset's stop still holds the token
+
+    stack.runner.submit("Again.")
+    idle(stack)
+    assert len(seen) == 1
+
+
+def test_an_on_reset_that_raises_is_logged_and_the_next_task_runs(serve, caplog):
+    def broken():
+        raise RuntimeError("The people memory is gone.")
+
+    stack = serve(DONE, on_reset=broken)
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.runtime.runner"):
+        stack.runner.reset()
+        idle(stack)
+    assert any("The reset's on_reset failed." in message for message in caplog.messages)
+    assert stack.replies == []  # not a failed task
+
+    stack.runner.submit("Hello.")
+    idle(stack)
+    assert stack.replies == ["Done."]
+
+
+def test_a_slow_on_reset_holds_the_next_task_but_not_a_stop_line(serve):
+    entered, release = threading.Event(), threading.Event()
+
+    def slow():
+        entered.set()
+        assert release.wait(10)
+
+    stack = serve(DONE, on_reset=slow)
+    stack.runner.reset()
+    assert entered.wait(10)
+    stack.runner.stop()
+    wait_until(lambda: stack.robot.said == [STOP_LINE])
+    stack.runner.submit("Hello.")
+    time.sleep(0.1)
+    assert stack.model.received == []
+    assert not stack.runner.wait_idle(0)
+
+    release.set()
+    idle(stack)
+    assert stack.replies == ["Done."]
 
 
 # -- Shutdown ---------------------------------------------------------------------

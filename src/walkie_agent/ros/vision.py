@@ -17,6 +17,16 @@ objects() stays UNAVAILABLE, since nothing reads the object arrays yet.
 - A person's id is person_<track_id>, the tracker's id, which walkie-vision keeps while
   the track lasts. A person the tracker has not taken up has track_id 0 and gets
   person_untracked_<n>, numbered left to right in that one array.
+- The callback also collects each tracked person's face and appearance vectors into a
+  TrackVectors (perception/track_vectors.py), from every array, the late ones too. A
+  face counts only when face_trusted passes it with the array's camera_info. The
+  buffer is cleared when the clock jumps back and by close(). As a VectorSource,
+  collected() and tracked_in_view() give TrackMemory (perception/memory.py) the
+  samples to remember and recognize people by (ADR-0070).
+- With a namer, set by set_namer(), people() names the tracked people of the array
+  before it applies the query, waiting at most NAME_WAIT_S and never past the call's
+  timeout_s. A query then matches a person's name too, ignoring case. A failure of
+  the namer leaves the names None and is logged; a stop still ends the call.
 - The room is the room of the configured place nearest the robot, read once per call,
   and only when someone matches. The pose read and the TF lookup wait only for what
   is left of the call's timeout_s; past it, the people come with no room and no
@@ -36,17 +46,18 @@ objects() stays UNAVAILABLE, since nothing reads the object arrays yet.
   direction less the base's yaw now.
 
 Ported in part from the experiment/hri-agent branch at 61d30e8 (its perception
-vision_feed module and the people half of its RosVision). The feed there also collected
-face and appearance vectors per track, which identity needs and this does not.
+vision_feed module and the people half of its RosVision). The vector collection
+follows that feed's, without its generation keys.
 """
 
 import logging
 import math
+import re
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from rclpy.duration import Duration
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
@@ -68,6 +79,15 @@ from walkie_agent.perception.geometry import (
 )
 from walkie_agent.perception.gestures import DEFAULT_GESTURE_CONFIG, GestureConfig, classify_gestures
 from walkie_agent.perception.people import gesture_phrase, phrases, pose_phrase
+from walkie_agent.perception.track_vectors import (
+    DEFAULT_TRACK_VECTORS_CONFIG,
+    Collected,
+    Sighting,
+    TrackVectors,
+    TrackVectorsConfig,
+    face_trusted,
+    model_vector,
+)
 from walkie_agent.ros.base import MAP_FRAME
 from walkie_agent.ros.policy import FORBIDDEN_NAMES, check_endpoint, ros_failure
 
@@ -95,14 +115,28 @@ WAIT_S = 1.0
 EPOCH_JUMP_S = 5.0
 # How long people() waits for TF to reach an array's stamp before it gives no bearings.
 TF_WAIT_S = 0.2
+# The longest wait of people() for the names of the people in view (decision S3-4).
+NAME_WAIT_S = 2.0
 PUBLISHER_HINT = "Is walkie-vision or oracle_perception running?"
 
 _POLL_S = 0.02
 _NS_PER_S = 1_000_000_000
+# The id of a tracked person, as people() gives it: no leading zero, never track 0.
+_TRACKED_ID = re.compile(r"person_([1-9][0-9]*)")
 
 # The map <- camera transform at an array's stamp: the rotation as x, y, z, w, and the
 # optical centre's position as x, y, z.
 _Camera = tuple[tuple[float, float, float, float], tuple[float, float, float]]
+
+
+class Namer(Protocol):
+    """What set_namer takes: TrackMemory.names on the robot.
+
+    Gives the names of those of `person_ids` it knows, within `timeout_s`. It raises
+    StepError CANCELLED on a stop.
+    """
+
+    def __call__(self, person_ids: Sequence[str], *, timeout_s: float) -> Mapping[str, str]: ...
 
 
 class UnavailableVision:
@@ -123,8 +157,9 @@ class RosVision:
     """people() from walkie-vision's newest people array. objects() stays UNAVAILABLE.
 
     `base` gives the pose and the places that name the room. `tf_buffer` is a tf2 Buffer
-    and defaults to the connector's own. Thread-safe: verbs run on LangChain workers,
-    the callback on the executor and close() on any thread.
+    and defaults to the connector's own. `vectors` sets what the vector buffer keeps.
+    Thread-safe: verbs run on LangChain workers, the callback on the executor and
+    close() on any thread.
     """
 
     def __init__(
@@ -139,7 +174,9 @@ class RosVision:
         wait_s: float = WAIT_S,
         epoch_jump_s: float = EPOCH_JUMP_S,
         tf_wait_s: float = TF_WAIT_S,
+        name_wait_s: float = NAME_WAIT_S,
         gestures: GestureConfig = DEFAULT_GESTURE_CONFIG,
+        vectors: TrackVectorsConfig = DEFAULT_TRACK_VECTORS_CONFIG,
         tf_buffer: Any = None,
     ) -> None:
         self._cancel = cancel
@@ -155,15 +192,27 @@ class RosVision:
         self._max_age_s = max_age_s
         self._wait_s = wait_s
         self._epoch_jump_ns = round(epoch_jump_s * _NS_PER_S)
+        self._name_wait_s = name_wait_s
         self._gestures = gestures
+        self._namer: Namer | None = None
         self._lock = threading.Lock()
         # Notified on every kept array and on close(), so a wait ends at once.
         self._arrived = threading.Condition(self._lock)
         self._newest: tuple[int, PersonDetectionArray] | None = None
+        # Added to and cleared under _lock, so nothing is added after close().
+        self._vectors = TrackVectors(vectors)
         self._closed = False
         self._subscription = self._node.create_subscription(
             PersonDetectionArray, self._topic, self._on_people, PEOPLE_QOS
         )
+
+    def set_namer(self, namer: Namer | None) -> None:
+        """Let people() name the tracked people in view with `namer`; None stops it.
+
+        main sets TrackMemory.names, which reads this vision's samples, so it cannot
+        be given to the constructor.
+        """
+        self._namer = namer
 
     def objects(self, query: str = "", *, timeout_s: float = 5.0) -> list[ObjectSeen]:
         return _no_objects(self._cancel, query, timeout_s)
@@ -173,7 +222,8 @@ class RosVision:
         _begin(self._cancel, query, timeout_s, what)
         deadline = time.monotonic() + timeout_s
         message = self._fresh_array(min(self._wait_s, timeout_s), what)
-        seen = self._people_in(message, query.strip().lower())
+        named = self._names(message, deadline)
+        seen = self._people_in(message, query.strip().lower(), named)
         # Before the empty answer too, so a stop during the classification is not
         # reported as nobody in view.
         self._cancel.check(what)
@@ -195,17 +245,42 @@ class RosVision:
         ]
 
     def close(self) -> None:
-        """Destroy the subscription. Later and waiting calls get UNAVAILABLE."""
+        """Destroy the subscription and drop the samples. Later and waiting calls get UNAVAILABLE."""
         with self._arrived:
             if self._closed:
                 return
             self._closed = True
             self._newest = None
+            self._vectors.clear()
             self._arrived.notify_all()
         try:
             self._node.destroy_subscription(self._subscription)
         except Exception:
             logger.exception("Could not destroy the people subscription.")
+
+    # -- The VectorSource of TrackMemory ------------------------------------------
+
+    def collected(self, person_id: str) -> Collected | None:
+        """The samples of the track `person_id` names, oldest first, as TrackMemory reads them.
+
+        None for an id that names no track, such as person_untracked_1, and after
+        close(). A track with no sample in the buffer's TTL gives an empty Collected.
+        """
+        matched = _TRACKED_ID.fullmatch(person_id) if isinstance(person_id, str) else None
+        if matched is None:
+            return None
+        with self._lock:
+            if self._closed:
+                return None
+            return self._vectors.collected(int(matched.group(1)), time.monotonic())
+
+    def tracked_in_view(self) -> list[str]:
+        """The ids of the tracked people of the newest array, left to right, however old it is."""
+        with self._lock:
+            newest = self._newest
+        if newest is None:
+            return []
+        return _tracked_ids(newest[1])
 
     # -- Reads, on the agent's worker -------------------------------------------
 
@@ -241,32 +316,51 @@ class RosVision:
             raise ros_failure(error, "Looking for people") from error
         return (now_ns - stamp_ns) / _NS_PER_S
 
+    def _names(self, message: PersonDetectionArray, deadline: float) -> Mapping[str, str]:
+        """The namer's names for the tracked people of `message`; {} without a namer or anyone tracked.
+
+        The namer waits at most name_wait_s, and never past `deadline`. A failure of
+        the namer gives {} and a warning; a stop raises StepError CANCELLED.
+        """
+        namer = self._namer
+        if namer is None:
+            return {}
+        person_ids = _tracked_ids(message)
+        if not person_ids:
+            return {}
+        wait_s = min(self._name_wait_s, deadline - time.monotonic())
+        if wait_s <= 0:
+            logger.warning(
+                "find_people shows no names: the call's time ran out before the people "
+                "were named."
+            )
+            return {}
+        try:
+            return namer(person_ids, timeout_s=wait_s)
+        except StepError as error:
+            if error.code is ErrorCode.CANCELLED:
+                raise
+            # The people are still in view, so they are reported without names.
+            logger.warning("find_people shows no names: %s", error)
+            return {}
+
     def _people_in(
-        self, message: PersonDetectionArray, wanted: str
+        self, message: PersonDetectionArray, wanted: str, named: Mapping[str, str]
     ) -> list[tuple[PersonSeen, list[tuple[float, float]], list[tuple[float, float]]]]:
         """The people of `message` that match `wanted`, left to right, with two lists of pixels.
 
-        The first is the torso's keypoints, or the box's centre with fewer than two of
-        them seen, and the second the ankles seen. The records have no room and no
-        bearing yet.
+        `named` gives the names by id. A person matches by one of their phrases or by
+        their name, ignoring case and spaces at either end. The first list is the
+        torso's keypoints, or the box's centre with fewer than two of them seen, and
+        the second the ankles seen. The records have no room and no bearing yet.
         """
-        order = sorted(
-            range(len(message.people)),
-            key=lambda i: (message.people[i].bbox.center.position.x, i),
-        )
-        seen, untracked = [], 0
-        for i in order:
-            person = message.people[i]
-            if person.track_id:
-                person_id = f"person_{person.track_id}"
-            else:
-                # Numbered before the query filters, so a query does not renumber them.
-                untracked += 1
-                person_id = f"person_untracked_{untracked}"
+        seen = []
+        for person, person_id in _left_to_right(message):
             names = classify_gestures(person.keypoints, person.keypoint_scores, self._gestures)
-            if wanted and wanted not in phrases(names):
+            name = named.get(person_id) or None
+            if wanted and wanted not in phrases(names) and not _is_name(wanted, name):
                 continue
-            record = PersonSeen(person_id, None, pose_phrase(names), gesture_phrase(names), "")
+            record = PersonSeen(person_id, name, pose_phrase(names), gesture_phrase(names), "")
             min_score = self._gestures.min_keypoint_score
             pixels = torso_pixels(person.keypoints, person.keypoint_scores, min_score)
             if not pixels:
@@ -337,18 +431,70 @@ class RosVision:
 
     def _on_people(self, message: PersonDetectionArray) -> None:
         stamp_ns = message.header.stamp.sec * _NS_PER_S + message.header.stamp.nanosec
+        # Converted before the lock is taken, so a reader never waits for the copies.
+        sightings = self._sightings(message)
         with self._arrived:
             if self._closed:
                 return
             newest = self._newest
+            jumped = newest is not None and newest[0] - stamp_ns > self._epoch_jump_ns
+            if jumped:
+                # The clock went back, so the tracks may be another run's or another
+                # walkie-vision's, with the same ids.
+                self._vectors.clear()
+            # Also from an array older than the newest: its faces are as good.
+            self._vectors.add(stamp_ns, sightings, time.monotonic())
             # By stamp, so an array that comes late does not hide a newer one.
-            if (
-                newest is None
-                or stamp_ns >= newest[0]
-                or newest[0] - stamp_ns > self._epoch_jump_ns
-            ):
+            if newest is None or stamp_ns >= newest[0] or jumped:
                 self._newest = (stamp_ns, message)
                 self._arrived.notify_all()
+
+    def _sightings(self, message: PersonDetectionArray) -> list[Sighting]:
+        """The tracked people of `message` with the vectors to collect of each."""
+        k = message.camera_info.k
+        fx, fy = float(k[0]), float(k[4])
+        config = self._vectors.config
+        sightings = []
+        for person in message.people:
+            if not person.track_id:
+                continue
+            face = None
+            box = person.face_bbox
+            if face_trusted(person.face_det_score, box.size_x, box.size_y, fx, fy, config):
+                face = model_vector(person.face_model, person.face_embedding)
+            appearance = model_vector(person.appearance_model, person.appearance_embedding)
+            sightings.append(Sighting(person.track_id, face, appearance))
+        return sightings
+
+
+def _left_to_right(message: PersonDetectionArray) -> list[tuple[Any, str]]:
+    """The people of `message` with their ids, by the column of their box's centre."""
+    order = sorted(
+        range(len(message.people)),
+        key=lambda i: (message.people[i].bbox.center.position.x, i),
+    )
+    people, untracked = [], 0
+    for i in order:
+        person = message.people[i]
+        if person.track_id:
+            person_id = f"person_{person.track_id}"
+        else:
+            # Numbered before the query filters, so a query does not renumber them.
+            untracked += 1
+            person_id = f"person_untracked_{untracked}"
+        people.append((person, person_id))
+    return people
+
+
+def _tracked_ids(message: PersonDetectionArray) -> list[str]:
+    """The ids of the tracked people of `message`, left to right, each once."""
+    tracked = (person_id for person, person_id in _left_to_right(message) if person.track_id)
+    return list(dict.fromkeys(tracked))
+
+
+def _is_name(wanted: str, name: str | None) -> bool:
+    """True when `name` is `wanted`, a query already stripped and in lower case."""
+    return name is not None and name.strip().lower() == wanted
 
 
 def _begin(cancel: CancelToken, query: str, timeout_s: float, what: str) -> None:

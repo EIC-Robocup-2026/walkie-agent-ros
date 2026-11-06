@@ -1,4 +1,4 @@
-"""The robot's capabilities on ctx: ctx.base, ctx.speech, ctx.vision, ctx.arms and ctx.facts.
+"""The robot's capabilities on ctx: base, speech, vision, arms, facts and memory.
 
 Each capability is a Protocol here. An atomic calls its verbs as
 ctx.base.go_to("shelf") and never sees a topic or an action. A failure is a
@@ -16,7 +16,14 @@ from datetime import datetime
 from typing import NoReturn, Protocol
 
 from walkie_agent.capabilities.guards import CancelToken
-from walkie_agent.capabilities.records import ObjectSeen, PersonSeen, Pose2D, Team
+from walkie_agent.capabilities.records import (
+    ObjectSeen,
+    PersonSeen,
+    Pose2D,
+    Recognized,
+    Remembered,
+    Team,
+)
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location
 
@@ -26,13 +33,17 @@ __all__ = [
     "CancelToken",
     "Ctx",
     "Facts",
+    "Memory",
     "ObjectSeen",
     "PersonSeen",
     "Pose2D",
+    "Recognized",
+    "Remembered",
     "Speech",
     "Team",
     "UnavailableArms",
     "UnavailableFacts",
+    "UnavailableMemory",
     "Vision",
 ]
 
@@ -163,6 +174,59 @@ class UnavailableFacts:
         self._refuse()
 
 
+class Memory(Protocol):
+    """ctx.memory: the people Walkie has met, by name (ADR-0070).
+
+    `person_id` is a live id, as find_people gives it. remember_person stores that
+    person under `name` with `facts`, from the face and appearance samples the backend
+    collected while they were in view; recognize says who they are. No sample and no
+    stored id leaves the backend. The people remembered are forgotten at the next
+    task, unless the backend was told to resume the last session.
+
+    remember_person raises StepError REFUSED for a name or facts outside
+    guards.require_person_details. Both verbs raise NOT_FOUND for a person who is not
+    in view or whose face and appearance were never seen; UNAVAILABLE without a
+    memory, or when it failed in a way that may pass, so the same call may work later;
+    REFUSED when the memory refused the call; TIMEOUT when it did not answer within
+    `timeout_s`, after which remember_person may have stored the person already; and
+    CANCELLED on a stop.
+    """
+
+    def remember_person(
+        self,
+        person_id: str,
+        name: str,
+        facts: Mapping[str, str] | None = None,
+        *,
+        timeout_s: float = 15.0,
+    ) -> Remembered: ...
+
+    def recognize(self, person_id: str, *, timeout_s: float = 15.0) -> Recognized: ...
+
+
+class UnavailableMemory:
+    """The ctx.memory of a robot with no people memory: every verb refuses."""
+
+    def _refuse(self) -> NoReturn:
+        raise StepError(
+            ErrorCode.UNAVAILABLE,
+            "Walkie cannot remember people here: no people memory is configured.",
+        )
+
+    def remember_person(
+        self,
+        person_id: str,
+        name: str,
+        facts: Mapping[str, str] | None = None,
+        *,
+        timeout_s: float = 15.0,
+    ) -> Remembered:
+        self._refuse()
+
+    def recognize(self, person_id: str, *, timeout_s: float = 15.0) -> Recognized:
+        self._refuse()
+
+
 @dataclass(frozen=True)
 class Ctx:
     """What an atomic runs against. Verbs hold the same `cancel` they are built with."""
@@ -173,3 +237,4 @@ class Ctx:
     vision: Vision
     arms: Arms = UnavailableArms()
     facts: Facts = UnavailableFacts()
+    memory: Memory = UnavailableMemory()

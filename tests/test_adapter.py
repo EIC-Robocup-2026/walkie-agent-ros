@@ -27,6 +27,8 @@ from walkie_agent.atomics import (
     go_to,
     list_places,
     move_relative,
+    recognize_person,
+    remember_person,
     say,
 )
 from walkie_agent.capabilities.fake import FakeRobot
@@ -107,6 +109,82 @@ def test_bind_refuses_a_bool_through_the_verb_s_guard(robot):
         bind(move_relative, robot.ctx)(True)
     assert caught.value.code is ErrorCode.REFUSED
     assert robot.pose() == before
+
+
+def test_remember_person_takes_facts_as_an_optional_object_of_text_values(robot):
+    schema = as_tool(remember_person, robot.ctx).tool_call_schema.model_json_schema()
+    assert set(schema["properties"]) == {"person_id", "name", "facts"}
+    assert schema["required"] == ["person_id", "name"]
+    facts = schema["properties"]["facts"]
+    assert facts["anyOf"] == [
+        {"type": "object", "additionalProperties": {"type": "string"}},
+        {"type": "null"},
+    ]
+    assert facts["default"] is None
+    assert "JSON object of text values" in facts["description"]
+
+
+def test_recognize_person_takes_one_person_id(robot):
+    schema = as_tool(recognize_person, robot.ctx).tool_call_schema.model_json_schema()
+    assert set(schema["properties"]) == {"person_id"}
+    assert schema["required"] == ["person_id"]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"person_id": "operator", "name": "Sam", "facts": {"age": 30}},
+        {"person_id": "operator", "name": "Sam", "facts": {"drink": True}},
+        {"person_id": "operator", "name": "Sam", "facts": "tea"},
+        {"person_id": "operator", "name": "Sam", "facts": ["tea"]},
+        {"person_id": "operator", "name": 7},
+        {"person_id": 1, "name": "Sam"},
+    ],
+)
+def test_remember_person_refuses_anything_but_text_and_stores_nothing(robot, args):
+    with pytest.raises(pydantic.ValidationError):
+        as_tool(remember_person, robot.ctx).invoke(args)
+    assert robot.calls == []
+    assert robot.recognize("operator").name is None
+
+
+def test_the_memory_tools_answer_in_json_text(robot):
+    remembered = as_tool(remember_person, robot.ctx).invoke(
+        {"person_id": "operator", "name": "Sam", "facts": {"drink": "tea"}}
+    )
+    recognized = as_tool(recognize_person, robot.ctx).invoke({"person_id": "operator"})
+    assert json.loads(remembered) == {
+        "id": "operator",
+        "name": "Sam",
+        "facts": {"drink": "tea"},
+        "faces": 1,
+        "appearances": 1,
+    }
+    assert json.loads(recognized) == {
+        "id": "operator",
+        "name": "Sam",
+        "facts": {"drink": "tea"},
+        "matched_by": "face",
+    }
+
+
+def test_a_stranger_reaches_the_model_with_a_null_name(robot):
+    message = run_agent(
+        robot,
+        as_tools([recognize_person], robot.ctx),
+        tool_call("recognize_person", {"person_id": "operator"}, "c1"),
+    )
+    assert message.status != "error"
+    assert json.loads(message.content)["name"] is None
+
+
+def test_a_refused_name_reaches_the_model_as_code_and_message(robot):
+    tools = as_tools([remember_person], robot.ctx)
+    call = tool_call("remember_person", {"person_id": "operator", "name": " "}, "c1")
+    message = run_agent(robot, tools, call)
+    assert message.status == "error"
+    assert message.content == "REFUSED: Refused: name must hold 1 to 40 characters, not 0."
+    assert robot.calls[-1]["error"] == "REFUSED"
 
 
 @pytest.mark.parametrize("tool_set", [GPSR, HRI, DEFAULT], ids=["GPSR", "HRI", "DEFAULT"])

@@ -88,6 +88,12 @@ class Runner:
     verb, such as one whose first cancel Nav2 refused, is asked again. `on_reply(text)` gets the final text of a task, and `on_todos(items,
     changed)`, the same listener as build_agent's, gets the empty list at a start or a
     reset. They run on the loop thread and must not block. `tool_log` logs the stop line.
+
+    `on_reset()` runs at each reset, as the end of a task: after the old thread is
+    deleted, the new session begins and on_todos has the empty list. main passes the
+    people memory's clear() (ADR-0070). It may block, so it runs in a worker thread,
+    and the next item waits for it; a stop's line is still spoken at once. It runs
+    while the reset's stop still holds `ctx.cancel`. An exception it raises is logged.
     """
 
     def __init__(
@@ -99,12 +105,14 @@ class Runner:
         on_reply: Callable[[str], None] | None = None,
         callbacks: Iterable[BaseCallbackHandler] = (),
         tool_log: ToolLog | None = None,
+        on_reset: Callable[[], None] | None = None,
     ) -> None:
         self.agent = agent
         self.ctx = ctx
         self.session = Session()
         self._on_todos = on_todos
         self._on_reply = on_reply
+        self._on_reset = on_reset
         self._callbacks = list(callbacks)
         self._tool_log = tool_log
         # The lock makes "take a task and clear the token" one step against "set the
@@ -272,6 +280,7 @@ class Runner:
             await self.agent.checkpointer.adelete_thread(self.session.thread_id)
             self.session = Session()
             self._call(self._on_todos, [], [])
+            await self._end_task()
         elif isinstance(item, _Stop):
             # The history shows the stop and its answer, and the list shows what was
             # stopped. before_agent ends this pass, so it cannot call the model or drive.
@@ -283,6 +292,15 @@ class Runner:
             last = result["messages"][-1]
             if isinstance(last, AIMessage) and not last.tool_calls and last.content:
                 self._call(self._on_reply, last.text)
+
+    async def _end_task(self) -> None:
+        """Run on_reset in a worker thread, since it may block. A failure is logged."""
+        if self._on_reset is None:
+            return
+        try:
+            await asyncio.to_thread(self._on_reset)
+        except Exception:
+            logger.exception("The reset's on_reset failed.")
 
     def _speak_stop_line(self, text: str, session: str) -> None:
         task = self._loop.create_task(self._say_stop_line(text, session))

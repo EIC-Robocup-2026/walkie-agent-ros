@@ -27,14 +27,19 @@ from rclpy.signals import SignalHandlerOptions
 from ros_fakes import WATCHDOG_S, FakeActionClient, FakeConnector, FakeNode
 from runtime_harness import ScriptedModel, ai, call, wait_until
 from std_msgs.msg import Empty
+from test_ros_vision import CAMERA_FRAME, person, with_vectors
+from test_scene_file import camera_info
+from walkie_vision_msgs.msg import PersonDetectionArray
 
 import walkie_agent.main as main
 from walkie_agent.atomics import DEFAULT, GPSR, HRI, get_facts, list_places
-from walkie_agent.capabilities import Team, UnavailableArms, UnavailableFacts
+from walkie_agent.capabilities import Team, UnavailableArms, UnavailableFacts, UnavailableMemory
 from walkie_agent.capabilities.facts import SystemFacts
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location, load_locations
 from walkie_agent.perception import PEOPLE_TOPIC
+from walkie_agent.perception.memory import TrackMemory
+from walkie_agent.perception.people_memory import InMemoryPeopleMemory
 from walkie_agent.ros import RosBase, RosSpeech, RosVision, UnavailableVision
 from walkie_agent.runtime import Runner, ToolLog, build_model
 from walkie_agent.tasks import TaskTemplate
@@ -219,6 +224,127 @@ def test_with_vision_find_people_reads_people_and_the_prompt_says_so(build, tool
     with pytest.raises(StepError) as raised:
         app.ctx.vision.people()
     assert str(raised.value) == "UNAVAILABLE: Live people perception has shut down."
+
+
+def guest_array(node, track_id=1):
+    """A people array stamped at `node`'s clock, with one guest whose appearance is in view."""
+    guest = with_vectors(person(320, track_id=track_id), appearance="guest")
+    array = PersonDetectionArray(people=[guest], camera_info=camera_info())
+    array.header.frame_id = CAMERA_FRAME
+    array.header.stamp = node.clock.now().to_msg()
+    return array
+
+
+def test_without_a_people_memory_the_memory_tools_are_unavailable_and_the_prompt_says_so(build):
+    built = build(tool_set="hri", vision=True)
+    app = built.app
+    assert isinstance(app.ctx.memory, UnavailableMemory)
+    assert app.runner._on_reset is None
+    assert app.ctx.vision._namer is None
+    app.start()
+    run_one(built)
+
+    system = built.model.received[0][0].content
+    assert system == main.build_system_prompt("hri", PLACES, ROBOT, vision=True)
+    assert "`remember_person` and `recognize_person` need a people memory" in system
+    assert "When someone tells you their name" not in system
+    with pytest.raises(StepError) as raised:
+        app.ctx.memory.recognize("person_1")
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+
+
+def test_a_mock_people_memory_remembers_from_the_vision_and_forgets_at_a_reset(build):
+    built = build(tool_set="hri", vision=True, people_memory="mock")
+    app, node = built.app, built.node
+    memory = app.ctx.memory
+    assert isinstance(memory, TrackMemory)
+    assert memory._source is app.ctx.vision
+    assert memory._cancel is app.ctx.cancel
+    store = memory._store
+    assert isinstance(store, InMemoryPeopleMemory)
+    assert app.ctx.vision._namer == memory.names
+    assert app.runner._on_reset == memory.clear
+    app.start()
+    run_one(built)
+
+    system = built.model.received[0][0].content
+    assert system == main.build_system_prompt("hri", PLACES, ROBOT, vision=True, memory=True)
+    assert "When someone tells you their name, call `remember_person`" in system
+    assert "need a people memory" not in system
+    named = set(re.findall(r"`(\w+)`", system))
+    assert named <= set(built.model.bound[0])
+
+    # The guest's samples come from the people subscription, and find_people names them.
+    [people] = [s for s in node.subscriptions if s.topic == PEOPLE_TOPIC]
+    people.callback(guest_array(node))
+    assert app.ctx.memory.remember_person("person_1", "Sam").name == "Sam"
+    assert [p.name for p in app.ctx.vision.people()] == ["Sam"]
+
+    # A reset ends the task, and the Runner forgets the guest.
+    next(s for s in node.subscriptions if s.topic == "/walkie/reset").callback(Empty())
+    assert app.runner.wait_idle(WATCHDOG_S)
+    assert len(store) == 0
+    app.ctx.cancel.reset()  # the reset set the latch, which a verb checks first
+    assert [p.name for p in app.ctx.vision.people()] == [None]
+
+
+@pytest.mark.parametrize("resume", [False, True])
+def test_a_ros_people_memory_is_made_on_the_connector_with_the_agents_token(build, monkeypatch, resume):
+    made = []
+
+    class StandIn(InMemoryPeopleMemory):
+        """RosPeopleMemory's constructor over the mock: FakeNode makes no service clients."""
+
+        def __init__(self, connector, cancel, *, resume_session=False):
+            super().__init__()
+            made.append((connector, cancel, resume_session))
+
+    monkeypatch.setattr(main, "RosPeopleMemory", StandIn)
+    built = build(
+        tool_set="hri", vision=True, people_memory="ros", resume_people_session=resume
+    )
+    [(connector, cancel, resume_session)] = made
+    assert connector is built.connector
+    assert cancel is built.app.ctx.cancel
+    assert resume_session is resume
+    assert isinstance(built.app.ctx.memory._store, StandIn)
+    assert built.app.runner._on_reset == built.app.ctx.memory.clear
+
+
+@pytest.mark.parametrize(
+    ("options", "words"),
+    [
+        ({"people_memory": "mock"}, "--people-memory mock needs --vision"),
+        ({"people_memory": "ros"}, "--people-memory ros needs --vision"),
+        ({"vision": True, "resume_people_session": True}, "needs --people-memory ros"),
+        (
+            {"vision": True, "people_memory": "mock", "resume_people_session": True},
+            "needs --people-memory ros",
+        ),
+        ({"vision": True, "people_memory": "sqlite"}, "no people memory 'sqlite'"),
+    ],
+)
+def test_assembly_refuses_a_people_memory_it_cannot_use_before_building_anything(
+    build, options, words
+):
+    connector = FakeConnector()
+    with pytest.raises(ValueError, match=re.escape(words)):
+        build(connector=connector, **options)
+    assert connector.node.publishers == []
+    assert connector.node.subscriptions == []
+
+
+@pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri"])
+def test_only_a_set_with_the_memory_tools_gets_a_memory_rule(tool_set):
+    prompts = {
+        memory: main.build_system_prompt(tool_set, PLACES, ROBOT, vision=True, memory=memory)
+        for memory in (False, True)
+    }
+    for prompt in prompts.values():
+        assert ("`remember_person`" in prompt) == (tool_set == "hri")
+        assert set(re.findall(r"`(\w+)`", prompt)) <= tool_names(tool_set)
+    # DEFAULT and GPSR, and their prompts, stay as they were.
+    assert (prompts[False] == prompts[True]) == (tool_set != "hri")
 
 
 def test_assemble_never_spins_or_destroys_the_connector(build):
@@ -656,11 +782,77 @@ def test_cli_defaults_keep_the_existing_paths_and_topics():
     ) == ("/from_human", "/walkie/console", "/walkie/reset", "/walkie/task", "/walkie/todos")
     assert args.use_sim_time is False
     assert args.vision is False
+    assert args.people_memory == "unavailable"
+    assert args.resume_people_session is False
     assert main._parse_args(["--tool-set", "hri"]).tool_set == "hri"
     with pytest.raises(SystemExit):
         main._parse_args(["--tool-set", "garage"])
     with pytest.raises(SystemExit):
         main._parse_args(["--fake-model"])
+
+
+@pytest.mark.parametrize(
+    ("flags", "memory", "resume"),
+    [
+        (["--vision", "--people-memory", "mock"], "mock", False),
+        (["--vision", "--people-memory", "ros"], "ros", False),
+        (["--vision", "--people-memory", "ros", "--resume-people-session"], "ros", True),
+        (["--vision", "--people-memory", "unavailable"], "unavailable", False),
+    ],
+)
+def test_a_people_memory_with_what_it_needs_is_accepted(flags, memory, resume):
+    args = main._parse_args(flags)
+    assert (args.people_memory, args.resume_people_session) == (memory, resume)
+
+
+@pytest.mark.parametrize(
+    ("flags", "words"),
+    [
+        (["--people-memory", "mock"], "--people-memory mock needs --vision"),
+        (["--people-memory", "ros", "--resume-people-session"], "--people-memory ros needs --vision"),
+        (["--vision", "--resume-people-session"], "--resume-people-session needs --people-memory ros"),
+        (
+            ["--vision", "--people-memory", "mock", "--resume-people-session"],
+            "--resume-people-session needs --people-memory ros",
+        ),
+        (["--vision", "--people-memory", "sqlite"], "invalid choice: 'sqlite'"),
+    ],
+)
+def test_a_people_memory_without_what_it_needs_is_a_usage_error(capsys, flags, words):
+    with pytest.raises(SystemExit) as exited:
+        main._parse_args(flags)
+    assert exited.value.code == 2
+    error = capsys.readouterr().err
+    assert error.startswith("usage: ")
+    assert words in error
+
+
+def test_cli_passes_the_people_memory_into_the_assembly(cli, monkeypatch):
+    received = {}
+
+    def assemble(**kwargs):
+        received.update(kwargs)
+        app = FakeApp(cli)
+        app.on_start = send
+        return app
+
+    monkeypatch.setattr(main, "assemble", assemble)
+    assert cli.run("--vision", "--people-memory", "ros", "--resume-people-session") == 0
+    assert (received["vision"], received["people_memory"], received["resume_people_session"]) == (
+        True,
+        "ros",
+        True,
+    )
+
+
+def test_a_people_memory_without_vision_stops_before_ros_init(cli, capsys):
+    with pytest.raises(SystemExit) as exited:
+        cli.run("--people-memory", "mock")
+    assert exited.value.code == 2
+    assert "--people-memory mock needs --vision" in capsys.readouterr().err
+    # Before .env, the model and ROS: nothing has started.
+    assert cli.events == []
+    assert cli.connectors == []
 
 
 def test_models_and_files_are_ready_before_ros_starts(cli):

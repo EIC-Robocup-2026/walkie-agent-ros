@@ -9,7 +9,18 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from walkie_agent.capabilities import Arms, Base, Facts, Speech, Team, Vision
+from walkie_agent.capabilities import (
+    Arms,
+    Base,
+    Facts,
+    Memory,
+    Recognized,
+    Remembered,
+    Speech,
+    Team,
+    Vision,
+)
+from walkie_agent.capabilities import fake
 from walkie_agent.capabilities.fake import (
     CHULA_PAT14_6_PLACES,
     OBJECTS,
@@ -72,7 +83,7 @@ def holding_apple() -> FakeRobot:
 
 
 def test_it_implements_every_protocol_method(robot):
-    for protocol in (Base, Speech, Vision, Arms, Facts):
+    for protocol in (Base, Speech, Vision, Arms, Facts, Memory):
         for name in vars(protocol):
             if not name.startswith("_"):
                 assert callable(getattr(robot, name)), name
@@ -81,7 +92,7 @@ def test_it_implements_every_protocol_method(robot):
 def test_its_ctx_holds_the_robot_and_its_token(robot):
     ctx = robot.ctx
     assert ctx.cancel is robot.cancel
-    assert ctx.base is ctx.speech is ctx.vision is ctx.arms is ctx.facts is robot
+    assert ctx.base is ctx.speech is ctx.vision is ctx.arms is ctx.facts is ctx.memory is robot
 
 
 # ctx.base
@@ -231,6 +242,8 @@ def test_every_wait_refuses_a_timeout_that_bounds_nothing(robot, bad):
         lambda: robot.pick("mug_1", timeout_s=bad),
         lambda: robot.place_on("shelf", timeout_s=bad),
         lambda: robot.hand_over("bob", timeout_s=bad),
+        lambda: robot.remember_person("bob", "Bob", timeout_s=bad),
+        lambda: robot.recognize("bob", timeout_s=bad),
     ]
     for call in calls:
         assert code_of(call) is ErrorCode.REFUSED
@@ -573,6 +586,11 @@ def test_a_cancel_after_the_wait_and_before_the_commit_keeps_the_robot_in_place(
         ("pick", ([],)),
         ("hand_over", (1,)),
         ("place_on", (None,)),
+        ("remember_person", (1, "Ann")),
+        ("remember_person", ("ann", None)),
+        ("remember_person", ("ann", "Ann", ["tea"])),
+        ("remember_person", ("ann", "Ann", {"drink": 1})),
+        ("recognize", (None,)),
     ],
 )
 def test_a_wrong_type_is_refused_logged_and_changes_nothing(robot, verb, args):
@@ -582,6 +600,7 @@ def test_a_wrong_type_is_refused_logged_and_changes_nothing(robot, verb, args):
     after = robot.snapshot()
     for key in ("at", "pose", "objects", "said"):
         assert after[key] == before[key]
+    assert robot.recognize("ann").name is None
 
 
 def test_an_unexpected_exception_is_logged_as_internal_and_not_hidden(robot):
@@ -778,3 +797,149 @@ def test_a_seeded_robot_starts_at_the_instruction_point_and_can_see_the_operator
     robot = FakeRobot(seed=4)
     assert robot.snapshot()["at"] == "instruction point"
     assert "operator" in [who.id for who in robot.people()]
+
+
+# ctx.memory
+
+
+def test_remember_person_keeps_the_stripped_name_and_facts_and_recognize_gives_them_back(robot):
+    remembered = robot.remember_person("ann", "  Annie ", {" drink ": " tea "})
+    assert remembered == Remembered("ann", "Annie", {"drink": "tea"}, faces=1, appearances=1)
+    assert robot.recognize("ann") == Recognized("ann", "Annie", {"drink": "tea"}, "face")
+    assert [call["verb"] for call in robot.calls] == ["memory.remember_person", "memory.recognize"]
+
+
+def test_a_person_never_remembered_is_not_named_even_though_the_world_names_them(robot):
+    assert robot.people()[0].name == "Ann"
+    assert robot.recognize("ann") == Recognized("ann", None, {}, None)
+
+
+def test_the_people_remembered_stay_apart_from_the_world_and_out_of_the_snapshot(robot):
+    before = robot.snapshot()
+    robot.remember_person("ann", "Annie", {"drink": "tea"})
+    after = robot.snapshot()
+    keys = {"at", "room", "pose", "holding", "places", "objects", "people", "facts", "said", "calls"}
+    assert set(after) == keys
+    assert {key: value for key, value in after.items() if key != "calls"} == {
+        key: value for key, value in before.items() if key != "calls"
+    }
+    assert robot.people()[0].name == "Ann"
+
+
+def test_remembering_a_person_again_replaces_what_was_kept(robot):
+    robot.remember_person("ann", "Ann", {"drink": "tea"})
+    robot.remember_person("ann", "Annie")
+    assert robot.recognize("ann") == Recognized("ann", "Annie", {}, "face")
+
+
+def test_the_facts_given_and_returned_share_nothing_with_the_memory(robot):
+    given = {"drink": "tea"}
+    remembered = robot.remember_person("ann", "Ann", given)
+    given["drink"] = "coffee"
+    remembered.facts["drink"] = "milk"
+    robot.recognize("ann").facts["drink"] = "water"
+    assert robot.recognize("ann").facts == {"drink": "tea"}
+
+
+def test_forget_clears_every_person_remembered(robot):
+    robot.remember_person("ann", "Ann")
+    robot.forget()
+    assert robot.recognize("ann").name is None
+
+
+@pytest.mark.parametrize(
+    "call",
+    [lambda robot: robot.remember_person("carol", "Carol"), lambda robot: robot.recognize("carol")],
+    ids=["remember", "recognize"],
+)
+def test_the_memory_does_not_find_an_unknown_person(robot, call):
+    with pytest.raises(StepError) as raised:
+        call(robot)
+    assert raised.value.code is ErrorCode.NOT_FOUND
+    assert str(raised.value) == "NOT_FOUND: No person 'carol'. Call find_people first."
+
+
+def test_the_memory_does_not_find_a_person_in_another_room_until_the_robot_goes_there(robot):
+    with pytest.raises(StepError) as raised:
+        robot.remember_person("bob", "Bob")
+    assert raised.value.code is ErrorCode.NOT_FOUND
+    assert "bob is not in view here. Call find_people first." in str(raised.value)
+    robot.go_to("den")
+    robot.remember_person("bob", "Bob")
+    robot.go_to("lobby")
+    assert code_of(robot.recognize, "bob") is ErrorCode.NOT_FOUND
+    robot.go_to("den")
+    assert robot.recognize("bob").name == "Bob"
+
+
+@pytest.mark.parametrize(
+    ("name", "facts"),
+    [
+        (" ", None),
+        ("A" * 41, None),
+        ("Ann", {f"fact {n}": "yes" for n in range(9)}),
+        ("Ann", {"": "tea"}),
+        ("Ann", {"drink": " "}),
+        ("Ann", {"k" * 31: "tea"}),
+        ("Ann", {"drink": "t" * 81}),
+        ("Ann", {"drink": "tea", " drink": "milk"}),
+    ],
+)
+def test_remember_person_refuses_details_outside_the_limits_and_keeps_nothing(robot, name, facts):
+    assert code_of(robot.remember_person, "ann", name, facts) is ErrorCode.REFUSED
+    assert robot.calls[-1]["error"] == "REFUSED"
+    assert robot.recognize("ann").name is None
+
+
+def test_the_memory_refuses_while_the_token_is_set(robot):
+    robot.cancel.cancel()
+    assert code_of(robot.remember_person, "ann", "Ann") is ErrorCode.CANCELLED
+    assert code_of(robot.recognize, "ann") is ErrorCode.CANCELLED
+    robot.cancel.reset()
+    assert robot.recognize("ann").name is None
+
+
+def test_a_stop_after_the_checks_and_before_the_write_remembers_nobody(robot, monkeypatch):
+    check = fake.require_person_details
+
+    def then_stop(*args, **kwargs):
+        checked = check(*args, **kwargs)
+        robot.cancel.cancel()
+        return checked
+
+    monkeypatch.setattr(fake, "require_person_details", then_stop)
+    assert code_of(robot.remember_person, "ann", "Ann") is ErrorCode.CANCELLED
+    assert robot.calls[-1]["error"] == "CANCELLED"
+    robot.cancel.reset()
+    assert robot.recognize("ann").name is None
+
+
+def test_a_remember_record_keeps_a_json_able_copy_of_the_facts(robot):
+    given = {"drink": "tea"}
+    robot.remember_person("ann", "Ann", given)
+    given["drink"] = "coffee"
+    with pytest.raises(StepError):
+        robot.remember_person("ann", "Ann", {1: float("nan"), "seen": (b"tea", None)})
+    snapshot = robot.snapshot()
+    assert json.loads(json.dumps(snapshot["calls"], allow_nan=False)) == snapshot["calls"]
+    assert snapshot["calls"][0]["args"] == {
+        "person_id": "ann",
+        "name": "Ann",
+        "facts": {"drink": "tea"},
+    }
+    assert snapshot["calls"][1]["args"]["facts"] == {"1": "nan", "seen": ["b'tea'", None]}
+
+
+@pytest.mark.parametrize(
+    ("verb", "call"),
+    [
+        ("memory.remember_person", lambda robot: robot.remember_person("ann", "Ann")),
+        ("memory.recognize", lambda robot: robot.recognize("ann")),
+    ],
+)
+def test_a_memory_fault_makes_every_call_to_that_verb_fail(robot, verb, call):
+    robot.faults[verb] = StepError(ErrorCode.TIMEOUT, "The people memory did not answer.")
+    assert code_of(call, robot) is ErrorCode.TIMEOUT
+    assert (robot.calls[-1]["verb"], robot.calls[-1]["error"]) == (verb, "TIMEOUT")
+    del robot.faults[verb]
+    assert robot.recognize("ann").name is None

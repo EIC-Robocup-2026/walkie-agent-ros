@@ -10,6 +10,10 @@ for every camera_info of the robot's head camera. Run it in the
 simulation's ROS graph, after the simulation is up: until TF has the map
 frame, images are skipped with a warning.
 
+It gives the oracle no clock epoch: the scene is the same at every stamp,
+so a pose cannot be paired with another clock's scene, and the oracle's TF
+buffer, on the node's clock, clears itself when sim time goes back.
+
 A bad scene file stops it before rclpy starts, with exit code 2.
 """
 

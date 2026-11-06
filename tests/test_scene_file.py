@@ -35,14 +35,23 @@ CHULA_SCENE = PROJECT_ROOT / "config" / "scenes" / "chula_living_room.toml"
 CHULA_LOCATIONS = PROJECT_ROOT / "config" / "locations.chula_pat14_6.toml"
 STREAM_ID = "6f1c2a4e-8b3d-4f7a-9c2e-1d5b7a9e3f60"
 
-# chula_pat14_6's walls and furniture that the scene's objects leave out, as
-# x1, y1, x2, y2 footprints in the map frame: chula_tv_desk with its
-# partition, and chula_room_divider's low wall. The east wall's inner face is
-# at x = 3.515.
-TV_DESK = (0.8775, -2.49, 1.25, -0.81)
-DIVIDER = (1.73, -3.32, 3.52, -3.24)
-EAST_WALL_X = 3.515
-# The room a standing person needs between their centre and any furniture.
+# A footprint: centre x and y, half-length and half-width, and yaw, in the map frame.
+Footprint = tuple[float, float, float, float, float]
+
+# chula_pat14_6's walls and furniture that the scene's objects leave out:
+# chula_tv_desk with its partition, chula_room_divider's low wall, and
+# chula_east_wall, whose body quaternion (0.700482648, 0, 0, -0.713669433)
+# turns it 1.07 deg off the y axis.
+TV_DESK: Footprint = (1.06375, -1.65, 0.18625, 0.84, 0.0)
+DIVIDER: Footprint = (2.625, -3.28, 0.895, 0.04, 0.0)
+EAST_WALL: Footprint = (
+    3.515,
+    -3.085,
+    3.48560612,
+    0.05,
+    2 * math.atan2(-0.713669433, 0.700482648),
+)
+# The room a standing person needs between their centre and any furniture or wall.
 CLEARANCE_M = 0.2
 
 
@@ -56,16 +65,30 @@ def living_room_camera() -> np.ndarray:
     return camera_from_map_at(place.x, place.y, place.yaw, base_from_camera())
 
 
-def footprint(box: MapBox) -> tuple[float, float, float, float]:
-    assert box.yaw == 0.0, "The footprint is axis-aligned only."
+def footprint(box: MapBox) -> Footprint:
     (cx, cy, _), (sx, sy, _) = box.center, box.size
-    return (cx - sx / 2, cy - sy / 2, cx + sx / 2, cy + sy / 2)
+    return (cx, cy, sx / 2, sy / 2, box.yaw)
 
 
-def gap(x: float, y: float, rect: tuple[float, float, float, float]) -> float:
-    """The distance from a point to a rectangle; 0 inside it."""
-    x1, y1, x2, y2 = rect
-    return math.hypot(max(x1 - x, 0.0, x - x2), max(y1 - y, 0.0, y - y2))
+def gap(x: float, y: float, rect: Footprint) -> float:
+    """The distance from a point to a footprint; 0 inside it."""
+    cx, cy, half_x, half_y, yaw = rect
+    dx, dy = x - cx, y - cy
+    # The point in the footprint's own frame.
+    u = dx * math.cos(yaw) + dy * math.sin(yaw)
+    v = -dx * math.sin(yaw) + dy * math.cos(yaw)
+    return math.hypot(max(abs(u) - half_x, 0.0), max(abs(v) - half_y, 0.0))
+
+
+def test_gap_measures_to_a_turned_footprint():
+    # The east wall's inner face lies 0.05 m west of its centre line, which
+    # leans east going north: at y = -0.42 the face is at x = 3.515.
+    assert gap(3.25, -0.42, EAST_WALL) == pytest.approx(0.265, abs=0.002)
+    assert gap(3.25, -1.65, EAST_WALL) == pytest.approx(0.242, abs=0.002)
+    assert gap(3.565, -0.42, EAST_WALL) == 0.0
+    # Axis-aligned: 0.1 m off the divider's centre line, so 0.06 m off its face, and inside.
+    assert gap(2.625, -3.18, DIVIDER) == pytest.approx(0.06)
+    assert gap(2.625, -3.28, DIVIDER) == 0.0
 
 
 def write(tmp_path: Path, text: str) -> Path:
@@ -134,13 +157,12 @@ def test_the_chula_people_face_the_living_room_camera():
 
 def test_a_standing_person_keeps_clear_of_the_furniture_and_walls():
     loaded = load_scene(CHULA_SCENE)
-    furniture = [footprint(o.box) for o in loaded.scene.objects] + [TV_DESK, DIVIDER]
+    obstacles = [footprint(o.box) for o in loaded.scene.objects] + [TV_DESK, DIVIDER, EAST_WALL]
 
     standing = [p for p in loaded.scene.people if p.posture == "standing"]
     assert standing
     for person in standing:
-        assert min(gap(person.x, person.y, rect) for rect in furniture) >= CLEARANCE_M
-        assert EAST_WALL_X - person.x >= CLEARANCE_M
+        assert min(gap(person.x, person.y, rect) for rect in obstacles) >= CLEARANCE_M
 
 
 def test_the_host_sits_on_the_sofas_cushions():
@@ -157,9 +179,10 @@ def test_the_mug_stands_on_the_coffee_table():
     objects = {o.label: o for o in load_scene(CHULA_SCENE).scene.objects}
     mug, table = objects["mug"].box, objects["table"].box
 
-    x1, y1, x2, y2 = footprint(table)
-    mx1, my1, mx2, my2 = footprint(mug)
-    assert x1 <= mx1 and mx2 <= x2 and y1 <= my1 and my2 <= y2
+    assert table.yaw == mug.yaw == 0.0
+    tx, ty, thx, thy, _ = footprint(table)
+    mx, my, mhx, mhy, _ = footprint(mug)
+    assert abs(mx - tx) + mhx <= thx and abs(my - ty) + mhy <= thy
     table_top = table.center[2] + table.size[2] / 2
     assert mug.center[2] - mug.size[2] / 2 == pytest.approx(table_top, abs=0.005)
 

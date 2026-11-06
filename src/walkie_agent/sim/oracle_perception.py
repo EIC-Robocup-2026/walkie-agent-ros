@@ -195,9 +195,10 @@ class OraclePerception:
     listens to TF on `node` itself.
 
     `epoch`, if given, counts the times the clock went back. It is read
-    before the camera's pose is looked up and again once the scene is
-    drawn. An image for which it changed is skipped, with a warning: its
-    pose and its scene may come from different clocks.
+    before the camera's pose is looked up and again once the arrays are
+    drawn, just before they are published. An image for which it changed
+    is skipped, with a warning: its pose and its scene may come from
+    different clocks. A scene that is the same at every stamp needs none.
 
     `stream_id` is the object arrays' stream_id. None makes a new UUID, as
     a vision process does when it starts; a consumer then keys the tracks
@@ -294,13 +295,6 @@ class OraclePerception:
             )
             return
         scene = self._scene(stamp)
-        if self._epoch is not None and self._epoch() != epoch:
-            self._warn(
-                "clock",
-                "An image was drawn while the clock went back, so no detections were published "
-                "for it: its camera pose and its scene may come from different clocks.",
-            )
-            return
         if scene is None:
             self._warn(
                 "scene",
@@ -316,6 +310,14 @@ class OraclePerception:
             self._rng,
             stream_id=self._stream_id,
         )
+        # After the drawing, so nothing drawn across a jump back is published.
+        if self._epoch is not None and self._epoch() != epoch:
+            self._warn(
+                "clock",
+                "An image was drawn while the clock went back, so no detections were published "
+                "for it: its camera pose and its scene may come from different clocks.",
+            )
+            return
         self._people_pub.publish(people)
         self._objects_pub.publish(objects)
 

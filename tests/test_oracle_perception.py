@@ -699,6 +699,34 @@ def test_an_image_during_which_the_clock_went_back_is_skipped_with_a_warning(
     assert "the clock went back" in text
 
 
+def test_an_image_whose_drawing_spans_a_clock_jump_is_not_published(
+    idle_node, caplog, monkeypatch
+):
+    # The clock goes back while the arrays are drawn, after the scene was read.
+    jumps = [0]
+    draw = oracle_perception.draw_detections
+
+    def draw_across_a_jump(*args, **kwargs):
+        arrays = draw(*args, **kwargs)
+        jumps[0] += 1
+        return arrays
+
+    monkeypatch.setattr(oracle_perception, "draw_detections", draw_across_a_jump)
+    scene = SceneAt(Scene(people=(facing_person(2.0),)))
+    oracle = OraclePerception(
+        idle_node, scene, QUIET, tf_buffer=camera_buffer(), epoch=lambda: jumps[0]
+    )
+    sent = published(oracle, monkeypatch)
+
+    with caplog.at_level(logging.WARNING, logger=oracle_perception.__name__):
+        oracle._on_camera_info(camera_info())
+
+    assert len(scene.asked) == 1 and jumps == [1]
+    assert sent == []
+    [text] = oracle_warnings(caplog)
+    assert "the clock went back" in text
+
+
 # -- Over ROS ----------------------------------------------------------------------------
 
 

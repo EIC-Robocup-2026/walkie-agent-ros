@@ -312,12 +312,35 @@ kitchen table, succeeded from the living room and from the shelf.
       -3.99°, so what is left is Nav2's overshoot.
 
     `down` left no record.
+- With the people memory (S3), on 2026-11-07: `up --agent -- --tool-set hri
+  --vision --people-memory mock`, then four tasks with the real model:
+    - "Hi, I am the one waving at you. My name is Sam, please remember me."
+      `find_people("waving person")` returned `person_1`, and
+      `remember_person("person_1", "Sam")` stored 18 faces and 20 appearance
+      vectors. The agent said "Nice to meet you, Sam. I have remembered you."
+    - "Please turn around to look behind you, and then turn back to face us."
+      The first `move_relative(0, 0, 180)` failed after 10.4 s with Nav2 error
+      code 105. By the headings that followed, the base had turned about 184°.
+      The model retried the turn, which ended at a heading of 4°, and the turn
+      back left the base at -177°, facing away from the guests. The agent said
+      it had turned back to face them. Decision S2-11 now counts such a turn as
+      done.
+    - "You are facing away from us now. Please turn around once more, and then
+      tell me who you can see." One more 180° turn, to 3°, then `find_people()`
+      returned `person_1` named Sam and `person_2` with no name. The agent said
+      Sam was standing and raising a hand, beside someone it did not know yet.
+    - After `/walkie/reset`, "Who can you see right now?" `find_people()`
+      named nobody, and the agent said it did not know either name.
+
+    `down` left no record.
 
 ## Not in the recipe
 
 - **Arms.** MoveIt and the arm commander come with S6 of the
   [roadmap](../architecture/see-remember-act.md). The commander is not in this
   repository yet.
-- **Memory.** walkie-database's sim seed and memory node come with S3.
+- **The people database.** `--people-memory mock` keeps the people memory in
+  the agent's process. walkie-database's node, for `--people-memory ros`, and
+  its sim seed are not started by the script.
 - **Voice.** Speech is logged, not voiced. RAI's voice nodes on a PipeWire null
   sink are not part of it ([Talk to Walkie by voice](07-voice.md)).

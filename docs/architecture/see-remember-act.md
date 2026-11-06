@@ -262,7 +262,15 @@ decision, and it can run beside the vision chain.
   matching `perception/recognition.py` and `perception/memory.py`, and the
   database client `ros/people_memory.py`. A Fast DDS test sends oracle-style
   people arrays through `RosVision` into the in-memory store and finds the
-  name again. The laptop run of the database path has not been done.
+  name again. The laptop run of the database path has not been done. The
+  Codex review added S3-11: a stop fences every store write, so a stop that
+  lands first stores nobody. In sim, with `--people-memory mock` and the real
+  model, the agent remembered the waving guest as Sam, named Sam again after
+  turning away and back, and named nobody after a reset
+  ([What has been run](../setup/08-chula-simulation.md#what-has-been-run)).
+  The same run found a 180° `move_relative` that Nav2 aborted 4° past its
+  goal; the model retried it and ended facing away. A turn on the spot now
+  counts as done within 10° of its goal, as face_person's does (S2-11).
 
 ### S4: See objects in view
 

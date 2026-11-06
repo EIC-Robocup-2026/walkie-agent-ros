@@ -417,8 +417,9 @@ pairing, colour accuracy and localizer error stay open until measured.
 ## See, remember and act
 
 Decisions taken while building the groundwork (G1 to G6) and the steps (S1
-to S13) that let the agent see people and objects, remember them and act on
-them. Each ID names the step it belongs to.
+to S13) of the [see, remember and act roadmap](see-remember-act.md). Each ID
+names the step it belongs to. The roadmap lists each step's planned defaults;
+a row here records one once it is built.
 
 | ID | Decision | Why | Alternative and consequence | Status |
 | --- | --- | --- | --- | --- |

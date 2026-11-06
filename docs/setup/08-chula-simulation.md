@@ -46,6 +46,11 @@ for `rmw_zenoh_cpp` 0.2.11, whose `rmw_wait` does not block forever
 ([ADR-0032](../architecture/decisions/0032-rmw-zenoh-from-source.md)). The script
 refuses to start without them.
 
+**A model key, for `--agent`.** The agent reads `OPENAI_API_KEY` from the
+environment or from `.env` at the root of this repository. A Git worktree has no
+`.env` of its own. Without a key, the agent exits at startup, and `up` fails with
+`the agent did not start`, leaving the other parts running.
+
 ## Start it
 
 ```bash
@@ -68,6 +73,11 @@ scripts/chula-sim.sh check --agent
 - `--gui` opens MuJoCo's viewer and RViz.
 - `up` refuses to start beside another `nav_mujoco_omnibot.launch.py`, on any
   graph, because two simulations compete for the CPU.
+- `up` returns only when the oracle and the agent have logged that they are up,
+  and every part is still running a few seconds later. If a part exits first,
+  `up` fails, names it, and lists the parts it leaves running.
+- `up` and `down` hold a lock on `SIM_DIR`, so a second `up` or `down` at the
+  same time refuses to run.
 
 **The robot starts facing the people.** The world's own spawn faces south, away
 from both people of the oracle's scene. The script spawns the robot at the
@@ -127,7 +137,11 @@ SIGINT, as Ctrl+C would, then SIGTERM, then SIGKILL if a part ignores both.
 Everything goes under `SIM_DIR`, `/var/tmp/walkie-chula-sim` by default.
 
 - `logs/`: one log per part, and the agent's tool log.
-- `pids/`: each part's process group.
+- `pids/`: one record for each part: its process group, the boot it started in,
+  and a token that every process of the part carries in `CHULA_SIM_TOKEN`.
+  `status` and `down` treat a part as running only while its group still holds
+  a process with that token. So after a reboot, or once the system gives the
+  group's number to another program, `down` never signals that program.
 - `ros/`: `ROS_HOME` and the ROS logs.
 - `worlds/`: the world the launch file generates.
 
@@ -185,6 +199,11 @@ table and succeeds, so the gap to furniture alone does not predict a failure.
 The cause was not found. The third `trash`, in the open corner north of the
 kitchen table, succeeded from the living room and from the shelf.
 
+- After the review fixes (G4-7), `up --agent` in a worktree without `.env`
+  stopped at `the agent did not start` and listed the four parts still running.
+  With the key exported, a second `up --agent` started only the agent, `check
+  --agent` passed again, and all 32 processes of the five parts carried their
+  part's token. `down` took 12 s and left none of them.
 - One more task with the real model, "Please say hello.". The agent called
   `say("Hello!")`, and `speech.log` showed the line. The log also begins with
   two of Zenoh's configuration warnings, which `ros2 topic echo` prints at

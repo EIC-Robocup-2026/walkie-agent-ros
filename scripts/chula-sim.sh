@@ -47,6 +47,14 @@ PARTS=(router bringup oracle speech agent)
 BRINGUP_READY="Managed nodes are active"
 BRINGUP_TIMEOUT_S=300
 ROUTER_TIMEOUT_S=30
+# What the oracle and the agent log once their nodes exist (oracle_scene.py, main.py).
+ORACLE_READY="Drawing "
+AGENT_READY="Walkie's agent is running"
+PART_TIMEOUT_S=120
+# The speech listener logs nothing until a line arrives; a bad start exits within this.
+SETTLE_S=3
+# Every process a part starts carries CHULA_SIM_TOKEN, and the part's record keeps it.
+TOKEN_VARIABLE=CHULA_SIM_TOKEN
 
 # Every process joins the private graph. Pixi sets RMW_IMPLEMENTATION=rmw_zenoh_cpp in
 # both repositories; the override replaces rmw_zenoh's default router, localhost:7447.
@@ -66,55 +74,101 @@ die() {
     exit 1
 }
 
-pgid_of() {
-    cat "$SIM_DIR/pids/$1" 2>/dev/null || true
+boot_id() {
+    cat /proc/sys/kernel/random/boot_id
 }
 
+# A part's record, pids/NAME, is one line: its process group ID, the boot it started in,
+# and the token that every process of the part carries in CHULA_SIM_TOKEN.
+pgid_of() {
+    local pgid= _
+    if [[ -f $SIM_DIR/pids/$1 ]]; then
+        read -r pgid _ < "$SIM_DIR/pids/$1" || true
+    fi
+    echo "$pgid"
+}
+
+# running NAME: NAME's process group still holds a process of this boot that carries
+# NAME's token. A group ID that the system has since given to another group, after a
+# reboot or after the part exited, does not count, so nothing else is ever signalled.
 running() {
-    local pgid
-    pgid=$(pgid_of "$1")
-    [[ -n $pgid ]] && kill -0 -- "-$pgid" 2>/dev/null
+    local pgid boot token pid
+    [[ -f $SIM_DIR/pids/$1 ]] || return 1
+    read -r pgid boot token < "$SIM_DIR/pids/$1" || return 1
+    [[ $pgid =~ ^[1-9][0-9]*$ && $boot == "$(boot_id)" && -n $token ]] || return 1
+    for pid in $(pgrep -g "$pgid" || true); do
+        grep -q -z -x -F "$TOKEN_VARIABLE=$token" "/proc/$pid/environ" 2>/dev/null && return 0
+    done
+    return 1
 }
 
 # start NAME DIR COMMAND...: run COMMAND in DIR as the leader of a new process group,
-# so that stop can signal it with every child it starts. The leader writes its own PID,
-# which is the group's ID.
+# so that stop can signal it with every child it starts. The leader writes the part's
+# record, through a temporary file so that a reader never sees half of it. Its PID is
+# the group's ID. Descriptor 9, the lock, is closed so that no part holds it.
 start() {
-    local name=$1 dir=$2
+    local name=$1 dir=$2 token
     shift 2
     local pidfile=$SIM_DIR/pids/$name
+    token=$name-$(cat /proc/sys/kernel/random/uuid)
     rm -f "$pidfile"
-    (cd "$dir" && exec setsid bash -c 'echo $$ > "$0"; exec "$@"' "$pidfile" ${PIN[@]+"${PIN[@]}"} "$@" \
-        > "$SIM_DIR/logs/$name.log" 2>&1 < /dev/null &)
+    (cd "$dir" && exec env "$TOKEN_VARIABLE=$token" setsid bash -c \
+        'echo "$$ $(cat /proc/sys/kernel/random/boot_id) $1" > "$0.new" && mv "$0.new" "$0" && shift && exec "$@"' \
+        "$pidfile" "$token" ${PIN[@]+"${PIN[@]}"} "$@" > "$SIM_DIR/logs/$name.log" 2>&1 < /dev/null 9>&- &)
     for _ in $(seq 50); do
         [[ -s $pidfile ]] && break
         sleep 0.1
     done
-    [[ -s $pidfile ]] || die "$name did not start; see $SIM_DIR/logs/$name.log"
+    [[ -s $pidfile ]] || fail "$name did not start; see $SIM_DIR/logs/$name.log"
     echo "started $name, process group $(pgid_of "$name"), log $SIM_DIR/logs/$name.log"
 }
 
 # stop NAME: SIGINT to the whole group, as Ctrl+C would send, then SIGTERM, then SIGKILL.
+# Each signal goes only while running still holds, so a recycled group ID is never hit.
 stop() {
     local name=$1 pgid
-    pgid=$(pgid_of "$name")
-    [[ -n $pgid ]] || return 0
-    if kill -0 -- "-$pgid" 2>/dev/null; then
+    if running "$name"; then
+        pgid=$(pgid_of "$name")
         kill -INT -- "-$pgid" 2>/dev/null || true
         for _ in $(seq 100); do
-            kill -0 -- "-$pgid" 2>/dev/null || break
+            running "$name" || break
             sleep 0.1
         done
-        if kill -0 -- "-$pgid" 2>/dev/null; then
+        if running "$name"; then
             kill -TERM -- "-$pgid" 2>/dev/null || true
-            sleep 5
+            for _ in $(seq 50); do
+                running "$name" || break
+                sleep 0.1
+            done
         fi
-        if kill -0 -- "-$pgid" 2>/dev/null; then
+        if running "$name"; then
             kill -KILL -- "-$pgid" 2>/dev/null || true
         fi
         echo "stopped $name"
     fi
     rm -f "$SIM_DIR/pids/$name"
+}
+
+# fail MESSAGE: stop up with MESSAGE, and say which parts it leaves running.
+fail() {
+    local name left=()
+    for name in "${PARTS[@]}"; do
+        if running "$name"; then
+            left+=("$name")
+        fi
+    done
+    if ((${#left[@]})); then
+        die "$*. Still running: ${left[*]}. scripts/chula-sim.sh down stops them."
+    fi
+    die "$*"
+}
+
+# lock: one up or down at a time, on this SIM_DIR. The lock is released when the
+# script exits.
+lock() {
+    mkdir -p "$SIM_DIR"
+    exec 9> "$SIM_DIR/lock"
+    flock -n 9 || die "another scripts/chula-sim.sh up or down is running on $SIM_DIR"
 }
 
 port_open() {
@@ -159,24 +213,25 @@ up() {
         shift
     done
     check_prerequisites
+    lock
     mkdir -p "$SIM_DIR"/{logs,pids,worlds,ros/log}
 
     if ! running bringup; then
         # A second MuJoCo simulation, on any graph, competes for the CPU with the first.
         local others
         others=$(pgrep -f "[n]av_mujoco_omnibot.launch.py" || true)
-        [[ -z $others ]] || die "another simulation is running (PIDs $(echo $others)); stop it first"
+        [[ -z $others ]] || fail "another simulation is running (PIDs $(echo $others)); stop it first"
     fi
 
     if ! running router; then
-        port_open && die "port $SIM_ZENOH_PORT is in use; set SIM_ZENOH_PORT to a free port"
+        port_open && fail "port $SIM_ZENOH_PORT is in use; set SIM_ZENOH_PORT to a free port"
         start router "$SIM_DIR" env ZENOH_CONFIG_OVERRIDE="listen/endpoints=[\"tcp/localhost:$SIM_ZENOH_PORT\"]" \
             "$PIXI" run --as-is --manifest-path "$WALKIE_ROS/pixi.toml" ros2 run rmw_zenoh_cpp rmw_zenohd
         for _ in $(seq "$ROUTER_TIMEOUT_S"); do
             port_open && break
             sleep 1
         done
-        port_open || die "the router is not listening on $SIM_ZENOH_PORT; see $SIM_DIR/logs/router.log"
+        port_open || fail "the router is not listening on $SIM_ZENOH_PORT; see $SIM_DIR/logs/router.log"
     fi
 
     if ! running bringup; then
@@ -189,7 +244,7 @@ up() {
     fi
     echo "waiting up to ${BRINGUP_TIMEOUT_S} s for Nav2 ..."
     wait_for_log bringup "$BRINGUP_READY" "$BRINGUP_TIMEOUT_S" ||
-        die "the simulation did not become ready; see $SIM_DIR/logs/bringup.log"
+        fail "the simulation did not become ready; see $SIM_DIR/logs/bringup.log"
 
     running oracle || start oracle "$REPO" "$PIXI" run --frozen --manifest-path "$REPO/pixi.toml" oracle-chula
     # The agent's say needs a listener on /to_human. This one writes each line to
@@ -200,6 +255,21 @@ up() {
         start agent "$REPO" "$PIXI" run --frozen --manifest-path "$REPO/pixi.toml" agent-sim-chula \
             --tool-log "$SIM_DIR/logs/agent-tools.jsonl"
     fi
+
+    wait_for_log oracle "$ORACLE_READY" "$PART_TIMEOUT_S" ||
+        fail "the oracle did not start; see $SIM_DIR/logs/oracle.log"
+    if $with_agent; then
+        wait_for_log agent "$AGENT_READY" "$PART_TIMEOUT_S" ||
+            fail "the agent did not start; see $SIM_DIR/logs/agent.log"
+    fi
+    sleep "$SETTLE_S"
+    local name wanted=(router bringup oracle speech)
+    if $with_agent; then
+        wanted+=(agent)
+    fi
+    for name in "${wanted[@]}"; do
+        running "$name" || fail "$name exited; see $SIM_DIR/logs/$name.log"
+    done
     echo "up. Next: scripts/chula-sim.sh check$($with_agent && echo " --agent" || true)"
 }
 
@@ -227,6 +297,7 @@ print_env() {
 
 down() {
     local i
+    lock
     for ((i = ${#PARTS[@]} - 1; i >= 0; i--)); do
         stop "${PARTS[i]}"
     done

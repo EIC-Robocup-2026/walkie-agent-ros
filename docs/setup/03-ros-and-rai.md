@@ -291,8 +291,8 @@ make = "*"
 ```
 
 The repository and its exact commit are listed in `ros2_ws.repos`. The file
-now also lists walkie-database and walkie-vision, which were added later
-(see the note below):
+now also lists walkie-database, walkie-vision and walkie-ros, which were added
+later (see the note below):
 
 ```yaml title="ros2_ws.repos"
 repositories:
@@ -308,6 +308,10 @@ repositories:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-vision.git
     version: ...  # the commit of the vision node the robot runs
+  ros2_ws/src/walkie-ros:
+    type: git
+    url: https://github.com/EIC-Robocup-2026/walkie-ros.git
+    version: ...  # the commit of the arm commander the robot runs
 ```
 
 Two tasks clone and build them:
@@ -320,11 +324,12 @@ outputs = [
   "ros2_ws/src/rai_interfaces/package.xml",
   "ros2_ws/src/walkie-database/ros2_ws/src/walkie_database_msgs/package.xml",
   "ros2_ws/src/walkie-vision/ros2_ws/src/walkie_vision_msgs/package.xml",
+  "ros2_ws/src/walkie-ros/manipulate/my_robot_interfaces/package.xml",
 ]
 
 [tasks.build-ros2]
 cmd = """colcon build --symlink-install \
-  --packages-select rai_interfaces walkie_database_msgs walkie_vision_msgs \
+  --packages-select rai_interfaces walkie_database_msgs walkie_vision_msgs my_robot_interfaces \
   --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python"""
 cwd = "ros2_ws"
 depends-on = ["clone-ros2-ws"]
@@ -340,13 +345,17 @@ depends-on = ["clone-ros2-ws"]
   a `~/.colcon/defaults.yaml` made for a system ROS install can point the
   build at the wrong Python.
 
-!!! note "Later: walkie-database and walkie-vision"
+!!! note "Later: walkie-database, walkie-vision and walkie-ros"
     [walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)
     was added for the messages of Walkie's memory, `walkie_database_msgs`
     ([ADR-0035](../architecture/decisions/0035-memory-through-walkie-database.md)),
     and [walkie-vision](https://github.com/EIC-Robocup-2026/walkie-vision)
     for the messages of its vision node, `walkie_vision_msgs`
     ([ADR-0034](../architecture/decisions/0034-vision-models-in-walkie-vision.md)).
+    On `feat/mahoraga-demo`,
+    [walkie-ros](https://github.com/EIC-Robocup-2026/walkie-ros) was added
+    for the actions and services of its arm commander, `my_robot_interfaces`
+    ([ADR-0018](../architecture/decisions/0018-pin-robot-interfaces.md)).
     Each clone holds a whole repository, so `build-ros2` builds only the
     packages named after `--packages-select`. That list is an allow-list: a
     message package from `ros2_ws.repos` that is missing from it is not
@@ -381,6 +390,9 @@ pixi run --locked build-ros2
 
 - `/var/tmp/wv-prep` and `/var/tmp/wd-prep` are the checkouts holding the
   two `feat/scene-graph-prep` branches. Use the paths of your own clones.
+- The walkie-ros pin, `6b26daa`, is on GitHub, so `vcs import` clones it with
+  no extra step. The clone is about 250 MB, without walkie-ros's submodules,
+  which `my_robot_interfaces` does not need.
 - `vcs import`, run by `clone-ros2-ws`, fetches each existing clone from
   GitHub and then checks out the pinned commit. The commit is already in the
   clone, so the checkout succeeds although GitHub does not have it.

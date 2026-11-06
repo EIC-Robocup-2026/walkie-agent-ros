@@ -26,3 +26,16 @@ repositories:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-vision.git
     version: 64811feb79ca983456a74f4c2667195db176dcb6
+  # my_robot_interfaces, the actions and services of walkie-ros's arm
+  # commander (ADR-0018). The type names must match walkie-ros exactly, so the
+  # package is built from this clone rather than copied under another name.
+  # The whole repository is cloned without its submodules, about 115 MB;
+  # build-ros2 builds only my_robot_interfaces. This is the commit the
+  # experiment line's robot_model.toml and arm tests were built on.
+  # my_robot_interfaces is the same there as on walkie-ros origin/main 813be41
+  # and on feat/chula-pat14-6-simulation adb9725, which the simulation runs.
+  # Compare it with the commit on the robot PC before the first robot run.
+  ros2_ws/src/walkie-ros:
+    type: git
+    url: https://github.com/EIC-Robocup-2026/walkie-ros.git
+    version: 6b26daab15d935a19621e51ebe8c10d81a3d8224

@@ -65,8 +65,8 @@ only on `FakeRobot`. The gaps this plan closes:
 | G2 | A Chula place list with rooms, an optional `room` on `Location`, and an `agent-sim-chula` task | S | S1, S8 | Built |
 | G3 | A sim perception source: port `oracle_perception` with a small scene driver | M | S1, S4 | Built |
 | G4 | A scripted, isolated Chula simulation recipe | S | Every sim test | Built |
-| G5 | Pin walkie-ros `my_robot_interfaces` at 6b26daa and build it | S | S6 | Planned |
-| G6 | Record the prototype's position on decisions 12 and 14 | S | S6, S11 | Planned |
+| G5 | Pin walkie-ros `my_robot_interfaces` at 6b26daa and build it | S | S6 | Built |
+| G6 | Record the prototype's position on decisions 12 and 14 | S | S6, S11 | Recorded |
 
 **G2.** `config/locations.chula_pat14_6.toml`, keyed by display names
 (`living room`, `kitchen room`, `table`, `shelf`, `bar`, `tv`, `sofa`,
@@ -115,10 +115,16 @@ every Chula place once `trash` and `instruction point` moved.
 arm tests were built on. `my_robot_interfaces` is unchanged from there to
 walkie-ros `origin/main` 813be41, so the pin is fetchable from GitHub. The
 full-body branch's 8074d22 changed the SRDF and is not pinned.
+Built as G5-1: `build-ros2` clones walkie-ros at the pin and builds
+`my_robot_interfaces`. The package and the MoveIt config that the snapshot
+reads are the same on 6b26daa, 813be41 and the simulation's adb9725.
 
 **G6.** Decision 12 (the arm path) and decision 14 (where gaze runs) stay
 with the team and the HRI owner. The log records that the prototype uses only
 named presets, grippers and discrete Nav2 turns, which pre-empt neither.
+Recorded as G6-1 and G6-2. S7's and S10's agent-side bundles are the one
+place the prototype leans toward decision 12's recommended option; under the
+other option they become `run_skill` calls.
 
 ## Steps
 

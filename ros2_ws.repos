@@ -16,4 +16,13 @@ repositories:
   ros2_ws/src/walkie-database:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-database.git
-    version: 7f657b0960944c4d4399ef19f5032b3c5d726f9d
+    version: 522ab92f4b1a06b4a82904414b004f2ad25ac2ba
+  # walkie_vision_msgs, the messages of the vision node: people, objects and
+  # the text-embedding service (ADR-0034). walkie-vision runs every model in
+  # one process, its vision node. The whole repository is cloned; build-ros2
+  # builds only the message package. Pin the commit the vision node on the
+  # robot is built from, for the same reason as walkie-database.
+  ros2_ws/src/walkie-vision:
+    type: git
+    url: https://github.com/EIC-Robocup-2026/walkie-vision.git
+    version: 64811feb79ca983456a74f4c2667195db176dcb6

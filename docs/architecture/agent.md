@@ -527,7 +527,7 @@ live robot ([ADR-0019](decisions/0019-test-fakes-fast-dds.md)).
 | `my_robot_interfaces` and future skill interfaces            | walkie-ros, pinned here    |
 | `walkie_perception`: grasp pipeline, classic 3D positions    | walkie-ros                 |
 | Vision: detection, embeddings, pose, faces, re-ID, captions  | walkie-vision              |
-| `walkie_vision_msgs`                                         | walkie-vision, not used by the agent yet |
+| `walkie_vision_msgs`                                         | walkie-vision, pinned here but not used by the agent yet |
 | Long-term memory: maps, rooms, objects, people, conversations | walkie-database           |
 | `walkie_database_msgs`                                       | walkie-database, pinned here but not used by the agent |
 | Skill server, policy inference                               | walkie-ros (or another robot-side repository), proposed |

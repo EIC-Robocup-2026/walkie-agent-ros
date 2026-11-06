@@ -97,6 +97,6 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | `tests/fixtures/locations.toml` | Invented places for tests and the fake robot                   |
 | `config/task_templates.toml` | Fixed tasks by name. Ships with none.                             |
 | `robot.md`                   | What Walkie is and can do today, for the system prompt            |
-| `ros2_ws/`                   | Message packages built from source (`rai_interfaces`, `walkie_database_msgs`) |
+| `ros2_ws/`                   | Message packages built from source (`rai_interfaces`, `walkie_database_msgs`, `walkie_vision_msgs`) |
 | `docker/langfuse/`           | The local Langfuse server                                         |
 | `docs/`                      | The documentation site (MkDocs)                                   |

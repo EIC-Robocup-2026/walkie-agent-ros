@@ -291,7 +291,8 @@ make = "*"
 ```
 
 The repository and its exact commit are listed in `ros2_ws.repos`. The file
-now also lists walkie-database, which was added later (see the note below):
+now also lists walkie-database and walkie-vision, which were added later
+(see the note below):
 
 ```yaml title="ros2_ws.repos"
 repositories:
@@ -303,6 +304,10 @@ repositories:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-database.git
     version: ...  # the commit of the database node the robot runs
+  ros2_ws/src/walkie-vision:
+    type: git
+    url: https://github.com/EIC-Robocup-2026/walkie-vision.git
+    version: ...  # the commit of the vision node the robot runs
 ```
 
 Two tasks clone and build them:
@@ -314,10 +319,12 @@ inputs = ["ros2_ws.repos"]
 outputs = [
   "ros2_ws/src/rai_interfaces/package.xml",
   "ros2_ws/src/walkie-database/ros2_ws/src/walkie_database_msgs/package.xml",
+  "ros2_ws/src/walkie-vision/ros2_ws/src/walkie_vision_msgs/package.xml",
 ]
 
 [tasks.build-ros2]
-cmd = """colcon build --symlink-install --packages-select rai_interfaces walkie_database_msgs \
+cmd = """colcon build --symlink-install \
+  --packages-select rai_interfaces walkie_database_msgs walkie_vision_msgs \
   --cmake-args -DPython3_EXECUTABLE=$CONDA_PREFIX/bin/python"""
 cwd = "ros2_ws"
 depends-on = ["clone-ros2-ws"]
@@ -333,20 +340,65 @@ depends-on = ["clone-ros2-ws"]
   a `~/.colcon/defaults.yaml` made for a system ROS install can point the
   build at the wrong Python.
 
-!!! note "Later: walkie-database"
+!!! note "Later: walkie-database and walkie-vision"
     [walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)
-    was added for the messages of Walkie's memory, `walkie_database_msgs`.
-    Its clone holds a whole repository, so `build-ros2` builds only the
+    was added for the messages of Walkie's memory, `walkie_database_msgs`
+    ([ADR-0035](../architecture/decisions/0035-memory-through-walkie-database.md)),
+    and [walkie-vision](https://github.com/EIC-Robocup-2026/walkie-vision)
+    for the messages of its vision node, `walkie_vision_msgs`
+    ([ADR-0034](../architecture/decisions/0034-vision-models-in-walkie-vision.md)).
+    Each clone holds a whole repository, so `build-ros2` builds only the
     packages named after `--packages-select`. That list is an allow-list: a
     message package from `ros2_ws.repos` that is missing from it is not
-    built
-    ([ADR-0035](../architecture/decisions/0035-memory-through-walkie-database.md)).
+    built.
 
 ```bash
 pixi run build-ros2
 ```
 
 The cloned source and the build output are in `.gitignore`.
+
+### Local message pins
+
+On the `feat/mahoraga-demo` prototype branch, the walkie-vision and
+walkie-database pins name commits that exist only on the local
+`feat/scene-graph-prep` branches of those repositories (walkie-vision
+`64811fe`, walkie-database `522ab92`). `vcs import` fetches from GitHub,
+which does not have them. Put the commits into the clones first, then build
+as usual:
+
+```bash
+# Skip a clone that already exists.
+git clone --no-checkout https://github.com/EIC-Robocup-2026/walkie-vision.git ros2_ws/src/walkie-vision
+git clone --no-checkout https://github.com/EIC-Robocup-2026/walkie-database.git ros2_ws/src/walkie-database
+
+# Copy the local branches into the clones.
+git -C ros2_ws/src/walkie-vision fetch /var/tmp/wv-prep feat/scene-graph-prep:feat/scene-graph-prep
+git -C ros2_ws/src/walkie-database fetch /var/tmp/wd-prep feat/scene-graph-prep:feat/scene-graph-prep
+
+pixi run --locked build-ros2
+```
+
+- `/var/tmp/wv-prep` and `/var/tmp/wd-prep` are the checkouts holding the
+  two `feat/scene-graph-prep` branches. Use the paths of your own clones.
+- `vcs import`, run by `clone-ros2-ws`, fetches each existing clone from
+  GitHub and then checks out the pinned commit. The commit is already in the
+  clone, so the checkout succeeds although GitHub does not have it.
+- Fetching into a named branch, rather than only into `FETCH_HEAD`, keeps the
+  commits referenced, so a later `git gc` does not remove them.
+- `--locked` stops Pixi from rewriting `pixi.lock`.
+- Do not add `--clean-env`: it drops the system `PATH`, and `vcs import`
+  then cannot find `git`, which the environment does not provide.
+
+Check that each clone is at its pin:
+
+```bash
+git -C ros2_ws/src/walkie-vision rev-parse HEAD    # 64811feb79ca...
+git -C ros2_ws/src/walkie-database rev-parse HEAD  # 522ab92f4b1a...
+```
+
+Once the two branches are pushed, `pixi run build-ros2` works without the
+fetch step, and this section can go.
 
 A colcon workspace must be "sourced" before Python can import it. Pixi runs
 `scripts/activate.sh` every time it activates the environment, and that

@@ -38,22 +38,31 @@ pixi install
 
 ## 3. Build the ROS packages
 
-RAI's message types (`rai_interfaces`) and the messages of Walkie's memory
+RAI's message types (`rai_interfaces`), the messages of Walkie's memory
 (`walkie_database_msgs`, from
-[walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)) are
-not published as packages, so we build them from source once:
+[walkie-database](https://github.com/EIC-Robocup-2026/walkie-database)) and
+the messages of its vision node (`walkie_vision_msgs`, from
+[walkie-vision](https://github.com/EIC-Robocup-2026/walkie-vision)) are not
+published as packages, so we build them from source once:
 
 ```bash
 pixi run build-ros2
 ```
 
-This clones `rai_interfaces` and walkie-database into `ros2_ws/src/`, at the
-commits pinned in `ros2_ws.repos`, and builds the two message packages with
-colcon. Pixi loads the result automatically every time you use `pixi run`
-or `pixi shell`. Run it again only if `ros2_ws.repos` changes. No agent tool
-reads walkie-database today, but the pin and the message package stay for a
-later slice
+This clones `rai_interfaces`, walkie-database and walkie-vision into
+`ros2_ws/src/`, at the commits pinned in `ros2_ws.repos`, and builds the
+three message packages with colcon. Pixi loads the result automatically
+every time you use `pixi run` or `pixi shell`. Run it again only if
+`ros2_ws.repos` changes. No agent tool reads walkie-database or walkie-vision
+yet. When one does, the walkie-database pin must match the database node you
+run, or the agent's memory requests are never answered
 ([ADR-0035](architecture/decisions/0035-memory-through-walkie-database.md)).
+
+On `feat/mahoraga-demo` the two pins name commits on the local
+`feat/scene-graph-prep` branches of walkie-vision and walkie-database, which
+are not on GitHub. `pixi run build-ros2` cannot fetch them, so import them
+from the local clones first; see
+[Local message pins](setup/03-ros-and-rai.md#local-message-pins).
 
 Every `pixi run` and `pixi shell` here uses the Zenoh middleware
 (`rmw_zenoh_cpp`), as walkie-ros and the robot do

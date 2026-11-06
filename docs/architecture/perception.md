@@ -95,12 +95,18 @@ flowchart TB
 
 | Interface | Owner | Status | Used by |
 | --------- | ----- | ------ | ------- |
-| `/walkie_vision/objects` (`ObjectDetectionArray`) | walkie-vision | Message built, node not yet | walkie-database's object memory, which `find_objects` reads |
-| `/walkie_vision/people` (`PersonDetectionArray`) | walkie-vision | Message built, node not yet | `find_people`, `refind_person` |
-| `/walkie_vision/embed_text` (`EmbedText`) | walkie-vision | Service type built, server not yet | `search_detections` |
-| `/walkie_vision/detect_objects` (`DetectObjects`) | walkie-vision | Proposed (its ADR-0009) | `detect_objects` |
+| `/walkie_vision/objects` (`ObjectDetectionArray`) | walkie-vision | Published by the vision node in the pinned 64811fe | walkie-database's object memory, which `find_objects` reads |
+| `/walkie_vision/people` (`PersonDetectionArray`) | walkie-vision | Published by the vision node in the pinned 64811fe | `find_people`, `refind_person` |
+| `/walkie_vision/embed_text` (`EmbedText`) | walkie-vision | Served by the vision node in the pinned 64811fe | `search_detections` |
+| `/walkie_vision/detect_objects` (`DetectObjects`) | walkie-vision | Served by the vision node in the pinned 64811fe (its ADR-0009) | `detect_objects` |
 | `/walkie_database/find_objects` | walkie-database | Exists | `find_objects` |
-| Vector search and people services | walkie-database | Not designed ([questions 2 and 6](#open-questions)) | `recognize_person`, `remember_person`, a later `find_objects` by description |
+| People services (`StartSession`, `RememberPerson`, `MatchPeople`) | walkie-database | Built in the pinned 522ab92 | `recognize_person`, `remember_person` |
+| Object vector search | walkie-database | Object writes answer `NOT_READY` until its milestone M1 ([questions 2 and 6](#open-questions)) | A later `find_objects` by description |
+
+The pins 64811fe and 522ab92 are commits on the local `feat/scene-graph-prep`
+branches of the two repositories, used by the `feat/mahoraga-demo`
+prototype. They are not on GitHub; see
+[Local message pins](../setup/03-ros-and-rai.md#local-message-pins).
 
 ## From model to tool
 
@@ -242,7 +248,7 @@ flowchart TB
     d1["<b>walkie-database</b><br/>Object ingest"]
     d2["<b>walkie-database</b><br/>Migration after<br/>the bake-off"]
     d3["<b>walkie-database</b><br/>People services"]:::proposed
-    a0["<b>walkie-agent-ros</b><br/>Pin walkie_vision_msgs<br/>(unblocked)"]
+    a0["<b>walkie-agent-ros</b><br/>Pin walkie_vision_msgs<br/>(done)"]
     a1["<b>walkie-agent-ros</b><br/>Phase 2: atomics<br/>on mocks"]
     a2["<b>walkie-agent-ros</b><br/>Real vision clients"]
     a3["<b>walkie-agent-ros</b><br/>Values tuned for<br/>the new model"]
@@ -271,10 +277,14 @@ flowchart TB
 - **The HRI task goes first.** It needs only the people half of this graph,
   plus seats from the streaming detector, and skips `DetectObjects`, the
   bake-off and person depth ([HRI Task](hri.md#delivery-order)).
-- **Unblocked now.** walkie-vision is on GitHub, so `walkie_vision_msgs` can
-  be pinned in `ros2_ws.repos`, which
-  [ADR-0034](decisions/0034-vision-models-in-walkie-vision.md) was waiting
-  for.
+- **Pinned.** `walkie_vision_msgs` is pinned in `ros2_ws.repos` and built
+  by `pixi run build-ros2`, as
+  [ADR-0034](decisions/0034-vision-models-in-walkie-vision.md) planned.
+  After a message change in walkie-vision, move the pin and build again.
+  The prototype pins the local 64811fe, whose `ObjectDetectionArray` adds
+  `stream_id`, whose `ObjectDetection` adds `view_quality` and
+  `color_shares`, and which adds the `DetectObjects`, `EmbedCrop`,
+  `DescribeCrop` and `GetPersonCrop` services.
 - **Phase 2 of the self-evolving agent** adds `find_people` and
   `refind_person` next to the object atomics, on mocks. `recognize_person`
   and `remember_person` wait for walkie-database's services.

@@ -432,3 +432,7 @@ decisions work.
 ??? note "ADR-0050: Perceive objects and people through atomics over walkie-vision · Proposed"
 
     --8<-- "architecture/decisions/0050-perception-atomics-over-walkie-vision.md:body"
+
+??? note "ADR-0070: Remember people through ctx.memory, with live ids and no vectors · Proposed"
+
+    --8<-- "architecture/decisions/0070-people-memory-capability.md:body"

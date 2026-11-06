@@ -253,6 +253,16 @@ decision, and it can run beside the vision chain.
 - **Risks.** Sim never exercises the database path. The face distance limit
   is untuned (Perception Q2). Stored faces raise a privacy and retention
   question on the robot.
+- **Built** as S3-1 to S3-10. The plan changed in three places. The model
+  sees only live ids, and the store's `stored_<n>` ids stay in the backend
+  (S3-2). find_people names the people in view, so `find_people("Sam")`
+  works, and `recognize` names everyone in view at once (S3-4). People are
+  forgotten at each reset on `/walkie/reset`, which this runtime treats as
+  the end of a task (S3-6). The buffer is `perception/track_vectors.py`, the
+  matching `perception/recognition.py` and `perception/memory.py`, and the
+  database client `ros/people_memory.py`. A Fast DDS test sends oracle-style
+  people arrays through `RosVision` into the in-memory store and finds the
+  name again. The laptop run of the database path has not been done.
 
 ### S4: See objects in view
 
@@ -312,6 +322,11 @@ decision, and it can run beside the vision chain.
 - **Risks.** A commander restart mid-goal leaves a stale status, and its only
   fix (`wip/p14`) has never run. About a third of the ported tests are flaky
   in CI. Sim slower than real time strains the timeouts.
+- **Core built** as S6-1 to S6-5: the poses, the arm state, the two TOMLs,
+  `ros/commander.py`'s `CommanderClient` and `sim/fake_commander.py`. The
+  `Arms` verbs, the atomics, `--arms`, the drive's travel-safe check and the
+  `FORBIDDEN_NAMES` additions are next (S6-1). The 104 commander tests passed
+  in every run against the fake. Nothing has run against the real commander.
 
 ### S7: Take a bag, and hand an object over
 

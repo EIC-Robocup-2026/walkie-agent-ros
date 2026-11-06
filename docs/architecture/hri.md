@@ -8,8 +8,11 @@
     on fakes only. The `hri` tool set binds `find_people`, which reads walkie-vision's
     people when the agent runs with `--vision`, and answers `UNAVAILABLE` on the robot
     otherwise. It also binds `face_person`, which turns the robot once to face a person
-    but does not keep looking at them. The other people atomics, and the seat, gaze and
-    arm atomics below, do not exist. So **this task cannot
+    but does not keep looking at them. It binds `remember_person` and
+    `recognize_person` too, which keep names in a people memory when the agent runs
+    with `--vision --people-memory mock` or `ros`
+    ([ADR-0070](decisions/0070-people-memory-capability.md)). The other people atomics,
+    and the seat, gaze and arm atomics below, do not exist. So **this task cannot
     run end to end today**, in simulation or on the robot.
 
     HRI input is text only. A message with an image or audio payload is refused.
@@ -164,12 +167,15 @@ the introductions.
 
 ### Faces collected while talking
 
-While the gaze loop follows a track, the handle store keeps that track's
-face and appearance vectors: up to 20, from faces above a detection
-score. `remember_person` sends all of them, minus the ones far from their
+With `--vision`, `RosVision` keeps each track's face and appearance
+vectors from its people subscription: up to 20 of each, from faces above a
+detection score and an angular size, for 60 s after the track was last
+seen. `remember_person` sends all of them, minus the ones far from their
 mean, as walkie-agent-v2's enrollment did. The guest turns while pacing, so
 walkie-database gets faces from several angles. That helps at the
-introductions, when the guest is seated and seen from elsewhere.
+introductions, when the guest is seated and seen from elsewhere. This is
+built, without the gaze loop
+([ADR-0070](decisions/0070-people-memory-capability.md)).
 
 ### Introductions
 

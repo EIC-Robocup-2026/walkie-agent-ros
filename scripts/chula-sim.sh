@@ -25,7 +25,8 @@
 #   SIM_CPUS            when set, every process runs on these CPUs (taskset -c)
 #
 # The agent reads its model keys as it always does: from the environment, or from the
-# .env at the root of this repository.
+# .env at the root of this repository. The script itself needs python3, 3.9 or newer, on
+# PATH, for scripts/chula_sim_owned.py.
 
 set -euo pipefail
 
@@ -53,8 +54,16 @@ AGENT_READY="Walkie's agent is running"
 PART_TIMEOUT_S=120
 # The speech listener logs nothing until a line arrives; a bad start exits within this.
 SETTLE_S=3
+# How long start waits for a part's record, and stop for a part to exit after each signal.
+# Stop's waits are minimums: each of its ten checks a second also starts the helper.
+START_TIMEOUT_S=5
+STOP_INT_S=10
+STOP_TERM_S=5
+STOP_KILL_S=2
 # Every process a part starts carries CHULA_SIM_TOKEN, and the part's record keeps it.
 TOKEN_VARIABLE=CHULA_SIM_TOKEN
+# Lists and signals a part's processes through pidfds (scripts/chula_sim_owned.py).
+OWNED=(python3 -I "$REPO/scripts/chula_sim_owned.py")
 
 # Every process joins the private graph. Pixi sets RMW_IMPLEMENTATION=rmw_zenoh_cpp in
 # both repositories; the override replaces rmw_zenoh's default router, localhost:7447.
@@ -88,24 +97,42 @@ pgid_of() {
     echo "$pgid"
 }
 
-# running NAME: NAME's process group still holds a process of this boot that carries
-# NAME's token. A group ID that the system has since given to another group, after a
-# reboot or after the part exited, does not count, so nothing else is ever signalled.
-running() {
-    local pgid boot token pid
+# owner NAME: print NAME's process group ID and token, if its record is from this boot.
+owner() {
+    local pgid boot token
     [[ -f $SIM_DIR/pids/$1 ]] || return 1
     read -r pgid boot token < "$SIM_DIR/pids/$1" || return 1
-    [[ $pgid =~ ^[1-9][0-9]*$ && $boot == "$(boot_id)" && -n $token ]] || return 1
-    for pid in $(pgrep -g "$pgid" || true); do
-        grep -q -z -x -F "$TOKEN_VARIABLE=$token" "/proc/$pid/environ" 2>/dev/null && return 0
-    done
-    return 1
+    [[ $pgid =~ ^[1-9][0-9]*$ && $boot == "$(boot_id)" && $token =~ ^[a-z]+-[0-9a-f-]+$ ]] || return 1
+    echo "$pgid $token"
+}
+
+# running NAME: NAME's process group still holds a process that carries NAME's token.
+# A group ID that the system has since given to another group, after a reboot or after
+# the part exited, does not count.
+running() {
+    local who pids
+    who=$(owner "$1") || return 1
+    # shellcheck disable=SC2086 # owner prints two words, a group ID and a token
+    pids=$("${OWNED[@]}" pids $who) || die "could not look up the processes of $1"
+    [[ -n $pids ]]
+}
+
+# signal_part NAME SIGNAL: send SIGNAL to each of NAME's processes, each through a pidfd,
+# so that a process that exits meanwhile never passes the signal to a later holder of
+# its ID.
+signal_part() {
+    local who
+    who=$(owner "$1") || return 0
+    # shellcheck disable=SC2086 # owner prints two words, a group ID and a token
+    "${OWNED[@]}" signal $who "$2" > /dev/null || die "could not signal the processes of $1"
 }
 
 # start NAME DIR COMMAND...: run COMMAND in DIR as the leader of a new process group,
 # so that stop can signal it with every child it starts. The leader writes the part's
 # record, through a temporary file so that a reader never sees half of it. Its PID is
-# the group's ID. Descriptor 9, the lock, is closed so that no part holds it.
+# the group's ID. The leader keeps descriptor 9, the lock, until it has written the
+# record, and closes it as it executes COMMAND. A down therefore cannot run between a
+# start that up gave up on and the part that start then runs, and no part holds the lock.
 start() {
     local name=$1 dir=$2 token
     shift 2
@@ -113,37 +140,40 @@ start() {
     token=$name-$(cat /proc/sys/kernel/random/uuid)
     rm -f "$pidfile"
     (cd "$dir" && exec env "$TOKEN_VARIABLE=$token" setsid bash -c \
-        'echo "$$ $(cat /proc/sys/kernel/random/boot_id) $1" > "$0.new" && mv "$0.new" "$0" && shift && exec "$@"' \
-        "$pidfile" "$token" ${PIN[@]+"${PIN[@]}"} "$@" > "$SIM_DIR/logs/$name.log" 2>&1 < /dev/null 9>&- &)
-    for _ in $(seq 50); do
+        'echo "$$ $1 $2" > "$0.new" && mv "$0.new" "$0" && shift 2 && exec "$@" 9>&-' \
+        "$pidfile" "$(boot_id)" "$token" ${PIN[@]+"${PIN[@]}"} "$@" > "$SIM_DIR/logs/$name.log" 2>&1 < /dev/null &)
+    for _ in $(seq $((START_TIMEOUT_S * 10))); do
         [[ -s $pidfile ]] && break
         sleep 0.1
     done
-    [[ -s $pidfile ]] || fail "$name did not start; see $SIM_DIR/logs/$name.log"
+    [[ -s $pidfile ]] || fail "$name wrote no record within $START_TIMEOUT_S s; see $SIM_DIR/logs/$name.log. If it starts later, status shows it and down stops it"
     echo "started $name, process group $(pgid_of "$name"), log $SIM_DIR/logs/$name.log"
 }
 
-# stop NAME: SIGINT to the whole group, as Ctrl+C would send, then SIGTERM, then SIGKILL.
-# Each signal goes only while running still holds, so a recycled group ID is never hit.
+# gone_within NAME SECONDS: NAME stops running within SECONDS.
+gone_within() {
+    local name=$1 seconds=$2
+    for _ in $(seq $((seconds * 10))); do
+        running "$name" || return 0
+        sleep 0.1
+    done
+    ! running "$name"
+}
+
+# stop NAME: SIGINT to every process of NAME, as Ctrl+C sends it to every process of a
+# terminal's foreground group, then SIGTERM, then SIGKILL. SIGKILL goes twice, for a
+# child started during the first. A part that outlives them all keeps its record.
 stop() {
-    local name=$1 pgid
+    local name=$1
     if running "$name"; then
-        pgid=$(pgid_of "$name")
-        kill -INT -- "-$pgid" 2>/dev/null || true
-        for _ in $(seq 100); do
-            running "$name" || break
-            sleep 0.1
-        done
-        if running "$name"; then
-            kill -TERM -- "-$pgid" 2>/dev/null || true
-            for _ in $(seq 50); do
-                running "$name" || break
-                sleep 0.1
-            done
-        fi
-        if running "$name"; then
-            kill -KILL -- "-$pgid" 2>/dev/null || true
-        fi
+        signal_part "$name" INT
+        gone_within "$name" "$STOP_INT_S" ||
+            { signal_part "$name" TERM && gone_within "$name" "$STOP_TERM_S"; } ||
+            { signal_part "$name" KILL && gone_within "$name" "$STOP_KILL_S"; } ||
+            { signal_part "$name" KILL && gone_within "$name" "$STOP_KILL_S"; } || {
+            echo "chula-sim: $name did not stop; its record stays in $SIM_DIR/pids" >&2
+            return 1
+        }
         echo "stopped $name"
     fi
     rm -f "$SIM_DIR/pids/$name"
@@ -295,19 +325,25 @@ print_env() {
     echo "export ZENOH_CONFIG_OVERRIDE='$ZENOH_CONFIG_OVERRIDE'"
 }
 
+# down: stop every part, in reverse order. A part that does not stop does not keep down
+# from stopping the others; down then exits 1.
 down() {
-    local i
+    local i result=0
     lock
     for ((i = ${#PARTS[@]} - 1; i >= 0; i--)); do
-        stop "${PARTS[i]}"
+        stop "${PARTS[i]}" || result=1
     done
+    return "$result"
 }
 
-case ${1:-} in
-    up) shift; up "$@" ;;
-    check) shift; check "$@" ;;
-    status) status ;;
-    env) print_env ;;
-    down) down ;;
-    *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
-esac
+# tests/test_chula_sim_script.py sources this file to call its functions.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+    case ${1:-} in
+        up) shift; up "$@" ;;
+        check) shift; check "$@" ;;
+        status) status ;;
+        env) print_env ;;
+        down) down ;;
+        *) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+    esac
+fi

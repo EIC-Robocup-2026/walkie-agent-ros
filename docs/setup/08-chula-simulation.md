@@ -51,6 +51,10 @@ environment or from `.env` at the root of this repository. A Git worktree has no
 `.env` of its own. Without a key, the agent exits at startup, and `up` fails with
 `the agent did not start`, leaving the other parts running.
 
+**`python3` 3.9 or newer on `PATH`, on Linux 5.3 or newer, x86-64 or arm64.**
+`scripts/chula_sim_owned.py` finds and signals each part's processes for the
+script (see [Stop it](#stop-it)). Ubuntu 24.04's own `python3` will do.
+
 ## Start it
 
 ```bash
@@ -77,7 +81,9 @@ scripts/chula-sim.sh check --agent
   and every part is still running a few seconds later. If a part exits first,
   `up` fails, names it, and lists the parts it leaves running.
 - `up` and `down` hold a lock on `SIM_DIR`, so a second `up` or `down` at the
-  same time refuses to run.
+  same time refuses to run. Each part's starter holds the lock too, until it has
+  written the part's record. If `up` gives up waiting for a record (5 s), a `down`
+  run at once still refuses, instead of finding no record and missing the part.
 
 **The robot starts facing the people.** The world's own spawn faces south, away
 from both people of the oracle's scene. The script spawns the robot at the
@@ -128,9 +134,16 @@ while discovery is still running. Each tool call is a line of
 scripts/chula-sim.sh down
 ```
 
-`down` stops the parts in reverse order. It sends each part's process group
-SIGINT, as Ctrl+C would, then SIGTERM, then SIGKILL if a part ignores both.
-`status` shows which parts are running.
+`down` stops the parts in reverse order. It sends each process of a part SIGINT,
+as Ctrl+C would, and gives the part at least 10 s to exit. Then it sends SIGTERM
+with at least 5 s, then SIGKILL, twice if need be. A part still running after that keeps its record, and `down`
+exits 1 once it has tried every part. `status` shows which parts are running.
+
+Each signal goes through a pidfd, a descriptor that refers to one process and
+never to a later one with the same ID. `chula_sim_owned.py` opens it, checks the
+process's group and token, and only then signals it. Without it, a part that
+exits just after the check could pass its group's number to another program
+before the signal arrives.
 
 ## Where things go
 
@@ -138,10 +151,12 @@ Everything goes under `SIM_DIR`, `/var/tmp/walkie-chula-sim` by default.
 
 - `logs/`: one log per part, and the agent's tool log.
 - `pids/`: one record for each part: its process group, the boot it started in,
-  and a token that every process of the part carries in `CHULA_SIM_TOKEN`.
-  `status` and `down` treat a part as running only while its group still holds
-  a process with that token. So after a reboot, or once the system gives the
-  group's number to another program, `down` never signals that program.
+  and a token that every process of the part carries in `CHULA_SIM_TOKEN`. A
+  part's processes are the members of its group that carry its token. `status`
+  counts only those, and `down` signals only those. So after a reboot, or once
+  the system gives the group's number to another program, `down` never signals
+  that program. A process that a part started in a session of its own, such as
+  the `ros2` daemon, is not in the group and is left running.
 - `ros/`: `ROS_HOME` and the ROS logs.
 - `worlds/`: the world the launch file generates.
 
@@ -204,6 +219,11 @@ kitchen table, succeeded from the living room and from the shelf.
   With the key exported, a second `up --agent` started only the agent, `check
   --agent` passed again, and all 32 processes of the five parts carried their
   part's token. `down` took 12 s and left none of them.
+- After the pidfd signalling (G4-8), on 2026-11-07, `up --agent` and `check
+  --agent` passed again, and the five parts held 32 processes with their tokens.
+  `down` took 11.8 s, 10.3 s of them for `bringup`. Nav2's `planner_server` and
+  `controller_server` outlived SIGINT and SIGTERM until `ros2 launch` sent them
+  SIGKILL, inside `down`'s 10 s SIGINT wait. `down` sent nothing after SIGINT.
 - One more task with the real model, "Please say hello.". The agent called
   `say("Hello!")`, and `speech.log` showed the line. The log also begins with
   two of Zenoh's configuration warnings, which `ros2 topic echo` prints at

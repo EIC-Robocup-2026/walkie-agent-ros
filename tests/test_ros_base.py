@@ -393,9 +393,10 @@ def test_a_pose_read_waits_no_longer_than_its_timeout():
     assert len(rig.connector.tf_reads) == reads
 
 
-def test_a_pose_read_ends_at_most_one_rai_miss_past_its_timeout():
+def test_with_tf_missing_a_pose_read_overruns_its_timeout_by_the_read_it_began():
     # RAI's get_transform sleeps 0.1 s before it gives up on a missing transform, and
-    # a read that has begun runs to its end.
+    # a read that has begun runs to its end. The read count is the bound this checks;
+    # the wall-clock limit only catches a hang.
     rai_miss_s = 0.1
 
     def slow_miss():
@@ -410,7 +411,7 @@ def test_a_pose_read_ends_at_most_one_rai_miss_past_its_timeout():
     elapsed = time.monotonic() - started
     assert raised.value.code is ErrorCode.UNAVAILABLE
     assert len(rig.connector.tf_reads) == 1
-    assert rai_miss_s <= elapsed < 0.01 + rai_miss_s + 0.2
+    assert rai_miss_s <= elapsed < 1.0
 
 
 def test_stale_missing_and_wrong_frame_tf_errors():

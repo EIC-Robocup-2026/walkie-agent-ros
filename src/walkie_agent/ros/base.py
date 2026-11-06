@@ -211,9 +211,10 @@ class RosBase:
     def pose(self, *, timeout_s: float = TF_S) -> Pose2D:
         """The pose from a sample stamped after this call, waited for at most `timeout_s`.
 
-        The wait is also no longer than the base's own `tf_s`. A TF read that has begun
-        is not cut short, and while TF has no transform between the two frames each
-        read takes RAI's 0.1 s sleep, so the call can end up to 0.1 s past `timeout_s`.
+        The wait is also no longer than the base's own `tf_s`. The last TF read can
+        begin as the time runs out, and a read is not cut short. While TF has no
+        transform between the two frames each read takes RAI's 0.1 s sleep, so the
+        call can end about 0.1 s past `timeout_s`, plus scheduling delay.
         """
         require_timeout(timeout_s)
         what = "reading the pose"

@@ -176,11 +176,16 @@ def moves(robot: FakeRobot) -> list[dict]:
     return [call["args"] for call in robot.calls if call["verb"] == "base.move_relative"]
 
 
-ABORTED = GoalFailed(ErrorCode.SKILL_FAILED, "Navigation failed for the move (ABORTED, error code 105).")
-# What RosBase raises when the result request fails: the goal's state is unknown.
-UNKNOWN = StepError(
-    ErrorCode.SKILL_FAILED, "Navigation failed for the move: the request for its result failed."
-)
+def aborted() -> GoalFailed:
+    """What RosBase raises when Nav2 aborts the goal."""
+    return GoalFailed(ErrorCode.SKILL_FAILED, "Navigation failed for the move (ABORTED, error code 105).")
+
+
+def unknown() -> StepError:
+    """What RosBase raises when the result request fails: the goal's state is unknown."""
+    return StepError(
+        ErrorCode.SKILL_FAILED, "Navigation failed for the move: the request for its result failed."
+    )
 
 
 class ShortTurns:
@@ -204,8 +209,8 @@ class ShortTurns:
         return getattr(self.robot, name)
 
 
-def short_turns(robot: FakeRobot, short_deg: float, error: StepError = ABORTED) -> Ctx:
-    base = ShortTurns(robot, short_deg, error)
+def short_turns(robot: FakeRobot, short_deg: float, error: StepError | None = None) -> Ctx:
+    base = ShortTurns(robot, short_deg, error or aborted())
     return Ctx(cancel=robot.cancel, base=base, speech=robot, vision=robot)
 
 
@@ -280,19 +285,21 @@ def test_a_turn_reported_failed_that_ends_within_10_degrees_still_faces_the_pers
 
 def test_a_turn_reported_failed_that_ends_further_off_raises_the_failure():
     robot = facing(40.0)
+    error = aborted()
     with pytest.raises(StepError) as raised:
-        face_person(short_turns(robot, 15.0), "jane")
-    assert raised.value is ABORTED
+        face_person(short_turns(robot, 15.0, error), "jane")
+    assert raised.value is error
 
 
 def test_a_turn_whose_end_is_unknown_raises_its_failure_even_within_10_degrees():
     robot = facing(40.0)
     reads = []
-    ctx = short_turns(robot, 3.0, UNKNOWN)
+    error = unknown()
+    ctx = short_turns(robot, 3.0, error)
     ctx.base.pose = lambda **kwargs: reads.append(kwargs) or robot.pose(**kwargs)
     with pytest.raises(StepError) as raised:
         face_person(ctx, "jane")
-    assert raised.value is UNKNOWN
+    assert raised.value is error
     assert len(reads) == 1  # The start only: the base may still be turning.
 
 

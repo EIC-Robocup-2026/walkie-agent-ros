@@ -44,11 +44,12 @@ class Base(Protocol):
     REFUSED for a value that is not finite, an empty move or one over the 3 m
     cap; CANCELLED on a stop; TIMEOUT past `timeout_s`, UNAVAILABLE without a
     navigation backend and SKILL_FAILED when the goal fails. That SKILL_FAILED
-    is a GoalFailed when the backend reports that the goal ended or was refused,
-    and a plain StepError when the goal's state is unknown.
+    is a GoalFailed when the backend reports that the goal was refused or ended
+    without success. A plain StepError SKILL_FAILED is any other failure, such
+    as a goal whose state is unknown or an unusable pose after a success.
 
-    pose waits at most `timeout_s`, plus one read of the backend that has begun,
-    for the robot's pose in the map. It raises
+    pose waits for the robot's pose in the map until `timeout_s` is up, and then
+    for the end of the backend read it began last. It raises
     REFUSED for a `timeout_s` that is not positive, CANCELLED on a stop, and
     TIMEOUT, UNAVAILABLE or SKILL_FAILED when no usable pose comes in time.
     """

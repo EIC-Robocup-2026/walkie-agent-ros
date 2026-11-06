@@ -1134,6 +1134,14 @@ def test_a_second_signal_ends_a_hung_connector_shutdown(cli, monkeypatch, caplog
         with pytest.raises(_Exited) as forced:
             cli.run()
     release.set()
+    # The shutdown thread outlives the forced exit, and ends with rclpy.try_shutdown().
+    # It must finish while the fixture's stand-in for rclpy is in place: after the
+    # fixture's teardown it would shut down the real context that later tests share.
+    for thread in threading.enumerate():
+        if thread.name == "walkie-ros-shutdown":
+            thread.join(WATCHDOG_S)
+            assert not thread.is_alive()
+    assert "try_shutdown" in cli.events
     assert forced.value.args == (main.FORCED_EXIT_CODE,)
     assert "The ROS connector has not shut down." in caplog.text
 

@@ -1,6 +1,8 @@
 """The driver refuses what is off the allow-list and enforces each budget."""
 
 import functools
+import threading
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -222,6 +224,51 @@ def test_a_run_inside_the_wall_budget_is_not_failed_by_the_check(runner, slow_go
 
     assert (result.ok, result.phase) == (True, "ok")
     assert robot.said == ["in time"]
+
+
+def test_a_stop_ends_a_running_script_and_no_script_can_catch_it(runner):
+    robot = FakeRobot(seed=1, drive_s=60.0)
+    fns = allow_list(GPSR, robot.ctx)
+    code = (
+        'for place in ["shelf", "bar", "table"]:\n'
+        "    try:\n"
+        "        go_to(place)\n"
+        "    except BaseException:\n"
+        "        pass\n"
+        'say("done")\n'
+    )
+
+    def stop_once_driving():
+        deadline = time.monotonic() + 10.0
+        while not any(call["verb"] == "base.go_to" for call in list(robot.calls)):
+            assert time.monotonic() < deadline, "the drive never started"
+            time.sleep(0.005)
+        robot.stop()
+        robot.cancel.cancel()
+
+    stopper = threading.Thread(target=stop_once_driving, daemon=True)
+    stopper.start()
+    started = time.monotonic()
+    result = runner.run(code, fns, cancel=robot.cancel)
+    stopper.join(1.0)
+
+    assert time.monotonic() - started < 10.0, "the stop did not end the 60 s drive"
+    assert (result.ok, result.phase) == (False, "cancelled")
+    assert "CANCELLED" in result.error
+    # The drive the stop ended is the only call: the refusals after it run nothing.
+    assert [(call["tool"], call["status"]) for call in result.calls] == [("go_to", "CANCELLED")]
+    assert robot.said == []
+    assert robot.snapshot()["at"] != "table"
+
+
+def test_a_stop_before_the_script_starts_runs_no_call(runner, fns, robot):
+    robot.cancel.cancel()
+
+    result = runner.run('say("hello")', fns, cancel=robot.cancel)
+
+    assert (result.ok, result.phase) == (False, "cancelled")
+    assert result.calls == []
+    assert robot.said == []
 
 
 def test_a_recursion_bomb_is_a_spent_budget(runner, fns):

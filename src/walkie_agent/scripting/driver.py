@@ -14,7 +14,8 @@ How a failed call reaches the script:
 - A bug in the host function: RuntimeError("INTERNAL: tool failed with Type."),
   and the traceback goes to the host's log, as in adapter.format_tool_error.
 
-Spending a budget ends the script with an error no script can catch.
+Spending a budget ends the script with an error no script can catch, and so does a
+stop, through the cancel token a run may be given.
 """
 
 import ast
@@ -43,7 +44,7 @@ from pydantic_monty import (
 )
 
 from walkie_agent.adapter import bind
-from walkie_agent.capabilities import Ctx
+from walkie_agent.capabilities import CancelToken, Ctx
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.scripting.evidence import Watch
 
@@ -70,7 +71,7 @@ class Budgets:
 
 @dataclass
 class ScriptResult:
-    """What one run did. `phase` is ok, type_check, syntax, runtime, budget or crash.
+    """What one run did. `phase` is ok, type_check, syntax, runtime, budget, cancelled or crash.
 
     `shelf_used` and `shelf_raised` name the shelf functions the run entered and
     those an exception crossed, as evidence.Watch saw at run time. `returned` and
@@ -105,6 +106,10 @@ class ScriptResult:
 
 class _WallClockSpent(Exception):
     """The script outlived its wall-clock budget between two host calls."""
+
+
+class _Cancelled(Exception):
+    """A stop or a reset set the run's cancel token."""
 
 
 class _Unservable(Exception):
@@ -184,12 +189,18 @@ class ScriptRunner:
         fns: Mapping[str, Callable[..., Any]],
         *,
         save: Sequence[str] = (),
+        cancel: CancelToken | None = None,
     ) -> ScriptResult:
         """Run `code` with `fns` callable. After a success, keep the definitions named in `save`.
 
         The script runs, is read and is saved with `\\n` line endings, and only if
         Python's parser accepts it and the evidence can read it. A refusal is a result
         like any failure, with no host call made and nothing saved.
+
+        Once `cancel` is set, the driver runs no further host call and ends the script
+        as it ends one out of wall clock, with phase "cancelled" whatever the script
+        catches. A host call already running is not interrupted: the stop that set the
+        token ends it, as it ends the same call made as a tool.
         """
         code = _with_newlines(code)
         result = ScriptResult()
@@ -220,7 +231,7 @@ class ScriptRunner:
             result.ok, result.phase, result.error = False, phase, _clip(watch.clean(error))
 
         try:
-            self._drive(prefix, fns, result, watch)
+            self._drive(prefix, fns, result, watch, cancel)
         except MontyTypingError as exc:
             fail("type_check", exc.display())
         except MontySyntaxError as exc:
@@ -231,6 +242,8 @@ class ScriptRunner:
             fail("budget" if exc.timed_out else "crash", str(exc))
         except _WallClockSpent:
             fail("budget", f"TimeoutError: over {self.budgets.wall_s} s of wall clock.")
+        except _Cancelled:
+            fail("cancelled", f"{ErrorCode.CANCELLED}: a stop ended the script.")
         except _Unservable as exc:
             fail("runtime", str(exc))
         except (MontyError, TimeoutError) as exc:
@@ -286,7 +299,11 @@ class ScriptRunner:
         fns: Mapping[str, Callable[..., Any]],
         result: ScriptResult,
         watch: Watch,
+        cancel: CancelToken | None,
     ) -> None:
+        def cancelled() -> bool:
+            return cancel is not None and cancel.cancelled
+
         deadline = time.monotonic() + self.budgets.wall_s
         checked = {name: validate_call(config=_STRICT)(fn) for name, fn in fns.items()}
         printed = CollectString(max_bytes=self.budgets.print_bytes)
@@ -303,11 +320,16 @@ class ScriptRunner:
                 try:
                     snapshot = session.feed_start(watch.code, print_callback=printed)
                     while not isinstance(snapshot, MontyComplete):
+                        if cancelled():
+                            self._unwind(snapshot, RuntimeError(f"{ErrorCode.CANCELLED}: a stop is in effect."))
+                            raise _Cancelled
                         if time.monotonic() > deadline:
-                            self._unwind(snapshot)
+                            self._unwind(snapshot, TimeoutError("Out of wall clock."))
                             raise _WallClockSpent
                         snapshot = self._answer(snapshot, checked, result.calls)
-                    # A last slow call overruns with no suspension left to catch it.
+                    # A stop or a last slow call can land with no suspension left to catch it.
+                    if cancelled():
+                        raise _Cancelled
                     if time.monotonic() > deadline:
                         raise _WallClockSpent
                     result.ok, result.phase = True, "ok"
@@ -317,12 +339,14 @@ class ScriptRunner:
         finally:
             result.printed = watch.clean(printed.output)
 
-    def _unwind(self, snapshot: Any) -> None:
-        """Let a script out of wall clock finish, with every further call refused and no host call run.
+    def _unwind(self, snapshot: Any, refusal: Exception) -> None:
+        """Let a script that has to end finish, with every further call refused and no host call run.
 
-        The worker takes no other feed while a suspension waits, so this is what keeps
-        the run's counters readable. A script that dawdles past another feed's worth of
-        time, catching the refusals, is left suspended and its evidence is lost.
+        A script ends this way out of wall clock or after a stop, and each call it still
+        makes raises `refusal`. The worker takes no other feed while a suspension waits,
+        so this is what keeps the run's counters readable. A script that dawdles past
+        another feed's worth of time, catching the refusals, is left suspended and its
+        evidence is lost.
         """
         stop = time.monotonic() + self.budgets.feed_s
         with contextlib.suppress(MontyError):
@@ -330,7 +354,7 @@ class ScriptRunner:
                 if isinstance(snapshot, NameLookupSnapshot):
                     snapshot = snapshot.resume()
                 elif isinstance(snapshot, FunctionSnapshot):
-                    snapshot = snapshot.resume({"exception": TimeoutError("Out of wall clock.")})
+                    snapshot = snapshot.resume({"exception": refusal})
                 else:
                     return
 

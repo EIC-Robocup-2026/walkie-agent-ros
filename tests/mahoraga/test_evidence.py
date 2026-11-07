@@ -396,7 +396,8 @@ def test_a_version_saved_and_returned_in_one_script_is_verified_and_frozen_whate
     shelf.mark_verified(_proven([script_record(code, result)]))
 
     assert (result.ok, result.output, result.saved) == (True, 1.0, ["divide"]), result.error
-    assert (shelf.root / "divide.py").read_bytes() == DIVIDE_ON_TWO_LINES.encode()
+    assert (shelf.temporary / "divide.py").read_bytes() == DIVIDE_ON_TWO_LINES.encode()
+    assert (shelf.bundled / "divide.py").read_bytes() == DIVIDE_ON_TWO_LINES.encode()
     assert result.returned == shelf.versions() == {"divide": source_sha(DIVIDE_ON_TWO_LINES)}
     assert shelf.counts()["divide"]["verified"] == 1
     assert Shelf(shelf.root, frozen=True).names() == ["divide"]

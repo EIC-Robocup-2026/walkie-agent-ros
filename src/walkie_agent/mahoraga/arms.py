@@ -12,6 +12,7 @@ All of them share the prompt, the atomics and whatever the eval's config sets.
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import StructuredTool
@@ -20,7 +21,6 @@ from pydantic_monty import Monty
 from walkie_agent.adapter import as_tool, as_tools
 from walkie_agent.capabilities import Ctx
 from walkie_agent.capabilities.fake import CHULA_PAT14_6_PLACES
-from walkie_agent.mahoraga import shelf_dir
 from walkie_agent.mahoraga.tasks import script_record
 from walkie_agent.scripting.driver import (
     Budgets,
@@ -109,18 +109,22 @@ def require_arm(arm: str) -> None:
 
 
 class ArmSetup:
-    """One arm of one eval. Its shelf view is fixed here, so every episode sees the same one."""
+    """One arm of one eval. Its shelf view is fixed here, so every episode sees the same one.
 
-    def __init__(self, arm: str, *, pool: Monty | None = None, shelf_root: str | None = None) -> None:
+    `shelf_root` is the shelf's store root. None means store_root's default:
+    WALKIE_TOOLS_HOME, then the tools package's own folder.
+    """
+
+    def __init__(self, arm: str, *, pool: Monty | None = None, shelf_root: str | Path | None = None) -> None:
         require_arm(arm)
         if arm in SCRIPT_ARMS and pool is None:
             raise ValueError(f"Arm {arm} runs scripts, so it needs a Monty pool.")
         self.arm = arm
         self.shelf: Shelf | None = None
         if arm in ("C", "C2"):
-            self.shelf = Shelf(shelf_dir(shelf_root), frozen=True)
+            self.shelf = Shelf(shelf_root, frozen=True)
         elif arm == INDUCT:
-            self.shelf = Shelf(shelf_dir(shelf_root))
+            self.shelf = Shelf(shelf_root)
         self._runner = None
         if arm in SCRIPT_ARMS:
             # C2 sees the same scripts as C, but its runner has no shelf to call them from.

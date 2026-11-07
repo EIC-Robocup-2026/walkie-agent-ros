@@ -105,8 +105,20 @@ def runner(pool):
 
 
 @pytest.fixture(autouse=True)
+def isolated_tools_home(monkeypatch, tmp_path):
+    """Point every test's default shelf store at a fresh folder, so no test writes into
+    src/walkie_agent/tools or reads what a real run left there.
+
+    A test of the default store removes WALKIE_TOOLS_HOME itself.
+    """
+    store = tmp_path / "walkie-tools"
+    monkeypatch.setenv("WALKIE_TOOLS_HOME", str(store))
+    return store
+
+
+@pytest.fixture(autouse=True)
 def isolated_home(request):
-    """Keep a gym test's shelf, gate results and logs out of the real home, and off the network.
+    """Keep a gym test's gate results and logs out of the real home, and off the network.
 
     Every other test is left alone.
     """

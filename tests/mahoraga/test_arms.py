@@ -10,7 +10,6 @@ from inspect_ai.log import resolve_sample_attachments
 from inspect_ai.model import ModelOutput, ModelUsage, get_model
 
 from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.mahoraga import shelf_dir
 from walkie_agent.mahoraga.arms import ARMS, INDUCT, PROMPT, ArmSetup
 from walkie_agent.mahoraga.checkers import ABOUT_YOURSELF
 from walkie_agent.mahoraga.commands import commands
@@ -71,7 +70,7 @@ def _induct(gated, record, *calls):
 
 
 def _verified_shelf():
-    shelf = Shelf(shelf_dir())
+    shelf = Shelf()
     assert shelf.save(SPEAK, ["speak_up"], check=lambda source: None)[0] == ["speak_up"]
     shelf.mark_verified(shelf.versions())
 
@@ -92,7 +91,7 @@ def test_arm_a_gets_per_step_tools(gated):
 
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"] == []
-    assert log.eval.metadata["arm"] == "A"
+    assert log.eval.metadata == {"arm": "A", "shelf_root": None, "shelf_digest": None}
 
 
 def test_arm_b_runs_the_oracles_script_as_one_call(gated):
@@ -138,10 +137,11 @@ def test_arm_c_calls_a_verified_function_from_the_frozen_shelf(gated):
     assert sample.scores["ground_truth"].value == 1.0
     [script] = sample.store["scripts"]
     assert script["shelf_used"] == ["speak_up"]
-    assert log.eval.metadata["shelf_digest"] == Shelf(shelf_dir(), frozen=True).digest()
+    assert log.eval.metadata["shelf_digest"] == Shelf(frozen=True).digest()
+    assert log.eval.metadata["shelf_root"] == str(Shelf().root)
     assert "def speak_up" in _last_input(sample)[0].text
-    assert Shelf(shelf_dir()).counts()["speak_up"]["run"] == 1
-    assert Shelf(shelf_dir()).counts()["speak_up"]["verified"] == 2
+    assert Shelf().counts()["speak_up"]["run"] == 1
+    assert Shelf().counts()["speak_up"]["verified"] == 2
 
 
 def test_only_the_induction_arm_can_save(pool):
@@ -208,7 +208,7 @@ def test_the_induction_arm_saves_and_the_harness_verifies(gated):
 
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"][0]["saved"] == ["speak_up"]
-    assert "speak_up" in Shelf(shelf_dir(), frozen=True).names()
+    assert "speak_up" in Shelf(frozen=True).names()
 
 
 def test_a_failed_episode_verifies_nothing(gated):
@@ -218,7 +218,7 @@ def test_a_failed_episode_verifies_nothing(gated):
 
     assert sample.scores["ground_truth"].value == 0.0
     assert sample.store["scripts"][0]["saved"] == ["speak_up"]
-    assert "speak_up" not in Shelf(shelf_dir(), frozen=True).names()
+    assert "speak_up" not in Shelf(frozen=True).names()
 
 
 def _talk_to(spec, then):
@@ -255,7 +255,7 @@ def test_a_task_for_induction_takes_only_training_commands(gated, pool, split):
 def test_the_plans_flow_trains_first_then_evaluates_held_out_on_the_frozen_shelf(gated):
     trained = _any_line_talk("train")
     _induct(gated, trained, ("run_script", {"code": SPEAK + _talk_to(trained["spec"], "speak_up()"), "save": ["speak_up"]}))
-    assert Shelf(shelf_dir(), frozen=True).names() == ["speak_up"]
+    assert Shelf(frozen=True).names() == ["speak_up"]
 
     target = _any_line_talk("heldout")
     log, sample = _run(
@@ -268,7 +268,34 @@ def test_the_plans_flow_trains_first_then_evaluates_held_out_on_the_frozen_shelf
 
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"][0]["shelf_used"] == ["speak_up"]
-    assert log.eval.metadata["shelf_digest"] == Shelf(shelf_dir(), frozen=True).digest()
+    assert log.eval.metadata["shelf_digest"] == Shelf(frozen=True).digest()
+
+
+def test_a_run_on_a_fresh_store_trains_and_evaluates_there_and_its_logs_record_it(gated, tmp_path):
+    store = tmp_path / "fresh"
+    trained = _any_line_talk("train")
+    code = SPEAK + _talk_to(trained["spec"], "speak_up()")
+
+    log, _ = _run(gated, INDUCT, trained, ("run_script", {"code": code, "save": ["speak_up"]}), split="train", shelf_root=store)
+
+    assert log.eval.metadata["shelf_root"] == str(store)
+    assert (store / "bundled" / "speak_up.py").read_text() == (store / "temporary" / "speak_up.py").read_text()
+    assert Shelf().names() == []
+    target = _any_line_talk("heldout")
+    log, sample = _run(
+        gated,
+        "C",
+        target,
+        ("run_script", {"code": _talk_to(target["spec"], "speak_up()")}),
+        split="heldout",
+        shelf_root=store,
+    )
+    assert sample.scores["ground_truth"].value == 1.0
+    assert log.eval.metadata == {
+        "arm": "C",
+        "shelf_root": str(store),
+        "shelf_digest": Shelf(store, frozen=True).digest(),
+    }
 
 
 def test_a_function_saved_but_never_run_is_not_verified(gated):
@@ -279,8 +306,8 @@ def test_a_function_saved_but_never_run_is_not_verified(gated):
 
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"][0]["saved"] == ["untested_bad"]
-    assert Shelf(shelf_dir()).counts()["untested_bad"] == {"saved": 1, "run": 0, "fail": 0, "verified": 0}
-    assert Shelf(shelf_dir(), frozen=True).names() == []
+    assert Shelf().counts()["untested_bad"] == {"saved": 1, "run": 0, "fail": 0, "verified": 0}
+    assert Shelf(frozen=True).names() == []
 
 
 def test_a_function_saved_in_one_script_and_run_in_the_next_is_verified(gated):
@@ -295,7 +322,7 @@ def test_a_function_saved_in_one_script_and_run_in_the_next_is_verified(gated):
 
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"][1]["shelf_used"] == ["speak_up"]
-    assert Shelf(shelf_dir(), frozen=True).names() == ["speak_up"]
+    assert Shelf(frozen=True).names() == ["speak_up"]
 
 
 def test_a_rewrite_that_never_ran_earns_nothing_from_the_version_that_did(gated):
@@ -310,9 +337,9 @@ def test_a_rewrite_that_never_ran_earns_nothing_from_the_version_that_did(gated)
     )
 
     assert sample.scores["ground_truth"].value == 1.0
-    assert "Goodbye" in (Shelf(shelf_dir()).root / "speak_up.py").read_text()
-    assert Shelf(shelf_dir()).counts()["speak_up"]["verified"] == 0
-    assert Shelf(shelf_dir(), frozen=True).names() == []
+    assert "Goodbye" in (Shelf().temporary / "speak_up.py").read_text()
+    assert Shelf().counts()["speak_up"]["verified"] == 0
+    assert Shelf(frozen=True).names() == []
 
 
 def test_a_function_that_raised_once_is_not_verified_by_another_call_that_returned(gated):
@@ -328,8 +355,8 @@ def test_a_function_that_raised_once_is_not_verified_by_another_call_that_return
 
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"][0]["saved"] == ["reach"]
-    assert Shelf(shelf_dir()).counts()["reach"]["verified"] == 0
-    assert Shelf(shelf_dir(), frozen=True).names() == []
+    assert Shelf().counts()["reach"]["verified"] == 0
+    assert Shelf(frozen=True).names() == []
 
 
 # Each pair runs in both orders, so one order has the later version's sha sort first.
@@ -346,9 +373,9 @@ def test_the_version_last_run_in_an_episode_is_verified_in_either_hash_order(gat
     )
 
     assert sample.scores["ground_truth"].value == 1.0
-    assert Shelf(shelf_dir()).counts()["versioned"] == {"saved": 2, "run": 0, "fail": 0, "verified": 1}
-    assert Shelf(shelf_dir(), frozen=True).names() == ["versioned"]
-    assert f"return {last}" in Shelf(shelf_dir(), frozen=True).examples()
+    assert Shelf().counts()["versioned"] == {"saved": 2, "run": 0, "fail": 0, "verified": 1}
+    assert Shelf(frozen=True).names() == ["versioned"]
+    assert f"return {last}" in Shelf(frozen=True).examples()
 
 
 @pytest.mark.parametrize(
@@ -384,12 +411,12 @@ def test_a_shelf_name_in_dead_code_is_no_hit_and_earns_nothing(gated):
 
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"][0]["shelf_used"] == []
-    assert Shelf(shelf_dir()).counts()["speak_up"] == {"saved": 1, "run": 0, "fail": 0, "verified": 1}
+    assert Shelf().counts()["speak_up"] == {"saved": 1, "run": 0, "fail": 0, "verified": 1}
     assert arm_metrics(log)["M7_shelf_hit"] == 0.0
 
 
 def test_a_shelf_function_that_raised_under_a_catch_is_harmful_and_earns_nothing(gated):
-    shelf = Shelf(shelf_dir())
+    shelf = Shelf()
     bad = 'def bad_move():\n    """Go nowhere."""\n    go_to("does not exist")\n'
     shelf.save(bad, ["bad_move"], check=lambda source: None)
     shelf.mark_verified(shelf.versions())
@@ -400,7 +427,7 @@ def test_a_shelf_function_that_raised_under_a_catch_is_harmful_and_earns_nothing
 
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"][0]["shelf_raised"] == ["bad_move"]
-    assert Shelf(shelf_dir()).counts()["bad_move"]["verified"] == 1
+    assert Shelf().counts()["bad_move"]["verified"] == 1
     metrics = arm_metrics(log)
     assert metrics["M7_shelf_hit"] == 1.0
     assert metrics["M8_harmful_reuse"] == 1.0
@@ -433,8 +460,8 @@ def test_a_default_holding_eval_cannot_verify_a_function_that_never_ran(gated):
     assert sample.scores["ground_truth"].value == 1.0
     assert sample.store["scripts"][1]["ok"], sample.store["scripts"][1]["error"]
     assert sample.store["scripts"][1]["returned"] == {}
-    assert Shelf(shelf_dir()).counts()["unused_bad"]["verified"] == 0
-    assert Shelf(shelf_dir(), frozen=True).names() == []
+    assert Shelf().counts()["unused_bad"]["verified"] == 0
+    assert Shelf(frozen=True).names() == []
     assert "literal" in sample.store["scripts"][0]["refused"]["take"]
 
 
@@ -643,7 +670,7 @@ def test_a_provider_error_ends_the_sample_after_one_attempt(gated):
     sample = next(sample for sample in log.samples if sample.id == record["seed"])
     assert "The provider fell over." in sample.error.message
     assert not sample.error_retries
-    assert Shelf(shelf_dir()).counts()["speak_up"]["run"] == 1
+    assert Shelf().counts()["speak_up"]["run"] == 1
 
 
 class _FakeProvider(BaseHTTPRequestHandler):

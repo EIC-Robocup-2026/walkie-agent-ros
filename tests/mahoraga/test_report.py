@@ -1,14 +1,24 @@
 """The metrics read what the logs hold, and the paired statistics hold on known inputs."""
 
+from types import SimpleNamespace
+
 import pytest
 from inspect_ai.log import write_eval_log
 from inspect_ai.model import ModelCall, ModelOutput, ModelUsage, get_model
 
-from walkie_agent.mahoraga import shelf_dir
 from walkie_agent.mahoraga.commands import commands
 from walkie_agent.mahoraga.gym import run_episodes
 from walkie_agent.mahoraga.oracle import oracle_script
-from walkie_agent.mahoraga.report import arm_metrics, by_command, compare, mcnemar_p, read_runs, report, shelf_metrics
+from walkie_agent.mahoraga.report import (
+    arm_metrics,
+    by_command,
+    compare,
+    mcnemar_p,
+    read_runs,
+    recorded_shelf_root,
+    report,
+    shelf_metrics,
+)
 from walkie_agent.mahoraga.tasks import SCORER
 from walkie_agent.scripting.shelf import Shelf
 
@@ -105,6 +115,27 @@ def test_the_report_compares_arms_by_command(gated, tmp_path):
     assert result["against_baseline"]["B"]["commands"] == 1
     assert result["warning"] is None
     assert result["against_baseline"]["B"]["complete"] is True
+
+
+def test_the_report_reads_the_shelf_its_logs_record_unless_told_another(gated, tmp_path):
+    record = commands("trial", 1)[0]
+    gated([record])
+    store = tmp_path / "store"
+    Shelf(store).save('def speak():\n    """One."""\n    say("one")\n', ["speak"])
+    run_episodes(["C"], 1, model=_mock(), max_samples=1, log_dir=tmp_path / "logs", shelf_root=store)
+
+    assert report(tmp_path / "logs")["shelf"]["M10_shelf_size"] == 1
+    assert report(tmp_path / "logs", shelf_root=tmp_path / "other")["shelf"]["M10_shelf_size"] == 0
+
+
+def test_logs_that_ran_on_different_shelves_name_no_one_shelf():
+    def logged(root):
+        return SimpleNamespace(eval=SimpleNamespace(metadata={"arm": "-", "shelf_root": root}))
+
+    assert recorded_shelf_root({"A": logged(None), "C": logged("/a")}) == "/a"
+    assert recorded_shelf_root({"A": logged(None)}) is None
+    with pytest.raises(ValueError, match="different shelves"):
+        recorded_shelf_root({"C": logged("/a"), "C2": logged("/b")})
 
 
 def _used(output):
@@ -405,7 +436,7 @@ def test_by_command_means_the_epochs(gated):
 
 
 def test_shelf_metrics_count_size_and_churn():
-    shelf = Shelf(shelf_dir())
+    shelf = Shelf()
     one = 'def speak():\n    """One."""\n    say("one")\n'
     two = 'def speak():\n    """Two."""\n    say("two")\n'
     shelf.save(one, ["speak"], check=lambda source: None)

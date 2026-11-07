@@ -1,11 +1,18 @@
-"""The script shelf: saved functions outside git, with a ledger of how they fared.
+"""The script shelf: saved functions in two tier folders, with a ledger of how they fared.
 
-One `<name>.py` per function, plus `ledger.jsonl` with saved, run, fail and
-verified events, each keyed to the exact source it is about. A script's run saves
-into a writable shelf. Only the harness calls mark_verified, after the ground-truth
-scorer, with what the driver saw run. A frozen shelf fixes its callable set at
-construction, to the functions verified by then, and takes no more definitions,
-while it keeps counting runs for the report.
+A store root holds `temporary/<name>.py`, the latest saved version of each
+function, `bundled/<name>.py`, the last version of each that a passing episode
+verified, and `ledger.jsonl` with saved, run, fail and verified events, each keyed
+to the exact source it is about. The ledger is the record, and the two folders hold
+the text. A script's run saves into a writable shelf, whose callable set is
+temporary/. Only the harness calls mark_verified, after the ground-truth scorer,
+with what the driver saw run. A frozen shelf fixes its callable set at construction,
+to the functions verified by then, read from bundled/, and takes no more
+definitions, while it keeps counting runs for the report.
+
+The store root is the tools package's own folder, src/walkie_agent/tools, unless
+WALKIE_TOOLS_HOME names another. Git must ignore every file the shelf writes there
+(require_ignored).
 """
 
 import ast
@@ -13,6 +20,8 @@ import copy
 import hashlib
 import json
 import os
+import shutil
+import subprocess
 import tempfile
 import threading
 import time
@@ -20,23 +29,84 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+import walkie_agent.tools
+
+TOOLS_HOME = "WALKIE_TOOLS_HOME"
+TEMPORARY = "temporary"
+BUNDLED = "bundled"
 LEDGER = "ledger.jsonl"
+# The default store root. The tier folders' tracked .gitignore files and the
+# repository's .gitignore ignore every file the shelf writes there.
+PACKAGE_STORE = Path(walkie_agent.tools.__file__).resolve().parent
+# What require_ignored asks git about: a saved file and the scratch file of an atomic
+# write in each tier folder, and the ledger.
+_PROBES = (
+    f"{TEMPORARY}/ignore_probe.py",
+    f"{TEMPORARY}/ignore_probe.tmp",
+    f"{BUNDLED}/ignore_probe.py",
+    f"{BUNDLED}/ignore_probe.tmp",
+    LEDGER,
+)
 # The loader defines these itself, so a saved function under one could not run as saved.
 SHADOWED = frozenset({"locals", "eval", "exec"})
 
 
-def private_dir(path: str | Path) -> Path:
-    """`path` resolved and created, for agent-written scripts and logs.
+def store_root(path: str | Path | None = None) -> Path:
+    """A shelf's store root, resolved: `path`, then WALKIE_TOOLS_HOME, then the tools package's own folder."""
+    chosen = path or os.environ.get(TOOLS_HOME)
+    return Path(chosen).expanduser().resolve() if chosen else PACKAGE_STORE
 
-    Raises ValueError for a directory inside a git work tree, because agent-written
-    scripts and logs must never end up in a commit.
+
+def require_ignored(root: Path) -> None:
+    """Raise ValueError unless git ignores every file a shelf writes under the resolved `root`.
+
+    A root with no `.git` at or above it is outside every git work tree, so it passes,
+    with or without git. Inside a work tree, `git check-ignore` must report a saved
+    file and an atomic write's scratch file in each tier folder, and the ledger, as
+    ignored. Anything else fails closed: a path git does not ignore, a tracked file at
+    a probed path, or git failing. Without git nothing can be checked there, so only
+    the package's own folder passes, whose tracked .gitignore files ignore what the
+    shelf writes.
     """
-    root = Path(path).expanduser().resolve()
-    for parent in (root, *root.parents):
-        if (parent / ".git").exists():
-            raise ValueError(f"{root} is inside the git work tree at {parent}.")
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    top = next((parent for parent in (root, *root.parents) if (parent / ".git").exists()), None)
+    if top is None:
+        return
+    elsewhere = f"set {TOOLS_HOME} to a folder outside any git work tree"
+    git = shutil.which("git")
+    if git is None:
+        if root == PACKAGE_STORE:
+            return
+        raise ValueError(
+            f"{root} is inside the git work tree at {top}, and git is not installed to check that it "
+            f"ignores what the shelf writes there. Install git, {elsewhere}, or unset {TOOLS_HOME} "
+            f"to use {PACKAGE_STORE}."
+        )
+    probes = [(root / probe).relative_to(top).as_posix() for probe in _PROBES]
+    # A GIT_DIR or GIT_WORK_TREE from the caller would point git at another repository.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    try:
+        done = subprocess.run(
+            [git, "-C", str(top), "check-ignore", "-z", "--stdin"],
+            input="\0".join(probes) + "\0",
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError(f"git check-ignore could not run in {top}: {exc}. Fix git there, or {elsewhere}.") from exc
+    # 0 means some path is ignored and 1 means none is. Anything else is an error.
+    if done.returncode not in (0, 1):
+        raise ValueError(
+            f"git check-ignore failed in {top}: {done.stderr.strip()} Fix git there, or {elsewhere}."
+        )
+    missing = sorted(set(probes) - set(done.stdout.split("\0")))
+    if missing:
+        raise ValueError(
+            f"{root} is inside the git work tree at {top}, and git does not ignore {', '.join(missing)}, "
+            f"so saved functions could be committed. Ignore them in a .gitignore there, or {elsewhere}."
+        )
 
 
 def source_sha(source: str) -> str:
@@ -129,13 +199,24 @@ def _defaults_are_literal(node: ast.FunctionDef) -> bool:
 
 
 class Shelf:
-    """Saved functions under `root`, which private_dir resolves, checks and creates."""
+    """Saved functions in the tier folders of the store that store_root(root) names.
 
-    def __init__(self, root: str | Path, *, frozen: bool = False) -> None:
-        self.root = private_dir(root)
+    The root must pass require_ignored before anything is created under it.
+    """
+
+    def __init__(self, root: str | Path | None = None, *, frozen: bool = False) -> None:
+        self.root = store_root(root)
+        require_ignored(self.root)
+        self.temporary = self.root / TEMPORARY
+        self.bundled = self.root / BUNDLED
+        self.temporary.mkdir(parents=True, exist_ok=True)
+        self.bundled.mkdir(exist_ok=True)
         self.frozen = frozen
         self._ledger = self.root / LEDGER
         self._lock = threading.Lock()
+        # The text of every version this shelf has read or written, by name and sha, so that
+        # mark_verified can copy a version to bundled/ after a rewrite replaced it in temporary/.
+        self._texts: dict[tuple[str, str], str] = {}
         self._frozen_sources = self._verified_sources() if frozen else None
 
     def names(self) -> list[str]:
@@ -203,9 +284,10 @@ class Shelf:
         problem = check("\n".join(chosen.values())) if chosen else None
         if problem:
             return [], {**refused, **{name: problem for name in chosen}}
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.temporary.mkdir(parents=True, exist_ok=True)
         for name, source in chosen.items():
-            _write_atomically(self.root / f"{name}.py", source)
+            self._texts[name, source_sha(source)] = source
+            _write_atomically(self.temporary / f"{name}.py", source)
             self._log("saved", name, source_sha(source))
         return sorted(chosen), refused
 
@@ -217,10 +299,21 @@ class Shelf:
     def mark_verified(self, versions: Mapping[str, str]) -> None:
         """For the harness only, with the versions that ran in an episode the scorer passed.
 
-        A version is the sha of the source that ran, so a rewrite since then stays unverified.
+        A version is the sha of the source that ran, so a rewrite since then stays
+        unverified. Each version gets its verified event, then its text as written goes
+        to bundled/<name>.py, even when temporary/ already holds a rewrite. Raises
+        ValueError, with nothing logged or written, for a version this shelf never read
+        or wrote, because its text is not known.
         """
-        for name, sha in versions.items():
-            self._log("verified", name, sha)
+        texts = {name: self._text_of(name, sha) for name, sha in versions.items()}
+        unknown = [f"{name} {versions[name]}" for name, text in texts.items() if text is None]
+        if unknown:
+            raise ValueError(f"This shelf never held these versions, so none was verified: {', '.join(unknown)}.")
+        with self._lock:
+            self.bundled.mkdir(parents=True, exist_ok=True)
+            for name, sha in versions.items():
+                self._append("verified", name, sha)
+                _write_atomically(self.bundled / f"{name}.py", texts[name])
 
     def counts(self) -> dict[str, dict[str, int]]:
         """Saved, run, fail and verified counts per function.
@@ -250,20 +343,45 @@ class Shelf:
         return self._all_sources() if self._frozen_sources is None else self._frozen_sources
 
     def _all_sources(self) -> dict[str, str]:
-        if not self.root.is_dir():
+        """The latest saved version of each function, from temporary/."""
+        return self._read(self.temporary)
+
+    def _read(self, folder: Path) -> dict[str, str]:
+        """Each `<name>.py` in `folder` by name, with its text remembered by name and sha."""
+        if not folder.is_dir():
             return {}
-        return {path.stem: path.read_text() for path in sorted(self.root.glob("*.py"))}
+        sources = {path.stem: path.read_text() for path in sorted(folder.glob("*.py"))}
+        for name, source in sources.items():
+            self._texts[name, source_sha(source)] = source
+        return sources
+
+    def _text_of(self, name: str, sha: str) -> str | None:
+        """The text of one version, from what this shelf has read or written, or its files now."""
+        if (name, sha) not in self._texts:
+            for folder in (self.temporary, self.bundled):
+                path = folder / f"{name}.py"
+                if path.is_file():
+                    text = path.read_text()
+                    self._texts[name, source_sha(text)] = text
+        return self._texts.get((name, sha))
 
     def _verified_sources(self) -> dict[str, str]:
-        """The current versions verified so far, without any that names a saved function left out.
+        """The functions whose verified version in bundled/ is still their latest saved one.
 
-        A verified function may name another that never ran, in a branch it did not
-        take. On a frozen shelf it could not stand alone, so it stays off as well.
+        A file in bundled/ counts only if the ledger holds a verified event for its sha,
+        and only while temporary/ holds the same version, so a rewrite that has not been
+        verified keeps its function off, as a rewrite starts with nothing. A verified
+        function may name another that never ran, in a branch it did not take. On a
+        frozen shelf it could not stand alone, so it stays off as well (M18).
         """
-        counts = self.counts()
-        sources = self._all_sources()
-        kept = {name: source for name, source in sources.items() if counts[name]["verified"] > 0}
-        while short := [name for name, source in kept.items() if (_names_in(source) & set(sources)) - set(kept)]:
+        saved = {name: source_sha(source) for name, source in self._all_sources().items()}
+        verified = {(event["name"], event["sha"]) for event in self._events() if event["event"] == "verified"}
+        kept = {
+            name: source
+            for name, source in self._read(self.bundled).items()
+            if saved.get(name) == source_sha(source) and (name, saved[name]) in verified
+        }
+        while short := [name for name, source in kept.items() if (_names_in(source) & set(saved)) - set(kept)]:
             for name in short:
                 del kept[name]
         return kept
@@ -274,11 +392,15 @@ class Shelf:
         return [json.loads(line) for line in self._ledger.read_text().splitlines()]
 
     def _log(self, event: str, name: str, sha: str) -> None:
-        line = json.dumps({"ts": time.time(), "event": event, "name": name, "sha": sha})
         with self._lock:
-            self.root.mkdir(parents=True, exist_ok=True)
-            with self._ledger.open("a") as ledger:
-                ledger.write(line + "\n")
+            self._append(event, name, sha)
+
+    def _append(self, event: str, name: str, sha: str) -> None:
+        """One line of the ledger. The caller holds the lock."""
+        line = json.dumps({"ts": time.time(), "event": event, "name": name, "sha": sha})
+        self.root.mkdir(parents=True, exist_ok=True)
+        with self._ledger.open("a") as ledger:
+            ledger.write(line + "\n")
 
 
 def header(source: str) -> str:

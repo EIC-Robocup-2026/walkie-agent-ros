@@ -116,8 +116,30 @@ def test_gate_defaults_to_the_plans_three_data_sets(monkeypatch):
 
 
 def test_report_prints_json(capsys, monkeypatch):
-    monkeypatch.setattr(cli, "report", lambda log_dir, baseline: {"log_dir": log_dir, "baseline": baseline})
+    def report(log_dir, baseline, shelf_root):
+        return {"log_dir": log_dir, "baseline": baseline, "shelf_root": shelf_root}
+
+    monkeypatch.setattr(cli, "report", report)
 
     assert cli.main(["report", "--log-dir", "/tmp/x"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"log_dir": "/tmp/x", "baseline": "A", "shelf_root": None}
+    assert cli.main(["report", "--log-dir", "/tmp/x", "--shelf", "/tmp/store"]) == 0
+    assert json.loads(capsys.readouterr().out)["shelf_root"] == "/tmp/store"
 
-    assert json.loads(capsys.readouterr().out) == {"log_dir": "/tmp/x", "baseline": "A"}
+
+def test_run_points_the_shelf_at_the_store_given(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cli, "run_episodes", lambda arms, commands, **kwargs: seen.update(kwargs) or [])
+
+    assert cli.main(["run", "--arms", "C", "--commands", "1", "--shelf", "/tmp/store"]) == 0
+    assert seen["shelf_root"] == "/tmp/store"
+    assert cli.main(["run", "--arms", "C", "--commands", "1"]) == 0
+    assert seen["shelf_root"] is None
+
+
+def test_a_report_on_a_shelf_in_an_unignored_work_tree_is_refused(capsys, tmp_path):
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+
+    assert cli.main(["report", "--log-dir", str(tmp_path / "logs"), "--shelf", str(tmp_path / "repo" / "store")]) == 2
+
+    assert "Refused:" in capsys.readouterr().err

@@ -10,18 +10,17 @@ docs/architecture/mahoraga-demo.md has the public API and the run commands.
 import os
 from pathlib import Path
 
-from walkie_agent.scripting.shelf import private_dir
-
 
 def home(path: str | Path | None = None) -> Path:
-    """Where the shelf, gate results and logs live: `path`, MAHORAGA_HOME or ~/.local/share/mahoraga.
+    """Where gate results and run logs live: `path`, MAHORAGA_HOME or ~/.local/share/mahoraga.
 
-    Raises ValueError for a directory inside a git work tree, because agent-written
-    scripts and logs must never end up in a commit.
+    The shelf is not here: its store is scripting.shelf.store_root's, which the gym's
+    --shelf names. Raises ValueError for a directory inside a git work tree, because
+    agent-written scripts in run logs must never end up in a commit.
     """
-    return private_dir(path or os.environ.get("MAHORAGA_HOME") or "~/.local/share/mahoraga")
-
-
-def shelf_dir(path: str | Path | None = None) -> Path:
-    """The gym's shelf directory: `path`, or the shelf/ directory of home()."""
-    return Path(path) if path else home() / "shelf"
+    root = Path(path or os.environ.get("MAHORAGA_HOME") or "~/.local/share/mahoraga").expanduser().resolve()
+    for parent in (root, *root.parents):
+        if (parent / ".git").exists():
+            raise ValueError(f"{root} is inside the git work tree at {parent}.")
+    root.mkdir(parents=True, exist_ok=True)
+    return root

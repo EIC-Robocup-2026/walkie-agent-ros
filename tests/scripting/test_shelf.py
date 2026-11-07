@@ -1,21 +1,31 @@
-"""The shelf keeps what succeeded, outside git, and only the harness verifies."""
+"""The shelf keeps what succeeded in git-ignored tier folders, and only the harness verifies."""
 
 import ast
 import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
+import walkie_agent.scripting.shelf as shelf_module
+import walkie_agent.tools
 from walkie_agent.scripting.driver import ScriptRunner, script_summary
 from walkie_agent.scripting.shelf import (
+    PACKAGE_STORE,
     Shelf,
     definition_source,
+    require_ignored,
     shape,
     source_sha,
+    store_root,
     top_level_defs,
 )
 
 FETCH = 'def to_shelf() -> str:\n    """Drive to the shelf."""\n    return go_to("shelf")\n\nto_shelf()'
+VALUE_1 = "def value() -> int:\n    return 1\n"
+VALUE_2 = "def value() -> int:\n    return 2\n"
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
 
 @pytest.fixture
@@ -28,25 +38,173 @@ def shelf_runner(pool, shelf):
     return ScriptRunner(pool, shelf=shelf)
 
 
+@pytest.fixture
+def repo(tmp_path):
+    """An empty git repository."""
+    root = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    return root
+
+
 def events(shelf):
     return [json.loads(line) for line in (shelf.root / "ledger.jsonl").read_text().splitlines()]
 
 
-def test_a_directory_in_a_git_work_tree_is_refused(tmp_path):
+def test_the_default_store_is_the_tools_package_folder(monkeypatch, tmp_path):
+    monkeypatch.delenv("WALKIE_TOOLS_HOME")
+
+    assert store_root() == PACKAGE_STORE == Path(walkie_agent.tools.__file__).resolve().parent
+    monkeypatch.setenv("WALKIE_TOOLS_HOME", str(tmp_path / "from-env"))
+    assert store_root() == tmp_path / "from-env"
+    assert store_root(tmp_path / "given") == tmp_path / "given"
+    assert Shelf(tmp_path / "given").temporary == tmp_path / "given" / "temporary"
+
+
+@needs_git
+def test_git_ignores_what_the_shelf_writes_in_the_package_folder():
+    if not any((parent / ".git").exists() for parent in (PACKAGE_STORE, *PACKAGE_STORE.parents)):
+        pytest.skip("The package is not in a git work tree.")
+    probes = [
+        "temporary/probe_tool.py",
+        "temporary/tmpk3j9x2.tmp",
+        "bundled/probe_tool.py",
+        "bundled/tmpk3j9x2.tmp",
+        "ledger.jsonl",
+    ]
+    done = subprocess.run(
+        ["git", "-C", str(PACKAGE_STORE), "check-ignore", "-z", "--stdin"],
+        input="\0".join(probes) + "\0",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    readmes = subprocess.run(
+        ["git", "-C", str(PACKAGE_STORE), "check-ignore", "temporary/README.md", "bundled/README.md"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert sorted(filter(None, done.stdout.split("\0"))) == sorted(probes), done.stderr
+    assert readmes.returncode == 1, readmes.stdout
+    require_ignored(PACKAGE_STORE)
+
+
+@needs_git
+def test_a_store_in_a_git_work_tree_that_does_not_ignore_it_is_refused_before_it_is_created(repo):
+    with pytest.raises(ValueError, match="does not ignore") as refused:
+        Shelf(repo / "store")
+
+    assert "WALKIE_TOOLS_HOME" in str(refused.value)
+    assert not (repo / "store").exists()
+    with pytest.raises(ValueError, match="does not ignore"):
+        Shelf(Path(__file__).parent / "shelf")
+
+
+@needs_git
+def test_a_store_that_git_ignores_only_in_part_is_refused_and_told_what_is_missing(repo):
+    (repo / ".gitignore").write_text("/store/temporary/\n")
+
+    with pytest.raises(ValueError, match="does not ignore") as refused:
+        Shelf(repo / "store")
+
+    assert "store/bundled/ignore_probe.py" in str(refused.value)
+    assert "store/ledger.jsonl" in str(refused.value)
+    assert "store/temporary/" not in str(refused.value)
+
+
+@needs_git
+def test_a_store_that_git_ignores_is_accepted(repo):
+    (repo / ".gitignore").write_text("/store/\n")
+
+    shelf = Shelf(repo / "store")
+
+    assert shelf.save(VALUE_1, ["value"]) == (["value"], {})
+    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], capture_output=True, text=True, check=True)
+    assert status.stdout == "?? .gitignore\n"
+
+
+@needs_git
+def test_a_folder_git_cannot_read_is_refused(tmp_path):
+    (tmp_path / "broken" / ".git").mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="git check-ignore failed"):
+        Shelf(tmp_path / "broken" / "store")
+
+
+def test_without_git_only_the_package_folder_passes_inside_a_work_tree(monkeypatch, tmp_path):
+    monkeypatch.setattr(shelf_module.shutil, "which", lambda name: None)
     (tmp_path / "repo" / ".git").mkdir(parents=True)
 
-    with pytest.raises(ValueError, match="git work tree"):
-        Shelf(tmp_path / "repo" / "shelf")
-    with pytest.raises(ValueError, match="git work tree"):
-        Shelf(Path(__file__).parent / "shelf")
+    with pytest.raises(ValueError, match="git is not installed"):
+        Shelf(tmp_path / "repo" / "store")
+    require_ignored(PACKAGE_STORE)
+    assert Shelf(tmp_path / "plain").root == tmp_path / "plain"
+
+
+def test_saving_writes_the_latest_version_to_temporary_and_nothing_to_bundled(shelf):
+    shelf.save(VALUE_1, ["value"])
+    shelf.save(VALUE_2, ["value"])
+
+    assert (shelf.temporary / "value.py").read_text() == VALUE_2
+    assert list(shelf.bundled.iterdir()) == []
+
+
+def test_verifying_writes_that_exact_version_to_bundled(shelf):
+    shelf.save(REPORT, ["report"])
+
+    shelf.mark_verified(shelf.versions())
+
+    verified = events(shelf)[-1]
+    assert (verified["event"], verified["name"]) == ("verified", "report")
+    assert (shelf.bundled / "report.py").read_bytes() == REPORT.encode()
+    assert source_sha((shelf.bundled / "report.py").read_text()) == verified["sha"]
+
+
+def test_a_version_verified_after_a_rewrite_goes_to_bundled_as_it_ran(shelf):
+    shelf.save(VALUE_1, ["value"])
+    first = shelf.versions()
+    shelf.save(VALUE_2, ["value"])
+
+    shelf.mark_verified(first)
+
+    assert (shelf.bundled / "value.py").read_text() == VALUE_1
+    assert (shelf.temporary / "value.py").read_text() == VALUE_2
+    assert Shelf(shelf.root, frozen=True).names() == []
+    shelf.mark_verified(shelf.versions())
+    assert (shelf.bundled / "value.py").read_text() == VALUE_2
+    assert Shelf(shelf.root, frozen=True).examples() == VALUE_2
+
+
+def test_a_frozen_shelf_loads_only_verified_files_in_bundled(shelf):
+    shelf.save(VALUE_1, ["value"])
+    shelf.mark_verified(shelf.versions())
+    shelf.save("def other() -> int:\n    return 3\n", ["other"])
+    (shelf.bundled / "other.py").write_text((shelf.temporary / "other.py").read_text())
+
+    assert Shelf(shelf.root, frozen=True).names() == ["value"]
+    (shelf.bundled / "value.py").unlink()
+    assert Shelf(shelf.root, frozen=True).names() == []
+
+
+def test_verifying_a_version_the_shelf_never_held_is_refused_and_changes_nothing(shelf):
+    shelf.save(VALUE_1, ["value"])
+
+    with pytest.raises(ValueError, match="never held"):
+        shelf.mark_verified({"value": source_sha(VALUE_2)})
+    with pytest.raises(ValueError, match="never held"):
+        shelf.mark_verified({"value": source_sha(VALUE_1), "missing": source_sha(VALUE_1)})
+
+    assert [event["event"] for event in events(shelf)] == ["saved"]
+    assert list(shelf.bundled.iterdir()) == []
 
 
 def test_a_success_saves_one_file_per_definition_and_a_ledger_line(shelf_runner, shelf, fns):
     result = shelf_runner.run(FETCH, fns, save=["to_shelf"])
 
     assert result.saved == ["to_shelf"]
-    assert (shelf.root / "to_shelf.py").read_text().startswith("def to_shelf() -> str:")
-    assert "to_shelf()\n" not in (shelf.root / "to_shelf.py").read_text().split("return")[1]
+    assert (shelf.temporary / "to_shelf.py").read_text().startswith("def to_shelf() -> str:")
+    assert "to_shelf()\n" not in (shelf.temporary / "to_shelf.py").read_text().split("return")[1]
     event = events(shelf)[0]
     assert (event["event"], event["name"]) == ("saved", "to_shelf")
     assert event["sha"] and event["ts"]
@@ -72,7 +230,7 @@ def test_a_top_level_definition_is_saved_with_its_text_exactly_as_written(shelf)
 
     assert definition_source(code, top_level_defs(code)["report"]) == REPORT
     assert shelf.save(code, ["report"])[0] == ["report"]
-    assert (shelf.root / "report.py").read_text() == REPORT
+    assert (shelf.temporary / "report.py").read_text() == REPORT
     assert events(shelf)[0]["sha"] == source_sha(REPORT)
 
 
@@ -82,7 +240,7 @@ def test_a_definition_is_saved_with_newline_endings_so_its_ledger_sha_is_the_one
 
     assert definition_source(code, top_level_defs(code)["report"]) == REPORT
     assert shelf.save(code, ["report"])[0] == ["report"]
-    assert (shelf.root / "report.py").read_bytes() == REPORT.encode()
+    assert (shelf.temporary / "report.py").read_bytes() == REPORT.encode()
     assert events(shelf)[0]["sha"] == shelf.versions()["report"] == source_sha(REPORT)
 
 
@@ -93,7 +251,7 @@ def test_a_form_feed_before_a_top_level_definition_takes_nothing_off_its_lines(s
 
     assert definition_source(code, top_level_defs(code)["note"]) == note
     assert shelf.save(code, ["note"])[0] == ["note"]
-    assert (shelf.root / "note.py").read_text() == note
+    assert (shelf.temporary / "note.py").read_text() == note
     assert events(shelf)[0]["sha"] == source_sha(note)
 
 

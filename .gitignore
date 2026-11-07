@@ -17,6 +17,8 @@ rmw_zenoh_ws/build/
 rmw_zenoh_ws/install/
 rmw_zenoh_ws/log/
 rmw_zenoh_ws/src/
+# The shelf's ledger in its default store; the tier folders ignore their own files
+/src/walkie_agent/tools/ledger.jsonl
 # Python
 __pycache__/
 *.egg-info/

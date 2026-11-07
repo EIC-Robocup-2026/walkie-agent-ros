@@ -50,12 +50,15 @@ def gpsr_task(
     *,
     epochs: int = 1,
     pool: Monty | None = None,
-    shelf_root: str | None = None,
+    shelf_root: str | Path | None = None,
 ) -> Task:
-    """One arm over `records`.
+    """One arm over `records`, with the shelf in the store at `shelf_root`.
 
-    Raises GateError unless the oracle gate covers them, and ValueError for induction
-    on anything but training commands, whose answers a later arm would then be handed.
+    None means store_root's default, WALKIE_TOOLS_HOME and then the tools package's
+    own folder. The task's metadata, and so its log, records the store root and the
+    callable set's digest. Raises GateError unless the oracle gate covers the records,
+    and ValueError for induction on anything but training commands, whose answers a
+    later arm would then be handed.
     """
     if arm == INDUCT and not all(SPLITS["train"] <= record["seed"] < SPLITS["heldout"] for record in records):
         raise ValueError(f"{INDUCT} runs only on commands of the train split.")
@@ -69,7 +72,11 @@ def gpsr_task(
         name=f"gpsr_{arm}",
         token_limit=_TOKEN_LIMIT,
         time_limit=_TIME_LIMIT_S,
-        metadata={"arm": arm, "shelf_digest": setup.shelf.digest() if setup.shelf else None},
+        metadata={
+            "arm": arm,
+            "shelf_root": str(setup.shelf.root) if setup.shelf else None,
+            "shelf_digest": setup.shelf.digest() if setup.shelf else None,
+        },
     )
 
 
@@ -141,10 +148,13 @@ def run_episodes(
     seed: int = 0,
     max_samples: int = 8,
     log_dir: str | Path | None = None,
-    shelf_root: str | None = None,
+    shelf_root: str | Path | None = None,
     sandbox: bool = True,
 ) -> list[EvalLog]:
     """Run `commands` commands for each of `arms`, `epochs` times each, and return the logs.
+
+    `shelf_root` is the shelf's store root, as for gpsr_task, so a run can start from a
+    fresh store. Logs go to `log_dir`, or a stamped folder under home()'s runs/.
 
     Raises GateError before any arm starts unless the gate covers the data, and
     ValueError for an unknown arm, a count below 1, or induction that is not alone on

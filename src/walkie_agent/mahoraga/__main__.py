@@ -15,7 +15,11 @@ from walkie_agent.mahoraga.report import report
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m walkie_agent.mahoraga")
-    parser.add_argument("--home", help="Where the shelf, gate results and logs live. Default: MAHORAGA_HOME.")
+    parser.add_argument(
+        "--home",
+        help="Where gate results and run logs live. Default: MAHORAGA_HOME, then ~/.local/share/mahoraga.",
+    )
+    shelf_help = "The shelf's store root. Default: WALKIE_TOOLS_HOME, then src/walkie_agent/tools."
     commands = parser.add_subparsers(dest="command", required=True)
 
     gate = commands.add_parser("gate", help="Run the oracle gate, with no LLM. Default: the plan's three data sets.")
@@ -42,11 +46,13 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--seed", type=int, default=0)
     run.add_argument("--max-samples", type=int, default=8)
     run.add_argument("--log-dir", help="Default: a new directory under the home's runs/.")
+    run.add_argument("--shelf", help=shelf_help)
     run.add_argument("--no-bwrap", action="store_true", help="Run workers outside bwrap, on a machine without it.")
 
     summary = commands.add_parser("report", help="Print the metrics of a run's logs as JSON.")
     summary.add_argument("--log-dir", required=True)
     summary.add_argument("--baseline", default="A")
+    summary.add_argument("--shelf", help=f"{shelf_help} Without it, the store root the logs record comes first.")
     return parser
 
 
@@ -59,7 +65,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _gate(parser, args)
     if args.command == "run":
         return _run(args)
-    print(json.dumps(report(args.log_dir, baseline=args.baseline), indent=1))
+    try:
+        summary = report(args.log_dir, baseline=args.baseline, shelf_root=args.shelf)
+    except ValueError as exc:
+        print(f"Refused: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(summary, indent=1))
     return 0
 
 
@@ -105,6 +116,7 @@ def _run(args: argparse.Namespace) -> int:
             seed=args.seed,
             max_samples=args.max_samples,
             log_dir=args.log_dir,
+            shelf_root=args.shelf,
             sandbox=not args.no_bwrap,
         )
     except (GateError, ValueError) as exc:

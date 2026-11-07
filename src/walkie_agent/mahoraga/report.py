@@ -21,7 +21,6 @@ from typing import Any
 from inspect_ai.event import ModelEvent
 from inspect_ai.log import EvalLog, EvalSample, read_eval_log
 
-from walkie_agent.mahoraga import shelf_dir
 from walkie_agent.mahoraga.tasks import SCORER
 from walkie_agent.scripting.shelf import Shelf
 
@@ -147,8 +146,8 @@ def arm_metrics(log: EvalLog) -> dict[str, Any]:
 
 
 def shelf_metrics(root: str | Path | None = None) -> dict[str, int]:
-    """M10: the shelf's size, and how many saved versions it has replaced."""
-    counts = Shelf(shelf_dir(root)).counts()
+    """M10: the size of the shelf in the store at `root`, and how many saved versions it has replaced."""
+    counts = Shelf(root).counts()
     return {
         "M10_shelf_size": len(counts),
         "M10_shelf_churn": sum(entry["saved"] for entry in counts.values()) - len(counts),
@@ -202,10 +201,22 @@ def _same_commands(baseline: EvalLog, other: EvalLog) -> bool:
     return all(text.get(sample.id, sample.input) == sample.input for sample in other.samples or [])
 
 
+def recorded_shelf_root(runs: Mapping[str, EvalLog]) -> str | None:
+    """The shelf's store root that the arms' logs record, or None if none records one.
+
+    Raises ValueError if they record different roots, as no one shelf then describes them.
+    """
+    roots = sorted({log.eval.metadata.get("shelf_root") for log in runs.values()} - {None})
+    if len(roots) > 1:
+        raise ValueError(f"The logs ran on different shelves: {', '.join(roots)}. Name one with shelf_root.")
+    return roots[0] if roots else None
+
+
 def report(log_dir: str | Path, *, baseline: str = "A", shelf_root: str | Path | None = None) -> dict[str, Any]:
     """Every arm's metrics under `log_dir`, and each arm against the baseline.
 
     `warning` is None only if every arm is complete. Each comparison has its own `complete`.
+    M10 reads the shelf at `shelf_root`, else the one the logs record, else store_root's default.
     """
     runs = read_runs(log_dir)
     scores = {arm: by_command(log) for arm, log in runs.items()}
@@ -228,5 +239,5 @@ def report(log_dir: str | Path, *, baseline: str = "A", shelf_root: str | Path |
             for arm, score in scores.items()
             if baseline in scores and arm != baseline
         },
-        "shelf": shelf_metrics(shelf_root),
+        "shelf": shelf_metrics(shelf_root or recorded_shelf_root(runs)),
     }

@@ -89,7 +89,7 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | `src/walkie_agent/main.py`   | The entry point, which assembles the agent                        |
 | `src/walkie_agent/capabilities/` | The verbs on `ctx`, their guards and `FakeRobot`. No ROS.     |
 | `src/walkie_agent/tools/atomic/` | The tools, as plain functions, and the fixed tool sets. No ROS. |
-| `src/walkie_agent/tools/`    | The tool tiers: `atomic/`, the gym's stand-in bundles in `bundled_preset/`, and the ignored `bundled/` and `temporary/` folders for saved functions, empty for now |
+| `src/walkie_agent/tools/`    | The tool tiers: `atomic/`, the gym's stand-in bundles in `bundled_preset/`, and the ignored `bundled/` and `temporary/` folders where the gym's shelf keeps saved functions |
 | `src/walkie_agent/scripting/` | `run_script`'s runtime: the Monty sandbox, the driver, the shelf of saved functions and its evidence. No ROS. |
 | `src/walkie_agent/runtime/`  | `create_agent`, the middlewares, the todo list and the Runner. No ROS. |
 | `src/walkie_agent/ros/`      | The ROS-backed verbs and the operator's topics                    |

@@ -139,12 +139,20 @@ The `carry` pose needs `travel_safe = true` in `config/arm_poses.toml`, or
 ## Tiers and folders
 
 Two tiers are in git and reviewed. Two are generated, and never committed.
-Each tier has a folder under `src/walkie_agent/tools/`. The two generated tiers'
-folders are ignored by git and hold only a README, because nothing writes a
-generated tool yet. This page proposed keeping generated tools under
-`$WALKIE_TOOLS_HOME` (default `~/.local/share/walkie/tools`, set with
-`[walkie.toolbox] root`), outside the repository. Where they are stored is not
-built. A **generated tool** is
+Each tier has a folder under `src/walkie_agent/tools/`. Git ignores everything in
+the two generated tiers' folders except a README and a `.gitignore`.
+
+Built now, for the Mahoraga gym's script shelf only: the shelf writes Python
+functions into the generated tiers. `temporary/<name>.py` holds the latest saved
+version of each function, `bundled/<name>.py` the last version a passing episode
+verified, and `ledger.jsonl` beside them the events
+([Shelf](mahoraga-demo.md#shelf)). The store root is the package's own
+`src/walkie_agent/tools/`, and `$WALKIE_TOOLS_HOME` overrides it. The shelf refuses
+a store inside a git work tree unless git ignores what it writes there. So today
+`bundled/` holds verified Python functions, not bundle drafts, and the bundle DSL,
+`request_tool` and the tool coder below are still proposals. This page first
+proposed `~/.local/share/walkie/tools` as the default, set with
+`[walkie.toolbox] root`, which is not built. A **generated tool** is
 any tool the agent made itself: a bundle draft in `bundled`, or Python in
 `temporary`. Generated Python is also called a vibed tool (internally:
 temporary tool). The **atomic agent** is
@@ -155,8 +163,8 @@ bundle ([The tool creator](#the-tool-creator)).
 | ---- | ------ | ------ | ---------- | ------- | -------- |
 | atomic | `src/walkie_agent/tools/atomic/` | Built: plain typed functions over `ctx`. Proposed in addition: `META`, `Args`, `Out`, `run(ctx, args)` | a human, or a promoted generated tool | the agent process if `META.runtime = "inprocess"`, otherwise a sandbox worker | every level, within its reviewed manifest |
 | bundled_preset | `src/walkie_agent/tools/bundled_preset/` | Built: stand-in Python functions over the atomics, for the Mahoraga gym's arm D only. Proposed: Bundle DSL | a human, often from a promoted bundle | `BundleRunner` | every level, if its backends are real or the run is a simulation |
-| bundled | `src/walkie_agent/tools/bundled/`, ignored by git and empty | Bundle DSL, rendered from JSON | the atomic agent | `BundleRunner` | Unrestricted and Standard: drafts stamped at or below the level. Competition: this session's only |
-| temporary | `src/walkie_agent/tools/temporary/`, ignored by git and empty | Python, same shape as atomic | the tool coder | a sandbox worker | as for bundled |
+| bundled | `src/walkie_agent/tools/bundled/`, or under `$WALKIE_TOOLS_HOME`, ignored by git | Built: the last verified version of each shelf function, as Python. Proposed: Bundle DSL, rendered from JSON | Built: the gym's scorer, through `Shelf.mark_verified`. Proposed: the atomic agent | Built: a Monty worker, as a frozen shelf's callable set. Proposed: `BundleRunner` | Built: the gym's arms C and C2. Proposed: Unrestricted and Standard: drafts stamped at or below the level. Competition: this session's only |
+| temporary | `src/walkie_agent/tools/temporary/`, or under `$WALKIE_TOOLS_HOME`, ignored by git | Built: the latest saved version of each shelf function, as Python. Proposed: Python, same shape as atomic | Built: a gym script with `save=[names]` that succeeds. Proposed: the tool coder | a sandbox worker | Built: the gym's arm `induct`. Proposed: as for bundled |
 
 A Competition run builds its index in memory from the git tiers and loads
 no generated file, so a sim draft cannot reach a competition by accident.
@@ -706,7 +714,7 @@ T12 on [Access Levels](access-levels.md#safety-model).
 | Client package for sandboxed code | walkie-agent-ros | `src/walkie_toolbox_facade/` (new) |
 | Templates | walkie-agent-ros | `config/task_templates.toml` (built, ships with none) |
 | Level policy, arm poses | walkie-agent-ros | `config/access_levels.toml`, `config/arm_poses.toml` (new) |
-| Generated tools, index, traces | each machine, never git | `$WALKIE_TOOLS_HOME` (proposed) |
+| Generated tools, index, traces | each machine, never git | The shelf's functions and ledger: `src/walkie_agent/tools/{temporary,bundled}/` and `tools/ledger.jsonl`, ignored by git, or `$WALKIE_TOOLS_HOME` (built). The index and traces: proposed |
 | `DetectObjects`, `EmbedText`, `/walkie_vision/people` | walkie-vision | `walkie_vision_msgs`. `DetectObjects` is proposed ([Perception](perception.md)) |
 | Object memory | walkie-database | `/walkie_database/find_objects` (exists, and the agent no longer calls it) |
 | Face and appearance matching, vector search | walkie-database | Services not designed yet ([Perception](perception.md#open-questions)) |

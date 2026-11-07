@@ -297,11 +297,11 @@ pydantic-monty, is in `default` too.
 | Module | What it holds |
 | --- | --- |
 | `scripting.driver` | `ScriptRunner`, `Budgets`, `ScriptResult`, `allow_list`, `stubs_for`, `describe_functions`, `script_summary` |
-| `scripting.shelf` | `Shelf`: saved functions and `ledger.jsonl`, outside git |
+| `scripting.shelf` | `Shelf`: saved functions in the git-ignored tier folders `temporary/` and `bundled/`, and `ledger.jsonl`; `store_root`, `require_ignored` |
 | `scripting.evidence` | `Watch`: which functions a run entered, returned from or raised through, from counters in the worker |
 | `scripting.sandbox` | `open_pool`, the Monty pool with each worker inside bwrap. It fails closed. |
 | `tools.bundled_preset` | `BUNDLES`, stand-ins for arm D until the team's bundles exist |
-| `mahoraga` | `home()`, the gym's home, and `shelf_dir()`, its shelf |
+| `mahoraga` | `home()`, the gym's home for gate results and run logs |
 | `mahoraga.commands` | `RecordingGenerator`, `parse`, `commands(split, n, category)`, and the arena's names in `data/` |
 | `mahoraga.worlds` | `build_world(spec, seed)`, `world_seed(sample_id, epoch)` |
 | `mahoraga.checkers` | `check(spec, start, end)` over `FakeRobot.snapshot()` |
@@ -310,7 +310,7 @@ pydantic-monty, is in `default` too.
 | `mahoraga.tasks` | `dataset`, `episode_robot`, the `ground_truth` scorer |
 | `mahoraga.gate` | `run_gate`, `run_standard_gate`, `require_gate`, `GateError` |
 | `mahoraga.gym` | `gpsr_task`, `run_episodes`, `resolve_model` |
-| `mahoraga.report` | `report(log_dir)`, `arm_metrics`, `compare`, `mcnemar_p` |
+| `mahoraga.report` | `report(log_dir, shelf_root=)`, `arm_metrics`, `compare`, `mcnemar_p`, `recorded_shelf_root` |
 
 ### `run_script`
 
@@ -343,13 +343,42 @@ sees only `script_summary(result)`.
 
 ### Shelf
 
-`Shelf(root, *, frozen=False)` keeps `<name>.py` files and `ledger.jsonl` in
-`root`, which may not be inside a git work tree. The gym passes `shelf_dir()`,
-`<home>/shelf`. The home is the `--home` argument, then `MAHORAGA_HOME`, then
-`~/.local/share/mahoraga`, under the same rule. A run with `save=[names]` keeps
-top-level functions only if it succeeds. A frozen shelf fixes its callable set when
-it is built, to the functions verified by then. Only the scorer calls
-`mark_verified`, after a success.
+`Shelf(root=None, *, frozen=False)` keeps its functions in two tier folders of a
+store root, with `ledger.jsonl` beside them:
+
+| Path | Holds | Written by |
+| --- | --- | --- |
+| `temporary/<name>.py` | The latest saved version of each function | A run with `save=[names]` that succeeds |
+| `bundled/<name>.py` | The last verified version of each function, with exactly the text that ran, so its sha is the one in the verified event | `mark_verified`, which only the scorer calls, after a success |
+| `ledger.jsonl` | The saved, run, fail and verified events, each keyed to a version's sha | Every save, run and verification |
+
+The ledger stays the record. The store root is `root`, then `WALKIE_TOOLS_HOME`,
+then the tools package's own folder, `src/walkie_agent/tools`. The tier folders'
+tracked `.gitignore` files and a scoped rule in the repository's `.gitignore` keep
+everything the shelf writes there out of git. `require_ignored` checks that before
+anything is created, and it fails closed: inside a git work tree, `git check-ignore`
+must report a saved file and an atomic write's scratch file in each tier folder,
+and the ledger, as ignored. A tracked file at one of those paths, or git failing,
+refuses the store too. Without git, only the package's own folder passes inside a
+work tree. A store outside every work tree always passes. The error names what git
+does not ignore, and says to ignore it or to set `WALKIE_TOOLS_HOME` to a folder
+outside any work tree.
+
+A writable shelf, as arm `induct` has, offers everything in `temporary/`. A frozen
+shelf, as arms C and C2 have, fixes its callable set when it is built, from
+`bundled/`: a function counts only if the ledger holds a verified event for the
+sha of its file there and `temporary/` still holds that same version. So a rewrite
+that has not been verified keeps its function off, and a file copied into
+`bundled/` by hand, with no verified event, is ignored. A verified function that
+names a saved function left off stays off as well (M18). `mark_verified` refuses a
+version whose text the shelf never read or wrote, with nothing logged.
+
+The gym's home keeps only gate results and run logs. It is the `--home` argument,
+then `MAHORAGA_HOME`, then `~/.local/share/mahoraga`, and it may not be inside a git
+work tree. The shelf is not in it: `--shelf` names the store root for `run` and
+`report`, and each run's log records the store root and the callable set's digest
+in its metadata, as `shelf_root` and `shelf_digest`. A report without `--shelf`
+reads the shelf its logs record, and refuses logs that ran on different shelves.
 
 What a function earns comes from what it did at run time, never from its name in a
 script. `evidence.Watch` wraps each shelf function a script loads and each definition
@@ -612,11 +641,28 @@ python -m walkie_agent.mahoraga report --log-dir <the run's directory>
 The defaults are `deepseek/deepseek-v4.1-flash:nitro`, through OpenRouter at
 `https://openrouter.ai/api/v1`, with the key in `OPENAI_API_KEY`. Other flags are
 `--epochs`, `--split`, `--category`, `--model`, `--base-url`, `--temperature`,
-`--seed`, `--max-samples`, `--log-dir`, `--no-bwrap` and `--home`.
+`--seed`, `--max-samples`, `--log-dir`, `--shelf`, `--no-bwrap` and `--home`.
+
+The shelf's store is `--shelf`, then `WALKIE_TOOLS_HOME`, then
+`src/walkie_agent/tools`, whose `temporary/` and `bundled/` git ignores. To start a
+run from an empty shelf, point `--shelf` at a new folder outside the repository, and
+give `report` the same `--shelf`, or let it read the store root the logs record:
+
+```bash
+OPENAI_API_KEY=... python -m walkie_agent.mahoraga run --arms induct --split train \
+    --commands 5 --shelf /var/tmp/shelf-trial-1
+python -m walkie_agent.mahoraga report --log-dir <the run's directory>
+```
+
+Stores from before the tier folders, such as `~/.local/share/mahoraga/shelf` or a
+`shelf/` folder in another home, are not migrated, read or touched. They hold
+`<name>.py` files beside their ledger with no tier folders, so passing one to
+`--shelf` gives an empty shelf, and its first save would mix the two layouts. Leave
+them where they are, and start a new store instead.
 
 The plan's R2 is then `run --arms induct --split train --commands 300`, followed by
-`run --arms A,B,C,C2,D --split heldout --commands 160 --epochs 3`. These are two runs
-on purpose, and each arm's shelf freezes as it starts. Generation keeps the splits
+`run --arms A,B,C,C2,D --split heldout --commands 160 --epochs 3`, both on the same
+store. These are two runs on purpose, and each arm's shelf freezes as it starts. Generation keeps the splits
 apart: the seed ranges differ, and `commands("heldout", ...)` skips any
 sentence in the standard 300-command training set. A training run longer than that
 gets no such promise.

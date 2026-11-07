@@ -128,10 +128,13 @@ This changes three earlier decisions:
   tier folders exist under `src/walkie_agent/tools/`. `atomic/` holds
   ADR-0060's plain atomics, not the `META` shape above. `bundled_preset/`
   holds plain Python stand-ins for the Mahoraga gym's arm D, not bundle
-  files. `bundled/` and `temporary/` sit in the repository, not under
-  `$WALKIE_TOOLS_HOME`, but git ignores everything in them except a README
-  and the `.gitignore`, and they are empty: nothing writes a generated tool
-  yet.
+  files. `bundled/` and `temporary/` sit in the repository, and git ignores
+  everything in them except a README and the `.gitignore`. Since decisions
+  T7 to T12, the gym's script shelf writes there: `temporary/` holds the
+  latest saved version of each function and `bundled/` the last verified
+  one, as Python, not bundle drafts. `$WALKIE_TOOLS_HOME` overrides the
+  store root, and the shelf refuses a store whose writes git would not
+  ignore.
 
 **See also:** [Self-Evolving Agent: tiers and folders](/architecture/self-evolving-agent.md#tiers-and-folders),
 [Access Levels](/architecture/access-levels.md)

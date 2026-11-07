@@ -84,6 +84,8 @@ CODE_AND_BUILD = [
     "pyproject.toml",
 ]
 TEXT_SUFFIXES = {".py", ".toml", ".sh", ".yml", ".yaml", ".md", ".json", ".txt", ".cfg", ".launch"}
+# The shelf's default store writes model-written functions here, which git ignores.
+GENERATED = [SRC / "walkie_agent" / "tools" / "temporary", SRC / "walkie_agent" / "tools" / "bundled"]
 
 
 def ros_modules_loaded_by(code: str) -> tuple[dict[str, str], list[str]]:
@@ -171,7 +173,9 @@ def _files_under(*relative: str) -> list[Path]:
     return [
         f
         for f in files
-        if f != Path(__file__).resolve() and not any(p.endswith(".egg-info") for p in f.parts)
+        if f != Path(__file__).resolve()
+        and not any(p.endswith(".egg-info") for p in f.parts)
+        and not (f.suffix == ".py" and any(f.is_relative_to(folder) for folder in GENERATED))
     ]
 
 
@@ -217,6 +221,17 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         "import walkie_agent.tools.atomic.memory\n"
     )
     assert _mentions([good], REMOVED) == []
+
+
+def test_the_sweep_skips_the_functions_a_shelf_saved_in_the_package(tmp_path, monkeypatch):
+    saved = tmp_path / "src" / "walkie_agent" / "tools" / "temporary"
+    saved.mkdir(parents=True)
+    (saved / "plan.py").write_text("def plan() -> None:\n    TodoList()\n")
+    (saved / "README.md").write_text("Saved functions.\n")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    monkeypatch.setattr(sys.modules[__name__], "GENERATED", [saved])
+
+    assert _files_under("src") == [saved / "README.md"]
 
 
 def test_no_docs_page_names_a_removed_module():

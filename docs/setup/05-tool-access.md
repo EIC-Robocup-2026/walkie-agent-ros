@@ -97,7 +97,7 @@ None of this has run on the robot's own graph.
 
 Most new tools are a new atomic over the verbs that exist:
 
-1. Write a plain typed function in `src/walkie_agent/atomics/`. It takes `ctx` first and
+1. Write a plain typed function in `src/walkie_agent/tools/atomic/`. It takes `ctx` first and
    raises `StepError`. Describe every parameter in its Google-style docstring.
 2. Add it to the set that should have it: `GPSR`, `HRI` or `DEFAULT`. The sets are plain
    lists, and a duplicate name is refused at build

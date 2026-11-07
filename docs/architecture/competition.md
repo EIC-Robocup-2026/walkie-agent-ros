@@ -533,7 +533,7 @@ The main risks, and what limits each:
 
 | Piece                                          | Repository       | Location                                                      |
 | ---------------------------------------------- | ---------------- | ------------------------------------------------------------- |
-| `play_sound`, `fetch_sound`, `look_up_online`  | walkie-agent-ros | `src/walkie_agent/atomics/` (new)                             |
+| `play_sound`, `fetch_sound`, `look_up_online`  | walkie-agent-ros | `src/walkie_agent/tools/atomic/` (new)                        |
 | Curated sound pack                             | walkie-agent-ros | `src/walkie_agent/assets/sounds/`, `SOUNDS.toml` (new)        |
 | Shared speech-ID holder, TTS override          | walkie-agent-ros | `src/walkie_agent/ros/speech.py`, `src/walkie_agent/half_duplex.py` (changed) |
 | Speech gate                                    | walkie-agent-ros | `src/walkie_agent/toolbox/speech_gate.py` (new)               |

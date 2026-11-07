@@ -123,6 +123,15 @@ This changes three earlier decisions:
 - Mocks can drift from the real interfaces. They follow the ADR-0027
   outcomes, [Arm Manipulation](/architecture/manipulation.md) and
   `walkie_vision_msgs`, and bundle tests rerun on the real clients.
+- **As built in the demo** (decision T2 of the
+  [demo decisions](/architecture/mahoraga-demo-decisions.md)): the four
+  tier folders exist under `src/walkie_agent/tools/`. `atomic/` holds
+  ADR-0060's plain atomics, not the `META` shape above. `bundled_preset/`
+  holds plain Python stand-ins for the Mahoraga gym's arm D, not bundle
+  files. `bundled/` and `temporary/` sit in the repository, not under
+  `$WALKIE_TOOLS_HOME`, but git ignores everything in them except a README
+  and the `.gitignore`, and they are empty: nothing writes a generated tool
+  yet.
 
 **See also:** [Self-Evolving Agent: tiers and folders](/architecture/self-evolving-agent.md#tiers-and-folders),
 [Access Levels](/architecture/access-levels.md)

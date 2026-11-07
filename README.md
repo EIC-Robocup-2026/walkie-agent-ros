@@ -88,7 +88,9 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | ---------------------------- | ----------------------------------------------------------------- |
 | `src/walkie_agent/main.py`   | The entry point, which assembles the agent                        |
 | `src/walkie_agent/capabilities/` | The verbs on `ctx`, their guards and `FakeRobot`. No ROS.     |
-| `src/walkie_agent/atomics/`  | The tools, as plain functions, and the fixed tool sets. No ROS.   |
+| `src/walkie_agent/tools/atomic/` | The tools, as plain functions, and the fixed tool sets. No ROS. |
+| `src/walkie_agent/tools/`    | The tool tiers: `atomic/`, the gym's stand-in bundles in `bundled_preset/`, and the ignored `bundled/` and `temporary/` folders for saved functions, empty for now |
+| `src/walkie_agent/scripting/` | `run_script`'s runtime: the Monty sandbox, the driver, the shelf of saved functions and its evidence. No ROS. |
 | `src/walkie_agent/runtime/`  | `create_agent`, the middlewares, the todo list and the Runner. No ROS. |
 | `src/walkie_agent/ros/`      | The ROS-backed verbs and the operator's topics                    |
 | `src/walkie_agent/voice.py`  | The voice entry points, on RAI's `AgentRunner`                    |
@@ -96,7 +98,7 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | `src/walkie_agent/sim/`      | The fake robot node, the oracle that stands in for walkie-vision in a simulation, and the check of a simulation's graph |
 | `scripts/chula-sim.sh`       | Runs the `chula_pat14_6` simulation, the oracle and the agent on a private ROS graph |
 | `tests/`                     | Tests with a scripted LLM. Some use real rclpy with a fake robot. |
-| `mahoraga/`                  | The research gym, in its own Pixi environment. Fake world only.   |
+| `src/walkie_agent/mahoraga/` | The research gym, in its own Pixi environment. Fake world only. Its tests are in `tests/mahoraga/`. |
 | `config.toml`                | LLM vendor and models, the team and its timezone, voice, tracing  |
 | `config/locations.toml`      | The robot's real places. Ships empty until they are measured.     |
 | `config/locations.sim.toml`  | Test points for the blank simulation map                          |

@@ -34,16 +34,18 @@ ROS-backed verbs implement layer 2's Protocols, and only `main.py` connects them
 | 2. Capability verbs, guards, `Ctx` | `walkie_agent/capabilities/` | Built |
 | 2. FakeRobot, Mahoraga's FakeCtx | `walkie_agent/capabilities/fake.py` | Built, fake only |
 | 3. Error type | `walkie_agent/errors.py` | Built |
-| 3. Atomics and tool sets | `walkie_agent/atomics/` | Built |
+| 3. Atomics and tool sets | `walkie_agent/tools/atomic/` | Built |
 | 4. Adapter to LangChain tools | `walkie_agent/adapter.py` | Built |
 | 5. `create_agent`, middlewares, Runner | `walkie_agent/runtime/` | [Built, and used by `main.py`](#runtime) |
 | 1 to 2. ROS-backed verbs, operator topics | `walkie_agent/ros/` | [Built, run on fake robots and in the MuJoCo simulation](#ros-wrappers) |
 | Entry point: flags, signals, assembly | `walkie_agent/main.py` | [Built, run on fake robots and in the MuJoCo simulation](#wiring-in-mainpy) |
-| 6. `run_script`, shelf, gym | `mahoraga/`, with its own pixi environment | [Built](#mahoraga), fake world only |
+| 6. `run_script` and its shelf | `walkie_agent/scripting/` | [Built](#run_script), used by the gym only |
+| 6. Arm D's stand-in bundles | `walkie_agent/tools/bundled_preset/` | Built, stand-ins only |
+| 6. Gym | `walkie_agent/mahoraga/`, with its own pixi environment | [Built](#mahoraga), fake world only |
 
-`errors`, `capabilities`, `atomics`, `adapter` and `runtime` never import
-rclpy, rai, rai_interfaces or any ROS message. `tests/test_ros_free.py` checks
-this in a fresh interpreter.
+`errors`, `capabilities`, `tools`, `adapter`, `runtime` and `scripting` never
+import rclpy, rai, rai_interfaces or any ROS message. `tests/test_ros_free.py`
+checks this in a fresh interpreter.
 
 ## Errors
 
@@ -221,7 +223,7 @@ one generated command belongs to the gym.
 
 ## Atomics
 
-Plain typed functions over `ctx` in `walkie_agent.atomics`. They return
+Plain typed functions over `ctx` in `walkie_agent.tools.atomic`. They return
 JSON-able values and raise `StepError`. The LLM reads their Google-style
 docstrings. Describe the return value in the summary paragraphs, because
 LangChain drops a `Returns:` section from the tool description.
@@ -279,28 +281,36 @@ logs its traceback and gives `"INTERNAL: <tool> failed with <ExceptionType>."`.
 
 ## Mahoraga
 
-The research gym, in the `mahoraga` pixi environment and solve group. Its
-dependencies stay out of `default`, which `tests/test_mahoraga_absent.py` checks,
-and it never imports ROS, which `mahoraga/tests/test_ros_free.py` checks. It reaches
-the foundation through the atomics and `adapter`, and it covers rungs R0 to R2 in
-the fake world. MuJoCo validation and promotion are not built.
+The research gym, the package `walkie_agent.mahoraga`, in the `mahoraga` pixi
+environment and solve group. inspect-ai and the GPSR generator stay out of
+`default`, which `tests/test_mahoraga_absent.py` checks, and so do the gym's tests
+in `tests/mahoraga/`, which the default environment does not collect. The gym never
+imports ROS, and the agent never imports the gym. `tests/test_ros_free.py` and
+`tests/test_mahoraga_absent.py` check both. It reaches the foundation through
+`walkie_agent.tools`, `walkie_agent.scripting` and `adapter`, and it covers rungs R0
+to R2 in the fake world. MuJoCo validation and promotion are not built.
+
+`run_script`'s runtime is the package `walkie_agent.scripting`. It imports no ROS
+and nothing from the gym, and its only dependency beyond the foundation,
+pydantic-monty, is in `default` too.
 
 | Module | What it holds |
 | --- | --- |
-| `driver` | `ScriptRunner`, `Budgets`, `ScriptResult`, `allow_list`, `stubs_for`, `describe_functions`, `script_summary` |
-| `shelf` | `Shelf`: saved functions and `ledger.jsonl`, outside git |
-| `evidence` | `Watch`: which functions a run entered, returned from or raised through, from counters in the worker |
-| `sandbox` | `open_pool`, the Monty pool with each worker inside bwrap. It fails closed. |
-| `commands` | `RecordingGenerator`, `parse`, `commands(split, n, category)`, and the arena's names in `data/` |
-| `worlds` | `build_world(spec, seed)`, `world_seed(sample_id, epoch)` |
-| `checkers` | `check(spec, start, end)` over `FakeRobot.snapshot()` |
-| `oracle` | `oracle_script(spec)`, written from the slots with no LLM |
-| `bundles` | `BUNDLES`, stand-ins for arm D until the team's bundles exist |
-| `arms` | `ARMS`, `INDUCT`, `ArmSetup(arm, pool=, shelf_root=).episode(ctx)` |
-| `tasks` | `dataset`, `episode_robot`, the `ground_truth` scorer |
-| `gate` | `run_gate`, `run_standard_gate`, `require_gate`, `GateError` |
-| `gym` | `gpsr_task`, `run_episodes`, `resolve_model` |
-| `report` | `report(log_dir)`, `arm_metrics`, `compare`, `mcnemar_p` |
+| `scripting.driver` | `ScriptRunner`, `Budgets`, `ScriptResult`, `allow_list`, `stubs_for`, `describe_functions`, `script_summary` |
+| `scripting.shelf` | `Shelf`: saved functions and `ledger.jsonl`, outside git |
+| `scripting.evidence` | `Watch`: which functions a run entered, returned from or raised through, from counters in the worker |
+| `scripting.sandbox` | `open_pool`, the Monty pool with each worker inside bwrap. It fails closed. |
+| `tools.bundled_preset` | `BUNDLES`, stand-ins for arm D until the team's bundles exist |
+| `mahoraga` | `home()`, the gym's home, and `shelf_dir()`, its shelf |
+| `mahoraga.commands` | `RecordingGenerator`, `parse`, `commands(split, n, category)`, and the arena's names in `data/` |
+| `mahoraga.worlds` | `build_world(spec, seed)`, `world_seed(sample_id, epoch)` |
+| `mahoraga.checkers` | `check(spec, start, end)` over `FakeRobot.snapshot()` |
+| `mahoraga.oracle` | `oracle_script(spec)`, written from the slots with no LLM |
+| `mahoraga.arms` | `ARMS`, `INDUCT`, `ArmSetup(arm, pool=, shelf_root=).episode(ctx)` |
+| `mahoraga.tasks` | `dataset`, `episode_robot`, the `ground_truth` scorer |
+| `mahoraga.gate` | `run_gate`, `run_standard_gate`, `require_gate`, `GateError` |
+| `mahoraga.gym` | `gpsr_task`, `run_episodes`, `resolve_model` |
+| `mahoraga.report` | `report(log_dir)`, `arm_metrics`, `compare`, `mcnemar_p` |
 
 ### `run_script`
 
@@ -333,12 +343,13 @@ sees only `script_summary(result)`.
 
 ### Shelf
 
-`Shelf(root=None, *, frozen=False)` keeps `<name>.py` files and `ledger.jsonl` in
-`root`, by default `<home>/shelf`. The home is the `--home` argument, then
-`MAHORAGA_HOME`, then `~/.local/share/mahoraga`, and it may not be inside a git work
-tree. A run with `save=[names]` keeps top-level functions only if it succeeds. A
-frozen shelf fixes its callable set when it is built, to the functions verified by
-then. Only the scorer calls `mark_verified`, after a success.
+`Shelf(root, *, frozen=False)` keeps `<name>.py` files and `ledger.jsonl` in
+`root`, which may not be inside a git work tree. The gym passes `shelf_dir()`,
+`<home>/shelf`. The home is the `--home` argument, then `MAHORAGA_HOME`, then
+`~/.local/share/mahoraga`, under the same rule. A run with `save=[names]` keeps
+top-level functions only if it succeeds. A frozen shelf fixes its callable set when
+it is built, to the functions verified by then. Only the scorer calls
+`mark_verified`, after a success.
 
 What a function earns comes from what it did at run time, never from its name in a
 script. `evidence.Watch` wraps each shelf function a script loads and each definition
@@ -569,10 +580,13 @@ stale, partial or hand-edited result made by mistake. It is no security boundary
 nothing is signed. `gpsr_task` and `run_episodes` both call it.
 
 The code digest covers each file's repository path and content, for the files
-`gate._digested_files()` lists: every `mahoraga/*.py` except `report.py` and
-`__main__.py`, the data files, `errors.py`, `adapter.py`, `locations.py`, the
-capabilities and atomics packages, and `pixi.lock`. So an edit to any of them,
-related to the oracle or not, means running the gate again, which takes about a minute.
+`gate._digested_files()` lists: every `walkie_agent/mahoraga/*.py` except
+`report.py` and `__main__.py`, the gym's data files, `walkie_agent/__init__.py`,
+`errors.py`, `adapter.py`, `locations.py`, the `scripting`, `capabilities` and `arm`
+packages, `tools/__init__.py` with the `tools/atomic` and `tools/bundled_preset`
+packages, the perception modules the fake world uses, and `pixi.lock`. So an edit to
+any of them, related to the oracle or not, means running the gate again, which takes
+about a minute.
 
 ### Running it
 
@@ -580,19 +594,19 @@ Run these with `pixi run --frozen -e mahoraga`, from the repository root. The ga
 is offline and costs nothing. `run` calls a real model, so `--commands` has no default.
 
 ```bash
-# The tests
-python -m pytest mahoraga/tests
+# The tests: the gym's, run_script's, and the gym's ROS-free check
+python -m pytest tests/mahoraga tests/scripting tests/test_ros_free.py
 
 # The gate on the plan's trial, training and held-out data: 1080 episodes, twice
-python -m mahoraga gate
+python -m walkie_agent.mahoraga gate
 # Or on other data
-python -m mahoraga gate --split trial --commands 20 --epochs 1 --category people
+python -m walkie_agent.mahoraga gate --split trial --commands 20 --epochs 1 --category people
 
 # A small real slice, with the key in the environment
-OPENAI_API_KEY=... python -m mahoraga run --arms A,B --commands 5
+OPENAI_API_KEY=... python -m walkie_agent.mahoraga run --arms A,B --commands 5
 
 # Metrics M1 to M10 and the paired comparison, as JSON
-python -m mahoraga report --log-dir <the run's directory>
+python -m walkie_agent.mahoraga report --log-dir <the run's directory>
 ```
 
 The defaults are `deepseek/deepseek-v4.1-flash:nitro`, through OpenRouter at
@@ -863,7 +877,7 @@ The real `main()`, signalled by PID, exits 0 in about 0.8 s on one signal, and e
 | 4 | Memory id kind | Plain database ids |
 | 5 to 8 | Decided earlier | Own WalkieTodos; bare stop is a fixed line with no LLM; runtime fixes in the `create_agent` port; task templates by name only |
 | 22 | Models | deepseek-v4.1-flash for runs |
-| 23 | Where Mahoraga lives | Top-level `mahoraga/` with its own pixi environment |
+| 23 | Where Mahoraga lives | The package `walkie_agent.mahoraga`, with its own pixi environment. It was a top-level `mahoraga/` until [decision T1](mahoraga-demo-decisions.md#tools-and-scripts). |
 | 26 | Arena data | A trash location and more objects in the fake arena |
 
 The cutover settled a few forks of its own, also provisionally:

@@ -12,7 +12,7 @@ Runner owns. This split is why most of the agent can be tested with no ROS insta
 | Voice | RAI's `rai_s2s` | Microphone, speech recognition, text to speech | Used by `src/walkie_agent/voice.py` and `half_duplex.py` |
 | Graph | LangChain | The model and tools loop, and the checkpoint | `create_agent`, called in `runtime/agent.py` |
 | Runtime | Walkie | The middlewares, the todo list and the Runner | `src/walkie_agent/runtime/` |
-| Tools | Walkie | Plain typed functions over `ctx`, and the fixed tool sets | `src/walkie_agent/atomics/` |
+| Tools | Walkie | Plain typed functions over `ctx`, and the fixed tool sets | `src/walkie_agent/tools/atomic/` |
 | Verbs | Walkie | `ctx.base`, `ctx.speech` and the rest, with their guards, and `FakeRobot` | `src/walkie_agent/capabilities/` |
 | ROS wrappers | Walkie | The verbs over ROS, and the operator's topics | `src/walkie_agent/ros/` |
 

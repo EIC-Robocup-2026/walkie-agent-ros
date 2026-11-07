@@ -422,7 +422,7 @@ flowchart LR
 
 ### Typed arm atomics
 
-Each atomic would be one file in `src/walkie_agent/atomics/`, with a `META`,
+Each atomic would be one file in `src/walkie_agent/tools/atomic/`, with a `META`,
 typed `Args` and `Out`, and a `run(ctx, args)` function
 ([ADR-0037](decisions/0037-tool-tiers-bundles-effects.md)). A bundle can
 wire only typed fields, never sentences, so this refactor comes first.
@@ -635,10 +635,10 @@ from the spoken request to the hand-over.
 
 | Piece                                                            | Repository       | Location                                             |
 | ---------------------------------------------------------------- | ---------------- | ---------------------------------------------------- |
-| Arm atomics, one file per tool                                   | walkie-agent-ros | `src/walkie_agent/atomics/` (new)                    |
-| Presets `find_object_in_view`, `pick_object`, `pickup_object_in_view`, `hand_over` | walkie-agent-ros | `src/walkie_agent/bundled_preset/` (new) |
+| Arm atomics, one file per tool                                   | walkie-agent-ros | `src/walkie_agent/tools/atomic/` (new)               |
+| Presets `find_object_in_view`, `pick_object`, `pickup_object_in_view`, `hand_over` | walkie-agent-ros | `src/walkie_agent/tools/bundled_preset/` (new) |
 | Typed results, `StepError`, the bundle runner and its runtime stow | walkie-agent-ros | `src/walkie_agent/toolbox/types.py`, `src/walkie_agent/toolbox/runner.py` (new) |
-| The navigation arm check                                         | walkie-agent-ros | `src/walkie_agent/ros/base.py`, `src/walkie_agent/atomics/navigation.py` (changed) |
+| The navigation arm check                                         | walkie-agent-ros | `src/walkie_agent/ros/base.py`, `src/walkie_agent/tools/atomic/navigation.py` (changed) |
 | MotionSupervisor                                                 | walkie-agent-ros | `src/walkie_agent/motion.py` (new)                   |
 | Named poses, robot-model snapshot and its generator              | walkie-agent-ros | `config/arm_poses.toml`, `config/robot_model.toml`, a script in `scripts/` (new) |
 | Never-list of arm, gripper, head and lift controllers            | walkie-agent-ros | `config/access_levels.toml` (new)                    |

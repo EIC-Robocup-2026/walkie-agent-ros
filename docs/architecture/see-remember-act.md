@@ -41,7 +41,7 @@ only on `FakeRobot`. The gaps this plan closes:
 - **Mahoraga stays fake-world only.** New people, memory and arm atomics stay
   out of the GPSR tool set, so the gym and P30's "no atomic calls a database
   service" are unaffected. The Mahoraga gate's digest covers
-  `capabilities/`, `atomics/`, `locations.py` and `pixi.lock`, so a change
+  `capabilities/`, `tools/atomic/`, `locations.py` and `pixi.lock`, so a change
   there reruns the gate.
 - **Named arm presets only.** The first arm steps use `set_joint_position`
   and `control_gripper` on `left_arm` and `right_arm`, which

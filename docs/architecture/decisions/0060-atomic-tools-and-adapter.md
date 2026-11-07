@@ -51,6 +51,10 @@ bundles and effect gating stay an unbuilt proposal.
   describe its return value in the summary.
 - Adding an atomic means editing code and a list, on purpose. A running agent cannot
   gain a tool.
+- **As built in the demo** (decision T2 of the
+  [demo decisions](/architecture/mahoraga-demo-decisions.md)): the atomics and their
+  sets moved to `walkie_agent.tools.atomic`, the atomic tier's folder in ADR-0037's
+  layout, and nothing is left at `walkie_agent.atomics`.
 
 **See also:** [Mahoraga demo: atomics](/architecture/mahoraga-demo.md#atomics),
 [Tool access](/setup/05-tool-access.md)

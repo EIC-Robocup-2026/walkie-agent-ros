@@ -138,9 +138,13 @@ The `carry` pose needs `travel_safe = true` in `config/arm_poses.toml`, or
 
 ## Tiers and folders
 
-Two tiers are in git and reviewed. Two are generated, and live under
+Two tiers are in git and reviewed. Two are generated, and never committed.
+Each tier has a folder under `src/walkie_agent/tools/`. The two generated tiers'
+folders are ignored by git and hold only a README, because nothing writes a
+generated tool yet. This page proposed keeping generated tools under
 `$WALKIE_TOOLS_HOME` (default `~/.local/share/walkie/tools`, set with
-`[walkie.toolbox] root`), never in the repository. A **generated tool** is
+`[walkie.toolbox] root`), outside the repository. Where they are stored is not
+built. A **generated tool** is
 any tool the agent made itself: a bundle draft in `bundled`, or Python in
 `temporary`. Generated Python is also called a vibed tool (internally:
 temporary tool). The **atomic agent** is
@@ -149,14 +153,14 @@ bundle ([The tool creator](#the-tool-creator)).
 
 | Tier | Folder | Format | Written by | Runs in | Loads at |
 | ---- | ------ | ------ | ---------- | ------- | -------- |
-| atomic | `src/walkie_agent/atomics/` | Built: plain typed functions over `ctx`. Proposed in addition: `META`, `Args`, `Out`, `run(ctx, args)` | a human, or a promoted generated tool | the agent process if `META.runtime = "inprocess"`, otherwise a sandbox worker | every level, within its reviewed manifest |
-| bundled_preset | `src/walkie_agent/bundled_preset/` (proposed) | Bundle DSL | a human, often from a promoted bundle | `BundleRunner` | every level, if its backends are real or the run is a simulation |
-| bundled | `$WALKIE_TOOLS_HOME/bundled/` | Bundle DSL, rendered from JSON | the atomic agent | `BundleRunner` | Unrestricted and Standard: drafts stamped at or below the level. Competition: this session's only |
-| temporary | `$WALKIE_TOOLS_HOME/temporary/` | Python, same shape as atomic | the tool coder | a sandbox worker | as for bundled |
+| atomic | `src/walkie_agent/tools/atomic/` | Built: plain typed functions over `ctx`. Proposed in addition: `META`, `Args`, `Out`, `run(ctx, args)` | a human, or a promoted generated tool | the agent process if `META.runtime = "inprocess"`, otherwise a sandbox worker | every level, within its reviewed manifest |
+| bundled_preset | `src/walkie_agent/tools/bundled_preset/` | Built: stand-in Python functions over the atomics, for the Mahoraga gym's arm D only. Proposed: Bundle DSL | a human, often from a promoted bundle | `BundleRunner` | every level, if its backends are real or the run is a simulation |
+| bundled | `src/walkie_agent/tools/bundled/`, ignored by git and empty | Bundle DSL, rendered from JSON | the atomic agent | `BundleRunner` | Unrestricted and Standard: drafts stamped at or below the level. Competition: this session's only |
+| temporary | `src/walkie_agent/tools/temporary/`, ignored by git and empty | Python, same shape as atomic | the tool coder | a sandbox worker | as for bundled |
 
 A Competition run builds its index in memory from the git tiers and loads
 no generated file, so a sim draft cannot reach a competition by accident.
-The built atomics in `src/walkie_agent/atomics/` are plain typed functions
+The built atomics in `src/walkie_agent/tools/atomic/` are plain typed functions
 that return sentences or JSON ([ADR-0060](decisions/0060-atomic-tools-and-adapter.md)).
 The `META`, `Args` and `Out` shape, the typed `core()` and the registry are not built,
 and a registry would have to be reconciled with those functions.
@@ -696,13 +700,13 @@ T12 on [Access Levels](access-levels.md#safety-model).
 | Per-role models | walkie-agent-ros | `src/walkie_agent/models.py` (new), `[walkie.*]` tables in `config.toml` |
 | Linker, runner, registry, index, sandbox | walkie-agent-ros | `src/walkie_agent/toolbox/` (new) |
 | Tool creator, coder and harvest | walkie-agent-ros | `src/walkie_agent/toolsmith/` (new) |
-| Atomic tools | walkie-agent-ros | `src/walkie_agent/atomics/` (built) |
-| Presets | walkie-agent-ros | `src/walkie_agent/bundled_preset/` (new) |
+| Atomic tools | walkie-agent-ros | `src/walkie_agent/tools/atomic/` (built) |
+| Presets | walkie-agent-ros | `src/walkie_agent/tools/bundled_preset/` (built, the gym's stand-ins only) |
 | Protocol mocks and ROS-level fakes | walkie-agent-ros | `src/walkie_agent/sim/`: `fake_scene.py`, `mock_vision.py`, `mock_skill.py`, `mock_arm.py`, `fake_skill_server.py`, `oracle_perception.py` (new files beside today's `fake_walkie.py`) |
 | Client package for sandboxed code | walkie-agent-ros | `src/walkie_toolbox_facade/` (new) |
 | Templates | walkie-agent-ros | `config/task_templates.toml` (built, ships with none) |
 | Level policy, arm poses | walkie-agent-ros | `config/access_levels.toml`, `config/arm_poses.toml` (new) |
-| Generated tools, index, traces | each machine, never git | `$WALKIE_TOOLS_HOME` |
+| Generated tools, index, traces | each machine, never git | `$WALKIE_TOOLS_HOME` (proposed) |
 | `DetectObjects`, `EmbedText`, `/walkie_vision/people` | walkie-vision | `walkie_vision_msgs`. `DetectObjects` is proposed ([Perception](perception.md)) |
 | Object memory | walkie-database | `/walkie_database/find_objects` (exists, and the agent no longer calls it) |
 | Face and appearance matching, vector search | walkie-database | Services not designed yet ([Perception](perception.md#open-questions)) |

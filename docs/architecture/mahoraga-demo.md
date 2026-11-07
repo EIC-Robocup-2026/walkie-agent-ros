@@ -360,7 +360,7 @@ store root, with `ledger.jsonl` beside them:
 | --- | --- | --- |
 | `temporary/<name>.py` | The latest saved version of each function | A run with `save=[names]` that succeeds |
 | `bundled/<name>.py` | The last verified version of each function, with exactly the text that ran, so its sha is the one in a verified event | `mark_verified`, which the gym's scorer calls after a success and the agent after the operator's passed verdict, and a save of a version verified before |
-| `ledger.jsonl` | The saved, run, fail and verified events, each keyed to a version's sha | Every save, run and verification |
+| `ledger.jsonl` | The saved, run, fail and verified events, each keyed to a version's sha, and on the agent the rejected events of an operator's failed verdict, which `counts()` does not count | Every save, run and verification, and the agent's failed verdicts |
 
 Which version `bundled/` holds follows one rule: the version in `temporary/` if
 the ledger verifies it, and otherwise the version verified last. `mark_verified`
@@ -400,6 +400,7 @@ work tree. The shelf is not in it: `--shelf` names the store root for `run` and
 `report`, and each run's log records the store root and the callable set's digest
 in its metadata, as `shelf_root` and `shelf_digest`. A report without `--shelf`
 reads the shelf its logs record, and refuses logs that ran on different shelves.
+It only reads that store: it creates no folder there and runs no git (T34).
 Logs that record none, of arms A and B alone or from before the tier folders, read
 the default store: `WALKIE_TOOLS_HOME`, then the package folder. The report's
 `shelf.root` names the store its M10 read. The `report` command prints `Refused:`
@@ -864,7 +865,7 @@ class RosBridge:  # the operator's topics; see the topic table on The Agent
     def close_ingress(self) -> None: ...             # ignores input, keeps subscriptions
     def close(self) -> None: ...
 
-FORBIDDEN_NAMES = ("/cmd_vel", "/walkie/reset", "/walkie/task", "/walkie/todos")
+FORBIDDEN_NAMES = ("/cmd_vel", ..., "/walkie/reset", "/walkie/task", "/walkie/todos", "/walkie/verdict")
 def check_endpoint(node, name, forbidden=FORBIDDEN_NAMES) -> str: ...  # StepError REFUSED
 ```
 

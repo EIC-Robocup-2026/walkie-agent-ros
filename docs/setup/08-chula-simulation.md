@@ -190,7 +190,9 @@ the tool log shows `find_people` returning `person_1`.
 `--scripts` gives the agent `run_script`
 ([Scripts on the agent](../architecture/agent.md#scripts-on-the-agent)). It needs
 `bwrap` on the computer. Without it the agent exits with code 2 at startup, and
-`up` reports that the agent part exited.
+`up` fails with `the agent did not start; see .../logs/agent.log`. The log's last
+lines, which `up` prints, include the agent's own `walkie-agent: --scripts runs
+scripts only inside bwrap` line.
 
 ```bash
 scripts/chula-sim.sh up --agent --arms -- --tool-set hri --people-memory mock --scripts
@@ -216,7 +218,9 @@ pixi run ros2 topic pub -w 1 --once /walkie/verdict std_msgs/msg/Bool "{data: tr
 ```
 
 The agent answers on `/walkie/console` with one line: which functions it
-verified, that the task proved none, or that it ignored the verdict. It ignores
+verified, which a `false` verdict judged, that the task proved none, or that it
+ignored the verdict. A `false` verdict verifies nothing, and the functions it
+judged get a `rejected` event in the store's `ledger.jsonl`. It ignores
 a verdict while a task runs and a second verdict on the same task. A question
 the agent asks ends a task too, so judge after its last reply. Each verdict is
 also a line of `logs/agent-tools.jsonl`, with the tool `verdict`.
@@ -289,10 +293,9 @@ the function store, `WALKIE_TOOLS_HOME` if the shell that runs `up` sets it, and
 otherwise `src/walkie_agent/tools/` of the checkout that runs the agent. A saved
 function is in `temporary/<name>.py`, a version a passed verdict verified is also
 in `bundled/<name>.py`, and `ledger.jsonl` records each save, each script that
-used a saved function, and each version a verdict verified. Git ignores all
-three there. To start from an empty
-store, set `WALKIE_TOOLS_HOME` to a new folder outside any git work tree before
-`up`.
+used a saved function, and each version a verdict verified or rejected. Git
+ignores all three there. To start from an empty store, set `WALKIE_TOOLS_HOME`
+to a new folder outside any git work tree before `up`.
 
 `SIM_ZENOH_PORT`, `SIM_DOMAIN_ID` and `SIM_CPUS` (`taskset -c`) are the other
 settings. The script's header lists them.

@@ -368,7 +368,9 @@ todos = [
     - A `say` that is already publishing is not cut off.
     - A running script makes no further call and ends as cancelled, whatever it
       catches. The call it was making ends through its verb, as the same call made
-      as a tool does.
+      as a tool does, and its `CANCELLED` reaches the script. A script that lets
+      that error end it, catches it and calls again, or catches it and loops without
+      a call ends as cancelled in each case, the last within the 2 s feed budget.
 - **Reset.** A message on `/walkie/reset` cancels and drops the queue. After the active
   run ends, the Runner deletes the conversation, starts a new session and publishes
   `[]` on `/walkie/todos` ([ADR-0008](decisions/0008-reset-topic.md)). A hung LLM call
@@ -457,7 +459,7 @@ tools. Neither exists.
 `--scripts` binds `run_script` beside the set's tools, for any `--tool-set`. It is the
 gym's `run_script` ([Mahoraga Demo](mahoraga-demo.md#run_script)) on the robot's
 `ctx`, with budgets for real motion and an operator in place of the scorer. The
-decisions are T18 to T30 in [Mahoraga Demo Decisions](mahoraga-demo-decisions.md#tools-and-scripts).
+decisions are T18 to T35 in [Mahoraga Demo Decisions](mahoraga-demo-decisions.md#tools-and-scripts).
 
 - **The sandbox.** A script runs in a Monty worker inside bwrap. `main` starts two
   workers before ROS starts. Without bwrap, or with a worker that cannot start, the
@@ -473,8 +475,11 @@ decisions are T18 to T30 in [Mahoraga Demo Decisions](mahoraga-demo-decisions.md
   ([Shelf](mahoraga-demo.md#shelf)). A later script may call any function there. The
   tool's description lists them after the atomics and puts the line
   `# Unverified: not yet confirmed by the operator, so it may be wrong.` above each
-  version that no verdict has verified. A save or a verdict changes the description,
-  and the next model call sends it.
+  version that no verdict has verified. A version that a failed verdict judged gets
+  `# Unverified: the operator failed a task that ran this version, so it is likely
+  wrong.` instead. A save or a verdict changes the description, and the next model
+  call sends it. A name that starts and ends with two underscores, such as
+  `__init__`, is never saved, so no tier folder becomes a package.
 - **Budgets.** A script may make 40 calls, run 2 s between calls and 300 s in all, and
   print 4000 bytes. Nothing interrupts a call that is running, so the wall clock is
   checked between calls, and each atomic keeps its own bounds. A script can therefore
@@ -493,13 +498,16 @@ decisions are T18 to T30 in [Mahoraga Demo Decisions](mahoraga-demo-decisions.md
   `std_msgs/msg/Bool` on `/walkie/verdict`. `true` verifies each saved function
   version that the task's scripts proved: it returned in one of them, and nothing
   raised through it in any. The shelf then writes those versions to `bundled/`.
-  `false` verifies nothing and is recorded. A verdict while a task runs, a second
-  verdict on the same task, or one before any task has ended is ignored and logged.
-  The console gets one line for each verdict. No capability may publish on the topic,
-  so the agent cannot judge its own work.
+  `false` verifies nothing. It gives each of those versions a `rejected` event in
+  the shelf's `ledger.jsonl`, so the description marks them, and they stay callable.
+  A later passing verdict on a task they prove still verifies them. A verdict while
+  a task runs, a second verdict on the same task, or one before any task has ended
+  is ignored and logged. The console gets one line for each verdict, and the tool
+  log a record with the versions verified or rejected. No capability may publish on
+  the topic, so the agent cannot judge its own work.
 
 Nothing on the robot path verifies a function without the operator. A function that
-was never judged stays callable, marked unverified.
+was never judged, or that a failed verdict judged, stays callable, marked unverified.
 
 ### Limits of the navigation verbs
 

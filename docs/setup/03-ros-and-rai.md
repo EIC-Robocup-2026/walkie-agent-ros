@@ -487,8 +487,8 @@ that are not installed yet, as in
 [Step 3](#step-3-add-the-ros-packages-rai-imports). Then run
 `pixi run test`.
 
-`errors`, `capabilities`, `atomics`, `adapter` and `runtime` must not import rclpy, RAI
-or any ROS message, and `tests/test_ros_free.py` checks that. A package that needs ROS
+`errors`, `capabilities`, `tools`, `scripting`, `adapter` and `runtime` must not import
+rclpy, RAI or any ROS message, and `tests/test_ros_free.py` checks that. A package that needs ROS
 belongs behind `walkie_agent/ros/`.
 
 Changing a pin of `langchain`, `langgraph` or `rai-core` can change behaviour without any

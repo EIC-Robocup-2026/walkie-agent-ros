@@ -29,6 +29,8 @@ logger = logging.getLogger(__name__)
 #   /walkie/reset  the agent must not wipe its own memory
 #   /walkie/task   the agent must not queue its own tasks or seed locked steps
 #   /walkie/todos  the operator's view of the list; only update_todos edits it
+#   /walkie/verdict  the agent must not judge its own work, which would verify
+#                  its scripts' functions
 # /trajectory_execution_event is not listed: CommanderClient publishes "stop" there,
 # as the one publisher while no MotionSupervisor exists.
 FORBIDDEN_NAMES = (
@@ -47,6 +49,7 @@ FORBIDDEN_NAMES = (
     "/walkie/reset",
     "/walkie/task",
     "/walkie/todos",
+    "/walkie/verdict",
 )
 
 # What an rclpy call raises once its handle or its context is gone.

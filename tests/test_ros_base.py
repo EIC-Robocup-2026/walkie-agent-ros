@@ -40,7 +40,7 @@ from walkie_agent.capabilities import Ctx, PersonSeen
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location
-from walkie_agent.ros import FORBIDDEN_NAMES, RosBase, UnavailableVision
+from walkie_agent.ros import FORBIDDEN_NAMES, RosBase, RosSpeech, UnavailableVision
 from walkie_agent.ros.commander import STOP_TOPIC
 from walkie_agent.tools.atomic import face_person, move_relative
 
@@ -600,6 +600,7 @@ def test_guards_refuse_without_sending(move):
         ("/walkie/reset", FakeNode()),
         ("walkie/task", FakeNode()),
         ("/walkie/todos", FakeNode()),
+        ("walkie/verdict", FakeNode()),
         ("/nav_alias", FakeNode(remaps={"/nav_alias": "/cmd_vel"})),
         ("cmd_vel_nav", FakeNode()),
         ("/go_to_pose", FakeNode()),
@@ -641,11 +642,26 @@ def test_forbidden_names_cover_velocity_pose_goal_and_lift_names():
         "/walkie/reset",
         "/walkie/task",
         "/walkie/todos",
+        "/walkie/verdict",
     }
     assert len(FORBIDDEN_NAMES) == len(set(FORBIDDEN_NAMES))
     # CommanderClient publishes its stop there, as the one publisher while no
     # MotionSupervisor exists.
     assert STOP_TOPIC not in FORBIDDEN_NAMES
+
+
+@pytest.mark.parametrize(
+    "node",
+    [FakeNode(), FakeNode(remaps={"/to_operator": "/walkie/verdict"})],
+)
+def test_no_capability_may_publish_the_operators_verdict(node):
+    # Speech is the one capability that publishes. A verdict verifies the scripts'
+    # functions, so the agent must never send one itself.
+    topic = "/to_operator" if node.remaps else "/walkie/verdict"
+    with pytest.raises(StepError) as raised:
+        RosSpeech(FakeConnector(node), topic=topic)
+    assert raised.value.code is ErrorCode.REFUSED
+    assert node.publishers == []
 
 
 # -- Arm check ----------------------------------------------------------------------

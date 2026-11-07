@@ -1,9 +1,11 @@
 """RosBridge: the operator's topics, between ROS callbacks and the Runner.
 
-Input side, on the connector's executor: /from_human, /walkie/task and /walkie/reset.
-Each callback validates, copies and queues on the Runner, so it never runs the model,
-calls a blocking verb or joins anything. A bad message is logged and dropped, and no
-callback lets an exception reach the executor.
+Input side, on the connector's executor: /from_human, /walkie/task and /walkie/reset,
+and with --scripts /walkie/verdict. Each callback validates, copies and queues on the
+Runner, so it never runs the model, calls a blocking verb or joins anything. The
+verdict's callback records the operator's judgement of the last task, a few small
+file writes at most, and puts its answer on the console. A bad message is logged and
+dropped, and no callback lets an exception reach the executor.
 
 Output side: `on_todos` and `on_reply` are the listeners of build_agent and the Runner.
 Both are safe from any thread, and a failed publish only logs. Replies and status
@@ -23,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from rai_interfaces.msg import HRIMessage
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_msgs.msg import Empty, String
+from std_msgs.msg import Bool, Empty, String
 
 from walkie_agent.ros.speech import SPEECH_TOPIC
 from walkie_agent.runtime.runner import is_stop_utterance
@@ -42,6 +44,8 @@ CONSOLE_TOPIC = "/walkie/console"
 RESET_TOPIC = "/walkie/reset"
 TASK_TOPIC = "/walkie/task"
 TODOS_TOPIC = "/walkie/todos"
+# The operator's judgement of the task that ended last, with --scripts.
+VERDICT_TOPIC = "/walkie/verdict"
 
 QUEUED_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10
@@ -61,6 +65,9 @@ class RosBridge:
     The publishers exist from the start, so the Runner's first list has somewhere to
     go. `open` subscribes, `close_ingress` refuses further input, and `close`, last of
     all, destroys the endpoints. Each is safe to repeat.
+
+    With `on_verdict`, open also subscribes to `verdict_topic`. Each std_msgs Bool on
+    it goes to on_verdict(data), and the line it returns goes to the console.
     """
 
     def __init__(
@@ -73,6 +80,8 @@ class RosBridge:
         reset_topic: str = RESET_TOPIC,
         task_topic: str = TASK_TOPIC,
         todos_topic: str = TODOS_TOPIC,
+        verdict_topic: str = VERDICT_TOPIC,
+        on_verdict: Callable[[bool], str] | None = None,
     ) -> None:
         self._node = connector.node
         if self._node.resolve_topic_name(output_topic) == self._node.resolve_topic_name(
@@ -83,6 +92,7 @@ class RosBridge:
         self._input_topic, self._reset_topic = input_topic, reset_topic
         self._task_topic, self._output_topic = task_topic, output_topic
         self._todos_topic = todos_topic
+        self._verdict_topic, self._on_verdict_call = verdict_topic, on_verdict
         self._runner: Runner | None = None
         # Guards the entity lists and orders a publish against close. It is never held
         # while waiting, and an ingress callback does not take it.
@@ -98,11 +108,14 @@ class RosBridge:
     def open(self, runner: "Runner") -> None:
         """Start taking input for `runner`, which must already be able to queue it."""
         self._runner = runner
-        for msg_type, topic, callback in (
+        endpoints: list[tuple[Any, str, Callable[[Any], None]]] = [
             (HRIMessage, self._input_topic, self._on_input),
             (String, self._task_topic, self._on_task),
             (Empty, self._reset_topic, self._on_reset),
-        ):
+        ]
+        if self._on_verdict_call is not None:
+            endpoints.append((Bool, self._verdict_topic, self._on_verdict))
+        for msg_type, topic, callback in endpoints:
             subscription = self._node.create_subscription(msg_type, topic, callback, QUEUED_QOS)
             with self._lock:
                 self._subscriptions.append(subscription)
@@ -163,6 +176,14 @@ class RosBridge:
         if self._ingress_closed.is_set():
             return
         self._queue(self._reset_topic, self._runner.reset)
+
+    def _on_verdict(self, message: Bool) -> None:
+        if self._ingress_closed.is_set():
+            return
+        self._queue(self._verdict_topic, self._judge, bool(message.data))
+
+    def _judge(self, passed: bool) -> None:
+        self.on_reply(self._on_verdict_call(passed))
 
     def _submit(self, data: str) -> None:
         text, todos = parse_task_message(data, self._templates)

@@ -26,7 +26,7 @@ from runtime_harness import (
     wait_until,
 )
 from sensor_msgs.msg import Image
-from std_msgs.msg import Empty, String
+from std_msgs.msg import Bool, Empty, String
 
 from walkie_agent.adapter import as_tools
 from walkie_agent.capabilities import Ctx
@@ -274,6 +274,48 @@ def test_reset_queues_without_blocking_callback(serve):
     idle(app)
     assert app.stack.runner.session.thread_id != session
     assert lists(app.connector)[-1] == []
+
+
+def test_a_verdict_goes_to_its_callback_and_its_answer_to_the_console():
+    verdicts = []
+
+    def judge(passed):
+        verdicts.append(passed)
+        return f"Judged {passed}."
+
+    bridge, connector = bridge_only(on_verdict=judge)
+    bridge.open(SimpleNamespace())
+    subscribed = subscription(connector, "/walkie/verdict")
+    assert subscribed.msg_type is Bool
+    assert_queued_qos(subscribed.qos)
+
+    assert bounded(subscribed.callback, Bool(data=True)) is None
+    subscribed.callback(Bool(data=False))
+    assert verdicts == [True, False]
+    assert texts(connector) == ["Judged True.", "Judged False."]
+
+    # A closed ingress takes no verdict either.
+    bridge.close_ingress()
+    subscribed.callback(Bool(data=True))
+    assert verdicts == [True, False]
+
+
+def test_without_a_verdict_callback_there_is_no_verdict_topic():
+    bridge, connector = bridge_only()
+    bridge.open(SimpleNamespace())
+    assert "/walkie/verdict" not in {s.topic for s in connector.node.subscriptions}
+
+
+def test_a_verdict_callback_that_raises_is_logged_and_publishes_nothing(caplog):
+    def broken(_passed):
+        raise RuntimeError("shelf gone")
+
+    bridge, connector = bridge_only(on_verdict=broken)
+    bridge.open(SimpleNamespace())
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.io"):
+        assert bounded(subscription(connector, "/walkie/verdict").callback, Bool(data=True)) is None
+    assert "Could not take a message on /walkie/verdict" in caplog.text
+    assert texts(connector) == []
 
 
 # -- Output --------------------------------------------------------------------------

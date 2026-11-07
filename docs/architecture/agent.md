@@ -371,7 +371,7 @@ todos = [
   If Nav2 has not answered, the agent keeps ROS running, keeps input closed, retries and
   logs what is unresolved. A second signal ends the process at once with exit code 3,
   and the robot's state is then unknown. A signal within 0.5 s of the last one counted
-  (`SIGNAL_REPEAT_S`) is the same signal, since `pixi run` forwards the one it gets
+  (`SIGNAL_REPEAT_S`) is treated as the same signal, since `pixi run` forwards the one it gets
   and the agent gets it from its process group as well. A clean exit is code 0. Before ROS starts,
   the agent reads its inputs, and an error that reading raises as an OSError,
   ValueError or KeyError prints one line on stderr, `walkie-agent: <message>`, and

@@ -1027,11 +1027,15 @@ def cli(monkeypatch, tmp_path, nav):
     monkeypatch.setattr(main, "SIGNAL_REPEAT_S", 0.0)
 
     # A stuck main thread would hang the whole run. Two signals force it out as a failure,
-    # the second after the repeat window, which a test may have set.
+    # the second after the repeat window, which a test may have set. The teardown ends the
+    # wait between them, so a first signal that let the run finish sends no second one
+    # to the handlers restored after it.
+    torn_down = threading.Event()
+
     def force_out():
         send(signal.SIGTERM)
-        time.sleep(main.SIGNAL_REPEAT_S + 0.1)
-        send(signal.SIGTERM)
+        if not torn_down.wait(main.SIGNAL_REPEAT_S + 0.1):
+            send(signal.SIGTERM)
 
     handlers = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
     watchdog = threading.Timer(3 * WATCHDOG_S, force_out)
@@ -1039,6 +1043,8 @@ def cli(monkeypatch, tmp_path, nav):
     watchdog.start()
     yield state
     watchdog.cancel()
+    torn_down.set()
+    watchdog.join(WATCHDOG_S)
     for number, handler in handlers.items():
         assert signal.getsignal(number) == handler, "main did not restore a signal handler"
 

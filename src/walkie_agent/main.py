@@ -45,7 +45,8 @@ agent before ROS starts, with one line on stderr and exit code 2.
 A first SIGINT or SIGTERM starts an orderly shutdown. If that cannot finish, for example
 because Nav2 has not answered a cancel, the agent keeps ROS running and keeps trying. A
 second signal then ends the process at once, with exit code 3, and the goal's state unknown.
-A signal within SIGNAL_REPEAT_S of the first is the same one, as `pixi run` forwards it.
+A signal within SIGNAL_REPEAT_S of the first is treated as the same one, since `pixi run`
+forwards it.
 """
 
 import argparse
@@ -149,9 +150,9 @@ CLOSE_TIMEOUT_S = 5.0
 CLOSE_ATTEMPT_S = 1.0
 POLL_S = 0.05
 SIGNALS_TO_FORCE = 2
-# A signal this soon after the last one counted is the same signal. `pixi run` forwards
-# the SIGINT or SIGTERM it gets to the agent, which also gets it from its process group,
-# so one Ctrl+C or one `chula-sim.sh down` arrives twice within milliseconds.
+# A signal this soon after the last one counted is treated as the same signal. `pixi run`
+# forwards the SIGINT or SIGTERM it gets to the agent, which also gets it from its process
+# group, so one Ctrl+C or one `chula-sim.sh down` arrives twice within milliseconds.
 SIGNAL_REPEAT_S = 0.5
 FORCED_EXIT_CODE = 3
 

@@ -15,7 +15,8 @@ How a failed call reaches the script:
   and the traceback goes to the host's log, as in adapter.format_tool_error.
 
 Spending a budget ends the script with an error no script can catch, and so does a
-stop, through the cancel token a run may be given.
+stop, through the cancel token a run may be given. A run a stop ended has phase
+cancelled, whether or not the script caught the error of the call the stop ended.
 """
 
 import ast
@@ -56,6 +57,10 @@ _STRICT = ConfigDict(strict=True)
 _ERROR_CHARS = 2000
 _OUTPUT_CHARS = 4000
 _ARGUMENT_CHARS = 500
+_STOPPED = f"{ErrorCode.CANCELLED}: a stop ended the script."
+# The phases a script that ran can end in. Once a stop is in effect, each of them
+# counts as the stop's. A type or syntax error comes before the script runs at all.
+_ENDED_BY_A_STOP = frozenset({"runtime", "budget", "crash"})
 
 
 @dataclass(frozen=True)
@@ -198,9 +203,13 @@ class ScriptRunner:
         like any failure, with no host call made and nothing saved.
 
         Once `cancel` is set, the driver runs no further host call and ends the script
-        as it ends one out of wall clock, with phase "cancelled" whatever the script
-        catches. A host call already running is not interrupted: the stop that set the
-        token ends it, as it ends the same call made as a tool.
+        as it ends one out of wall clock. A host call already running is not
+        interrupted: the stop that set the token ends it, as it ends the same call made
+        as a tool, and its CANCELLED reaches the script. The run's phase is then
+        "cancelled" whatever the script does with that error: lets it end the script,
+        catches it and calls again, or catches it and loops without a call until the
+        feed budget ends it. Only a type or syntax error, found before the script runs,
+        keeps its own phase.
         """
         code = _with_newlines(code)
         result = ScriptResult()
@@ -243,11 +252,16 @@ class ScriptRunner:
         except _WallClockSpent:
             fail("budget", f"TimeoutError: over {self.budgets.wall_s} s of wall clock.")
         except _Cancelled:
-            fail("cancelled", f"{ErrorCode.CANCELLED}: a stop ended the script.")
+            fail("cancelled", _STOPPED)
         except _Unservable as exc:
             fail("runtime", str(exc))
         except (MontyError, TimeoutError) as exc:
             fail("crash", f"{type(exc).__name__}: {exc}")
+        # The stop's CANCELLED reaches the script through the call it ended. A script that
+        # does not catch it dies of it, and one that catches it and then loops without a
+        # call runs out of feed time. Either way the stop ended the script.
+        if cancel is not None and cancel.cancelled and result.phase in _ENDED_BY_A_STOP:
+            fail("cancelled", _STOPPED)
         for call in result.calls:
             call["tool"] = watch.clean(call["tool"])
         used = {name: sha for name, sha in shelf_versions.items() if name in watch.entered}

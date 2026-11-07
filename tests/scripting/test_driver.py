@@ -226,17 +226,27 @@ def test_a_run_inside_the_wall_budget_is_not_failed_by_the_check(runner, slow_go
     assert robot.said == ["in time"]
 
 
-def test_a_stop_ends_a_running_script_and_no_script_can_catch_it(runner):
-    robot = FakeRobot(seed=1, drive_s=60.0)
-    fns = allow_list(GPSR, robot.ctx)
-    code = (
+# What a script may do with the CANCELLED of the drive a stop ends.
+STOPPED_SCRIPTS = {
+    "uncaught": 'for place in ["shelf", "bar", "table"]:\n    go_to(place)\nsay("done")\n',
+    "caught_then_called": (
         'for place in ["shelf", "bar", "table"]:\n'
         "    try:\n"
         "        go_to(place)\n"
         "    except BaseException:\n"
         "        pass\n"
         'say("done")\n'
-    )
+    ),
+    "caught_then_looped": (
+        'try:\n    go_to("shelf")\nexcept BaseException:\n    pass\nwhile True:\n    pass\n'
+    ),
+}
+
+
+@pytest.mark.parametrize("code", STOPPED_SCRIPTS.values(), ids=STOPPED_SCRIPTS)
+def test_a_stop_ends_a_running_script_and_no_script_can_catch_it(runner, code):
+    robot = FakeRobot(seed=1, drive_s=60.0)
+    fns = allow_list(GPSR, robot.ctx)
 
     def stop_once_driving():
         deadline = time.monotonic() + 10.0
@@ -254,7 +264,7 @@ def test_a_stop_ends_a_running_script_and_no_script_can_catch_it(runner):
 
     assert time.monotonic() - started < 10.0, "the stop did not end the 60 s drive"
     assert (result.ok, result.phase) == (False, "cancelled")
-    assert "CANCELLED" in result.error
+    assert result.error == "CANCELLED: a stop ended the script."
     # The drive the stop ended is the only call: the refusals after it run nothing.
     assert [(call["tool"], call["status"]) for call in result.calls] == [("go_to", "CANCELLED")]
     assert robot.said == []
@@ -269,6 +279,16 @@ def test_a_stop_before_the_script_starts_runs_no_call(runner, fns, robot):
     assert (result.ok, result.phase) == (False, "cancelled")
     assert result.calls == []
     assert robot.said == []
+
+
+def test_a_type_error_keeps_its_phase_after_a_stop(runner, fns, robot):
+    # The script never ran, so the stop ended nothing and the model learns of the error.
+    robot.cancel.cancel()
+
+    result = runner.run("go_to(place=1)", fns, cancel=robot.cancel)
+
+    assert (result.ok, result.phase) == (False, "type_check")
+    assert result.calls == []
 
 
 def test_a_recursion_bomb_is_a_spent_budget(runner, fns):

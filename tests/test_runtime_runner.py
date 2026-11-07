@@ -208,19 +208,26 @@ def test_stop_ends_a_drive_through_the_token_and_makes_no_more_model_calls(serve
     assert stack.robot.cancel.cancelled
 
 
-def test_stop_ends_a_running_script_and_the_run_and_the_task_ends_once(serve, pool, tmp_path):
-    robot = FakeRobot(drive_s=30)
-    tool_log = ToolLog(tmp_path / "tools.jsonl")
-    scripts = AgentScripts(pool, Shelf(), tool_log=tool_log)
-    marks = []
-    code = (
+# A script whose drive a stop or a reset ends, with and without catching its CANCELLED.
+STOPPED_SCRIPTS = {
+    "uncaught": 'for place in ["sofa", "table"]:\n    go_to(place)\nsay("Done.")\n',
+    "caught": (
         'for place in ["sofa", "table"]:\n'
         "    try:\n"
         "        go_to(place)\n"
         "    except BaseException:\n"
         "        pass\n"
         'say("Done.")\n'
-    )
+    ),
+}
+
+
+@pytest.mark.parametrize("code", STOPPED_SCRIPTS.values(), ids=STOPPED_SCRIPTS)
+def test_stop_ends_a_running_script_and_the_run_and_the_task_ends_once(serve, pool, tmp_path, code):
+    robot = FakeRobot(drive_s=30)
+    tool_log = ToolLog(tmp_path / "tools.jsonl")
+    scripts = AgentScripts(pool, Shelf(), tool_log=tool_log)
+    marks = []
     stack = serve(
         ai(call("run_script", {"code": code}, "s")),
         robot=robot,
@@ -249,6 +256,39 @@ def test_stop_ends_a_running_script_and_the_run_and_the_task_ends_once(serve, po
     assert scripts.verdict(False).startswith("Recorded a failed verdict")
     logged = [record for record in log_records(tool_log) if record["tool"] == "run_script"]
     assert [record["status"] for record in logged] == ["error"]
+    assert "go_to: CANCELLED" in logged[0]["result"]
+
+
+def test_reset_ends_a_running_script_as_a_stop_does(serve, pool, tmp_path):
+    robot = FakeRobot(drive_s=30)
+    tool_log = ToolLog(tmp_path / "tools.jsonl")
+    scripts = AgentScripts(pool, Shelf(), tool_log=tool_log)
+    marks = []
+    stack = serve(
+        ai(call("run_script", {"code": STOPPED_SCRIPTS["uncaught"]}, "s")),
+        robot=robot,
+        tool_log=tool_log,
+        extra_tools=[scripts.tool(DEFAULT, robot.ctx)],
+        on_task_start=lambda: (marks.append("start"), scripts.begin()),
+        on_task_end=lambda: (marks.append("end"), scripts.end()),
+    )
+    stack.runner.submit("Go to the sofa, then the table.")
+    drive_started(stack)
+    old = stack.runner.session
+
+    started = time.monotonic()
+    stack.runner.reset()
+    idle(stack)
+
+    assert time.monotonic() - started < 5.0
+    assert stack.runner.session != old
+    assert len(stack.model.received) == 1
+    assert stack.verbs().count("base.go_to") == 1
+    assert "Done." not in stack.robot.said
+    assert marks == ["start", "end"]
+    logged = [record for record in log_records(tool_log) if record["tool"] == "run_script"]
+    assert [record["status"] for record in logged] == ["error"]
+    assert logged[0]["result"].startswith(f"{ErrorCode.CANCELLED}: A stop ended the script")
     assert "go_to: CANCELLED" in logged[0]["result"]
 
 

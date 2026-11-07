@@ -266,17 +266,23 @@ def test_a_verdict_judges_only_the_task_that_ended_last(scripts, run, isolated_t
 # -- A stop --------------------------------------------------------------------------
 
 
-def test_a_stop_ends_a_running_script_as_cancelled(scripts):
-    robot = FakeRobot(seed=1, drive_s=60.0)
-    tool = scripts.tool(GPSR, robot.ctx)
-    code = (
+STOPPED_SCRIPTS = {
+    "uncaught": 'for place in ["shelf", "bar", "table"]:\n    go_to(place)\nsay("done")\n',
+    "caught": (
         'for place in ["shelf", "bar", "table"]:\n'
         "    try:\n"
         "        go_to(place)\n"
         "    except BaseException:\n"
         "        pass\n"
         'say("done")\n'
-    )
+    ),
+}
+
+
+@pytest.mark.parametrize("code", STOPPED_SCRIPTS.values(), ids=STOPPED_SCRIPTS)
+def test_a_stop_ends_a_running_script_as_cancelled(scripts, code):
+    robot = FakeRobot(seed=1, drive_s=60.0)
+    tool = scripts.tool(GPSR, robot.ctx)
     outcome = {}
 
     def call():
@@ -299,7 +305,7 @@ def test_a_stop_ends_a_running_script_as_cancelled(scripts):
     assert not worker.is_alive(), "the stop did not end the script"
     assert time.monotonic() - stopped < 5.0
     assert outcome["error"].code is ErrorCode.CANCELLED
-    assert "A stop ended the script" in str(outcome["error"])
+    assert str(outcome["error"]).startswith("CANCELLED: A stop ended the script")
     assert "go_to: CANCELLED" in str(outcome["error"])
     assert robot.said == []
     assert [entry["verb"] for entry in robot.calls].count("base.go_to") == 1

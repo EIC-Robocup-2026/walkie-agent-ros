@@ -4,7 +4,8 @@ The tool runs a script over the run's own atomics, bound to the robot's ctx, and
 functions on the shelf. The shelf is writable, so a script may save functions into
 temporary/. No scorer runs on the robot path. Only the operator's verdict, about the
 task that ended last, verifies what that task proved, by the gym's evidence rule
-(driver.proven). Without a verdict nothing is ever verified here.
+(driver.proven). Without a verdict nothing is ever verified here. A failed verdict
+records the same versions as rejected in the shelf's ledger, and verifies nothing.
 
 A task is one run of the agent, from a message to its reply, so a question and its
 answer are two tasks. The Runner calls begin() and end() around each run.
@@ -50,6 +51,7 @@ AGENT_BUDGETS = Budgets(max_calls=40, feed_s=2.0, wall_s=300.0)
 # that a spent budget killed.
 POOL_SIZE = 2
 UNVERIFIED = "# Unverified: not yet confirmed by the operator, so it may be wrong."
+REJECTED = "# Unverified: the operator failed a task that ran this version, so it is likely wrong."
 
 _NOTES = """\
 A script is Python, and the functions below are its only way to act. Nothing
@@ -178,7 +180,7 @@ class AgentScripts:
     def _refresh(self) -> None:
         if self._tool is None:
             return
-        shelf = self.shelf.describe_marked(UNVERIFIED)
+        shelf = self.shelf.describe_marked(UNVERIFIED, REJECTED)
         self._tool.description = f"{self._functions}\n\n{_SHELF}\n\n{shelf}" if shelf else self._functions
 
     def _record(self, code: str, result: ScriptResult) -> None:
@@ -200,11 +202,13 @@ class AgentScripts:
     def verdict(self, passed: bool) -> str:
         """Judge the task that ended last, once, and return a line for the operator's console.
 
-        True verifies each function version that the task proved: it returned in one of
-        the task's scripts, and nothing raised through it in any of them. The shelf then
-        writes those versions into bundled/. False verifies nothing. Either way the
-        verdict goes to the tool log. A verdict while a task runs, or with no task ended
-        since the last verdict, changes nothing and is logged.
+        The verdict judges each function version that the task proved: it returned in
+        one of the task's scripts, and nothing raised through it in any of them. True
+        verifies those versions, and the shelf writes them into bundled/. False
+        verifies nothing and gives each of them a rejected event in the shelf's ledger,
+        so the description marks it apart from one never judged. Either way the verdict
+        goes to the tool log. A verdict while a task runs, or with no task ended since
+        the last verdict, changes nothing and is logged.
         """
         with self._lock:
             if self._running:
@@ -212,15 +216,21 @@ class AgentScripts:
             if self._ended is None:
                 return self._ignored(passed, "Ignored the verdict: no task has ended since the last one.")
             scripts, self._ended = self._ended, None
-        versions = proven(scripts) if passed else {}
+        versions = proven(scripts)
         if versions:
             try:
-                self.shelf.mark_verified(versions)
+                if passed:
+                    self.shelf.mark_verified(versions)
+                else:
+                    self.shelf.mark_rejected(versions)
             except (OSError, ValueError):
-                logger.exception("Could not verify %s.", ", ".join(sorted(versions)))
+                logger.exception("Could not record the verdict on %s.", ", ".join(sorted(versions)))
                 return self._judged(passed, versions, "error", "The verdict could not be recorded on the shelf.")
             self._refresh()
-        if not passed:
+        if not passed and versions:
+            line = f"Recorded a failed verdict on the last task, against {', '.join(sorted(versions))}. "
+            line += "Nothing was verified."
+        elif not passed:
             line = "Recorded a failed verdict on the last task. Nothing was verified."
         elif versions:
             line = f"Verified {', '.join(sorted(versions))} from the last task."
@@ -239,8 +249,16 @@ class AgentScripts:
         return line
 
     def _log(self, passed: bool, versions: dict[str, str], status: str, line: str) -> None:
+        """One tool-log line. `versions` are those the verdict judged, verified or rejected as it passed."""
         if self._tool_log is not None:
-            self._tool_log.write(tool="verdict", args={"passed": passed}, status=status, result=line, verified=versions)
+            self._tool_log.write(
+                tool="verdict",
+                args={"passed": passed},
+                status=status,
+                result=line,
+                verified=versions if passed else {},
+                rejected={} if passed else versions,
+            )
 
     # -- Shutdown --------------------------------------------------------------
 

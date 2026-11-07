@@ -14,7 +14,7 @@ from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.runtime.middleware import ToolLog
 from walkie_agent.scripting import agent_tool
-from walkie_agent.scripting.agent_tool import AGENT_BUDGETS, NOT_CALLABLE, UNVERIFIED, AgentScripts
+from walkie_agent.scripting.agent_tool import AGENT_BUDGETS, NOT_CALLABLE, REJECTED, UNVERIFIED, AgentScripts
 from walkie_agent.scripting.sandbox import SandboxUnavailable
 from walkie_agent.scripting.shelf import Shelf
 from walkie_agent.tools.atomic import DEFAULT, GPSR
@@ -197,17 +197,35 @@ def test_a_verified_function_stays_callable(scripts, run, robot):
     assert run('visit("bar")')["output"] == "bar"
 
 
-def test_a_failed_verdict_verifies_nothing(scripts, run, log, isolated_tools_home):
+def test_a_failed_verdict_verifies_nothing_and_marks_what_it_judged_rejected(scripts, run, log, isolated_tools_home):
     task(scripts, lambda: run(VISIT, save=["visit"]))
+    sha = scripts.shelf.versions()["visit"]
 
     line = scripts.verdict(False)
 
-    assert line == "Recorded a failed verdict on the last task. Nothing was verified."
+    assert line == "Recorded a failed verdict on the last task, against visit. Nothing was verified."
     assert list((isolated_tools_home / "bundled").glob("*.py")) == []
     assert scripts.shelf.unverified() == ["visit"]
-    assert UNVERIFIED in run.tool.description
+    assert scripts.shelf.rejected() == ["visit"]
+    assert f"{REJECTED}\ndef visit(place: str) -> str:" in run.tool.description
+    assert UNVERIFIED not in run.tool.description
+    ledger = [json.loads(entry) for entry in (isolated_tools_home / "ledger.jsonl").read_text().splitlines()]
+    assert [(event["event"], event["sha"]) for event in ledger if event["event"] == "rejected"] == [("rejected", sha)]
     verdict = records(log)[-1]
-    assert (verdict["args"], verdict["status"], verdict["verified"]) == ({"passed": False}, "success", {})
+    assert (verdict["args"], verdict["status"]) == ({"passed": False}, "success")
+    assert (verdict["verified"], verdict["rejected"]) == ({}, {"visit": sha})
+    # The function stays callable, and a later passed verdict still verifies it.
+    task(scripts, lambda: run('visit("bar")'))
+    assert scripts.verdict(True) == "Verified visit from the last task."
+    assert scripts.shelf.rejected() == []
+    assert REJECTED not in run.tool.description
+
+
+def test_a_failed_verdict_on_a_task_without_a_saved_return_names_nothing(scripts, run):
+    task(scripts, lambda: run('say("hello")'))
+
+    assert scripts.verdict(False) == "Recorded a failed verdict on the last task. Nothing was verified."
+    assert scripts.shelf.rejected() == []
 
 
 def test_a_passed_verdict_on_a_task_without_a_saved_return_verifies_nothing(scripts, run, isolated_tools_home):

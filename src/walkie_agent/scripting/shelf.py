@@ -3,13 +3,17 @@
 A store root holds `temporary/<name>.py`, the latest saved version of each
 function, `bundled/<name>.py`, a version of each that a passing episode verified,
 the latest saved one whenever that one is verified, and `ledger.jsonl` with saved,
-run, fail and verified events, each keyed to the exact source it is about. The
+run, fail, verified and rejected events, each keyed to the exact source it is
+about. Only an operator's failed verdict on the agent writes a rejected event. The
 ledger is the record, and the two folders hold the text. A script's run saves into
-a writable shelf, whose callable set is temporary/. Only the harness calls
-mark_verified, after the ground-truth scorer, with what the driver saw run. A
-frozen shelf fixes its callable set at construction, to the functions verified by
-then, read from bundled/, and takes no more definitions, while it keeps counting
-runs for the report.
+a writable shelf, whose callable set is temporary/. Two callers verify, each with
+what the driver saw run and by the same evidence rule (driver.proven): the gym's
+harness, after its ground-truth scorer passes an episode, and the agent's
+run_script (scripting.agent_tool), after its operator sends a passing verdict on
+/walkie/verdict. Nothing else calls mark_verified. A frozen shelf fixes its
+callable set at construction, to the functions verified by then, read from
+bundled/, and takes no more definitions, while it keeps counting runs for the
+report.
 
 The store root is the tools package's own folder, src/walkie_agent/tools, unless
 WALKIE_TOOLS_HOME names another. Git must ignore every file the shelf writes there
@@ -244,13 +248,26 @@ class Shelf:
         verified = self._verified_versions()
         return sorted(name for name, sha in self.versions().items() if (name, sha) not in verified)
 
-    def describe_marked(self, mark: str) -> str:
-        """As describe(), with `mark` on a line of its own above each unverified function."""
+    def rejected(self) -> list[str]:
+        """The unverified callable functions whose current version has a rejected event, sorted."""
         unverified = set(self.unverified())
-        return "\n\n".join(
-            f"{mark}\n{header(source)}" if name in unverified else header(source)
-            for name, source in self._sources().items()
-        )
+        rejected = self._versions_with("rejected")
+        return sorted(name for name, sha in self.versions().items() if name in unverified and (name, sha) in rejected)
+
+    def describe_marked(self, mark: str, rejected_mark: str | None = None) -> str:
+        """As describe(), with `mark` on a line of its own above each unverified function.
+
+        With `rejected_mark`, a function in rejected() gets that line instead.
+        """
+        unverified = set(self.unverified())
+        rejected = set(self.rejected()) if rejected_mark is not None else set()
+
+        def marked(name: str, source: str) -> str:
+            if name in rejected:
+                return f"{rejected_mark}\n{header(source)}"
+            return f"{mark}\n{header(source)}" if name in unverified else header(source)
+
+        return "\n\n".join(marked(name, source) for name, source in self._sources().items())
 
     def source_for(self, code: str) -> tuple[str, dict[str, str]]:
         """The shelf functions `code` names, transitively, as source to run first, and each one's sha.
@@ -296,6 +313,10 @@ class Shelf:
                 refused[name] = "No top-level function has this name."
             elif name in reserved or name in SHADOWED:
                 refused[name] = "This name belongs to a built-in function."
+            elif name.startswith("__") and name.endswith("__"):
+                # Python gives such names their meaning. Saved as __init__.py, one would
+                # make a tier folder in the source tree a package of model-written code.
+                refused[name] = "A name that starts and ends with two underscores cannot be saved."
             elif node.decorator_list:
                 refused[name] = "A decorated function cannot be saved."
             elif not _defaults_are_literal(node):
@@ -325,10 +346,12 @@ class Shelf:
             self._log("run" if ok else "fail", name, sha)
 
     def mark_verified(self, versions: Mapping[str, str]) -> None:
-        """For the harness only, with the versions that ran in an episode the scorer passed.
+        """Verify `versions`, the versions that a passing judgement proved.
 
-        A version is the sha of the source that ran, so a rewrite since then stays
-        unverified. Each version gets its verified event. Then bundled/<name>.py gets
+        There are two callers. The gym's harness passes what an episode proved once its
+        scorer passed the episode. The agent's run_script passes what a task proved once
+        the operator's verdict on the task passed. A version is the sha of the source
+        that ran, so a rewrite since then stays unverified. Each version gets its verified event. Then bundled/<name>.py gets
         the text, as written, of the version temporary/ holds if that one is verified,
         and otherwise of the version just verified. So bundled/ holds a verified
         latest version whatever order episodes are scored in: an episode that ran an
@@ -352,11 +375,24 @@ class Shelf:
                     text = texts[name]
                 _write_atomically(self.bundled / f"{name}.py", text)
 
+    def mark_rejected(self, versions: Mapping[str, str]) -> None:
+        """One rejected event per version, which an operator's failed verdict judged.
+
+        Only the agent's run_script calls it, with the versions a passing verdict on
+        the same task would have verified. It verifies nothing and leaves the files as
+        they are, so the function stays callable, and rejected() tells it from one no
+        verdict has judged. A later verified event still verifies the version.
+        """
+        with self._lock:
+            for name, sha in versions.items():
+                self._append("rejected", name, sha)
+
     def counts(self) -> dict[str, dict[str, int]]:
         """Saved, run, fail and verified counts per function.
 
         `saved` counts every version, which is the churn. The rest count the
         version on the shelf now, because a rewrite earned none of the old runs.
+        Rejected events are not counted: no gym run writes them.
         """
         current = {name: source_sha(source) for name, source in self._all_sources().items()}
         counts = {
@@ -364,7 +400,9 @@ class Shelf:
         }
         for event in self._events():
             name = event["name"]
-            if name in counts and (event["event"] == "saved" or event["sha"] == current[name]):
+            if name not in counts or event["event"] not in counts[name]:
+                continue
+            if event["event"] == "saved" or event["sha"] == current[name]:
                 counts[name][event["event"]] += 1
         return counts
 
@@ -433,7 +471,11 @@ class Shelf:
 
     def _verified_versions(self) -> set[tuple[str, str]]:
         """Each (name, sha) the ledger holds a verified event for."""
-        return {(event["name"], event["sha"]) for event in self._events() if event["event"] == "verified"}
+        return self._versions_with("verified")
+
+    def _versions_with(self, kind: str) -> set[tuple[str, str]]:
+        """Each (name, sha) the ledger holds an event of `kind` for."""
+        return {(event["name"], event["sha"]) for event in self._events() if event["event"] == kind}
 
     def _log(self, event: str, name: str, sha: str) -> None:
         with self._lock:

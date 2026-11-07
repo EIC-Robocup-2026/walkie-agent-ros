@@ -433,6 +433,20 @@ def test_save_refuses_a_name_the_loader_defines(shelf, name):
     assert shelf.names() == []
 
 
+@pytest.mark.parametrize("name", ["__init__", "__main__", "__version__"])
+def test_save_refuses_a_dunder_name(shelf, name):
+    saved, refused = shelf.save(f"def {name}() -> int:\n    return 73\n", [name])
+
+    assert saved == []
+    assert "two underscores" in refused[name]
+    assert shelf.names() == []
+    assert not (shelf.temporary / f"{name}.py").exists()
+
+
+def test_save_keeps_a_name_with_one_leading_underscore(shelf):
+    assert shelf.save("def _helper() -> int:\n    return 1\n", ["_helper"]) == (["_helper"], {})
+
+
 def test_definitions_saved_together_may_call_each_other(shelf_runner, shelf, fns):
     code = "def helper() -> int:\n    return 1\n\ndef uses() -> int:\n    return helper()\n"
 
@@ -496,6 +510,32 @@ def test_counts_follow_the_ledger(shelf_runner, shelf, fns):
     shelf.mark_verified(shelf.versions())
 
     assert shelf.counts() == {"value": {"saved": 1, "run": 1, "fail": 1, "verified": 1}}
+
+
+def test_a_rejected_version_stays_callable_and_is_told_apart_in_the_description(shelf):
+    shelf.save('def kept() -> int:\n    """Kept."""\n    return 1\n', ["kept"])
+    shelf.save('def judged() -> int:\n    """Judged."""\n    return 2\n', ["judged"])
+
+    shelf.mark_rejected({"judged": shelf.versions()["judged"]})
+
+    assert shelf.names() == ["judged", "kept"]
+    assert shelf.rejected() == ["judged"]
+    assert list(shelf.bundled.glob("*.py")) == []
+    assert shelf.describe_marked("# new", "# rejected") == (
+        '# rejected\ndef judged() -> int:\n    """Judged."""\n\n# new\ndef kept() -> int:\n    """Kept."""'
+    )
+    assert shelf.describe_marked("# new").startswith("# new\ndef judged()")
+    # The gym's report counts the same four kinds of event as before.
+    assert shelf.counts()["judged"] == {"saved": 1, "run": 0, "fail": 0, "verified": 0}
+
+
+def test_a_rewrite_of_a_rejected_function_is_not_rejected(shelf):
+    shelf.save("def value() -> int:\n    return 1\n", ["value"])
+    shelf.mark_rejected(shelf.versions())
+    shelf.save("def value() -> int:\n    return 2\n", ["value"])
+
+    assert shelf.rejected() == []
+    assert shelf.unverified() == ["value"]
 
 
 def test_a_rewrite_starts_its_counts_again_but_keeps_the_churn(shelf_runner, shelf, fns):

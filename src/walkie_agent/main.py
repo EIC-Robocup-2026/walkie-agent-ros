@@ -45,6 +45,7 @@ agent before ROS starts, with one line on stderr and exit code 2.
 A first SIGINT or SIGTERM starts an orderly shutdown. If that cannot finish, for example
 because Nav2 has not answered a cancel, the agent keeps ROS running and keeps trying. A
 second signal then ends the process at once, with exit code 3, and the goal's state unknown.
+A signal within SIGNAL_REPEAT_S of the first is the same one, as `pixi run` forwards it.
 """
 
 import argparse
@@ -148,6 +149,10 @@ CLOSE_TIMEOUT_S = 5.0
 CLOSE_ATTEMPT_S = 1.0
 POLL_S = 0.05
 SIGNALS_TO_FORCE = 2
+# A signal this soon after the last one counted is the same signal. `pixi run` forwards
+# the SIGINT or SIGTERM it gets to the agent, which also gets it from its process group,
+# so one Ctrl+C or one `chula-sim.sh down` arrives twice within milliseconds.
+SIGNAL_REPEAT_S = 0.5
 FORCED_EXIT_CODE = 3
 
 # What bad input raises while main() reads everything before ROS starts. ValueError
@@ -589,13 +594,16 @@ def assemble(
 class _Signals:
     """Counts SIGINT and SIGTERM. The main thread polls the count.
 
-    The handler only adds one. It runs on the main thread between two of its bytecodes,
-    so anything that takes a lock, threading.Event.set included, could deadlock against
-    the code it interrupted.
+    The handler only reads `clock` and adds one, and a signal within SIGNAL_REPEAT_S of
+    the last one counted adds nothing. It runs on the main thread between two of its
+    bytecodes, so anything that takes a lock, threading.Event.set included, could
+    deadlock against the code it interrupted.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], float] = time.monotonic) -> None:
         self.count = 0
+        self._clock = clock
+        self._counted_at: float | None = None
         self._previous: dict[int, Any] = {}
 
     def install(self) -> None:
@@ -607,6 +615,10 @@ class _Signals:
             signal.signal(number, handler)
 
     def _handle(self, _number: int, _frame: FrameType | None) -> None:
+        now = self._clock()
+        if self._counted_at is not None and now - self._counted_at < SIGNAL_REPEAT_S:
+            return
+        self._counted_at = now
         self.count += 1
 
 

@@ -14,6 +14,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
@@ -1021,9 +1022,19 @@ def cli(monkeypatch, tmp_path, nav):
 
     state.use_fake_app = use_fake_app
 
-    # A stuck main thread would hang the whole run. Two signals force it out as a failure.
+    # Every signal a test sends counts, however close together; the tests of the repeat
+    # window set it themselves.
+    monkeypatch.setattr(main, "SIGNAL_REPEAT_S", 0.0)
+
+    # A stuck main thread would hang the whole run. Two signals force it out as a failure,
+    # the second after the repeat window, which a test may have set.
+    def force_out():
+        send(signal.SIGTERM)
+        time.sleep(main.SIGNAL_REPEAT_S + 0.1)
+        send(signal.SIGTERM)
+
     handlers = {number: signal.getsignal(number) for number in (signal.SIGINT, signal.SIGTERM)}
-    watchdog = threading.Timer(3 * WATCHDOG_S, lambda: (send(signal.SIGTERM), send(signal.SIGTERM)))
+    watchdog = threading.Timer(3 * WATCHDOG_S, force_out)
     watchdog.daemon = True
     watchdog.start()
     yield state
@@ -1756,6 +1767,61 @@ def test_a_second_signal_is_not_a_failure_if_the_shutdown_finishes(cli):
     app.on_start = both
     assert cli.run() == 0
     assert cli.events[-2:] == ["connector.shutdown", "try_shutdown"]
+
+
+def test_a_signal_within_the_repeat_window_of_the_last_counted_one_is_not_counted():
+    now = [100.0]
+    signals = main._Signals(clock=lambda: now[0])
+    for at, count in [(100.0, 1), (100.01, 1), (100.49, 1), (100.5, 2), (100.9, 2), (101.0, 3)]:
+        now[0] = at
+        signals._handle(signal.SIGINT, None)
+        assert signals.count == count, at
+
+
+def test_a_signal_forwarded_by_pixi_does_not_force_the_exit(cli, monkeypatch, caplog):
+    monkeypatch.setattr(main, "SIGNAL_REPEAT_S", 0.5)
+    # The shutdown needs a second attempt, as when an arm goal has not ended yet.
+    app = cli.use_fake_app(FakeApp(cli, closes=(False, True)))
+
+    def as_pixi_delivers_it():
+        # From the process group, and again from `pixi run`, which forwards it.
+        send()
+        send()
+
+    app.on_start = as_pixi_delivers_it
+    with caplog.at_level(logging.WARNING, logger="walkie_agent.main"):
+        assert cli.run() == 0
+    assert "Shutdown is waiting" in caplog.text
+    assert "forced the exit" not in caplog.text
+    assert cli.events[-2:] == ["connector.shutdown", "try_shutdown"]
+
+
+def test_a_second_signal_after_the_repeat_window_forces_the_exit(cli, monkeypatch, caplog):
+    monkeypatch.setattr(main, "SIGNAL_REPEAT_S", 0.05)
+    app = cli.use_fake_app(FakeApp(cli, closes=(False,)))
+
+    def twice_then_again():
+        send()
+        send()
+
+    closes = []
+
+    def again_after_the_window():
+        closes.append(1)
+        if len(closes) == 1:
+            time.sleep(0.1)
+            send()
+
+    app.on_start = twice_then_again
+    app.on_close = again_after_the_window
+    with (
+        caplog.at_level(logging.ERROR, logger="walkie_agent.main"),
+        pytest.raises(_Exited) as forced,
+    ):
+        cli.run()
+    assert forced.value.args == (main.FORCED_EXIT_CODE,)
+    assert len(closes) == 1, "the fixture's watchdog forced this, not the second signal"
+    assert "A second signal forced the exit" in caplog.text
 
 
 def test_a_second_signal_ends_a_hung_connector_shutdown(cli, monkeypatch, caplog):

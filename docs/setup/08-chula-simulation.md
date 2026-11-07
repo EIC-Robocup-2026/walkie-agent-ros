@@ -432,6 +432,42 @@ kitchen table, succeeded from the living room and from the shelf.
       named nobody, and the agent said it did not know either name.
 
     `down` left no record.
+- With scripts (T18 to T35), on 2026-11-08 at commit 4643811: `up --agent --arms --
+  --tool-set hri --people-memory mock --scripts`, with the function store at its
+  default, `src/walkie_agent/tools/` of the checkout, which held no function. Four
+  tasks with the real model, and two verdicts on `/walkie/verdict`:
+    - "Go to the sofa, then the table, then come back to the living room." The
+      model did not use `run_script`. It called `go_to` three times, with todo
+      updates between them, in 10.3 s, 27.9 s and 32.0 s. A `true` verdict got
+      "It proved no saved function, so nothing was verified."
+    - "Use one script for this. Visit the tv and then the sofa, and at each one
+      say which place you reached. Save the step that goes to a place and
+      announces it as a function, so you can reuse it later." One `run_script`
+      call of 37.4 s defined `visit_and_announce(place)`, called it twice (four
+      calls, each `ok`), and saved it to `temporary/`. A `true` verdict verified
+      it, and `bundled/visit_and_announce.py` was byte for byte the file in
+      `temporary/`. The ledger held a `saved` and a `verified` event for the
+      same sha, and `git status` showed nothing.
+    - "Please visit the bar and then the entrance, announcing each place as you
+      reach it." The model called the saved `visit_and_announce` without
+      defining it again. The bar leg succeeded, and `go_to("entrance")` timed
+      out at 120 s, so `run_script` raised `SKILL_FAILED` after 185.2 s, with
+      the traceback and `calls: go_to: ok, say: ok, go_to: TIMEOUT`. The ledger
+      gained a `fail` event. The model's next call then failed with `[Errno -3]
+      Temporary failure in name resolution`, and the model client makes no
+      retry (`max_retries=0` in `runtime/model.py`), so the task ended there.
+    - "Use one script: go to the kitchen room, then the shelf, then the tv,
+      announcing each place with your saved function." The model's first
+      `update_todos` tried to close task 3's steps, which belong to that task
+      only, so it failed and the `say` beside it was not run; the next message
+      made a fresh list. A bare "stop" 12.6 s into the script cancelled the
+      Nav2 goal and sent the arm commander's stop, and the agent said "Okay,
+      stopping." in the same second. `run_script` raised `CANCELLED: A stop
+      ended the script`, with `calls: go_to: CANCELLED`, so the shelf and tv
+      legs never started. The ledger counted the stop as a second `fail` of
+      `visit_and_announce`, which T36 then fixed.
+
+    `down` left no record. The saved function stayed in the store, ignored by git.
 
 ## Not in the recipe
 

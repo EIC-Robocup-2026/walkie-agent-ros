@@ -19,7 +19,7 @@ This page is the contract each layer follows.
     | ROS graph with a fake robot | Real rclpy and RAI's connector against a `FakeWalkie` node, on Fast DDS | Run |
     | Silent demo | Separate processes on rmw_zenoh and a private router, a scripted model, no audio | Run, on fake robots only |
     | Gym with a real model | Small slices in the fake world, listed in the [decision log](mahoraga-demo-decisions.md#small-real-model-runs) | Run, no ROS involved |
-    | MuJoCo simulation with a real model | Real Nav2, MoveIt and the arm commander in the `chula_pat14_6` world, oracle perception, the in-process people memory, small tasks from S1 to S3 and S6 of [See, Remember and Act](see-remember-act.md) | Run, listed in [What has been run](../setup/08-chula-simulation.md#what-has-been-run) |
+    | MuJoCo simulation with a real model | Real Nav2, MoveIt and the arm commander in the `chula_pat14_6` world, oracle perception, the in-process people memory, small tasks from S1 to S3 and S6 of [See, Remember and Act](see-remember-act.md), and four tasks with `run_script` and the operator's verdict | Run, listed in [What has been run](../setup/08-chula-simulation.md#what-has-been-run) |
     | Hardware | The robot's own graph, walkie-vision's node and walkie-database's people services | **Not run** |
 
     The last row is the one that would show the robot works. Nothing here claims it.

@@ -459,7 +459,7 @@ tools. Neither exists.
 `--scripts` binds `run_script` beside the set's tools, for any `--tool-set`. It is the
 gym's `run_script` ([Mahoraga Demo](mahoraga-demo.md#run_script)) on the robot's
 `ctx`, with budgets for real motion and an operator in place of the scorer. The
-decisions are T18 to T35 in [Mahoraga Demo Decisions](mahoraga-demo-decisions.md#tools-and-scripts).
+decisions are T18 to T36 in [Mahoraga Demo Decisions](mahoraga-demo-decisions.md#tools-and-scripts).
 
 - **The sandbox.** A script runs in a Monty worker inside bwrap. `main` starts two
   workers before ROS starts. Without bwrap, or with a worker that cannot start, the
@@ -488,7 +488,8 @@ decisions are T18 to T35 in [Mahoraga Demo Decisions](mahoraga-demo-decisions.md
 - **Results.** A script that runs to its end returns its value, what it printed, each
   call it made as `tool: status`, and what it saved. One that does not run to its end
   fails the tool call with `SKILL_FAILED`, or `CANCELLED` after a stop, and the same
-  summary. A todo step that names a tool is proven only by the LLM's own call of that
+  summary. A run a stop ended writes no `run` or `fail` event for the saved functions
+  it entered (T36). A todo step that names a tool is proven only by the LLM's own call of that
   tool, never by a call inside a script.
 - **Tool log.** Each `run_script` call is a line of `--tool-log`, with the script, the
   names to save and the summary, calls included. Each verdict is a line with the tool

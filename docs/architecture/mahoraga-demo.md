@@ -11,7 +11,7 @@ This page is the contract each layer follows.
 
 !!! warning "Prototype: what the evidence covers"
     Every choice below is a provisional pick of the plan's recommended option. The
-    evidence comes in five kinds, and they do not stand in for each other:
+    evidence comes in six kinds, and they do not stand in for each other:
 
     | Kind | What ran | Status |
     | --- | --- | --- |
@@ -19,7 +19,8 @@ This page is the contract each layer follows.
     | ROS graph with a fake robot | Real rclpy and RAI's connector against a `FakeWalkie` node, on Fast DDS | Run |
     | Silent demo | Separate processes on rmw_zenoh and a private router, a scripted model, no audio | Run, on fake robots only |
     | Gym with a real model | Small slices in the fake world, listed in the [decision log](mahoraga-demo-decisions.md#small-real-model-runs) | Run, no ROS involved |
-    | Real Nav2, simulator, hardware, real model on the robot path | The robot's own graph | **Not run** |
+    | MuJoCo simulation with a real model | Real Nav2, MoveIt and the arm commander in the `chula_pat14_6` world, oracle perception, the in-process people memory, small tasks from S1 to S3 and S6 of [See, Remember and Act](see-remember-act.md) | Run, listed in [What has been run](../setup/08-chula-simulation.md#what-has-been-run) |
+    | Hardware | The robot's own graph, walkie-vision's node and walkie-database's people services | **Not run** |
 
     The last row is the one that would show the robot works. Nothing here claims it.
 
@@ -36,8 +37,8 @@ ROS-backed verbs implement layer 2's Protocols, and only `main.py` connects them
 | 3. Atomics and tool sets | `walkie_agent/atomics/` | Built |
 | 4. Adapter to LangChain tools | `walkie_agent/adapter.py` | Built |
 | 5. `create_agent`, middlewares, Runner | `walkie_agent/runtime/` | [Built, and used by `main.py`](#runtime) |
-| 1 to 2. ROS-backed verbs, operator topics | `walkie_agent/ros/` | [Built, run on fake robots only](#ros-wrappers) |
-| Entry point: flags, signals, assembly | `walkie_agent/main.py` | [Built, run on fake robots only](#wiring-in-mainpy) |
+| 1 to 2. ROS-backed verbs, operator topics | `walkie_agent/ros/` | [Built, run on fake robots and in the MuJoCo simulation](#ros-wrappers) |
+| Entry point: flags, signals, assembly | `walkie_agent/main.py` | [Built, run on fake robots and in the MuJoCo simulation](#wiring-in-mainpy) |
 | 6. `run_script`, shelf, gym | `mahoraga/`, with its own pixi environment | [Built](#mahoraga), fake world only |
 
 `errors`, `capabilities`, `atomics`, `adapter` and `runtime` never import

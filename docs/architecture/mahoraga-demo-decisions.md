@@ -547,7 +547,10 @@ default data (digest d474e7df540db4a4), with logs that differ from the
 e060036ad20de94a pass only in the recorded commit. T31 to T35 changed the driver,
 the shelf and the report after a check of that work and a security review, and the
 gate passed again (digest 4a64c0f050917a47, commit a413e20), with logs that differ
-from the d474e7df540db4a4 pass only in the recorded commit and its dirty flag.
+from the d474e7df540db4a4 pass only in the recorded commit and its dirty flag. T36
+came out of the simulation run, and the gate passed once more (digest
+330bc2baa3767ede, commit 1f3abcf), with logs that differ from the 4a64c0f050917a47
+pass in the same two fields only.
 
 | ID | Decision | Why | Alternative and consequence | Status |
 | --- | --- | --- | --- | --- |

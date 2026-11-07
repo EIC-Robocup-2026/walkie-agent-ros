@@ -342,6 +342,11 @@ decision, and it can run beside the vision chain.
   `moveit` and `commander` parts. The gate rerun passed with episode logs
   identical to the previous code's but for the commit. The sim check below
   has not run yet, and nothing has run against the real commander.
+- **Review fixes** as S6-14 and S6-15, from the Codex review of the second
+  part: a failed start-pose read no longer hides the base's refusal of a
+  turn, and shutdown closes the commander client only once no arm goal is
+  outstanding, so a goal accepted after a stop is still cancelled. The gate
+  rerun on the new digest passed with identical episode logs.
 
 ### S7: Take a bag, and hand an object over
 

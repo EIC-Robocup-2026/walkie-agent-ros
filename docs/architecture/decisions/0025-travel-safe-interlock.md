@@ -31,6 +31,9 @@ joint states (3 s limit):
   before the goal's target is computed, so a refused motion reads no TF and
   sends nothing. Its limit is the commander client's read bound, or what the
   motion has left, whichever is shorter.
+- The turn atomics read the start pose before they call the base, but a
+  failed read no longer ends them there: the turn goes ahead, so a missing TF
+  does not hide the refusal (decision S6-14).
 - `FakeRobot` runs the same rule (`arm.answers.drive_verdict`) when it is
   given arm poses, so a fake run refuses in the robot's words.
 - It fails open only when the commander's joint state service is not found,

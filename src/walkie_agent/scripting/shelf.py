@@ -94,8 +94,10 @@ def require_ignored(root: Path) -> None:
     # A GIT_DIR or GIT_WORK_TREE from the caller would point git at another repository.
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     try:
+        # check-ignore reads the index, which runs the program core.fsmonitor names in the
+        # repository's own config. Turning it off keeps the check from running anything.
         done = subprocess.run(
-            [git, "-C", str(top), "check-ignore", "-z", "--stdin"],
+            [git, "-c", "core.fsmonitor=false", "-C", str(top), "check-ignore", "-z", "--stdin"],
             input="\0".join(probes) + "\0",
             capture_output=True,
             text=True,
@@ -205,6 +207,33 @@ def _defaults_are_literal(node: ast.FunctionDef) -> bool:
         except (ValueError, TypeError):
             return False
     return True
+
+
+def _count(sources: Mapping[str, str], events: Sequence[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+    """Shelf.counts() from the latest saved version of each function and the ledger's events."""
+    current = {name: source_sha(source) for name, source in sources.items()}
+    counts = {name: {"saved": 0, "run": 0, "fail": 0, "verified": 0} for name in current}
+    for event in events:
+        name = event["name"]
+        if name not in counts or event["event"] not in counts[name]:
+            continue
+        if event["event"] == "saved" or event["sha"] == current[name]:
+            counts[name][event["event"]] += 1
+    return counts
+
+
+def read_counts(root: str | Path | None = None) -> dict[str, dict[str, int]]:
+    """Shelf.counts() of the store at store_root(root), read without opening a Shelf.
+
+    It creates no folder and runs no git, so it is safe on a root read out of a log,
+    which may name any folder. A folder that holds no store reads as an empty one.
+    """
+    resolved = store_root(root)
+    folder = resolved / TEMPORARY
+    sources = {path.stem: path.read_text() for path in sorted(folder.glob("*.py"))} if folder.is_dir() else {}
+    ledger = resolved / LEDGER
+    events = [json.loads(line) for line in ledger.read_text().splitlines()] if ledger.is_file() else []
+    return _count(sources, events)
 
 
 class Shelf:
@@ -394,17 +423,7 @@ class Shelf:
         version on the shelf now, because a rewrite earned none of the old runs.
         Rejected events are not counted: no gym run writes them.
         """
-        current = {name: source_sha(source) for name, source in self._all_sources().items()}
-        counts = {
-            name: {"saved": 0, "run": 0, "fail": 0, "verified": 0} for name in current
-        }
-        for event in self._events():
-            name = event["name"]
-            if name not in counts or event["event"] not in counts[name]:
-                continue
-            if event["event"] == "saved" or event["sha"] == current[name]:
-                counts[name][event["event"]] += 1
-        return counts
+        return _count(self._all_sources(), self._events())
 
     def describe(self) -> str:
         """Each callable function's definition line and docstring, for a prompt."""

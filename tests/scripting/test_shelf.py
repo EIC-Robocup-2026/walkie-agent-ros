@@ -126,6 +126,23 @@ def test_a_store_that_git_ignores_is_accepted(repo):
 
 
 @needs_git
+def test_the_ignore_check_runs_no_program_the_repository_config_names(repo, tmp_path):
+    marker = tmp_path / "ran"
+    program = tmp_path / "fsmonitor.sh"
+    program.write_text(f"#!/bin/sh\ntouch {marker}\n")
+    program.chmod(0o755)
+    (repo / ".gitignore").write_text("/store/\n")
+    # Staged first, so the index exists for check-ignore to read, and before the config,
+    # as git add would run the program itself.
+    subprocess.run(["git", "-C", str(repo), "add", ".gitignore"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "core.fsmonitor", str(program)], check=True)
+
+    Shelf(repo / "store")
+
+    assert not marker.exists()
+
+
+@needs_git
 def test_a_folder_git_cannot_read_is_refused(tmp_path):
     (tmp_path / "broken" / ".git").mkdir(parents=True)
 

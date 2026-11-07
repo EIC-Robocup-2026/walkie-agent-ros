@@ -122,7 +122,8 @@ def isolated_home(request):
 
     Every other test is left alone.
     """
-    if GYM_TESTS not in request.path.parents:
+    # Resolved, as GYM_TESTS is, so a test reached through a symlink is still isolated.
+    if GYM_TESTS not in request.path.resolve().parents:
         return None
     monkeypatch = request.getfixturevalue("monkeypatch")
     home = request.getfixturevalue("tmp_path") / "mahoraga-home"

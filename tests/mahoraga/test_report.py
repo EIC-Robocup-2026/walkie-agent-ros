@@ -1,5 +1,6 @@
 """The metrics read what the logs hold, and the paired statistics hold on known inputs."""
 
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -133,6 +134,18 @@ def test_logs_that_record_no_shelf_report_the_default_store_by_name(isolated_too
     (tmp_path / "logs").mkdir()
 
     assert report(tmp_path / "logs")["shelf"]["root"] == str(isolated_tools_home)
+
+
+def test_a_shelf_root_a_log_records_is_only_read(monkeypatch, tmp_path):
+    def no_git(*args, **kwargs):
+        raise AssertionError("the report ran a subprocess")
+
+    monkeypatch.setattr(subprocess, "run", no_git)
+    (tmp_path / "repo" / ".git").mkdir(parents=True)
+    named = tmp_path / "repo" / "store"
+
+    assert shelf_metrics(named) == {"M10_shelf_size": 0, "M10_shelf_churn": 0}
+    assert not named.exists()
 
 
 def test_logs_that_ran_on_different_shelves_name_no_one_shelf():

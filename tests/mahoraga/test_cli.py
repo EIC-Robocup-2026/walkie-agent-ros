@@ -7,6 +7,7 @@ import pytest
 import walkie_agent.mahoraga.__main__ as cli
 from walkie_agent.mahoraga import home
 from walkie_agent.mahoraga.commands import commands
+from walkie_agent.scripting.shelf import StoreRefused
 
 
 @pytest.mark.parametrize(
@@ -137,12 +138,25 @@ def test_run_points_the_shelf_at_the_store_given(monkeypatch):
     assert seen["shelf_root"] is None
 
 
-def test_a_report_on_a_shelf_in_an_unignored_work_tree_is_refused(capsys, tmp_path):
+def test_a_report_on_a_shelf_in_an_unignored_work_tree_only_reads_it(capsys, tmp_path):
+    # The report writes nothing to the store, so it needs no refusal there (T34).
     (tmp_path / "repo" / ".git").mkdir(parents=True)
+    (tmp_path / "logs").mkdir()
 
-    assert cli.main(["report", "--log-dir", str(tmp_path / "logs"), "--shelf", str(tmp_path / "repo" / "store")]) == 2
+    assert cli.main(["report", "--log-dir", str(tmp_path / "logs"), "--shelf", str(tmp_path / "repo" / "store")]) == 0
 
-    assert "Refused:" in capsys.readouterr().err
+    assert "Refused:" not in capsys.readouterr().err
+    assert not (tmp_path / "repo" / "store").exists()
+
+
+def test_a_store_refusal_in_a_report_is_printed_as_one(capsys, monkeypatch):
+    def report(log_dir, baseline, shelf_root):
+        raise StoreRefused("The logs ran on different shelves: /a, /b. Name one with shelf_root.")
+
+    monkeypatch.setattr(cli, "report", report)
+
+    assert cli.main(["report", "--log-dir", "/tmp/x"]) == 2
+    assert "Refused: The logs ran on different shelves" in capsys.readouterr().err
 
 
 def test_a_report_that_fails_for_another_reason_is_not_called_a_refusal(monkeypatch):

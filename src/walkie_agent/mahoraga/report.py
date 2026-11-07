@@ -22,7 +22,7 @@ from inspect_ai.event import ModelEvent
 from inspect_ai.log import EvalLog, EvalSample, read_eval_log
 
 from walkie_agent.mahoraga.tasks import SCORER
-from walkie_agent.scripting.shelf import Shelf, StoreRefused, store_root
+from walkie_agent.scripting.shelf import StoreRefused, read_counts, store_root
 
 _WARNING ="Incomplete, so these comparisons do not measure the whole evaluation. {}. They count as failures."
 
@@ -146,8 +146,12 @@ def arm_metrics(log: EvalLog) -> dict[str, Any]:
 
 
 def shelf_metrics(root: str | Path | None = None) -> dict[str, int]:
-    """M10: the size of the shelf in the store at `root`, and how many saved versions it has replaced."""
-    counts = Shelf(root).counts()
+    """M10: the size of the shelf in the store at `root`, and how many saved versions it has replaced.
+
+    It only reads the store (read_counts), because `root` may come from a log's metadata:
+    opening a Shelf there would create folders and run git in whatever folder the log names.
+    """
+    counts = read_counts(root)
     return {
         "M10_shelf_size": len(counts),
         "M10_shelf_churn": sum(entry["saved"] for entry in counts.values()) - len(counts),

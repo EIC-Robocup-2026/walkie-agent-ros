@@ -9,7 +9,8 @@ when the test moves the clock on, once the fake has shown that the call waits wh
 test expects. Real time is left for the waits the test clock does not cover: the slices
 in which every wait watches the CancelToken, the wait for an answer to the call's own
 cancel (the client's cancel_answer_s), which a test raises to 10 s when the answer comes
-at once, and the settled read's pause (SETTLE_S).
+at once, the settled read's pause (SETTLE_S), and close()'s wait for a goal that has not
+ended.
 
 The helpers below (wait_until, Call, Spinner, ModuleClock) stand in for those of
 experiment/hri-agent's conftest, which this tree does not have.
@@ -696,7 +697,6 @@ def test_a_goal_accepted_after_the_client_was_destroyed_sends_nothing(
     connector, fake_commander, poses, monkeypatch, module_clock, caplog
 ):
     clock = module_clock(commander_module)
-    # Its own client: the commander fixture would destroy this one again.
     client = CommanderClient(connector, CancelToken(), poses)
     assert wait_until(client.available), "The client never discovered the fake commander."
     # The commander's answer reaches the client, and the test holds it on its
@@ -2217,7 +2217,6 @@ def test_stop_also_stops_a_move_whose_call_gave_up(
 
 def test_stop_after_destroy_sets_the_token_and_publishes_nothing(connector, poses, monkeypatch):
     token = CancelToken()
-    # Its own client: the commander fixture would destroy this one again.
     client = CommanderClient(connector, token, poses)
     published = []
     monkeypatch.setattr(client._stop_publisher, "publish", published.append)
@@ -2240,6 +2239,196 @@ def test_stop_never_raises(commander, token, monkeypatch, caplog):
 
     assert token.cancelled
     assert "arms.stop failed." in caplog.text
+
+
+# -- Close --------------------------------------------------------------------------
+
+
+def count_destroys(monkeypatch, client) -> list[str]:
+    """A list that gets one entry each time `client` destroys its joint action client."""
+    destroys = []
+    action_client = client._set_joint_position
+    destroy = action_client.destroy
+
+    def destroy_and_count() -> None:
+        destroys.append("destroyed")
+        destroy()
+
+    monkeypatch.setattr(action_client, "destroy", destroy_and_count)
+    return destroys
+
+
+@pytest.mark.parametrize("timeout_s", [30.0, 0])
+def test_a_close_with_nothing_outstanding_destroys_the_client_at_once(
+    client, monkeypatch, timeout_s
+):
+    client.read_arms()
+    destroys = count_destroys(monkeypatch, client)
+    assert client.unresolved() == []
+
+    started = time.monotonic()
+    assert client.close(timeout_s)
+
+    assert time.monotonic() - started < 5.0
+    assert destroys == ["destroyed"]
+    assert client.unresolved() == []
+    # A repeated close, and a destroy after it, do nothing.
+    assert client.close(30.0)
+    client.destroy()
+    assert destroys == ["destroyed"]
+
+
+def test_a_close_waits_for_a_goal_that_its_call_still_waits_for(
+    client, fake_commander, poses, monkeypatch
+):
+    client.joint_names("left_arm")
+    # The goal's result is held until the test lets it go, so its call
+    # keeps the call lock and has not given up on it.
+    result = threading.Event()
+    fake_commander.result_gate = result
+    destroys = count_destroys(monkeypatch, client)
+    moving = Call(move, client, "left_arm", table(poses, "standby", "left"))
+    assert wait_until(lambda: accepted_handle(client) is not None)
+
+    assert client.close(0.2) is False
+    # A close with no time checks once and does not wait.
+    started = time.monotonic()
+    assert client.close(0) is False
+    assert time.monotonic() - started < 0.1
+    assert destroys == []
+    assert client.unresolved() == ["The move of left_arm has not ended: no result has come."]
+
+    result.set()
+    assert moving.result() == "Success"
+    assert client.close(10.0)
+    assert destroys == ["destroyed"]
+
+
+def test_a_close_waits_for_a_read_that_has_not_returned(client, fake_commander, monkeypatch):
+    # The commander holds its answer until the test lets it go, so the read
+    # keeps the call lock with no goal recorded.
+    held = threading.Event()
+    fake_commander.joint_states_gate = held
+    destroys = count_destroys(monkeypatch, client)
+    reading = Call(client.joint_states, "both_arms", timeout_s=30.0)
+    assert wait_until(lambda: fake_commander.joint_state_requests == ["both_arms"])
+
+    assert client.close(0.2) is False
+    assert destroys == []
+    assert client.unresolved() == ["A call to the commander has not returned."]
+
+    held.set()
+    reading.result()
+    assert client.close(10.0)
+    assert destroys == ["destroyed"]
+    assert client.unresolved() == []
+
+
+def test_a_goal_accepted_after_the_stop_holds_off_close_until_its_cancel_ends_it(
+    client, fake_commander, poses, monkeypatch, caplog
+):
+    client.joint_names("left_arm")
+    before = fake_commander.joints()
+    assert wait_until(lambda: stop_matched(client))
+    # The commander answers the send only once the test lets it. Accepted,
+    # the goal plans until its cancel is requested, which "stop" does not
+    # do, and its result is held until the test lets it go.
+    accept = threading.Event()
+    fake_commander.accept_gate = accept
+    fake_commander.plan_until_cancelled = True
+    result = threading.Event()
+    fake_commander.result_gate = result
+    destroys = count_destroys(monkeypatch, client)
+    moving = Call(move, client, "left_arm", table(poses, "standby", "left"))
+    assert wait_until(lambda: fake_commander.joint_goals)
+
+    # As at shutdown: the stop ends the call's wait before the commander
+    # answers the send, and "stop" reaches MoveIt before the goal runs.
+    client.stop()
+    with pytest.raises(StepError) as error:
+        moving.result()
+    assert error.value.code == "CANCELLED"
+    assert cancel_answer(error.value) == "pending"
+    assert wait_until(lambda: fake_commander.stops_heard == 1)
+
+    assert client.close(0.2) is False
+    assert destroys == []
+    assert client.available()
+    assert client.unresolved() == [
+        "The move of left_arm has not ended: the commander has not answered its send."
+    ]
+
+    # The client is still alive, so the late acceptance is cancelled, not
+    # only logged.
+    with caplog.at_level(logging.WARNING, logger=commander_module.__name__):
+        accept.set()
+        assert wait_until(
+            lambda: "The commander accepted the move of left_arm after its call gave up; "
+            "cancelling it." in caplog.text
+        )
+    assert wait_until(lambda: fake_commander.cancel_requests == 1)
+    assert wait_until(
+        lambda: client.unresolved()
+        == ["The move of left_arm has not ended: a cancel was sent, but no result has come."]
+    )
+    assert client.close(0.2) is False
+    assert destroys == []
+
+    result.set()
+    assert client.close(10.0)
+    assert destroys == ["destroyed"]
+    assert client.unresolved() == []
+    # Cancelled while it planned, so the arm never moved.
+    assert fake_commander.results == [("left_arm", "Canceled")]
+    assert fake_commander.joints() == before
+    # A repeated close does nothing.
+    assert client.close(10.0)
+    assert destroys == ["destroyed"]
+
+
+@pytest.mark.parametrize(
+    ("bound", "reason"),
+    [
+        ("abandon_after_s", "no result came within 0.3 s after its call gave up"),
+        ("absent_abandon_s", "its action server has not been discovered for 0.3 s"),
+    ],
+)
+def test_a_close_destroys_the_client_once_the_goal_holding_it_off_is_abandoned(
+    client, fake_commander, poses, token, monkeypatch, caplog, bound, reason
+):
+    # The goal is held until it is cancelled, and the commander refuses the
+    # call's cancel, so its result never comes.
+    fake_commander.never_answer = True
+    fake_commander.reject_cancels = True
+    monkeypatch.setattr(client, f"_{bound}", 0.3)
+    client.joint_names("left_arm")
+    destroys = count_destroys(monkeypatch, client)
+    moving = Call(move, client, "left_arm", table(poses, "standby", "left"))
+    assert wait_until(lambda: accepted_handle(client) is not None)
+    # The token alone: "stop" would end the held goal.
+    token.cancel()
+    with pytest.raises(StepError) as error:
+        moving.result()
+    assert cancel_answer(error.value) == "refused"
+    if bound == "absent_abandon_s":
+        fake_commander.vanish()
+
+    with caplog.at_level(logging.WARNING, logger=commander_module.__name__):
+        assert client.close(10.0)
+
+    assert f"Abandoned the move of left_arm: {reason}" in caplog.text
+    assert destroys == ["destroyed"]
+    assert client.unverified == ABANDONED
+    assert client.unresolved() == []
+    # Still unresolved: close() does not wait for an abandoned goal.
+    assert [goal.what for goal in client._unresolved] == ["the move of left_arm"]
+
+
+@pytest.mark.parametrize("timeout_s", [-1.0, -0.001, math.inf, math.nan, True, "1"])
+def test_a_close_bound_that_is_not_a_finite_number_of_seconds_is_a_bug(commander, timeout_s):
+    with pytest.raises(ValueError, match="timeout_s must be a finite number of seconds, 0 or more"):
+        commander.close(timeout_s)
+    assert commander.unresolved() == []
 
 
 # -- Gripper goals ----------------------------------------------------------------

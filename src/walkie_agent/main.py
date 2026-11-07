@@ -388,9 +388,6 @@ class Application:
         self._speech = speech
         self._vision = vision
         self._commander = commander
-        # CommanderClient.destroy() may run once only: rclpy refuses a second destroy
-        # of an action client.
-        self._commander_destroyed = False
         self._run_ended = True
 
     def start(self) -> None:
@@ -407,8 +404,11 @@ class Application:
         ROS under a live worker could lose the cancel of a goal that is still driving.
         A repeated call is safe. The latch stays set for good.
 
-        With arms, the commander's "stop" goes out at once, beside the base's, and its
-        clients are destroyed once the base has closed.
+        With arms, the commander's "stop" goes out at once, beside the base's. Once the
+        base has closed, the commander client closes too: it waits for an arm goal that
+        has not ended, such as one the commander accepts only after the stop, so that
+        the goal's cancel and result still reach it. Until it has closed, close() returns
+        False with speech, vision and the bridge still open.
         """
         self.bridge.close_ingress()
         self.ctx.cancel.cancel()
@@ -422,9 +422,10 @@ class Application:
             return False
         if not self._base.close(timeout_s):
             return False
-        if self._commander is not None and not self._commander_destroyed:
-            self._commander_destroyed = True
-            self._commander.destroy()
+        # After the base, whose drive check reads the arms. A repeated close() of the
+        # client after it finished does nothing.
+        if self._commander is not None and not self._commander.close(timeout_s):
+            return False
         # After the Runner's join, so a stop line in flight can still be published.
         self._speech.close()
         if self._vision is not None:
@@ -435,7 +436,8 @@ class Application:
     def unresolved(self) -> list[str]:
         """What kept the last close() from finishing, as sentences for the operator's log."""
         worker = [] if self._run_ended else ["The agent's current run has not ended."]
-        return [*worker, *self._base.unresolved()]
+        arms = [] if self._commander is None else self._commander.unresolved()
+        return [*worker, *self._base.unresolved(), *arms]
 
 
 def assemble(

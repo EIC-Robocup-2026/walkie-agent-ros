@@ -36,6 +36,8 @@ from ros_fakes import (
 from walkie_agent.arm.answers import drive_verdict
 from walkie_agent.arm.results import NOT_FOUND, DriveCheck
 from walkie_agent.arm.state import ARMS_OUT, ArmsState, ArmState
+from walkie_agent.atomics import face_person, move_relative
+from walkie_agent.capabilities import Ctx, PersonSeen
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location
@@ -752,6 +754,47 @@ def test_the_drive_verdict_judges_a_turn(found, code, text):
     # face_person's turn takes a GoalFailed as a turn that ended, so a refusal is never one.
     assert not isinstance(raised.value, GoalFailed)
     assert (rig.client.ready_polls, rig.connector.tf_reads, rig.client.goals) == (0, [], [])
+
+
+def test_the_turn_atomics_answer_the_arm_refusal_while_tf_is_missing(caplog):
+    # Both atomics read the start pose before they turn. With TF missing that read fails,
+    # and the turn must still reach the arm check: its refusal says to move the arm home,
+    # where the failed read would only say that the position is unknown.
+    reads_at_the_check = []
+
+    def check_like_the_commander(what, _budget_s):
+        reads_at_the_check.append(len(rig.connector.tf_reads))
+        drive_verdict(lambda: DriveCheck(ArmsState(left=HANDS_UP, right=HOME)), what)
+
+    class OnePerson:
+        def people(self, query="", *, timeout_s=5.0):
+            return [PersonSeen("person_1", None, "standing person", "", "living room", 90.0)]
+
+    rig = Rig(arms_check=check_like_the_commander, tf_s=0.05)
+    rig.connector.tf = missing_tf
+    ctx = Ctx(cancel=rig.token, base=rig.base, speech=None, vision=OnePerson())
+    turns = {
+        "the turn of 180 degrees": lambda: move_relative(ctx, 0.0, 0.0, 180.0),
+        "the turn to person_1": lambda: face_person(ctx, "person_1"),
+    }
+    for what, turn in turns.items():
+        reads = len(rig.connector.tf_reads)
+        with (
+            caplog.at_level("INFO", logger="walkie_agent.atomics.navigation"),
+            pytest.raises(StepError) as raised,
+        ):
+            bounded(turn)
+        assert raised.value.code is ErrorCode.PRECONDITION_FAILED
+        assert raised.value.message.startswith("Not starting the move")
+        assert f"the left arm is {ARMS_OUT}" in raised.value.message
+        assert f"Starting {what} without its start pose: UNAVAILABLE" in caplog.text
+        # The atomic's own start read made every TF read, all before the check, and the
+        # refused turn read none of its own.
+        assert reads_at_the_check[-1] > reads
+        assert len(rig.connector.tf_reads) == reads_at_the_check[-1]
+    assert len(reads_at_the_check) == len(turns)
+    assert (rig.client.ready_polls, rig.client.goals) == (0, [])
+    assert rig.base.unresolved() == []
 
 
 def test_no_arm_check_while_another_goal_is_live():

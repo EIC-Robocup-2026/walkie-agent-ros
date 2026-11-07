@@ -109,7 +109,9 @@ class StandInCommander:
 
     FakeNode makes no service clients, so the real client cannot be made over it.
     `state` is what every read of the arms finds, and `log` records the drive checks'
-    bounds and the calls of stop and destroy, in order.
+    bounds and the calls of stop, close and destroy, in order. close() calls `on_close`,
+    which may change `closes` for the next close(), and returns what `closes` was when
+    it was called. unresolved() gives `left` after a close() that returned False.
     """
 
     def __init__(self, connector, cancel, poses=None, **bounds):
@@ -119,7 +121,11 @@ class StandInCommander:
         self.bounds = bounds
         self.state = ArmsState(left=HOME, right=HOME)
         self.log = []
-        self.on_destroy = None
+        self.closes = True
+        self.left = ["The move of left_arm has not ended: a cancel was sent, but no result has come."]
+        self.on_close = None
+        # What the last close() returned; None before the first.
+        self._closed = None
 
     @property
     def read_timeout_s(self):
@@ -146,10 +152,18 @@ class StandInCommander:
         self.log.append("stop")
         self.cancel.cancel()
 
+    def close(self, timeout_s):
+        self.log.append("close")
+        self._closed = self.closes
+        if self.on_close is not None:
+            self.on_close()
+        return self._closed
+
+    def unresolved(self):
+        return list(self.left) if self._closed is False else []
+
     def destroy(self):
         self.log.append("destroy")
-        if self.on_destroy is not None:
-            self.on_destroy()
 
 
 @pytest.fixture
@@ -779,7 +793,7 @@ def test_assembly_refuses_a_set_that_does_not_go_with_the_arms_before_building_a
     assert commanders == []
 
 
-def test_close_stops_the_arms_at_once_and_destroys_the_commander_after_the_base(
+def test_close_stops_the_arms_at_once_and_closes_the_commander_after_the_base(
     build, commanders, nav, monkeypatch
 ):
     built = build(tool_set="hri", arm_poses=POSES)
@@ -792,16 +806,23 @@ def test_close_stops_the_arms_at_once_and_destroys_the_commander_after_the_base(
         return real_shutdown(timeout)
 
     monkeypatch.setattr(app.runner, "shutdown", shutdown)
-    commander.on_destroy = lambda: commander.log.append(("base destroyed", nav[0].destroyed))
+    # What is closed as the commander closes: the base, and nothing of speech,
+    # vision or the bridge.
+    commander.on_close = lambda: commander.log.append(
+        ("base destroyed", nav[0].destroyed, "node destroyed", list(built.node.destroyed))
+    )
     app.start()
 
     assert app.close(WATCHDOG_S)
-    assert commander.log == ["stop", "runner", "destroy", ("base destroyed", 1)]
+    assert commander.log == ["stop", "runner", "close", ("base destroyed", 1, "node destroyed", [])]
     assert set(built.node.publishers) <= set(built.node.destroyed)
 
-    # A repeated close sends "stop" again, which never raises, and destroys nothing twice.
+    # A repeated close sends "stop" again, which never raises, and closes the client
+    # again, which then does nothing. Only an assembly's rollback calls destroy().
+    commander.on_close = None
     assert app.close(WATCHDOG_S)
-    assert commander.log.count("destroy") == 1
+    assert commander.log[4:] == ["stop", "runner", "close"]
+    assert "destroy" not in commander.log
 
 
 @pytest.mark.parametrize("stage", ["runner", "base"])
@@ -820,7 +841,32 @@ def test_a_close_that_has_not_finished_keeps_the_commander(build, commanders, na
 
     monkeypatch.undo()
     assert app.close(WATCHDOG_S)
-    assert commander.log == ["stop", "stop", "destroy"]
+    assert commander.log == ["stop", "stop", "close"]
+
+
+def test_a_commander_close_that_has_not_finished_keeps_speech_vision_and_the_bridge(
+    build, commanders, nav
+):
+    built = build(tool_set="hri", arm_poses=POSES, vision=True)
+    app = built.app
+    [commander] = commanders
+    commander.closes = False
+    app.start()
+
+    assert app.close(WATCHDOG_S) is False
+
+    assert commander.log == ["stop", "close"]
+    assert nav[0].destroyed == 1, "the base closes before the commander"
+    assert built.node.destroyed == [], "speech, vision and the bridge stay open"
+    assert app.unresolved() == commander.left
+
+    # The goal ends, and the retried close finishes.
+    commander.closes = True
+    assert app.close(WATCHDOG_S)
+    assert commander.log == ["stop", "close", "stop", "close"]
+    assert set(built.node.publishers) <= set(built.node.destroyed)
+    assert set(built.node.subscriptions) <= set(built.node.destroyed)
+    assert app.unresolved() == []
 
 
 @pytest.mark.parametrize("stage", ["RosBase", "RosSpeech", "build_agent"])
@@ -1214,24 +1260,42 @@ def test_a_broken_arm_pose_file_stops_with_one_line_before_ros_init(cli, capsys,
     assert cli.connectors == []
 
 
-def test_with_arms_the_shutdown_destroys_the_commander_before_the_connector(cli, commanders, monkeypatch):
+def test_with_arms_the_shutdown_waits_for_the_commander_to_close_before_the_connector(
+    cli, commanders, monkeypatch, caplog
+):
     events = cli.events
 
     def started(app):
         [commander] = commanders
         assert app.ctx.arms._client is commander
-        commander.on_destroy = lambda: events.append(("commander destroyed", cli.nav[0].destroyed))
+        # The first close finds an arm goal that has not ended; it ends before the retry.
+        commander.closes = False
+
+        def close():
+            events.append(("commander closes", commander.closes, cli.nav[0].destroyed))
+            commander.closes = True
+
+        commander.on_close = close
         send()
 
     cli.on_started = started
     monkeypatch.chdir(PROJECT_ROOT)
-    assert cli.run("--arms", "--tool-set", "hri") == 0
+    with caplog.at_level(logging.WARNING, logger="walkie_agent.main"):
+        assert cli.run("--arms", "--tool-set", "hri") == 0
 
     [commander] = commanders
     assert commander.bounds == {}
-    assert commander.log == ["stop", "destroy"]
+    assert commander.log == ["stop", "close", "stop", "close"]
+    assert "Shutdown is waiting" in caplog.text
+    assert commander.left[0] in caplog.text
     timeline = events[events.index("started") :]
-    expected = [("commander destroyed", 1), "destroy /to_human", "connector.shutdown", "try_shutdown"]
+    expected = [
+        ("commander closes", False, 1),
+        ("commander closes", True, 1),
+        "destroy /to_human",
+        "connector.shutdown",
+        "try_shutdown",
+    ]
     positions = [timeline.index(event) for event in expected]
     assert positions == sorted(positions), timeline
 

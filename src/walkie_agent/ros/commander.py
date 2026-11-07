@@ -120,7 +120,7 @@ from walkie_agent.arm.results import (
     Recovery,
 )
 from walkie_agent.arm.state import ArmsState, ArmState
-from walkie_agent.capabilities.guards import CancelToken
+from walkie_agent.capabilities.guards import CancelToken, is_finite_number
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.ros.policy import FORBIDDEN_NAMES, check_endpoint
 
@@ -351,13 +351,15 @@ class _Goal:
 class CommanderClient:
     """Joint goals, gripper goals and joint reads on the commander, one call at a time.
 
-    Created once per agent. Without a commander it does no harm: a call then fails
-    with UNAVAILABLE. `cancel` is the runtime's token: once it is set, every wait ends
-    and every call is refused until the runtime resets it. `poses` are the checked
-    named poses, used to say which pose each arm is in; by default
-    config/arm_poses.toml, checked against config/robot_model.toml. `forbidden` is
-    checked against every name the client uses, as RosBase checks its own. The
-    keyword bounds are in seconds of wall-clock time; see the module docstring.
+    Created once per agent, and destroyed by close() once no goal is outstanding, so
+    that a goal the commander accepts after a stop is still cancelled. Without a
+    commander it does no harm: a call then fails with UNAVAILABLE. `cancel` is the
+    runtime's token: once it is set, every wait ends and every call is refused until
+    the runtime resets it. `poses` are the checked named poses, used to say which pose
+    each arm is in; by default config/arm_poses.toml, checked against
+    config/robot_model.toml. `forbidden` is checked against every name the client
+    uses, as RosBase checks its own. The keyword bounds are in seconds of wall-clock
+    time; see the module docstring.
 
     Every blocking method raises StepError:
       - CANCELLED once the token is set, after asking the commander to cancel a
@@ -487,7 +489,8 @@ class CommanderClient:
         # can tell whether a newer command came (joint_states_since).
         self._gripper_commands = dict.fromkeys(GRIPPER_GOAL_GROUPS, 0)
         # Set by destroy() before it destroys the clients, so a goal accepted
-        # late and a stop send nothing through them after that.
+        # late and a stop send nothing through them after that, and a second
+        # destroy() or close() does nothing.
         self._destroyed = False
 
     # -- Without waiting ----------------------------------------------------------
@@ -863,12 +866,93 @@ class CommanderClient:
             command=record.command,
         )
 
+    # -- Lifecycle --------------------------------------------------------------
+
+    def close(self, timeout_s: float) -> bool:
+        """Destroy the clients and the publisher once no goal is outstanding; True once done.
+
+        Waits up to `timeout_s` of wall-clock time while a call runs or a goal has not
+        ended: one that its call still waits for, or one that a call gave up on, as on
+        a stop, and that is still outstanding (_outstanding). Until then it returns
+        False with every client and the publisher alive, so that a late acceptance of
+        that goal is still cancelled and its result still comes (_on_late_answer). The
+        executor has to keep spinning for those answers, so call this after stop() and
+        before the connector's shutdown, and again to retry; unresolved() says what is
+        left. A commander that died holds it off only until the goal is abandoned: once
+        its action server has stayed undiscovered for `absent_abandon_s`, or
+        `abandon_after_s` after its call gave up. A repeated call after the destroy
+        returns True and does nothing. A `timeout_s` of 0 checks once without waiting,
+        as RosBase.close(0) does. Raises ValueError unless `timeout_s` is a finite
+        number of seconds, 0 or more.
+
+        The known limit: a goal that was abandoned earlier and is still unresolved does
+        not hold it off. If the commander accepts such a goal after the destroy, nothing
+        cancels it, and that is only logged (_on_late_answer).
+        """
+        if not is_finite_number(timeout_s) or timeout_s < 0:
+            raise ValueError(
+                f"timeout_s must be a finite number of seconds, 0 or more, not {timeout_s!r}."
+            )
+        with self._state_lock:
+            if self._destroyed:
+                return True
+        if timeout_s == 0:
+            if not self._may_close():
+                return False
+        else:
+            try:
+                # On a token that nothing sets, since the call's token is set by
+                # now, and holding neither lock, so the executor's callbacks can
+                # end the goal meanwhile.
+                _UNSTOPPABLE.wait_for(self._may_close, timeout_s, "the end of the arm goal")
+            except StepError as e:
+                if e.code != ErrorCode.TIMEOUT:
+                    raise
+                return False
+        # Held while the clients are destroyed, so no call starts on them.
+        if not self._lock.acquire(blocking=False):
+            return False
+        try:
+            if self._holding() is not None:
+                return False
+            self.destroy()
+        finally:
+            self._lock.release()
+        return True
+
+    def unresolved(self) -> list[str]:
+        """What keeps close() from finishing, as sentences for the operator's log. Never waits.
+
+        Empty when nothing does, and once the client was destroyed.
+        """
+        with self._state_lock:
+            if self._destroyed:
+                return []
+        goal = self._holding()
+        if goal is None:
+            return ["A call to the commander has not returned."] if self._lock.locked() else []
+        with self._state_lock:
+            if not goal.sent.done():
+                state = "the commander has not answered its send"
+            elif goal.cancels:
+                state = "a cancel was sent, but no result has come"
+            else:
+                state = "no result has come"
+        return [f"{_capital(goal.what)} has not ended: {state}."]
+
     def destroy(self) -> None:
-        """Destroy the clients and the publisher. Node.destroy_node() does not destroy action clients."""
+        """Destroy the clients and the publisher at once, whatever goal is outstanding.
+
+        For the rollback of an assembly that failed; close() first waits for an
+        outstanding goal. A repeated call does nothing: rclpy refuses a second destroy
+        of an action client. Node.destroy_node() does not destroy action clients.
+        """
         # Under the state lock, which _on_late_answer() and stop() hold while
         # they send: a send either ends before the clients are destroyed or is
         # not made.
         with self._state_lock:
+            if self._destroyed:
+                return
             self._destroyed = True
         self._set_joint_position.destroy()
         self._control_gripper.destroy()
@@ -1436,7 +1520,9 @@ class CommanderClient:
         cancel, so a gripper goal is never disturbed. An answer that is not an
         acceptance forgets the goal, or resolves it once it was abandoned. An
         acceptance that comes after destroy() sends nothing and is only logged, at
-        debug level: the clients it would send through are gone.
+        debug level: the clients it would send through are gone. close() destroys them
+        only once no goal is outstanding, so after close() such a goal is one that had
+        been abandoned.
         """
         try:
             handle = None if sent.cancelled() or sent.exception() is not None else sent.result()
@@ -1631,6 +1717,23 @@ class CommanderClient:
         else:
             return goal
         return None
+
+    def _holding(self) -> _Goal | None:
+        """The goal that keeps close() from destroying the clients, else None.
+
+        One that a call gave up on and that is outstanding (_outstanding), or one that
+        its call still waits for, which no abandonment covers.
+        """
+        goal = self._outstanding()
+        if goal is not None:
+            return goal
+        with self._state_lock:
+            goal = self._goal
+            return None if goal is None or goal.ended() else goal
+
+    def _may_close(self) -> bool:
+        """Whether close() may destroy the clients now: no call runs and no goal holds it."""
+        return not self._lock.locked() and self._holding() is None
 
     def _abandon(self, goal: _Goal, reason: str) -> None:
         """Stop waiting for `goal`: calls are taken again, and the arms are unverified.

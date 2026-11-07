@@ -184,6 +184,10 @@ def moves(robot: FakeRobot) -> list[dict]:
     return [call["args"] for call in robot.calls if call["verb"] == "base.move_relative"]
 
 
+def base_verbs(robot: FakeRobot) -> list[str]:
+    return [call["verb"] for call in robot.calls if call["verb"].startswith("base.")]
+
+
 def aborted() -> GoalFailed:
     """What RosBase raises when Nav2 aborts the goal."""
     return GoalFailed(ErrorCode.SKILL_FAILED, "Navigation failed for the move (ABORTED, error code 105).")
@@ -345,16 +349,53 @@ def test_any_other_move_reported_failed_raises_the_failure(forward, turn, short)
     assert raised.value is error
 
 
-@pytest.mark.parametrize("turn", [355.0, 360.0, -355.0, 720.0])
+# Turns on the spot whose end is judged against the tolerance: wrapped to [-180, 180),
+# each goal is more than 10 degrees from the start. 180 and 540 wrap to -180, 181 to -179.
+JUDGED_TURNS = [180.0, -180.0, 179.0, 181.0, -179.0, -181.0, 540.0, -540.0, 10.5, -10.5]
+# Turns whose end is not judged: wrapped, each goal is at most 10 degrees from the start,
+# where a refused goal leaves the robot too. 370 wraps to 10 and -370 to -10, the boundary.
+UNJUDGED_TURNS = [355.0, 360.0, -355.0, 720.0, 10.0, -10.0, 370.0, -370.0]
+
+
+def refused() -> GoalFailed:
+    """What RosBase raises when Nav2 rejects the goal: the robot did not move."""
+    return GoalFailed(ErrorCode.SKILL_FAILED, "Nav2 rejected the goal for the move.")
+
+
+@pytest.mark.parametrize("turn", UNJUDGED_TURNS)
 def test_a_refused_turn_whose_goal_wraps_to_within_10_degrees_raises_the_refusal(turn):
     robot = facing(40.0)
-    error = GoalFailed(ErrorCode.SKILL_FAILED, "Nav2 rejected the goal for the move.")
+    error = refused()
     # A refused goal leaves the robot where it was.
     robot.faults["base.move_relative"] = error
     with pytest.raises(StepError) as raised:
         move_relative(robot.ctx, 0.0, 0.0, turn)
     assert raised.value is error
+    assert base_verbs(robot) == ["base.move_relative"]  # No pose read: nothing is judged.
     assert robot.pose().yaw == 0.0
+
+
+@pytest.mark.parametrize("turn", JUDGED_TURNS)
+def test_a_turn_whose_goal_wraps_to_further_than_10_degrees_counts_as_done_within_10_degrees(
+    caplog, turn
+):
+    robot = facing(40.0)
+    with caplog.at_level(logging.INFO, logger="walkie_agent.atomics.navigation"):
+        reply = move_relative(short_turns(robot, 3.0), 0.0, 0.0, turn)
+    assert reply.startswith(f"Moved turning {abs(turn):g} degrees ")
+    assert f"Counting the turn of {turn:g} degrees as done, 3.0 degrees off" in caplog.text
+
+
+@pytest.mark.parametrize("turn", JUDGED_TURNS)
+def test_a_refused_turn_whose_goal_wraps_to_further_than_10_degrees_raises_the_refusal(turn):
+    robot = facing(40.0)
+    error = refused()
+    robot.faults["base.move_relative"] = error
+    with pytest.raises(StepError) as raised:
+        move_relative(robot.ctx, 0.0, 0.0, turn)
+    assert raised.value is error
+    # Judged from the start and the end, which is the start, so it missed by the whole turn.
+    assert base_verbs(robot) == ["base.pose", "base.move_relative", "base.pose"]
 
 
 def test_a_turn_by_move_relative_whose_end_is_unknown_raises_its_failure():
@@ -372,6 +413,129 @@ def test_any_other_failure_of_the_turn_is_raised_as_it_is(code):
     with pytest.raises(StepError) as raised:
         face_person(robot.ctx, "jane")
     assert raised.value.code is code
+
+
+# Both atomics read the start pose before a judged turn. Only a turn reported failed
+# needs it, so a failed read must not hide the base's own refusal of the turn.
+TURNS = {
+    "move_relative": lambda ctx: move_relative(ctx, 0.0, 0.0, 180.0),
+    "face_person": lambda ctx: face_person(ctx, "jane"),
+}
+UNREAD = [ErrorCode.TIMEOUT, ErrorCode.UNAVAILABLE, ErrorCode.SKILL_FAILED]
+
+
+def unread(code: ErrorCode) -> StepError:
+    """A failed pose read, as RosBase raises it when TF is stale, missing or not usable."""
+    return StepError(code, "The robot's position (map -> base_footprint) is unknown.")
+
+
+@pytest.mark.parametrize("turn", TURNS)
+@pytest.mark.parametrize("read", UNREAD)
+@pytest.mark.parametrize("refusal", [ErrorCode.PRECONDITION_FAILED, ErrorCode.INTERNAL])
+def test_a_turn_whose_start_pose_cannot_be_read_raises_the_base_s_refusal(turn, read, refusal):
+    robot = facing(40.0)
+    robot.faults["base.pose"] = unread(read)
+    # As RosBase's arm check refuses a drive with an arm out or not checkable (ADR-0025).
+    error = StepError(refusal, "Not starting the move: the left arm is out. Move it home first.")
+    robot.faults["base.move_relative"] = error
+    with pytest.raises(StepError) as raised:
+        TURNS[turn](robot.ctx)
+    assert raised.value is error
+    assert base_verbs(robot) == ["base.pose", "base.move_relative"]
+
+
+@pytest.mark.parametrize(
+    ("turn", "reply"),
+    [
+        (
+            "move_relative",
+            "Moved turning 180 degrees left. Now at x=0.00 m, y=0.00 m, heading 180 degrees.",
+        ),
+        # The bearing it was asked to turn, since no turned angle can be measured.
+        ("face_person", "Turned 40 degrees left to face jane."),
+    ],
+)
+@pytest.mark.parametrize("read", UNREAD)
+def test_a_turn_whose_start_pose_cannot_be_read_still_turns_and_says_so(caplog, turn, reply, read):
+    robot = facing(40.0)
+    robot.faults["base.pose"] = unread(read)
+    with caplog.at_level(logging.INFO, logger="walkie_agent.atomics.navigation"):
+        assert TURNS[turn](robot.ctx) == reply
+    assert base_verbs(robot) == ["base.pose", "base.move_relative"]
+    assert "without its start pose" in caplog.text
+    assert f"{read}: The robot's position" in caplog.text
+
+
+@pytest.mark.parametrize("turn", TURNS)
+@pytest.mark.parametrize("read", UNREAD)
+def test_a_turn_reported_failed_with_no_start_pose_raises_the_failure_even_within_10_degrees(
+    turn, read
+):
+    robot = facing(40.0)
+    robot.faults["base.pose"] = unread(read)
+    error = aborted()
+    with pytest.raises(StepError) as raised:
+        TURNS[turn](short_turns(robot, 3.0, error))
+    assert raised.value is error
+    # The turn ended 3 degrees short, but with no start there is no goal to judge it by.
+    assert base_verbs(robot) == ["base.pose", "base.move_relative"]
+
+
+def fails_after_the_start(ctx: Ctx, robot: FakeRobot, error: StepError) -> list[dict]:
+    """Make every pose read after the first raise `error`; return the reads."""
+    reads = []
+
+    def pose(**kwargs):
+        reads.append(kwargs)
+        if len(reads) > 1:
+            raise error
+        return robot.pose(**kwargs)
+
+    ctx.base.pose = pose
+    return reads
+
+
+@pytest.mark.parametrize("turn", TURNS)
+@pytest.mark.parametrize("read", UNREAD)
+def test_a_turn_reported_failed_whose_end_pose_cannot_be_read_raises_the_failure(
+    caplog, turn, read
+):
+    robot = facing(40.0)
+    error = aborted()
+    ctx = short_turns(robot, 3.0, error)
+    reads = fails_after_the_start(ctx, robot, unread(read))
+    with (
+        caplog.at_level(logging.INFO, logger="walkie_agent.atomics.navigation"),
+        pytest.raises(StepError) as raised,
+    ):
+        TURNS[turn](ctx)
+    # The base's failure, not the failed read: without its end the turn is not judged.
+    assert raised.value is error
+    assert len(reads) == 2
+    assert "by its end pose" in caplog.text
+    assert f"{read}: The robot's position" in caplog.text
+
+
+@pytest.mark.parametrize("turn", TURNS)
+def test_a_stop_during_the_end_pose_read_is_raised(turn):
+    robot = facing(40.0)
+    ctx = short_turns(robot, 3.0, aborted())
+    stop = StepError(ErrorCode.CANCELLED, "Cancelled reading the pose: a stop is in effect.")
+    fails_after_the_start(ctx, robot, stop)
+    with pytest.raises(StepError) as raised:
+        TURNS[turn](ctx)
+    assert raised.value is stop
+
+
+@pytest.mark.parametrize("turn", TURNS)
+def test_a_stop_during_the_start_pose_read_is_raised_and_nothing_turns(turn):
+    robot = facing(40.0)
+    error = StepError(ErrorCode.CANCELLED, "Cancelled reading the pose: a stop is in effect.")
+    robot.faults["base.pose"] = error
+    with pytest.raises(StepError) as raised:
+        TURNS[turn](robot.ctx)
+    assert raised.value is error
+    assert base_verbs(robot) == ["base.pose"]
 
 
 def test_every_return_value_is_json_able(robot):

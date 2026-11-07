@@ -11,9 +11,9 @@ logger = logging.getLogger(__name__)
 
 # How far from straight ahead a person may be and still count as faced. A person
 # within it gets no turn, and a turn on the spot larger than it that Nav2 reports as
-# ended without success still counts as done if it ended within it of its goal:
-# Nav2's progress checker can abort a turn on the spot that is still settling on its
-# 0.6 degree yaw tolerance (decisions S2-4, S2-9 and S2-11).
+# ended without success still counts as done if its start pose is known and it ended
+# within it of its goal: Nav2's progress checker can abort a turn on the spot that is
+# still settling on its 0.6 degree yaw tolerance (decisions S2-4, S2-9 and S2-11).
 FACE_TOLERANCE_DEG = 10.0
 
 
@@ -56,7 +56,8 @@ def move_relative(
     # Wrapped, since a 355 degree goal is 5 degrees from where a refused turn leaves
     # the robot.
     if not forward_m and not left_m and abs(wrap_deg(turn_deg)) > FACE_TOLERANCE_DEG:
-        pose = _turn(ctx, ctx.base.pose(), turn_deg, f"the turn of {turn_deg:g} degrees")
+        what = f"the turn of {turn_deg:g} degrees"
+        pose = _turn(ctx, _start_pose(ctx, what), turn_deg, what)
     else:
         pose = ctx.base.move_relative(forward_m, left_m, turn_deg)
     return (
@@ -86,26 +87,59 @@ def face_person(ctx: Ctx, person_id: str) -> str:
     bearing = seen.bearing_deg
     if abs(bearing) <= FACE_TOLERANCE_DEG:
         return f"Already facing {person_id}, {_offset(bearing)}."
-    start = ctx.base.pose()
-    end = _turn(ctx, start, bearing, f"the turn to {person_id}")
-    turned = wrap_deg(math.degrees(end.yaw - start.yaw))
+    what = f"the turn to {person_id}"
+    start = _start_pose(ctx, what)
+    end = _turn(ctx, start, bearing, what)
+    # Without a start, a turn the base reports as done is taken to have turned the
+    # bearing it was asked to.
+    turned = bearing if start is None else wrap_deg(math.degrees(end.yaw - start.yaw))
     return f"Turned {_round(abs(turned), 0):.0f} degrees {_side(turned)} to face {person_id}."
 
 
-def _turn(ctx: Ctx, start: Pose2D, turn_deg: float, what: str) -> Pose2D:
+def _start_pose(ctx: Ctx, what: str) -> Pose2D | None:
+    """The pose before the turn `what`, or None when it cannot be read.
+
+    The start serves only to judge a turn that the base reports as ended without
+    success, and face_person's reply, so a failed read is logged and the turn goes
+    ahead. ctx.base.move_relative then raises its own refusal if it has one, such as
+    the arm check before a drive (ADR-0025), a goal still live or its own failed pose
+    read, and that refusal says what to fix where the failed read would not. A stop
+    is raised at once, since nothing more may run under it.
+    """
+    try:
+        return ctx.base.pose()
+    except StepError as error:
+        if error.code is ErrorCode.CANCELLED:
+            raise
+        logger.info("Starting %s without its start pose: %s", what, error)
+        return None
+
+
+def _turn(ctx: Ctx, start: Pose2D | None, turn_deg: float, what: str) -> Pose2D:
     """Turn on the spot by turn_deg from start, and return the pose it ended at.
 
     A turn that the base reports as ended without success still counts as done if it
     ended within FACE_TOLERANCE_DEG of its goal. The callers send only turns whose
     goal, wrapped to [-180, 180), is further than that tolerance from start, so a
-    refused goal, which leaves the robot at start, still raises.
+    refused goal, which leaves the robot at start, still raises. With start None the
+    goal is unknown, and when the end pose cannot be read the end is, so in either case
+    such a turn raises the base's failure as it is.
     """
     try:
         return ctx.base.move_relative(0.0, 0.0, turn_deg)
     except GoalFailed as error:
+        if start is None:
+            raise
         # Only a goal known to have ended: with its state unknown the base may still
         # be turning, so a pose read now says nothing about where it stops (S2-9).
-        end = ctx.base.pose()
+        try:
+            end = ctx.base.pose()
+        except StepError as read_error:
+            if read_error.code is ErrorCode.CANCELLED:
+                raise
+            # Without its end the turn cannot be judged, so the base's failure stands.
+            logger.info("Could not judge %s by its end pose: %s", what, read_error)
+            raise error from None
         missed = wrap_deg(math.degrees(start.yaw) + turn_deg - math.degrees(end.yaw))
         if abs(missed) > FACE_TOLERANCE_DEG:
             raise

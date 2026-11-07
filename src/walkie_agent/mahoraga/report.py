@@ -22,7 +22,7 @@ from inspect_ai.event import ModelEvent
 from inspect_ai.log import EvalLog, EvalSample, read_eval_log
 
 from walkie_agent.mahoraga.tasks import SCORER
-from walkie_agent.scripting.shelf import Shelf
+from walkie_agent.scripting.shelf import Shelf, StoreRefused, store_root
 
 _WARNING ="Incomplete, so these comparisons do not measure the whole evaluation. {}. They count as failures."
 
@@ -204,11 +204,11 @@ def _same_commands(baseline: EvalLog, other: EvalLog) -> bool:
 def recorded_shelf_root(runs: Mapping[str, EvalLog]) -> str | None:
     """The shelf's store root that the arms' logs record, or None if none records one.
 
-    Raises ValueError if they record different roots, as no one shelf then describes them.
+    Raises StoreRefused if they record different roots, as no one shelf then describes them.
     """
     roots = sorted({log.eval.metadata.get("shelf_root") for log in runs.values()} - {None})
     if len(roots) > 1:
-        raise ValueError(f"The logs ran on different shelves: {', '.join(roots)}. Name one with shelf_root.")
+        raise StoreRefused(f"The logs ran on different shelves: {', '.join(roots)}. Name one with shelf_root.")
     return roots[0] if roots else None
 
 
@@ -216,9 +216,12 @@ def report(log_dir: str | Path, *, baseline: str = "A", shelf_root: str | Path |
     """Every arm's metrics under `log_dir`, and each arm against the baseline.
 
     `warning` is None only if every arm is complete. Each comparison has its own `complete`.
-    M10 reads the shelf at `shelf_root`, else the one the logs record, else store_root's default.
+    M10 reads the shelf at `shelf_root`, else the one the logs record, else store_root's
+    default, as logs of arms A and B alone, or from before the tier folders, record none.
+    `shelf.root` names the store M10 read.
     """
     runs = read_runs(log_dir)
+    shelf = store_root(shelf_root or recorded_shelf_root(runs))
     scores = {arm: by_command(log) for arm, log in runs.items()}
     arms = {arm: arm_metrics(log) for arm, log in runs.items()}
     incomplete = [
@@ -239,5 +242,5 @@ def report(log_dir: str | Path, *, baseline: str = "A", shelf_root: str | Path |
             for arm, score in scores.items()
             if baseline in scores and arm != baseline
         },
-        "shelf": shelf_metrics(shelf_root or recorded_shelf_root(runs)),
+        "shelf": {"root": str(shelf), **shelf_metrics(shelf)},
     }

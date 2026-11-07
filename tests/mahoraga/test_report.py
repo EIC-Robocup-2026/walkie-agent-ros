@@ -20,7 +20,7 @@ from walkie_agent.mahoraga.report import (
     shelf_metrics,
 )
 from walkie_agent.mahoraga.tasks import SCORER
-from walkie_agent.scripting.shelf import Shelf
+from walkie_agent.scripting.shelf import Shelf, StoreRefused
 
 MOCK = "mockllm/model"
 
@@ -124,8 +124,15 @@ def test_the_report_reads_the_shelf_its_logs_record_unless_told_another(gated, t
     Shelf(store).save('def speak():\n    """One."""\n    say("one")\n', ["speak"])
     run_episodes(["C"], 1, model=_mock(), max_samples=1, log_dir=tmp_path / "logs", shelf_root=store)
 
-    assert report(tmp_path / "logs")["shelf"]["M10_shelf_size"] == 1
-    assert report(tmp_path / "logs", shelf_root=tmp_path / "other")["shelf"]["M10_shelf_size"] == 0
+    assert report(tmp_path / "logs")["shelf"] == {"root": str(store), "M10_shelf_size": 1, "M10_shelf_churn": 0}
+    other = report(tmp_path / "logs", shelf_root=tmp_path / "other")["shelf"]
+    assert other == {"root": str(tmp_path / "other"), "M10_shelf_size": 0, "M10_shelf_churn": 0}
+
+
+def test_logs_that_record_no_shelf_report_the_default_store_by_name(isolated_tools_home, tmp_path):
+    (tmp_path / "logs").mkdir()
+
+    assert report(tmp_path / "logs")["shelf"]["root"] == str(isolated_tools_home)
 
 
 def test_logs_that_ran_on_different_shelves_name_no_one_shelf():
@@ -134,7 +141,7 @@ def test_logs_that_ran_on_different_shelves_name_no_one_shelf():
 
     assert recorded_shelf_root({"A": logged(None), "C": logged("/a")}) == "/a"
     assert recorded_shelf_root({"A": logged(None)}) is None
-    with pytest.raises(ValueError, match="different shelves"):
+    with pytest.raises(StoreRefused, match="different shelves"):
         recorded_shelf_root({"C": logged("/a"), "C2": logged("/b")})
 
 

@@ -143,3 +143,13 @@ def test_a_report_on_a_shelf_in_an_unignored_work_tree_is_refused(capsys, tmp_pa
     assert cli.main(["report", "--log-dir", str(tmp_path / "logs"), "--shelf", str(tmp_path / "repo" / "store")]) == 2
 
     assert "Refused:" in capsys.readouterr().err
+
+
+def test_a_report_that_fails_for_another_reason_is_not_called_a_refusal(monkeypatch):
+    def report(log_dir, baseline, shelf_root):
+        raise ValueError("A log is broken.")
+
+    monkeypatch.setattr(cli, "report", report)
+
+    with pytest.raises(ValueError, match="A log is broken."):
+        cli.main(["report", "--log-dir", "/tmp/x"])

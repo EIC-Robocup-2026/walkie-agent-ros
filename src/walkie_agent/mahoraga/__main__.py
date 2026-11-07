@@ -11,6 +11,7 @@ from walkie_agent.mahoraga.commands import CATEGORIES, SPLITS
 from walkie_agent.mahoraga.gate import GateError, run_gate, run_standard_gate
 from walkie_agent.mahoraga.gym import DEFAULT_MODEL, OPENROUTER, run_episodes
 from walkie_agent.mahoraga.report import report
+from walkie_agent.scripting.shelf import StoreRefused
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -67,7 +68,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run(args)
     try:
         summary = report(args.log_dir, baseline=args.baseline, shelf_root=args.shelf)
-    except ValueError as exc:
+    except StoreRefused as exc:
         print(f"Refused: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(summary, indent=1))

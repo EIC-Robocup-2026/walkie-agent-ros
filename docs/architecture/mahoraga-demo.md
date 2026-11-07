@@ -39,7 +39,7 @@ ROS-backed verbs implement layer 2's Protocols, and only `main.py` connects them
 | 5. `create_agent`, middlewares, Runner | `walkie_agent/runtime/` | [Built, and used by `main.py`](#runtime) |
 | 1 to 2. ROS-backed verbs, operator topics | `walkie_agent/ros/` | [Built, run on fake robots and in the MuJoCo simulation](#ros-wrappers) |
 | Entry point: flags, signals, assembly | `walkie_agent/main.py` | [Built, run on fake robots and in the MuJoCo simulation](#wiring-in-mainpy) |
-| 6. `run_script` and its shelf | `walkie_agent/scripting/` | [Built](#run_script), used by the gym only |
+| 6. `run_script` and its shelf | `walkie_agent/scripting/` | [Built](#run_script), used by the gym and, behind `--scripts`, by the agent; run on fakes only |
 | 6. Arm D's stand-in bundles | `walkie_agent/tools/bundled_preset/` | Built, stand-ins only |
 | 6. Gym | `walkie_agent/mahoraga/`, with its own pixi environment | [Built](#mahoraga), fake world only |
 
@@ -296,7 +296,8 @@ pydantic-monty, is in `default` too.
 
 | Module | What it holds |
 | --- | --- |
-| `scripting.driver` | `ScriptRunner`, `Budgets`, `ScriptResult`, `allow_list`, `stubs_for`, `describe_functions`, `script_summary` |
+| `scripting.driver` | `ScriptRunner`, `Budgets`, `ScriptResult`, `allow_list`, `stubs_for`, `describe_functions`, `script_summary`, and the evidence rule shared by the scorer and the verdict: `script_record`, `proven` |
+| `scripting.agent_tool` | `AgentScripts`: the agent's `run_script` behind `--scripts`, its task records and the operator's verdict |
 | `scripting.shelf` | `Shelf`: saved functions in the git-ignored tier folders `temporary/` and `bundled/`, and `ledger.jsonl`; `store_root`, `require_ignored` |
 | `scripting.evidence` | `Watch`: which functions a run entered, returned from or raised through, from counters in the worker |
 | `scripting.sandbox` | `open_pool`, the Monty pool with each worker inside bwrap. It fails closed. |
@@ -315,8 +316,12 @@ pydantic-monty, is in `default` too.
 ### `run_script`
 
 ```python
-ScriptRunner(pool, *, shelf=None, budgets=Budgets()).run(code, fns, *, save=()) -> ScriptResult
+ScriptRunner(pool, *, shelf=None, budgets=Budgets()).run(code, fns, *, save=(), cancel=None) -> ScriptResult
 ```
+
+The gym and, behind `--scripts`, the competition agent run scripts through it. The
+agent's tool, its budgets and the operator's verdict are in
+[Scripts on the agent](agent.md#scripts-on-the-agent).
 
 A script calls only the functions in `fns`, which `allow_list(atomics, ctx)` builds
 with ctx bound. Every other call or name lookup is refused, including any OS call,
@@ -338,8 +343,13 @@ a host function, so a run can outlast its budget by one call. The script then ge
 up to one more feed's time to finish, with every further call refused, so that the
 evidence below stays readable.
 
-`ScriptResult.calls` is the ledger: one entry per call, with its status. The model
-sees only `script_summary(result)`.
+`cancel` is a `CancelToken`. Once it is set, no further host call runs and the
+script ends the same way, with phase `cancelled` and an error it cannot catch. The
+agent passes the Runner's token, so a stop or a reset ends a running script.
+
+`ScriptResult.calls` is the ledger: one entry per call, with its status. In the gym
+the model sees only `script_summary(result)`. The agent's tool adds the ledger as
+`tool: status` lines, so that the model and the tool log see each call.
 
 ### Shelf
 
@@ -349,7 +359,7 @@ store root, with `ledger.jsonl` beside them:
 | Path | Holds | Written by |
 | --- | --- | --- |
 | `temporary/<name>.py` | The latest saved version of each function | A run with `save=[names]` that succeeds |
-| `bundled/<name>.py` | The last verified version of each function, with exactly the text that ran, so its sha is the one in a verified event | `mark_verified`, which only the scorer calls, after a success, and a save of a version verified before |
+| `bundled/<name>.py` | The last verified version of each function, with exactly the text that ran, so its sha is the one in a verified event | `mark_verified`, which the gym's scorer calls after a success and the agent after the operator's passed verdict, and a save of a version verified before |
 | `ledger.jsonl` | The saved, run, fail and verified events, each keyed to a version's sha | Every save, run and verification |
 
 Which version `bundled/` holds follows one rule: the version in `temporary/` if
@@ -404,7 +414,7 @@ it may save, and counts entries and normal returns inside the worker:
 | --- | --- | --- |
 | Used | Entered at least once | `shelf_used`, run and fail events, M7 |
 | Raised | Entered more often than it returned: an exception crossed its boundary, even if a caller caught it, or the run ended inside it | `shelf_raised`, M8 |
-| Verified | Returned, never raised in that episode, and the episode scored 1 | The `verified` event |
+| Verified | Returned, never raised in that episode, and the episode scored 1, or, on the agent, the operator passed the task | The `verified` event |
 
 Each event carries the sha of the source that ran, so a rewrite starts with nothing.
 If an episode ran several versions of one name, only the last that returned and never
@@ -918,8 +928,15 @@ before it raises.
 
 `Application.close` runs in one order: close the input, cancel and stop the base, shut down
 the Runner, drain the base, close speech, close a `RosVision` if there is one, close the
-bridge. Only then does `main` shut down
+bridge, and with `--scripts` close the script sandbox's workers. Only then does `main` shut down
 the connector and the context, on a thread of its own.
+
+With `--scripts`, `main` opens `AgentScripts` from its main thread before ROS starts,
+because each bwrap worker dies with the thread that started it, and passes it to
+`assemble`. `assemble` binds its `run_script` after the set's atomics through
+`build_agent(extra_tools=...)`, gives the bridge its `verdict`, and gives the Runner
+its `begin` and `end` as `on_task_start` and `on_task_end`. `main` closes it again
+in a `finally`, for a run that failed before `assemble` finished.
 
 Signals use `SignalHandlerOptions.NO`, because rclpy's own handler would shut the context
 down before the cancel of a running goal could be sent. The first SIGINT or SIGTERM starts
@@ -987,8 +1004,10 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
   gesture, so no command's selector can match them.
 - M9 counts refused calls, since an escape would not show in a log. The bwrap
   tests are what stand behind it.
-- There is no secondary template-chain set, no frozen paraphrases, no
-  pre-registration file and no flag registering `run_script` in the runtime.
+- There is no secondary template-chain set, no frozen paraphrases and no
+  pre-registration file. `run_script` is in the runtime behind `--scripts`
+  ([decision T20](mahoraga-demo-decisions.md#tools-and-scripts)), where the operator's
+  verdict stands in for the scorer.
 - The plan's target for what replaces `agent.py`, `graph.py`, `todo.py`, `tasks.py`
   and `tools/todos.py` is about 575 own lines, against 1,111 before. It measures 1,609:
   1,447 in `runtime/` and 162 in `tasks.py`. The decided fixes, the Runner's lifecycle and

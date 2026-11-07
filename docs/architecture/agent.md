@@ -32,6 +32,11 @@ still a proposal: see [Self-Evolving Agent (Proposed)](self-evolving-agent.md).
   startup, and the whole set is bound for the life of the agent
   ([ADR-0067](decisions/0067-static-tool-sets.md)). There is no tool search and no
   tool is added at runtime.
+- **Scripts, behind a flag.** With `--scripts`, any set also binds `run_script`. The
+  LLM writes a short Python script over the bound tools, which runs inside bwrap, and
+  may save functions from it for later tasks. The operator judges each task on
+  `/walkie/verdict`, and a passed verdict verifies the functions the task proved
+  ([Scripts on the agent](#scripts-on-the-agent)).
 - **A todo list for every task.** For a task with several steps, the LLM writes the
   steps with `update_todos` and marks them as it goes. The rules are enforced in
   code. For example, a step whose tool failed cannot be marked completed until that
@@ -114,7 +119,7 @@ flowchart TB
   voice -- speaker --> person
   voice -- "/from_human" --> bridge
   verbs -- "/to_human" --> voice
-  operator <-- "in: /from_human, /walkie/task, /walkie/reset<br/>out: /walkie/console, /walkie/todos" --> bridge
+  operator <-- "in: /from_human, /walkie/task, /walkie/reset,<br/>/walkie/verdict with --scripts<br/>out: /walkie/console, /walkie/todos" --> bridge
   bridge --> runner
   runner --> verbs
   robotmd --> runner
@@ -140,6 +145,7 @@ Nav2.
 | `/from_human` | `rai_interfaces/msg/HRIMessage` | In | Reliable, keep last 10 | Text only. A bare stop stops, and anything else is a task. |
 | `/walkie/task` | `std_msgs/msg/String` | In | Reliable, keep last 10 | JSON: a task with its steps or a template name. |
 | `/walkie/reset` | `std_msgs/msg/Empty` | In | Reliable, keep last 10 | Forget the conversation. |
+| `/walkie/verdict` | `std_msgs/msg/Bool` | In, with `--scripts` | Reliable, keep last 10 | The operator's judgement of the task that ended last. `true` verifies the saved functions it proved. |
 | `/walkie/console` | `rai_interfaces/msg/HRIMessage` | Out | Reliable, keep last 10 | Plain-text replies, status lines and the failure line. Never spoken. |
 | `/walkie/todos` | `std_msgs/msg/String` | Out | Reliable, transient-local, keep last 1 | The whole list as JSON. |
 | `/to_human` | `rai_interfaces/msg/HRIMessage` | Out | Reliable, keep last 10 | `say`, `wait_for_person` and the stop line. |
@@ -154,7 +160,7 @@ without any acknowledgement of playback, so `say` means "sent", not "heard".
 
 `--input-topic`, `--output-topic`, `--reset-topic`, `--task-topic` and `--todos-topic`
 rename the operator's topics. A console topic that resolves to `/to_human` is refused at
-startup.
+startup. `/walkie/verdict` has no flag of its own.
 
 ## How a task runs
 
@@ -360,6 +366,9 @@ todos = [
       cancelled, with the note "Stopped by the person."
     - The token stays set until the next task starts.
     - A `say` that is already publishing is not cut off.
+    - A running script makes no further call and ends as cancelled, whatever it
+      catches. The call it was making ends through its verb, as the same call made
+      as a tool does.
 - **Reset.** A message on `/walkie/reset` cancels and drops the queue. After the active
   run ends, the Runner deletes the conversation, starts a new session and publishes
   `[]` on `/walkie/todos` ([ADR-0008](decisions/0008-reset-topic.md)). A hung LLM call
@@ -379,12 +388,17 @@ todos = [
   key, a bad `base_url` scheme, host or port, and a bad `[team]` table. Any other
   error ends with its traceback and code 1, as does a failure once ROS has started.
   A single value where a table belongs, such as `vendor = "openai"`, is one of those,
-  because the TypeError it raises can also mean a bug.
+  because the TypeError it raises can also mean a bug. With `--scripts`, a missing
+  bwrap, a sandbox worker that cannot start, or a function store that git does not
+  ignore also stops the agent with one line and code 2 before ROS starts. The script
+  sandbox's workers close last, after the bridge. Until they have, the agent reports
+  them as unresolved and waits again, as it does for Nav2.
 
 ## Tools
 
 The tools the LLM can call come from one fixed list, chosen by `--tool-set`. Two more
-come from the todo middleware, in every set.
+come from the todo middleware, in every set, and `--scripts` adds `run_script` to any
+set.
 
 | Tool | Sets | What it does on the robot's `ctx` |
 | --- | --- | --- |
@@ -403,6 +417,7 @@ come from the todo middleware, in every set.
 | `get_arm_state` | hri, arms, with `--arms` | Reads both arms and the fingers, and says whether Walkie may drive |
 | `pick`, `place_on`, `hand_over` | gpsr | `UNAVAILABLE`: Walkie has no grasp skill yet |
 | `get_facts` | default, gpsr | Reads the time and the date from the computer's clock, in the timezone of `config.toml`'s `[team]`, and the team's name, country and affiliation from that table |
+| `run_script` | any, with `--scripts` | Runs one Python script that calls the other bound tools as functions, inside bwrap, and keeps the functions named in `save` ([Scripts on the agent](#scripts-on-the-agent)) |
 | `update_todos` | always | Adds, updates and removes steps by id, all or nothing |
 | `wait_for_person` | always | Asks a question out loud and ends the run until the answer |
 
@@ -431,10 +446,60 @@ for a number gets a validation error back and can retry. Otherwise pydantic woul
 The system prompt is built for the chosen set, by `build_system_prompt` in `main.py`, so
 it names only tools that are bound. Each set that binds an unavailable tool also tells
 the LLM to say that it cannot do this, not to guess. GPSR has no `list_places`, so its
-prompt lists the configured places as data.
+prompt lists the configured places as data. `--scripts` adds the `run_script` rule
+after the tools' own, and without the flag no prompt changes.
 
 The [arm manipulation design](manipulation.md) proposes real arm verbs and, later, skill
 tools. Neither exists.
+
+### Scripts on the agent
+
+`--scripts` binds `run_script` beside the set's tools, for any `--tool-set`. It is the
+gym's `run_script` ([Mahoraga Demo](mahoraga-demo.md#run_script)) on the robot's
+`ctx`, with budgets for real motion and an operator in place of the scorer. The
+decisions are T18 to T30 in [Mahoraga Demo Decisions](mahoraga-demo-decisions.md#tools-and-scripts).
+
+- **The sandbox.** A script runs in a Monty worker inside bwrap. `main` starts two
+  workers before ROS starts. Without bwrap, or with a worker that cannot start, the
+  agent stops with one line and code 2: it never runs a script outside the sandbox.
+- **What a script can call.** The run's own atomics, bound to the robot's `ctx`, so
+  the arm tools only with `--arms`. `update_todos`, `wait_for_person` and `run_script`
+  itself are never callable. The gym's stand-in bundles in `tools/bundled_preset` are
+  not bound, because they call `pick`, `place_on` and `hand_over`, which answer
+  `UNAVAILABLE` here.
+- **Saved functions.** `save` names top-level functions of the script. After a script
+  that ran to its end, the shelf keeps them in `temporary/` of the function store:
+  `WALKIE_TOOLS_HOME` when it is set, else `src/walkie_agent/tools/`
+  ([Shelf](mahoraga-demo.md#shelf)). A later script may call any function there. The
+  tool's description lists them after the atomics and puts the line
+  `# Unverified: not yet confirmed by the operator, so it may be wrong.` above each
+  version that no verdict has verified. A save or a verdict changes the description,
+  and the next model call sends it.
+- **Budgets.** A script may make 40 calls, run 2 s between calls and 300 s in all, and
+  print 4000 bytes. Nothing interrupts a call that is running, so the wall clock is
+  checked between calls, and each atomic keeps its own bounds. A script can therefore
+  outlast 300 s by its last call, up to that call's own bound, such as Nav2's 120 s for
+  `go_to`. The run's model limits bound only the model calls.
+- **Results.** A script that runs to its end returns its value, what it printed, each
+  call it made as `tool: status`, and what it saved. One that does not run to its end
+  fails the tool call with `SKILL_FAILED`, or `CANCELLED` after a stop, and the same
+  summary. A todo step that names a tool is proven only by the LLM's own call of that
+  tool, never by a call inside a script.
+- **Tool log.** Each `run_script` call is a line of `--tool-log`, with the script, the
+  names to save and the summary, calls included. Each verdict is a line with the tool
+  `verdict`.
+- **The verdict.** A task is one run of the agent, from a message to its reply, so a
+  question and its answer are two tasks. After a task, the operator publishes a
+  `std_msgs/msg/Bool` on `/walkie/verdict`. `true` verifies each saved function
+  version that the task's scripts proved: it returned in one of them, and nothing
+  raised through it in any. The shelf then writes those versions to `bundled/`.
+  `false` verifies nothing and is recorded. A verdict while a task runs, a second
+  verdict on the same task, or one before any task has ended is ignored and logged.
+  The console gets one line for each verdict. No capability may publish on the topic,
+  so the agent cannot judge its own work.
+
+Nothing on the robot path verifies a function without the operator. A function that
+was never judged stays callable, marked unverified.
 
 ### Limits of the navigation verbs
 
@@ -491,6 +556,8 @@ These have **not** run with this runtime:
 - walkie-ros's blank-map simulation (`agent-sim`).
 - A real LLM on more than the two one-step tasks above.
 - Live vision or arms, which do not exist as backends.
+- `--scripts`: the agent's `run_script` and the verdict have run only on fakes,
+  with no model and no simulation.
 
 So real Nav2 races, TF freshness on hardware and physical stop latency are all unknown.
 The silent demo runs scripted driving and speech only. It is not a full HRI run, because

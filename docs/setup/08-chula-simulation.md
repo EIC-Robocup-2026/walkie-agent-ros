@@ -185,6 +185,42 @@ With `up --agent -- --tool-set hri`, the agent also has the HRI tools, and
 `find_people` reads the oracle's two guests. Ask "Is anyone waving at you?" and
 the tool log shows `find_people` returning `person_1`.
 
+### Scripts and the verdict
+
+`--scripts` gives the agent `run_script`
+([Scripts on the agent](../architecture/agent.md#scripts-on-the-agent)). It needs
+`bwrap` on the computer. Without it the agent exits with code 2 at startup, and
+`up` reports that the agent part exited.
+
+```bash
+scripts/chula-sim.sh up --agent --arms -- --tool-set hri --people-memory mock --scripts
+```
+
+Give it a task with several steps, such as "Go to the sofa, then the table, then
+come back to the living room." The tool log shows each `run_script` call with its
+script and a `calls` list, one `tool: status` line for each call the script made.
+
+Once the task has ended and you have checked what the robot did, judge it on
+`/walkie/verdict`, `true` if it did the task and `false` if not. The console
+keeps no messages for a late listener, so start the first command in another
+terminal before you publish:
+
+```bash
+eval "$(scripts/chula-sim.sh env)"
+pixi run ros2 topic echo /walkie/console rai_interfaces/msg/HRIMessage --field text
+```
+
+```bash
+eval "$(scripts/chula-sim.sh env)"
+pixi run ros2 topic pub -w 1 --once /walkie/verdict std_msgs/msg/Bool "{data: true}"
+```
+
+The agent answers on `/walkie/console` with one line: which functions it
+verified, that the task proved none, or that it ignored the verdict. It ignores
+a verdict while a task runs and a second verdict on the same task. A question
+the agent asks ends a task too, so judge after its last reply. Each verdict is
+also a line of `logs/agent-tools.jsonl`, with the tool `verdict`.
+
 ## Stop it
 
 ```bash
@@ -247,6 +283,16 @@ Everything goes under `SIM_DIR`, `/var/tmp/walkie-chula-sim` by default.
   the `ros2` daemon, is not in the group and is left running.
 - `ros/`: `ROS_HOME` and the ROS logs.
 - `worlds/`: the world the launch file generates.
+
+The functions an agent with `--scripts` saves are not under `SIM_DIR`. They go to
+the function store, `WALKIE_TOOLS_HOME` if the shell that runs `up` sets it, and
+otherwise `src/walkie_agent/tools/` of the checkout that runs the agent. A saved
+function is in `temporary/<name>.py`, a version a passed verdict verified is also
+in `bundled/<name>.py`, and `ledger.jsonl` records each save, each script that
+used a saved function, and each version a verdict verified. Git ignores all
+three there. To start from an empty
+store, set `WALKIE_TOOLS_HOME` to a new folder outside any git work tree before
+`up`.
 
 `SIM_ZENOH_PORT`, `SIM_DOMAIN_ID` and `SIM_CPUS` (`taskset -c`) are the other
 settings. The script's header lists them.

@@ -32,11 +32,10 @@ from walkie_agent.mahoraga.tasks import (
     dataset,
     episode_robot,
     ground_truth,
-    script_record,
     spec_of,
 )
 from walkie_agent.mahoraga.worlds import build_world, world_seed
-from walkie_agent.scripting.driver import ScriptRunner, allow_list
+from walkie_agent.scripting.driver import ScriptRunner, allow_list, script_record
 from walkie_agent.scripting.sandbox import open_pool
 
 # Fields that differ between any two runs of the same thing: clocks, random ids

@@ -1,8 +1,7 @@
 """A function counts as used, returned or raised from what it did at run time, not from its name.
 
-These test walkie_agent.scripting.evidence, but they live with the gym's tests: the
-episode's veto they check is tasks._proven, over tasks.script_record, and the gym's
-tasks module imports inspect_ai.
+These test walkie_agent.scripting.evidence and the veto over it, driver.proven over
+driver.script_record, which the gym's scorer and the agent's verdict both apply.
 """
 
 import ast
@@ -13,8 +12,7 @@ from types import SimpleNamespace
 import pytest
 
 import walkie_agent.scripting.driver as driver
-from walkie_agent.mahoraga.tasks import _proven, script_record
-from walkie_agent.scripting.driver import Budgets, ScriptRunner
+from walkie_agent.scripting.driver import Budgets, ScriptRunner, script_record
 from walkie_agent.scripting.evidence import Watch
 from walkie_agent.scripting.shelf import Shelf, shape, source_sha, top_level_defs
 
@@ -56,7 +54,7 @@ def test_a_raise_in_a_failed_script_counts_against_the_version_it_ran(pool, tmp_
     assert second.saved == []
     assert second.returned == {}
     assert second.raised == first.returned == {"divide": source_sha(divide)}
-    assert _proven([{"returned": r.returned, "raised": r.raised} for r in (first, second)]) == {}
+    assert driver.proven([{"returned": r.returned, "raised": r.raised} for r in (first, second)]) == {}
 
 
 DIVIDE = "def divide(divisor=1): return 1 / divisor\n"
@@ -72,7 +70,7 @@ def _verify_after(pool, tmp_path, fns, second_code, saved=DIVIDE):
     second = runner.run(second_code, fns)
     assert first.returned == {"divide": source_sha(saved)}
     assert second.saved == []
-    proven = _proven([script_record("", first), script_record(second_code, second)])
+    proven = driver.proven([script_record("", first), script_record(second_code, second)])
     shelf.mark_verified(proven)
     return proven, Shelf(shelf.root, frozen=True).names()
 
@@ -147,8 +145,8 @@ def _episode(pool, tmp_path, fns, saved, copy, name="divide"):
     assert (second.saved, recovery.ok) == ([], True)
     records = [script_record(saved + f"{name}()", first), script_record(copy, second), script_record("1", recovery)]
     # Without the copy the saved version is proven, so whatever the episode refuses, the copy refused.
-    assert _proven([records[0], records[2]]) == first.returned
-    proven = _proven(records)
+    assert driver.proven([records[0], records[2]]) == first.returned
+    proven = driver.proven(records)
     shelf.mark_verified(proven)
     return second, proven, Shelf(shelf.root, frozen=True).names()
 
@@ -281,7 +279,7 @@ def test_a_raise_through_a_shelf_version_vetoes_a_rewrite_of_the_same_shape(pool
 
     assert (loaded.shelf_raised, rewrite.saved) == (["divide"], ["divide"])
     assert loaded.shapes[source_sha(DIVIDE_ON_TWO_LINES)] == rewrite.shapes[source_sha(commented)]
-    proven = _proven([script_record("divide(0)", loaded), script_record(commented + "divide()", rewrite)])
+    proven = driver.proven([script_record("divide(0)", loaded), script_record(commented + "divide()", rewrite)])
     shelf.mark_verified(proven)
     assert proven == {}
     assert Shelf(shelf.root, frozen=True).names() == []
@@ -355,7 +353,7 @@ def test_a_raise_through_a_shelf_version_vetoes_a_rewrite_of_the_same_shape(pool
     ],
 )
 def test_proven_compares_versions_by_shape_and_falls_back_to_the_sha(scripts, proven):
-    assert _proven(scripts) == proven
+    assert driver.proven(scripts) == proven
 
 
 # A top-level def after lines that end in a lone \r, which the parser and Monty both accept.
@@ -393,7 +391,7 @@ def test_a_version_saved_and_returned_in_one_script_is_verified_and_frozen_whate
     code = f"def divide(divisor=1):{ending}    return 1 / divisor{ending}divide()"
 
     result = ScriptRunner(pool, shelf=shelf).run(code, fns, save=["divide"])
-    shelf.mark_verified(_proven([script_record(code, result)]))
+    shelf.mark_verified(driver.proven([script_record(code, result)]))
 
     assert (result.ok, result.output, result.saved) == (True, 1.0, ["divide"]), result.error
     assert (shelf.temporary / "divide.py").read_bytes() == DIVIDE_ON_TWO_LINES.encode()
@@ -410,7 +408,7 @@ def test_a_string_across_lines_holds_the_same_value_when_it_runs_and_once_it_is_
     code = f'def note() -> str:{ending}    return """first{ending}second"""{ending}note()'
 
     result = ScriptRunner(pool, shelf=shelf).run(code, fns, save=["note"])
-    shelf.mark_verified(_proven([script_record(code, result)]))
+    shelf.mark_verified(driver.proven([script_record(code, result)]))
     frozen = ScriptRunner(pool, shelf=Shelf(shelf.root, frozen=True)).run("note()", fns)
 
     assert (result.ok, result.output, result.saved) == (True, "first\nsecond", ["note"]), result.error

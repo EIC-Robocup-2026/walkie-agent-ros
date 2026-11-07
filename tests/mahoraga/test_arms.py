@@ -16,7 +16,7 @@ from walkie_agent.mahoraga.commands import commands
 from walkie_agent.mahoraga.gym import gpsr_task, run_episodes
 from walkie_agent.mahoraga.oracle import oracle_script
 from walkie_agent.mahoraga.report import arm_metrics
-from walkie_agent.mahoraga.tasks import _proven
+from walkie_agent.scripting import driver
 from walkie_agent.scripting.shelf import Shelf
 
 MOCK = "mockllm/model"
@@ -399,7 +399,7 @@ def test_the_version_last_run_in_an_episode_is_verified_in_either_hash_order(gat
     ],
 )
 def test_proven_keeps_each_names_last_version_that_returned_and_never_raised(scripts, proven):
-    assert _proven([{"returned": returned, "raised": raised} for returned, raised in scripts]) == proven
+    assert driver.proven([{"returned": returned, "raised": raised} for returned, raised in scripts]) == proven
 
 
 def test_a_shelf_name_in_dead_code_is_no_hit_and_earns_nothing(gated):

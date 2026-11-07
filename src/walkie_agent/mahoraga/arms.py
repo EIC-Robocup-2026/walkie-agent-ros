@@ -21,12 +21,12 @@ from pydantic_monty import Monty
 from walkie_agent.adapter import as_tool, as_tools
 from walkie_agent.capabilities import Ctx
 from walkie_agent.capabilities.fake import CHULA_PAT14_6_PLACES
-from walkie_agent.mahoraga.tasks import script_record
 from walkie_agent.scripting.driver import (
     Budgets,
     ScriptRunner,
     allow_list,
     describe_functions,
+    script_record,
     script_summary,
 )
 from walkie_agent.scripting.shelf import Shelf

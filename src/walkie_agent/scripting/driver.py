@@ -409,6 +409,53 @@ def script_summary(result: ScriptResult) -> dict[str, Any]:
     return summary
 
 
+def script_record(code: str, result: ScriptResult) -> dict[str, Any]:
+    """One script's record for whoever verifies after the task, which the model never sees."""
+    return {
+        "code": code,
+        "ok": result.ok,
+        "phase": result.phase,
+        "error": result.error,
+        "calls": result.calls,
+        "shelf_used": result.shelf_used,
+        "shelf_raised": result.shelf_raised,
+        "returned": result.returned,
+        "raised": result.raised,
+        "unwatched": [list(version) for version in result.unwatched],
+        "shapes": result.shapes,
+        "saved": result.saved,
+        "refused": result.refused,
+    }
+
+
+def proven(scripts: Sequence[Mapping[str, Any]]) -> dict[str, str]:
+    """Per name, the last version that returned in a task and that nothing raised through in it.
+
+    `scripts` holds the script_record of each script of one task. A version that ran
+    where no wrapper watched it counts as raised. Versions match by name and shape,
+    from each script's own `shapes`, so a raise through a copy at another depth or laid
+    out another way counts against the version it copies. They also match by name and
+    sha, which is all a record from before `shapes` existed, or a sha missing from its
+    record's shapes, has to go on. A record from before `unwatched` existed has none.
+    What is proven is the text sha, as the ledger keeps it.
+    """
+
+    def keys(script: Mapping[str, Any], name: str, sha: str) -> set[tuple[str, str, str]]:
+        shape = script.get("shapes", {}).get(sha)
+        return {("sha", name, sha)} | ({("shape", name, shape)} if shape else set())
+
+    raised: set[tuple[str, str, str]] = set()
+    for script in scripts:
+        for name, sha in [*script["raised"].items(), *script.get("unwatched", ())]:
+            raised |= keys(script, name, sha)
+    versions: dict[str, str] = {}
+    for script in scripts:
+        for name, sha in script["returned"].items():
+            if not keys(script, name, sha) & raised:
+                versions[name] = sha
+    return versions
+
+
 def _invalid(name: str, fn: Callable[..., Any], exc: ValidationError) -> str:
     """One line per bad argument. Pydantic gives a positional argument's index, so name it."""
     parameters = list(inspect.signature(fn).parameters)

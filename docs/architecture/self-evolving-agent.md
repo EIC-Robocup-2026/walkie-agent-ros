@@ -305,7 +305,11 @@ demotes the session in the middle of a bundle. A preset may add
 started, so a perception failure never moves an arm. Full results go to
 `$WALKIE_TOOLS_HOME/runs/<tool>/<ts>.json`, never to
 `ToolMessage.artifact`, because RAI pickles every artifact into
-`./artifact_database.pkl`, which also needs adding to `.gitignore`.
+`./artifact_database.pkl`, which also needs adding to `.gitignore`. The
+built `$WALKIE_TOOLS_HOME` is the script shelf's store root, inside the
+repository by default, where git ignores only the shelf's own files, so
+`runs/` needs a root of its own or its own ignore rule
+([demo decision T17](mahoraga-demo-decisions.md#tools-and-scripts)).
 
 ```text title="ToolMessage at a decision point (status=success)"
 pickup_object_in_view STOPPED at step 2/5 'match' (search_detections): AMBIGUOUS

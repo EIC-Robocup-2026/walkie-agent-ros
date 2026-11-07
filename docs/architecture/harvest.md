@@ -361,7 +361,12 @@ distance_threshold=1 - τ_review)` (scikit-learn 1.9.1, installed here).
 ## H6. Report and human review
 
 Each run writes `$WALKIE_TOOLS_HOME/harvest/<run-id>/report.json` and
-`report.md`.
+`report.md`. As built in the demo, `$WALKIE_TOOLS_HOME` names the script
+shelf's store root, by default `src/walkie_agent/tools/` inside the
+repository, where git ignores only `temporary/`, `bundled/` and `ledger.jsonl`
+([demo decision T17](mahoraga-demo-decisions.md#tools-and-scripts)). The
+harvest's folders here need a root of their own, or their own ignore rules,
+before they are built.
 
 | Part | Contents |
 |---|---|

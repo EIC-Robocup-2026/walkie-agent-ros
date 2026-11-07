@@ -638,7 +638,7 @@ argument: a separate query writer sees only this task's human utterances.
 | Search keys, kill switch | walkie-agent-ros | `.env.example`: `WALKIE_BRAVE_KEY_ROBOT`, `WALKIE_TAVILY_KEY_ROBOT`, `WALKIE_BRAVE_KEY_SIM`, `WALKIE_TAVILY_KEY_SIM`; `config.toml`: `[walkie.search]` (new) |
 | Search shaping | walkie-agent-ros | `config/search_denylist.txt`, `config/site_names.toml` (new) |
 | Robot-PC check | walkie-agent-ros | `scripts/robot_check.sh` (new) |
-| Traces | each sim or robot machine | `$WALKIE_TOOLS_HOME/runs/` (new, never in git) |
+| Traces | each sim or robot machine | `$WALKIE_TOOLS_HOME/runs/` (new, never in git; the built variable is the script shelf's store root, inside the repository by default, see [demo decision T17](mahoraga-demo-decisions.md#tools-and-scripts)) |
 | Markers | dev and harvest machines; robot PC | `/etc/walkie/sim-host`; `/etc/walkie/robot` (new, root-owned) |
 | bwrap copy, AppArmor profile | robot PC, only on `BWRAP_FAILED` | `/opt/walkie/bin/bwrap`, a profile in `/etc/apparmor.d/` (new) |
 | Controller names | walkie-ros (existing) | `description/config/ros2_controller/mujoco_controllers.yaml` and `real_controllers.yaml` (robot-description submodule), `bringup/config/openarm/openarm_v10_bimanual_controllers.yaml` |

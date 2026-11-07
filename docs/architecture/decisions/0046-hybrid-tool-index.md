@@ -138,6 +138,14 @@ tool search to the vision service.
 the repository, by default `~/.local/share/walkie/tools`. `embed_cache` is
 a table of vectors keyed by text hash and `model_id`.
 
+As built in the demo (decision T17 of the
+[demo decisions](/architecture/mahoraga-demo-decisions.md#tools-and-scripts)),
+`$WALKIE_TOOLS_HOME` names the script shelf's store root instead, by default
+`src/walkie_agent/tools/` inside the repository, and git ignores only
+`temporary/`, `bundled/` and `ledger.jsonl` there. The index and harvest
+folders below need a root of their own, or their own ignore rules, before
+they are built.
+
 | | In sim | At Competition |
 | - | ------ | -------------- |
 | Index | `$WALKIE_TOOLS_HOME/index.sqlite`, WAL mode, never in git, always rebuildable from the tool files | Built in memory at startup from the git tiers |

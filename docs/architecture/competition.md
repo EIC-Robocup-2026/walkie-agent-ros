@@ -432,7 +432,12 @@ thing reuses the tool made for the first visitor.
 - A quarantine copy goes to `$WALKIE_TOOLS_HOME/quarantine/<date>/<name>@<sha8>/`
   (`~/.local/share/walkie/tools`): the code or asset, its hash, the coder
   model, the intent with personal data removed, the level, a timestamp, the
-  web sources (site names only, for search) and the license.
+  web sources (site names only, for search) and the license. As built in the
+  demo, `$WALKIE_TOOLS_HOME` names the script shelf's store root instead, by
+  default `src/walkie_agent/tools/` inside the repository, where git ignores
+  only `temporary/`, `bundled/` and `ledger.jsonl`
+  ([demo decision T17](mahoraga-demo-decisions.md#tools-and-scripts)). The
+  quarantine needs a root of its own before it is built.
 - Copies are never loaded automatically. The harvest imports them into its
   quarantine lane, useful sounds join the pack after a license check, and
   copies are deleted after 30 days. A Competition run loads no file from

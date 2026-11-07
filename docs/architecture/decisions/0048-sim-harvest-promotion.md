@@ -11,7 +11,10 @@ need ([ADR-0037](/architecture/decisions/0037-tool-tiers-bundles-effects.md),
 [ADR-0039](/architecture/decisions/0039-access-levels.md)). Some are worth
 keeping, but none can be trusted on its own evidence. The agent's claim of
 success can be wrong, a draft can pass once by luck, and a draft made at
-Competition was shaped by a visitor's words.
+Competition was shaped by a visitor's words. As built in the demo,
+`$WALKIE_TOOLS_HOME` names the script shelf's store root instead, by default
+inside the repository (decision T17 of the
+[demo decisions](/architecture/mahoraga-demo-decisions.md#tools-and-scripts)).
 
 Judging drafts needs many unattended episodes and a truth to score them
 against. walkie-ros's MuJoCo simulation can provide both

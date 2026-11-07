@@ -349,8 +349,16 @@ store root, with `ledger.jsonl` beside them:
 | Path | Holds | Written by |
 | --- | --- | --- |
 | `temporary/<name>.py` | The latest saved version of each function | A run with `save=[names]` that succeeds |
-| `bundled/<name>.py` | The last verified version of each function, with exactly the text that ran, so its sha is the one in the verified event | `mark_verified`, which only the scorer calls, after a success |
+| `bundled/<name>.py` | The last verified version of each function, with exactly the text that ran, so its sha is the one in a verified event | `mark_verified`, which only the scorer calls, after a success, and a save of a version verified before |
 | `ledger.jsonl` | The saved, run, fail and verified events, each keyed to a version's sha | Every save, run and verification |
+
+Which version `bundled/` holds follows one rule: the version in `temporary/` if
+the ledger verifies it, and otherwise the version verified last. `mark_verified`
+writes that after its events, and a save writes a version to `bundled/` when the
+ledger already verifies it. So an episode that ran an older version and is scored
+after the latest one was verified, as can happen while `induct` runs eight episodes
+at once, does not replace the latest, and a script that saves an earlier verified
+version again puts it back.
 
 The ledger stays the record. The store root is `root`, then `WALKIE_TOOLS_HOME`,
 then the tools package's own folder, `src/walkie_agent/tools`. The tier folders'
@@ -369,9 +377,12 @@ shelf, as arms C and C2 have, fixes its callable set when it is built, from
 `bundled/`: a function counts only if the ledger holds a verified event for the
 sha of its file there and `temporary/` still holds that same version. So a rewrite
 that has not been verified keeps its function off, and a file copied into
-`bundled/` by hand, with no verified event, is ignored. A verified function that
-names a saved function left off stays off as well (M18). `mark_verified` refuses a
-version whose text the shelf never read or wrote, with nothing logged.
+`bundled/` by hand, with no verified event, is ignored. With the rule above, the
+callable set is the latest version of each function that the ledger verifies, as
+`counts()` reports it and as the shelf chose before the tier folders, whatever order
+episodes were scored in. A verified function that names a saved function left off
+stays off as well (M18). `mark_verified` refuses a version whose text the shelf
+never read or wrote, with nothing logged.
 
 The gym's home keeps only gate results and run logs. It is the `--home` argument,
 then `MAHORAGA_HOME`, then `~/.local/share/mahoraga`, and it may not be inside a git
@@ -379,6 +390,11 @@ work tree. The shelf is not in it: `--shelf` names the store root for `run` and
 `report`, and each run's log records the store root and the callable set's digest
 in its metadata, as `shelf_root` and `shelf_digest`. A report without `--shelf`
 reads the shelf its logs record, and refuses logs that ran on different shelves.
+Logs that record none, of arms A and B alone or from before the tier folders, read
+the default store: `WALKIE_TOOLS_HOME`, then the package folder. The report's
+`shelf.root` names the store its M10 read. The `report` command prints `Refused:`
+and exits 2 only for a store the shelf refuses (`StoreRefused`), and any other error
+keeps its traceback.
 
 What a function earns comes from what it did at run time, never from its name in a
 script. `evidence.Watch` wraps each shelf function a script loads and each definition

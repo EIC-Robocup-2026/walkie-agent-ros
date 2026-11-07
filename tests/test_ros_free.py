@@ -1,10 +1,12 @@
-"""The foundation imports no ROS, and nothing still names a removed module.
+"""The foundation, run_script's runtime and the Mahoraga gym import no ROS, and nothing
+still names a removed module.
 
 The import checks run in a fresh interpreter, since other test modules import rclpy
 into this one. PYTHONPATH puts this tree's src first, because the environment's
 editable install of walkie_agent can point at another checkout.
 """
 
+import importlib.util
 import json
 import os
 import re
@@ -19,17 +21,19 @@ SRC = ROOT / "src"
 
 IMPORT_EVERY_NEW_MODULE = """
 import importlib, json, pkgutil, sys
-import walkie_agent.atomics, walkie_agent.capabilities, walkie_agent.perception, walkie_agent.runtime
-import walkie_agent.arm
+import walkie_agent.tools.atomic, walkie_agent.capabilities, walkie_agent.perception, walkie_agent.runtime
+import walkie_agent.arm, walkie_agent.scripting
 names = ["walkie_agent.errors", "walkie_agent.adapter", "walkie_agent.tasks", "walkie_agent.locations"]
+names += ["walkie_agent.tools", "walkie_agent.tools.bundled_preset"]
 # The simulation's scene, its file and its projection; the sim package's ROS nodes are left out.
 names += ["walkie_agent.sim." + name for name in ("scene", "scene_file", "projection", "fake_vectors")]
 for package in (
     walkie_agent.capabilities,
-    walkie_agent.atomics,
+    walkie_agent.tools.atomic,
     walkie_agent.perception,
     walkie_agent.runtime,
     walkie_agent.arm,
+    walkie_agent.scripting,
 ):
     names.append(package.__name__)
     names += [found.name for found in pkgutil.iter_modules(package.__path__, package.__name__ + ".")]
@@ -38,21 +42,41 @@ loaded = sorted({name.partition(".")[0] for name in sys.modules})
 print(json.dumps({"files": files, "loaded": loaded}))
 """
 
+# Every module of the gym but its command line, which only `python -m` runs.
+IMPORT_THE_GYM = """
+import importlib, json, pkgutil, sys
+import walkie_agent.mahoraga as gym
+names = [gym.__name__]
+names += [
+    found.name
+    for found in pkgutil.iter_modules(gym.__path__, gym.__name__ + ".")
+    if found.name != gym.__name__ + ".__main__"
+]
+files = {name: importlib.import_module(name).__file__ for name in names}
+loaded = sorted({name.partition(".")[0] for name in sys.modules})
+print(json.dumps({"files": files, "loaded": loaded}))
+"""
+
+# Only the mahoraga pixi environment has them (tests/test_mahoraga_absent.py).
+GYM_DEPENDENCIES = ("inspect_ai", "robocupathome_generator")
+
 # Stands in for a real import, so the negative control needs no ROS installation.
 FAKE_ROS_IMPORT = 'import sys, types\nsys.modules["rclpy"] = types.ModuleType("rclpy")\n'
 
 ROS = re.compile(r"rclpy|rai|rai_.*|rosidl_.*|.*_msgs|.*_srvs|.*_interfaces")
 
-# The modules of the RAI-hosted agent, in any spelling of an import or a path.
+# The modules of the RAI-hosted agent, in any spelling of an import or a path. The
+# walkie_agent.tools package that holds the atomics now is not one of them.
 REMOVED = re.compile(
-    r"walkie_agent[./](agent|graph|todo|whoami|tools)\b"
-    r"|from walkie_agent import [^\n]*\b(agent|graph|todo|whoami|tools)\b"
+    r"walkie_agent[./](agent|graph|todo|whoami)\b"
+    r"|walkie_agent[./]tools[./](memory|navigation|speech|todos|waiters)\b"
+    r"|from walkie_agent import [^\n]*\b(agent|graph|todo|whoami)\b"
+    r"|from walkie_agent\.tools import [^\n]*\b(memory|navigation|speech|todos|waiters)\b"
 )
 REMOVED_NAMES = re.compile(r"\b(TodoList|WalkieToolRunner|WalkieAgent|build_walkie_graph)\b")
 CODE_AND_BUILD = [
     "src",
     "tests",
-    "mahoraga",
     "scripts",
     "docker",
     ".github",
@@ -84,12 +108,19 @@ def test_importing_every_new_module_loads_no_ros():
         "walkie_agent.capabilities.fake",
         "walkie_agent.capabilities.guards",
         "walkie_agent.capabilities.records",
-        "walkie_agent.atomics",
-        "walkie_agent.atomics.facts",
-        "walkie_agent.atomics.navigation",
-        "walkie_agent.atomics.speech",
-        "walkie_agent.atomics.perception",
-        "walkie_agent.atomics.manipulation",
+        "walkie_agent.tools",
+        "walkie_agent.tools.atomic",
+        "walkie_agent.tools.atomic.facts",
+        "walkie_agent.tools.atomic.navigation",
+        "walkie_agent.tools.atomic.speech",
+        "walkie_agent.tools.atomic.perception",
+        "walkie_agent.tools.atomic.manipulation",
+        "walkie_agent.tools.bundled_preset",
+        "walkie_agent.scripting",
+        "walkie_agent.scripting.driver",
+        "walkie_agent.scripting.evidence",
+        "walkie_agent.scripting.sandbox",
+        "walkie_agent.scripting.shelf",
         "walkie_agent.runtime",
         "walkie_agent.runtime.agent",
         "walkie_agent.runtime.middleware",
@@ -112,6 +143,20 @@ def test_importing_every_new_module_loads_no_ros():
 def test_the_check_would_catch_a_ros_import():
     _, ros = ros_modules_loaded_by(FAKE_ROS_IMPORT + IMPORT_EVERY_NEW_MODULE)
     assert "rclpy" in ros
+
+
+@pytest.mark.skipif(
+    any(importlib.util.find_spec(name) is None for name in GYM_DEPENDENCIES),
+    reason="The gym's dependencies are only in the mahoraga pixi environment.",
+)
+def test_importing_the_gym_loads_no_ros():
+    files, ros = ros_modules_loaded_by(IMPORT_THE_GYM)
+    assert ros == []
+    assert {
+        "walkie_agent.mahoraga." + name
+        for name in ("arms", "checkers", "commands", "gate", "gym", "oracle", "report", "tasks", "worlds")
+    } <= set(files)
+    assert all(Path(file).is_relative_to(SRC) for file in files.values())
 
 
 def _files_under(*relative: str) -> list[Path]:
@@ -144,7 +189,7 @@ def test_no_code_or_build_file_names_a_removed_module():
 
 
 def test_no_code_uses_a_removed_class():
-    assert _mentions(_files_under("src", "mahoraga", "scripts"), REMOVED_NAMES) == []
+    assert _mentions(_files_under("src", "scripts"), REMOVED_NAMES) == []
 
 
 def test_tests_cannot_read_a_dotenv_file(tmp_path, monkeypatch):
@@ -158,8 +203,20 @@ def test_tests_cannot_read_a_dotenv_file(tmp_path, monkeypatch):
 
 def test_the_sweep_would_catch_a_removed_module(tmp_path):
     bad = tmp_path / "bad.py"
-    bad.write_text("from walkie_agent.graph import x\nfrom walkie_agent import tools, errors\n")
-    assert len(_mentions([bad], REMOVED)) == 2
+    bad.write_text(
+        "from walkie_agent.graph import x\n"
+        "from walkie_agent.tools.todos import y\n"
+        "from walkie_agent.tools import waiters, memory\n"
+    )
+    assert len(_mentions([bad], REMOVED)) == 3
+    # The tools package that holds the atomics is not the removed one.
+    good = tmp_path / "good.py"
+    good.write_text(
+        "from walkie_agent import tools, errors\n"
+        "from walkie_agent.tools import atomic\n"
+        "import walkie_agent.tools.atomic.memory\n"
+    )
+    assert _mentions([good], REMOVED) == []
 
 
 def test_no_docs_page_names_a_removed_module():

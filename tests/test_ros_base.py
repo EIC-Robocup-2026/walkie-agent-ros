@@ -36,13 +36,13 @@ from ros_fakes import (
 from walkie_agent.arm.answers import drive_verdict
 from walkie_agent.arm.results import NOT_FOUND, DriveCheck
 from walkie_agent.arm.state import ARMS_OUT, ArmsState, ArmState
-from walkie_agent.atomics import face_person, move_relative
 from walkie_agent.capabilities import Ctx, PersonSeen
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location
 from walkie_agent.ros import FORBIDDEN_NAMES, RosBase, UnavailableVision
 from walkie_agent.ros.commander import STOP_TOPIC
+from walkie_agent.tools.atomic import face_person, move_relative
 
 PLACES = {
     "kitchen": Location("kitchen", 1.0, 2.0, math.pi / 2),
@@ -780,7 +780,7 @@ def test_the_turn_atomics_answer_the_arm_refusal_while_tf_is_missing(caplog):
     for what, turn in turns.items():
         reads = len(rig.connector.tf_reads)
         with (
-            caplog.at_level("INFO", logger="walkie_agent.atomics.navigation"),
+            caplog.at_level("INFO", logger="walkie_agent.tools.atomic.navigation"),
             pytest.raises(StepError) as raised,
         ):
             bounded(turn)

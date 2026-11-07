@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from conftest import PROJECT_ROOT
-from walkie_agent.atomics import DEFAULT, GPSR, HRI
 from walkie_agent.runtime.todos import parse_seed
 from walkie_agent.tasks import (
     TaskTemplate,
@@ -15,6 +14,7 @@ from walkie_agent.tasks import (
     load_task_templates,
     parse_task_message,
 )
+from walkie_agent.tools.atomic import DEFAULT, GPSR, HRI
 
 TEMPLATES_FILE = PROJECT_ROOT / "config" / "task_templates.toml"
 

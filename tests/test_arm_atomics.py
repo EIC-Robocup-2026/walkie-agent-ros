@@ -27,16 +27,6 @@ from walkie_agent.arm.state import (
     ArmsState,
     ArmState,
 )
-from walkie_agent.atomics import (
-    ARMS,
-    ARM_TOOLS,
-    get_arm_state,
-    go_to,
-    list_arm_poses,
-    move_arm_to_pose,
-    set_gripper,
-)
-from walkie_agent.atomics import arms as arm_atomics
 from walkie_agent.capabilities import (
     NO_ARMS,
     ArmsMoved,
@@ -48,6 +38,16 @@ from walkie_agent.capabilities import (
 )
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
+from walkie_agent.tools.atomic import (
+    ARMS,
+    ARM_TOOLS,
+    get_arm_state,
+    go_to,
+    list_arm_poses,
+    move_arm_to_pose,
+    set_gripper,
+)
+from walkie_agent.tools.atomic import arms as arm_atomics
 
 HOME = ArmState("home", True)
 HANDS_UP = ArmState("hands_up", False)

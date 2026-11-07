@@ -4,8 +4,8 @@ import inspect
 
 import pytest
 
-from walkie_agent import atomics
-from walkie_agent.atomics import (
+from walkie_agent.tools import atomic
+from walkie_agent.tools.atomic import (
     ARM_TOOLS,
     ARMS,
     DEFAULT,
@@ -136,9 +136,9 @@ def test_the_memory_tools_are_in_hri_alone():
 
 def test_every_public_atomic_is_in_a_set():
     public = {
-        getattr(atomics, name)
-        for name in atomics.__all__
-        if inspect.isfunction(getattr(atomics, name))
+        getattr(atomic, name)
+        for name in atomic.__all__
+        if inspect.isfunction(getattr(atomic, name))
     }
     assert public == set(ALL)
 

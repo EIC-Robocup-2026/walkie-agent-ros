@@ -69,7 +69,6 @@ from rai.communication.ros2 import ROS2Connector
 from rclpy.signals import SignalHandlerOptions
 
 from walkie_agent.arm.poses import ArmPoses, load_arm_poses
-from walkie_agent.atomics import ARM_TOOLS, ARMS, DEFAULT, GPSR, HRI
 from walkie_agent.capabilities import (
     Arms,
     CancelToken,
@@ -110,6 +109,7 @@ from walkie_agent.runtime.model import (
     load_config,
 )
 from walkie_agent.tasks import TaskTemplate, check_required_tools, load_task_templates
+from walkie_agent.tools.atomic import ARM_TOOLS, ARMS, DEFAULT, GPSR, HRI
 
 logger = logging.getLogger(__name__)
 

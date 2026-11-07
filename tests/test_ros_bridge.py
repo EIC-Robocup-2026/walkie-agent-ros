@@ -29,13 +29,13 @@ from sensor_msgs.msg import Image
 from std_msgs.msg import Empty, String
 
 from walkie_agent.adapter import as_tools
-from walkie_agent.atomics import DEFAULT, GPSR, HRI, find_objects, find_people
 from walkie_agent.capabilities import Ctx
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.ros import RosBridge, UnavailableVision
 from walkie_agent.runtime import STOP_LINE, Runner, build_agent
 from walkie_agent.tasks import TaskTemplate
+from walkie_agent.tools.atomic import DEFAULT, GPSR, HRI, find_objects, find_people
 
 DONE = AIMessage("Done.")
 TOUR = TaskTemplate(

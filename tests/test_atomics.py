@@ -7,7 +7,17 @@ import math
 
 import pytest
 
-from walkie_agent.atomics import (
+from walkie_agent.capabilities import CancelToken, Ctx, PersonSeen, Recognized, Remembered
+from walkie_agent.capabilities.fake import FakeRobot
+from walkie_agent.capabilities.guards import (
+    MAX_FACT_KEY_CHARS,
+    MAX_FACT_VALUE_CHARS,
+    MAX_FACTS,
+    MAX_MOVE_M,
+    MAX_NAME_CHARS,
+)
+from walkie_agent.errors import ErrorCode, GoalFailed, StepError
+from walkie_agent.tools.atomic import (
     face_person,
     find_objects,
     find_people,
@@ -22,16 +32,6 @@ from walkie_agent.atomics import (
     remember_person,
     say,
 )
-from walkie_agent.capabilities import CancelToken, Ctx, PersonSeen, Recognized, Remembered
-from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.capabilities.guards import (
-    MAX_FACT_KEY_CHARS,
-    MAX_FACT_VALUE_CHARS,
-    MAX_FACTS,
-    MAX_MOVE_M,
-    MAX_NAME_CHARS,
-)
-from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 
 WORLD = {
     "places": {
@@ -290,7 +290,7 @@ def test_a_person_whose_direction_is_unknown_is_unavailable(robot):
 )
 def test_a_turn_reported_failed_that_ends_within_10_degrees_still_faces_the_person(caplog, short, reply):
     robot = facing(40.0)
-    with caplog.at_level(logging.INFO, logger="walkie_agent.atomics.navigation"):
+    with caplog.at_level(logging.INFO, logger="walkie_agent.tools.atomic.navigation"):
         assert face_person(short_turns(robot, short), "jane") == reply
     assert f"Counting the turn to jane as done, {abs(short):.1f} degrees off" in caplog.text
 
@@ -327,7 +327,7 @@ def test_a_move_that_only_turns_and_ends_within_10_degrees_counts_as_done(
     caplog, turn, short, heading
 ):
     robot = facing(40.0)
-    with caplog.at_level(logging.INFO, logger="walkie_agent.atomics.navigation"):
+    with caplog.at_level(logging.INFO, logger="walkie_agent.tools.atomic.navigation"):
         reply = move_relative(short_turns(robot, short), 0.0, 0.0, turn)
     assert reply.startswith("Moved ")
     assert reply.endswith(f"heading {heading:.0f} degrees.")
@@ -380,7 +380,7 @@ def test_a_turn_whose_goal_wraps_to_further_than_10_degrees_counts_as_done_withi
     caplog, turn
 ):
     robot = facing(40.0)
-    with caplog.at_level(logging.INFO, logger="walkie_agent.atomics.navigation"):
+    with caplog.at_level(logging.INFO, logger="walkie_agent.tools.atomic.navigation"):
         reply = move_relative(short_turns(robot, 3.0), 0.0, 0.0, turn)
     assert reply.startswith(f"Moved turning {abs(turn):g} degrees ")
     assert f"Counting the turn of {turn:g} degrees as done, 3.0 degrees off" in caplog.text
@@ -459,7 +459,7 @@ def test_a_turn_whose_start_pose_cannot_be_read_raises_the_base_s_refusal(turn, 
 def test_a_turn_whose_start_pose_cannot_be_read_still_turns_and_says_so(caplog, turn, reply, read):
     robot = facing(40.0)
     robot.faults["base.pose"] = unread(read)
-    with caplog.at_level(logging.INFO, logger="walkie_agent.atomics.navigation"):
+    with caplog.at_level(logging.INFO, logger="walkie_agent.tools.atomic.navigation"):
         assert TURNS[turn](robot.ctx) == reply
     assert base_verbs(robot) == ["base.pose", "base.move_relative"]
     assert "without its start pose" in caplog.text
@@ -505,7 +505,7 @@ def test_a_turn_reported_failed_whose_end_pose_cannot_be_read_raises_the_failure
     ctx = short_turns(robot, 3.0, error)
     reads = fails_after_the_start(ctx, robot, unread(read))
     with (
-        caplog.at_level(logging.INFO, logger="walkie_agent.atomics.navigation"),
+        caplog.at_level(logging.INFO, logger="walkie_agent.tools.atomic.navigation"),
         pytest.raises(StepError) as raised,
     ):
         TURNS[turn](ctx)

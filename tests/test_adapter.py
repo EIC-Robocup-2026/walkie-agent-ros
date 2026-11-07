@@ -19,7 +19,9 @@ from walkie_agent.adapter import (
     format_tool_error,
     tool_error_middleware,
 )
-from walkie_agent.atomics import (
+from walkie_agent.capabilities.fake import FakeRobot
+from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.tools.atomic import (
     DEFAULT,
     GPSR,
     HRI,
@@ -31,8 +33,6 @@ from walkie_agent.atomics import (
     remember_person,
     say,
 )
-from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.errors import ErrorCode, StepError
 
 
 @pytest.fixture

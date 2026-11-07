@@ -8,12 +8,12 @@ from pathlib import Path
 import pytest
 
 from walkie_agent.adapter import as_tool
-from walkie_agent.atomics import get_facts
 from walkie_agent.capabilities import CancelToken, Ctx, Team
 from walkie_agent.capabilities.facts import SystemFacts, facts_from_config
 from walkie_agent.capabilities.fake import FakeRobot, chula_pat14_6
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.runtime.model import load_config
+from walkie_agent.tools.atomic import get_facts
 
 REPO_CONFIG = Path(__file__).resolve().parents[1] / "config.toml"
 EIC = Team("EIC", "Thailand", "Chulalongkorn University")

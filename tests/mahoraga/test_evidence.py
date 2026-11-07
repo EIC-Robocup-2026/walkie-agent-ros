@@ -1,0 +1,1131 @@
+"""A function counts as used, returned or raised from what it did at run time, not from its name.
+
+These test walkie_agent.scripting.evidence, but they live with the gym's tests: the
+episode's veto they check is tasks._proven, over tasks.script_record, and the gym's
+tasks module imports inspect_ai.
+"""
+
+import ast
+import functools
+import re
+from types import SimpleNamespace
+
+import pytest
+
+import walkie_agent.scripting.driver as driver
+from walkie_agent.mahoraga.tasks import _proven, script_record
+from walkie_agent.scripting.driver import Budgets, ScriptRunner
+from walkie_agent.scripting.evidence import Watch
+from walkie_agent.scripting.shelf import Shelf, shape, source_sha, top_level_defs
+
+VALUE ="def value() -> int:\n    return 1\n"
+BAD = 'def bad() -> str:\n    return go_to("garage")\n'
+OUTER = "def outer() -> str:\n    return bad()\n"
+CATCHES = 'def catches() -> str:\n    try:\n        return bad()\n    except RuntimeError:\n        return "caught"\n'
+HIDDEN = re.compile(r"_h[0-9a-f]{16}")
+
+
+@pytest.fixture
+def shelf(tmp_path):
+    shelf = Shelf(tmp_path / "shelf")
+    code = VALUE + BAD + OUTER + CATCHES
+    assert shelf.save(code, ["value", "bad", "outer", "catches"])[0] == ["bad", "catches", "outer", "value"]
+    return shelf
+
+
+@pytest.fixture
+def run(pool, shelf, fns):
+    runner = ScriptRunner(pool, shelf=shelf)
+    return lambda code, **kwargs: runner.run(code, fns, **kwargs)
+
+
+def _events(shelf, name):
+    return {key: shelf.counts()[name][key] for key in ("run", "fail", "verified")}
+
+
+def test_a_raise_in_a_failed_script_counts_against_the_version_it_ran(pool, tmp_path, fns):
+    """The script saved nothing, but the same text is on the shelf, so its verification must not stand."""
+    divide = "def divide(divisor=1):\n    return 1 / divisor\n"
+    runner = ScriptRunner(pool, shelf=Shelf(tmp_path / "shelf"))
+
+    first = runner.run(divide + "divide()", fns, save=["divide"])
+    second = runner.run(divide + "divide(0)", fns, save=["divide"])
+
+    assert first.saved == ["divide"]
+    assert second.ok is False
+    assert second.saved == []
+    assert second.returned == {}
+    assert second.raised == first.returned == {"divide": source_sha(divide)}
+    assert _proven([{"returned": r.returned, "raised": r.raised} for r in (first, second)]) == {}
+
+
+DIVIDE = "def divide(divisor=1): return 1 / divisor\n"
+# Indented, a definition over two lines keeps the scope's indentation on its second line.
+DIVIDE_ON_TWO_LINES = "def divide(divisor=1):\n    return 1 / divisor\n"
+
+
+def _verify_after(pool, tmp_path, fns, second_code, saved=DIVIDE):
+    """Save and return `saved` in one script, run `second_code` unsaved, score both, freeze."""
+    shelf = Shelf(tmp_path / "shelf")
+    runner = ScriptRunner(pool, shelf=shelf)
+    first = runner.run(saved + "divide()", fns, save=["divide"])
+    second = runner.run(second_code, fns)
+    assert first.returned == {"divide": source_sha(saved)}
+    assert second.saved == []
+    proven = _proven([script_record("", first), script_record(second_code, second)])
+    shelf.mark_verified(proven)
+    return proven, Shelf(shelf.root, frozen=True).names()
+
+
+@pytest.mark.parametrize(
+    ("saved", "second_code"),
+    [
+        # Watched: the wrapper sees the raise.
+        (DIVIDE, DIVIDE + "divide(0)"),
+        # The others go unwatched, so their versions count as raised.
+        (DIVIDE, DIVIDE + "divide = divide\ndivide(0)"),
+        (
+            DIVIDE,
+            DIVIDE + "try:\n    divide(0)\nexcept ZeroDivisionError:\n    pass\n"
+            "def divide(divisor=1): return 2 / divisor\ndivide()",
+        ),
+        (DIVIDE, "if True:\n    def divide(divisor=1): return 1 / divisor\ndivide(0)"),
+        (DIVIDE, "def outer():\n    def divide(divisor=1): return 1 / divisor\n    return divide(0)\nouter()"),
+        (DIVIDE_ON_TWO_LINES, "if True:\n    def divide(divisor=1):\n        return 1 / divisor\ndivide(0)"),
+        (
+            DIVIDE_ON_TWO_LINES,
+            "def outer():\n    def divide(divisor=1):\n        return 1 / divisor\n    return divide(0)\nouter()",
+        ),
+    ],
+    ids=[
+        "watched",
+        "bound-twice",
+        "redefined-later",
+        "conditional",
+        "nested",
+        "conditional-on-two-lines",
+        "nested-on-two-lines",
+    ],
+)
+def test_a_raise_through_an_unsaved_copy_keeps_the_version_off_the_frozen_shelf(
+    pool, tmp_path, fns, saved, second_code
+):
+    """The second script asks to save nothing, so only its raise can stop the verification."""
+    proven, frozen = _verify_after(pool, tmp_path, fns, second_code, saved)
+
+    assert "divide" not in proven
+    assert frozen == []
+
+
+def _definition(code, name):
+    """The one definition of `name` in `code`, at any depth."""
+    (node,) = [node for node in ast.walk(ast.parse(code)) if isinstance(node, ast.FunctionDef) and node.name == name]
+    return node
+
+
+NOTE = 'def note() -> str:\n    return """first\nsecond"""\n'
+# The same function with four spaces before its string's second line, a different value.
+NOTE_INDENTED = 'def note() -> str:\n    return """first\n    second"""\n'
+
+
+def _lf(text):
+    """`text` with `\\r\\n` and `\\r` line endings as `\\n`, as the shelf holds a version."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _episode(pool, tmp_path, fns, saved, copy, name="divide"):
+    """Save `saved` and return through it, run the unsaved `copy`, recover, score all three, freeze.
+
+    Returns the copy's result, what the episode proves and the names on the frozen shelf.
+    """
+    shelf = Shelf(tmp_path / "shelf")
+    runner = ScriptRunner(pool, shelf=shelf)
+    first = runner.run(saved + f"{name}()", fns, save=[name])
+    second = runner.run(copy, fns)
+    recovery = runner.run("1", fns)
+    assert (first.ok, first.saved, first.returned) == (True, [name], {name: source_sha(_lf(saved))})
+    assert (second.saved, recovery.ok) == ([], True)
+    records = [script_record(saved + f"{name}()", first), script_record(copy, second), script_record("1", recovery)]
+    # Without the copy the saved version is proven, so whatever the episode refuses, the copy refused.
+    assert _proven([records[0], records[2]]) == first.returned
+    proven = _proven(records)
+    shelf.mark_verified(proven)
+    return second, proven, Shelf(shelf.root, frozen=True).names()
+
+
+# Each copy sits beside the top-level definition it copies, so the two have one shape.
+_COPIES = pytest.mark.parametrize(
+    ("top_level", "code", "name"),
+    [
+        (DIVIDE_ON_TWO_LINES, "if True:\n    def divide(divisor=1):\n        return 1 / divisor\n", "divide"),
+        (
+            DIVIDE_ON_TWO_LINES,
+            "def outer():\n    def divide(divisor=1):\n        return 1 / divisor\n    return divide(0)\n",
+            "divide",
+        ),
+        (
+            DIVIDE_ON_TWO_LINES,
+            "def outer():\n    if True:\n        def divide(divisor=1):\n            return 1 / divisor\n    return divide(0)\n",
+            "divide",
+        ),
+        (DIVIDE_ON_TWO_LINES, "if True:\n\tdef divide(divisor=1):\n\t    return 1 / divisor\n", "divide"),
+        (DIVIDE_ON_TWO_LINES, "if True:\n\f    def divide(divisor=1):\n        return 1 / divisor\n", "divide"),
+        # A lone \r ends a line for the parser, as \r\n does.
+        (
+            "def divide(divisor=1):\r    return 1 / divisor\n",
+            "if True:\r    def divide(divisor=1):\r        return 1 / divisor\r",
+            "divide",
+        ),
+        (
+            "def divide(divisor=1):\r\n    return 1 / divisor\n",
+            "if True:\r\n    def divide(divisor=1):\r\n        return 1 / divisor\r\n",
+            "divide",
+        ),
+        # A string keeps its text, so a string line indented with the rest copies a
+        # top-level string that holds the same spaces.
+        (NOTE, 'if True:\n    def note() -> str:\n        return """first\nsecond"""\n', "note"),
+        (NOTE_INDENTED, 'if True:\n    def note() -> str:\n        return """first\n    second"""\n', "note"),
+        # The shape leaves the decorators out, as the text did by starting at the def.
+        (DIVIDE_ON_TWO_LINES, "def wrap(fn):\n    return fn\n\n@wrap\ndef divide(divisor=1):\n    return 1 / divisor\n", "divide"),
+    ],
+    ids=[
+        "conditional",
+        "nested",
+        "two-scopes-deep",
+        "tab-indented",
+        "form-feed-before-the-indentation",
+        "lone-carriage-return-line-endings",
+        "crlf-line-endings",
+        "string-line-at-column-0",
+        "string-line-indented-with-the-rest",
+        "decorated",
+    ],
+)
+
+
+@_COPIES
+def test_an_indented_copy_has_the_shape_of_the_same_definition_at_top_level(top_level, code, name):
+    saved = shape(top_level_defs(top_level)[name])
+    watch = Watch(code, {}, watch_own=True)
+
+    assert shape(_definition(code, name)) == saved
+    assert [watch.shapes[sha] for unwatched, sha in watch.unwatched if unwatched == name] == [saved]
+
+
+@_COPIES
+def test_an_indented_copy_keeps_the_same_definition_at_top_level_off_the_frozen_shelf(
+    pool, tmp_path, fns, top_level, code, name
+):
+    """No wrapper watches the copy, so it counts as raised whether it ran or not."""
+    _, proven, frozen = _episode(pool, tmp_path, fns, top_level, code, name)
+
+    assert proven == {}
+    assert frozen == []
+
+
+@pytest.mark.parametrize(
+    "copy",
+    [
+        "if True:\n\x0c    def divide(divisor=1):\n\x0c        return 1 / divisor\ndivide(0)",
+        "if True:\n    \\\ndef divide(divisor=1):\n        return 1 / divisor\ndivide(0)",
+        "if True:\n   \\\n def divide(divisor=1):\n        return 1 / divisor\ndivide(0)",
+        "if True:\n    def divide(divisor=1):\n        # One over the divisor.\n\n        return 1 / divisor\ndivide(0)",
+    ],
+    ids=[
+        "form-feed-on-each-indented-line",
+        "indentation-before-a-continuation",
+        "indentation-split-across-a-continuation",
+        "comment-and-blank-line",
+    ],
+)
+def test_a_raise_through_a_copy_laid_out_another_way_keeps_the_saved_version_off_the_frozen_shelf(
+    pool, tmp_path, fns, copy
+):
+    second, proven, frozen = _episode(pool, tmp_path, fns, DIVIDE_ON_TWO_LINES, copy)
+
+    assert second.phase == "runtime"
+    assert "ZeroDivisionError" in second.error
+    assert proven == {}
+    assert frozen == []
+
+
+def test_a_raise_through_a_copy_that_computes_something_else_does_not_veto_the_saved_version(pool, tmp_path, fns):
+    copy = "if True:\n    def divide(divisor=1):\n        return 2 / divisor\ndivide(0)"
+
+    second, proven, frozen = _episode(pool, tmp_path, fns, DIVIDE_ON_TWO_LINES, copy)
+
+    assert "ZeroDivisionError" in second.error
+    assert proven == {"divide": source_sha(DIVIDE_ON_TWO_LINES)}
+    assert frozen == ["divide"]
+
+
+def test_a_copy_whose_string_holds_other_text_does_not_veto_the_saved_version(pool, tmp_path, fns):
+    """Indented with the rest, the copy's string has four more spaces, so it returns another value."""
+    copy = 'if True:\n    def note() -> str:\n        return """first\n    second"""\nnote()'
+
+    _, proven, frozen = _episode(pool, tmp_path, fns, NOTE, copy, "note")
+
+    assert proven == {"note": source_sha(NOTE)}
+    assert frozen == ["note"]
+
+
+def test_a_raise_through_a_shelf_version_vetoes_a_rewrite_of_the_same_shape(pool, tmp_path, fns):
+    """The shelf version's shape comes from the shelf's source the run loaded."""
+    commented = "def divide(divisor=1):\n    # One over the divisor.\n    return 1 / divisor\n"
+    shelf = Shelf(tmp_path / "shelf")
+    assert shelf.save(DIVIDE_ON_TWO_LINES, ["divide"])[0] == ["divide"]
+    runner = ScriptRunner(pool, shelf=shelf)
+
+    loaded = runner.run("divide(0)", fns)
+    rewrite = runner.run(commented + "divide()", fns, save=["divide"])
+
+    assert (loaded.shelf_raised, rewrite.saved) == (["divide"], ["divide"])
+    assert loaded.shapes[source_sha(DIVIDE_ON_TWO_LINES)] == rewrite.shapes[source_sha(commented)]
+    proven = _proven([script_record("divide(0)", loaded), script_record(commented + "divide()", rewrite)])
+    shelf.mark_verified(proven)
+    assert proven == {}
+    assert Shelf(shelf.root, frozen=True).names() == []
+
+
+@pytest.mark.parametrize(
+    ("scripts", "proven"),
+    [
+        # A record from before shapes existed compares shas.
+        ([{"returned": {"f": "aaa"}, "raised": {}}, {"returned": {}, "raised": {"f": "aaa"}}], {}),
+        ([{"returned": {"f": "aaa"}, "raised": {}}, {"returned": {}, "raised": {"f": "bbb"}}], {"f": "aaa"}),
+        ([{"returned": {"f": "aaa"}, "raised": {}, "unwatched": [["f", "aaa"]]}], {}),
+        ([{"returned": {"f": "aaa"}, "raised": {}, "unwatched": [["f", "bbb"]]}], {"f": "aaa"}),
+        # Two shas of one shape are one version for the veto, and the text sha is what is proven.
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {"aaa": "one"}},
+                {"returned": {}, "raised": {}, "unwatched": [["f", "bbb"]], "shapes": {"bbb": "one"}},
+            ],
+            {},
+        ),
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {"aaa": "one"}},
+                {"returned": {}, "raised": {"f": "bbb"}, "shapes": {"bbb": "one"}},
+            ],
+            {},
+        ),
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {"aaa": "one"}},
+                {"returned": {}, "raised": {"f": "bbb"}, "shapes": {"bbb": "two"}},
+            ],
+            {"f": "aaa"},
+        ),
+        # A shape vetoes its own name only.
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {"aaa": "one"}},
+                {"returned": {}, "raised": {"g": "bbb"}, "shapes": {"bbb": "one"}},
+            ],
+            {"f": "aaa"},
+        ),
+        # A sha the record has no shape for still vetoes the same sha.
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {"aaa": "one"}},
+                {"returned": {}, "raised": {"f": "aaa"}},
+            ],
+            {},
+        ),
+        (
+            [
+                {"returned": {"f": "aaa"}, "raised": {}, "shapes": {}},
+                {"returned": {}, "raised": {"f": "aaa"}, "shapes": {"bbb": "one"}},
+            ],
+            {},
+        ),
+    ],
+    ids=[
+        "old-same-sha-raised",
+        "old-other-sha-raised",
+        "old-same-sha-unwatched",
+        "old-other-sha-unwatched",
+        "same-shape-unwatched",
+        "same-shape-raised",
+        "other-shape-raised",
+        "same-shape-other-name",
+        "same-sha-without-a-shape",
+        "same-sha-missing-from-the-shapes",
+    ],
+)
+def test_proven_compares_versions_by_shape_and_falls_back_to_the_sha(scripts, proven):
+    assert _proven(scripts) == proven
+
+
+# A top-level def after lines that end in a lone \r, which the parser and Monty both accept.
+LONE_CR = "# comment\rdef divide(divisor=1):\r    return 1 / divisor\r"
+
+
+def test_a_definition_after_lone_carriage_returns_is_watched_on_its_own_line():
+    watch = Watch(LONE_CR, {}, watch_own=True)
+
+    assert list(watch.own_versions) == ["divide"]
+    assert watch.unwatched == []
+    assert re.fullmatch(r"# comment\rdef _h[0-9a-f]{16}_divide\(divisor=1\):\r    return 1 / divisor\r", watch.code)
+
+
+def test_a_script_with_lone_carriage_returns_runs_and_its_definition_is_counted(pool, tmp_path, fns):
+    runner = ScriptRunner(pool, shelf=Shelf(tmp_path / "shelf"))
+    version = {"divide": source_sha(DIVIDE_ON_TWO_LINES)}
+
+    returned = runner.run(LONE_CR + "divide(2)", fns, save=["divide"])
+    raised = runner.run(LONE_CR + "divide(0)", fns)
+
+    assert (returned.ok, returned.output, returned.saved) == (True, 0.5, ["divide"]), returned.error
+    assert returned.returned == version
+    assert raised.phase == "runtime"
+    assert "ZeroDivisionError" in raised.error
+    assert raised.raised == version
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r", "\r\n"], ids=["lf", "lone-cr", "crlf"])
+def test_a_version_saved_and_returned_in_one_script_is_verified_and_frozen_whatever_its_line_endings(
+    pool, tmp_path, fns, ending
+):
+    """The sha the run returns and the ledger saves is the one the shelf reports when it reads the file back."""
+    shelf = Shelf(tmp_path / "shelf")
+    code = f"def divide(divisor=1):{ending}    return 1 / divisor{ending}divide()"
+
+    result = ScriptRunner(pool, shelf=shelf).run(code, fns, save=["divide"])
+    shelf.mark_verified(_proven([script_record(code, result)]))
+
+    assert (result.ok, result.output, result.saved) == (True, 1.0, ["divide"]), result.error
+    assert (shelf.root / "divide.py").read_bytes() == DIVIDE_ON_TWO_LINES.encode()
+    assert result.returned == shelf.versions() == {"divide": source_sha(DIVIDE_ON_TWO_LINES)}
+    assert shelf.counts()["divide"]["verified"] == 1
+    assert Shelf(shelf.root, frozen=True).names() == ["divide"]
+
+
+@pytest.mark.parametrize("ending", ["\r", "\r\n"], ids=["lone-cr", "crlf"])
+def test_a_string_across_lines_holds_the_same_value_when_it_runs_and_once_it_is_saved(pool, tmp_path, fns, ending):
+    """Monty would keep the CR inside the string, while the shelf saves the definition with LF (M62)."""
+    shelf = Shelf(tmp_path / "shelf")
+    code = f'def note() -> str:{ending}    return """first{ending}second"""{ending}note()'
+
+    result = ScriptRunner(pool, shelf=shelf).run(code, fns, save=["note"])
+    shelf.mark_verified(_proven([script_record(code, result)]))
+    frozen = ScriptRunner(pool, shelf=Shelf(shelf.root, frozen=True)).run("note()", fns)
+
+    assert (result.ok, result.output, result.saved) == (True, "first\nsecond", ["note"]), result.error
+    assert (frozen.ok, frozen.output, frozen.shelf_used) == (True, "first\nsecond", ["note"]), frozen.error
+
+
+def test_a_string_across_lone_carriage_returns_compares_as_python_reads_it(pool, tmp_path, fns):
+    """The string holds LF, so it is not the escaped CR, and the division raises before anything is saved."""
+    code = "def f():\r    return 1 / (\"\"\"a\rb\"\"\" == 'a\\rb')\rf()"
+
+    result = ScriptRunner(pool, shelf=Shelf(tmp_path / "shelf")).run(code, fns, save=["f"])
+
+    assert result.phase == "runtime"
+    assert "ZeroDivisionError" in result.error
+    assert result.saved == [] and result.returned == {}
+
+
+def test_an_error_after_lone_carriage_returns_names_its_own_lines(pool, fns):
+    code = "# a\r# b\rdef divide(divisor=1):\r    return 1 / divisor\rdivide(0)"
+
+    result = ScriptRunner(pool).run(code, fns)
+
+    assert result.phase == "runtime"
+    assert "line 5" in result.error and "line 4" in result.error
+
+
+@pytest.mark.parametrize("line", ["# \x00", 's = "\x00"'], ids=["comment", "string"])
+def test_a_script_that_python_cannot_parse_does_not_run(pool, tmp_path, fns, line):
+    """Monty would run it, with none of its definitions seen by the evidence's parser (M63)."""
+    shelf = Shelf(tmp_path / "shelf")
+    runner = ScriptRunner(pool, shelf=shelf)
+    first = runner.run(DIVIDE_ON_TWO_LINES + "divide()", fns, save=["divide"])
+    code = DIVIDE_ON_TWO_LINES + 'go_to("kitchen")\n' + line + "\ntry:\n    divide(0)\nexcept ZeroDivisionError:\n    pass\n1"
+
+    second = runner.run(code, fns, save=["divide"])
+
+    assert (second.ok, second.phase) == (False, "syntax")
+    assert "null bytes" in second.error
+    assert second.calls == [] and second.returned == second.raised == {} and second.shelf_used == []
+    assert second.refused == {"divide": "The script did not succeed."}
+    assert _events(shelf, "divide") == {"run": 0, "fail": 0, "verified": 0}
+    assert first.ok
+
+
+def test_a_u_prefix_leaves_a_definition_its_shape():
+    saved = _definition('def divide(divisor=1):\n    return "s" * (1 // divisor)\n', "divide")
+    prefixed = _definition('def divide(divisor=1):\n    return u"s" * (1 // divisor)\n', "divide")
+
+    assert shape(prefixed) == shape(saved)
+    assert prefixed.body[0].value.left.kind == "u"
+
+
+def test_a_built_tree_with_an_empty_kind_has_the_shape_of_one_with_none():
+    saved = _definition('def f():\n    return "x"\n', "f")
+    built = _definition('def f():\n    return "x"\n', "f")
+    built.body[0].value.kind = ""
+
+    assert shape(built) == shape(saved)
+    assert built.body[0].value.kind == ""
+
+
+def test_a_raise_through_a_copy_with_a_u_prefix_keeps_the_saved_version_off_the_frozen_shelf(pool, tmp_path, fns):
+    """The prefix changes no value, so the copy computes what the saved version does (M64)."""
+    saved = 'def divide(divisor=1):\n    return "s" * (1 // divisor)\n'
+    copy = 'def divide(divisor=1):\n    return u"s" * (1 // divisor)\n'
+    code = copy + "try:\n    divide(0)\nexcept ZeroDivisionError:\n    pass\n1"
+
+    second, proven, frozen = _episode(pool, tmp_path, fns, saved, code)
+
+    assert second.ok and second.raised == {"divide": source_sha(copy)}
+    assert "divide" not in proven
+    assert frozen == []
+
+
+def test_a_definition_nested_deeper_than_a_deep_copy_reaches_still_runs_and_saves(pool, tmp_path, fns):
+    """ast.dump, the parser and Monty all read this, so its shape must too (M66)."""
+    code = "def f():\n    return " + "[" * 190 + "1" + "]" * 190 + "\nf()"
+    runner = ScriptRunner(pool, shelf=Shelf(tmp_path / "shelf"))
+
+    result = runner.run(code, fns, save=["f"])
+
+    assert (result.ok, result.saved) == (True, ["f"])
+    assert result.returned == {"f": "c32d1cf56da9e2b5"}
+    assert "c32d1cf56da9e2b5" in result.shapes
+
+
+@pytest.mark.parametrize(
+    "body",
+    ["+".join(["1"] * 256), "(1)" + ".real" * 240, '"a"' + "[0]" * 240],
+    ids=["sum", "attributes", "subscripts"],
+)
+def test_a_definition_too_deep_for_monty_ends_as_its_syntax_error(pool, tmp_path, fns, body):
+    runner = ScriptRunner(pool, shelf=Shelf(tmp_path / "shelf"))
+
+    result = runner.run(f"def f():\n    return {body}\nf()", fns, save=["f"])
+
+    assert (result.ok, result.phase) == (False, "syntax")
+    assert "too deeply nested" in result.error
+    assert result.refused == {"f": "The script did not succeed."}
+
+
+def test_a_lone_surrogate_is_refused_as_syntax_without_a_shelf(pool, fns):
+    """Python's parser cannot encode it as UTF-8, so it raises UnicodeEncodeError, not SyntaxError (M67)."""
+    result = ScriptRunner(pool).run('"\ud800"', fns, save=["f"])
+
+    assert (result.ok, result.phase) == (False, "syntax")
+    assert "not valid UTF-8" in result.error
+    assert result.refused == {"f": "This run has no shelf."}
+
+
+def test_a_script_too_deep_for_python_s_parser_is_refused_as_syntax(pool, tmp_path, fns):
+    shelf = Shelf(tmp_path / "shelf")
+
+    result = ScriptRunner(pool, shelf=shelf).run("+".join(["1"] * 100000), fns, save=["f"])
+
+    assert (result.ok, result.phase) == (False, "syntax")
+    assert result.error.startswith("RecursionError:")
+    assert result.calls == [] and result.refused == {"f": "The script did not succeed."}
+
+
+@pytest.mark.parametrize(
+    ("where", "error", "phase"),
+    [
+        ("parser", MemoryError, "budget"),
+        ("evidence", MemoryError, "budget"),
+        ("evidence", RecursionError, "syntax"),
+    ],
+)
+def test_the_host_running_out_while_it_reads_a_script_ends_as_a_result(
+    pool, tmp_path, fns, monkeypatch, where, error, phase
+):
+    """The host reads the script before Monty's budgets apply, so a failure there is a refusal (M67)."""
+
+    def runs_out(*args, **kwargs):
+        raise error
+
+    shelf = Shelf(tmp_path / "shelf")
+    runner = ScriptRunner(pool, shelf=shelf)
+    monkeypatch.setattr(*((driver.ast, "parse") if where == "parser" else (driver, "Watch")), runs_out)
+
+    result = runner.run('go_to("kitchen")\ndef f():\n    return 1\nf()', fns, save=["f"])
+
+    assert (result.ok, result.phase) == (False, phase)
+    assert result.error.startswith(f"{error.__name__}:")
+    assert result.calls == [] and result.saved == [] and result.refused == {"f": "The script did not succeed."}
+    assert shelf.names() == []
+
+
+def test_an_unsaved_copy_that_returns_does_not_block_the_verification(pool, tmp_path, fns):
+    proven, frozen = _verify_after(pool, tmp_path, fns, DIVIDE + "divide(2)")
+
+    assert proven == {"divide": source_sha(DIVIDE)}
+    assert frozen == ["divide"]
+
+
+def test_each_unwatched_version_of_a_name_is_kept(run):
+    code = "def mine() -> int:\n    return 1\n\nfirst = mine()\n\ndef mine() -> int:\n    return 2\n\nfirst + mine()"
+
+    result = run(code)
+
+    assert result.output == 3
+    assert result.raised == {}
+    assert [name for name, _ in result.unwatched] == ["mine", "mine"]
+    assert len({sha for _, sha in result.unwatched}) == 2
+
+
+def test_a_function_that_ran_is_used_and_returned(run, shelf):
+    result = run("value()")
+
+    assert result.shelf_used == ["value"]
+    assert result.shelf_raised == []
+    assert result.returned == {"value": shelf.versions()["value"]}
+    assert result.raised == {}
+    assert _events(shelf, "value") == {"run": 1, "fail": 0, "verified": 0}
+
+
+def test_a_name_in_dead_code_is_not_a_use(run, shelf):
+    result = run("if False:\n    value()\n1")
+
+    assert result.ok
+    assert result.shelf_used == []
+    assert result.returned == {}
+    assert _events(shelf, "value") == {"run": 0, "fail": 0, "verified": 0}
+
+
+def test_a_name_only_read_is_not_a_use(run):
+    assert run("kept = value\n1").shelf_used == []
+
+
+def test_a_script_that_never_starts_uses_nothing(run, shelf):
+    result = run('value()\nvalue("too many")')
+
+    assert result.phase == "type_check"
+    assert result.shelf_used == []
+    assert _events(shelf, "value") == {"run": 0, "fail": 0, "verified": 0}
+
+
+def test_a_raise_its_caller_caught_still_counts_as_raised(run, shelf):
+    result = run("try:\n    bad()\nexcept RuntimeError:\n    pass\n1")
+
+    assert result.ok
+    assert (result.shelf_used, result.shelf_raised) == (["bad"], ["bad"])
+    assert result.returned == {}
+    assert result.raised == {"bad": shelf.versions()["bad"]}
+
+
+def test_a_raise_through_two_functions_counts_for_both(run):
+    result = run("try:\n    outer()\nexcept RuntimeError:\n    pass\n1")
+
+    assert result.shelf_used == ["bad", "outer"]
+    assert result.shelf_raised == ["bad", "outer"]
+
+
+def test_a_function_that_handled_a_raise_returned_and_the_inner_one_raised(run):
+    result = run("catches()")
+
+    assert result.output == "caught"
+    assert result.shelf_used == ["bad", "catches"]
+    assert result.shelf_raised == ["bad"]
+    assert list(result.returned) == ["catches"]
+
+
+def test_a_raise_on_one_call_counts_even_if_another_call_returned(pool, tmp_path, fns):
+    shelf = Shelf(tmp_path / "other")
+    shelf.save('def maybe(place: str) -> str:\n    return go_to(place)\n', ["maybe"])
+
+    result = ScriptRunner(pool, shelf=shelf).run(
+        'maybe("shelf")\ntry:\n    maybe("garage")\nexcept RuntimeError:\n    pass', fns
+    )
+
+    assert result.shelf_raised == ["maybe"]
+    assert result.raised == result.returned == shelf.versions()
+
+
+def test_a_script_that_fails_after_a_function_returned_keeps_its_evidence(run, shelf):
+    result = run("value()\n1 / 0")
+
+    assert not result.ok
+    assert (result.shelf_used, result.shelf_raised) == (["value"], [])
+    assert _events(shelf, "value") == {"run": 0, "fail": 1, "verified": 0}
+
+
+def test_the_ledger_keys_a_run_to_the_source_that_ran(run, shelf):
+    ran = run("value()").returned
+    shelf.save("def value() -> int:\n    return 2\n", ["value"])
+
+    assert ran != shelf.versions()
+    shelf.mark_verified(ran)
+    assert _events(shelf, "value") == {"run": 0, "fail": 0, "verified": 0}
+    assert "value" not in Shelf(shelf.root, frozen=True).names()
+
+
+def test_counting_spends_no_call_and_leaves_the_ledger_alone(run):
+    result = run('catches()\nvalue()\nsay("hi")')
+
+    assert [call["tool"] for call in result.calls] == ["go_to", "say"]
+
+
+def test_a_shelf_function_still_works_as_a_key_function(pool, tmp_path, fns):
+    shelf = Shelf(tmp_path / "other")
+    shelf.save("def backwards(n: int) -> int:\n    return -n\n", ["backwards"])
+
+    result = ScriptRunner(pool, shelf=shelf).run("sorted([1, 3, 2], key=backwards)", fns)
+
+    assert result.output == [3, 2, 1]
+    assert result.shelf_used == ["backwards"]
+
+
+def test_a_shelf_function_keeps_its_signature_in_the_type_check(run):
+    result = run("value(1)")
+
+    assert result.phase == "type_check"
+    assert not HIDDEN.search(result.error)
+
+
+def test_wrong_arguments_at_run_time_read_as_the_functions_own(run):
+    result = run("value(1)  # type: ignore")
+
+    assert result.phase == "runtime"
+    assert "value()" in result.error
+    assert not HIDDEN.search(result.error)
+
+
+def test_a_runtime_error_shows_only_the_scripts_own_frames(run):
+    result = run("bad()")
+
+    assert result.phase == "runtime"
+    assert 'return go_to("garage")' in result.error
+    assert "value = " not in result.error
+    assert "kwargs" not in result.error
+    assert not HIDDEN.search(result.error)
+
+
+def test_a_call_budget_inside_a_watched_function_is_spent_as_before(pool, tmp_path, fns):
+    shelf = Shelf(tmp_path / "other")
+    shelf.save('def loud() -> None:\n    while True:\n        say("x")\n', ["loud"])
+
+    result = ScriptRunner(pool, shelf=shelf).run("loud()", fns)
+
+    assert result.phase == "budget"
+    assert (result.shelf_used, result.shelf_raised) == (["loud"], ["loud"])
+    assert len(result.calls) == 40
+
+
+@pytest.fixture
+def clocked(monkeypatch, fns):
+    """fns with a go_to that takes 31 s on a clock only it moves."""
+    clock = SimpleNamespace(now=0.0)
+    monkeypatch.setattr(driver, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    go_to_on_robot = fns["go_to"]
+
+    @functools.wraps(go_to_on_robot)
+    def slow(*args, **kwargs):
+        clock.now += 31.0
+        return go_to_on_robot(*args, **kwargs)
+
+    return {**fns, "go_to": slow}
+
+
+@pytest.fixture
+def to_shelf(pool, tmp_path):
+    shelf = Shelf(tmp_path / "other")
+    shelf.save('def to_shelf() -> str:\n    return go_to("shelf")\n', ["to_shelf"])
+    return ScriptRunner(pool, shelf=shelf)
+
+
+def test_a_wall_budget_abort_keeps_the_evidence_of_what_ran(to_shelf, clocked, robot):
+    result = to_shelf.run("to_shelf()\nto_shelf()", clocked)
+
+    assert (result.ok, result.phase) == (False, "budget")
+    assert "wall clock" in result.error
+    assert (result.shelf_used, result.shelf_raised) == (["to_shelf"], ["to_shelf"])
+    assert len(result.calls) == 1
+    assert len([call for call in robot.calls if call["verb"] == "base.go_to"]) == 1
+
+
+def test_a_script_that_catches_the_refusals_cannot_outlast_the_budget(to_shelf, clocked, robot):
+    code = "to_shelf()\nwhile True:\n    try:\n        to_shelf()\n    except TimeoutError:\n        pass"
+
+    result = to_shelf.run(code, clocked)
+
+    assert (result.ok, result.phase) == (False, "budget")
+    assert "wall clock" in result.error
+    assert result.shelf_used == ["to_shelf"]
+    assert len([call for call in robot.calls if call["verb"] == "base.go_to"]) == 1
+
+
+def test_a_script_that_ends_after_the_refusal_still_fails_the_budget(to_shelf, clocked):
+    code = "to_shelf()\ntry:\n    to_shelf()\nexcept TimeoutError:\n    pass\n1"
+
+    assert to_shelf.run(code, clocked).phase == "budget"
+
+
+def test_a_script_that_spins_past_its_feed_is_a_budget_and_keeps_its_evidence(pool, shelf, fns):
+    runner = ScriptRunner(pool, shelf=shelf, budgets=Budgets(feed_s=0.2))
+
+    result = runner.run("value()\nwhile True:\n    pass", fns)
+
+    assert result.phase == "budget", result.error
+    assert result.returned == {"value": shelf.versions()["value"]}
+    assert ScriptRunner(pool, shelf=shelf).run("value()", fns).ok
+
+
+def test_counters_that_cannot_be_read_credit_nothing_and_count_as_raised(run, shelf, monkeypatch):
+    def refuses(*args, **kwargs):
+        raise RuntimeError("monty worker protocol error")
+
+    real = Watch.read
+    monkeypatch.setattr(Watch, "read", lambda self, session: real(self, SimpleNamespace(feed_run=refuses)))
+
+    result = run("value()")
+
+    assert result.ok
+    assert result.shelf_used == []
+    assert result.returned == {}
+    # A raise may be what was lost, so another script's return cannot verify the version.
+    assert result.raised == {"value": shelf.versions()["value"]}
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "globals()  # type: ignore",
+        "vars()  # type: ignore",
+        "dir()  # type: ignore",
+        "eval('1')",
+        "exec('x = 1')",
+        "[eval][0]('1')",
+        "compile('1', 'f', 'eval')  # type: ignore",
+        "__import__('gc')  # type: ignore",
+        "import gc  # type: ignore",
+        "import builtins",
+        "import inspect",
+        "value.__globals__",
+        "value.__closure__",
+        "value.__code__",
+        "value.__wrapped__  # type: ignore",
+        "value.__dict__",
+        "getattr(value, '__globals__')  # type: ignore",
+        "__builtins__",
+    ],
+)
+def test_a_script_cannot_reach_the_counters(run, code):
+    result = run(f"{code}\nvalue()\n1")
+
+    assert result.phase == "runtime", result.error
+    assert not HIDDEN.search(str(result.error))
+    assert result.returned == {}
+
+
+def test_a_name_guessed_for_a_counter_reaches_nothing(run):
+    code = (
+        '_h0000000000000000_in["value"] = 5  # type: ignore\n'
+        '_h0000000000000000_out["value"] = 5  # type: ignore\n'
+        "if False:\n    value()\n1"
+    )
+
+    result = run(code)
+
+    assert result.phase == "runtime", result.error
+    assert result.returned == {}
+    assert result.shelf_used == []
+
+
+# The token does reach the script in a caught error. What it must not do is turn into a name.
+_READ_THE_TOKEN = "try:\n    mine()\nexcept Exception as error:\n    tag = str(error).split('_mine')[0]\n"
+_NEVER_RUNS = "\nif False:\n    value()\n\ndef mine() -> int:\n    return 3\n\n1"
+
+
+@pytest.mark.parametrize(
+    "forge",
+    [
+        "exec(tag + '_in[\"{name}\"] = 1')\nexec(tag + '_out[\"{name}\"] = 1')",
+        "eval(tag + '_in')['{name}'] = 1\neval(tag + '_out')['{name}'] = 1",
+        "run_it = [exec][0]\nrun_it(tag + '_in[\"{name}\"] = 1')\nrun_it(tag + '_out[\"{name}\"] = 1')",
+        "locals()[tag + '_in']['{name}'] = 1\nlocals()[tag + '_out']['{name}'] = 1",
+    ],
+)
+@pytest.mark.parametrize("name", ["mine", "value"])
+def test_a_token_read_from_an_error_forges_no_evidence(run, forge, name):
+    attempt = "".join(f"    {line}\n" for line in forge.format(name=name).split("\n"))
+    code = f"{_READ_THE_TOKEN}try:\n{attempt}except Exception:\n    pass{_NEVER_RUNS}"
+
+    result = run(code, save=["mine"])
+
+    assert result.ok, result.error
+    assert result.saved == ["mine"]
+    assert result.shelf_used == []
+    assert result.returned == {}
+
+
+# A default is evaluated in the shelf's feed, before the loader's shadows exist. That feed
+# defines functions in sorted order, so `take` comes after a saved `set`, which literal_eval
+# would let a default call.
+_EVAL_IN_A_DEFAULT = [
+    "def take(code: str, evaluate=eval):\n    return evaluate(code)\n",
+    "def take(code: str, *, evaluate=eval):\n    return evaluate(code)\n",
+    "def take(code: str, box=[eval]):\n    return box[0](code)\n",
+    "def set():\n    return eval\n\ndef take(code: str, evaluate=set()):\n    return evaluate(code)\n",
+    "def set():\n    return eval\n\ndef take(code: str, box=(set(),)):\n    return box[0](code)\n",
+]
+
+
+def _attempt(line):
+    """A line under a catch, so the run goes on if `take` never reached the shelf.
+
+    `nothing` keeps the ignore comment in use whether or not `take` exists, because the
+    type check refuses an unused one.
+    """
+    return f"try:\n    {line}; nothing  # type: ignore\nexcept Exception:\n    pass\n"
+
+
+@pytest.mark.parametrize("definition", _EVAL_IN_A_DEFAULT)
+def test_a_default_keeps_no_real_eval_to_forge_evidence_with(run, shelf, definition):
+    run(definition, save=list(top_level_defs(definition)))
+    forge = _attempt("take(tag + '_in')['value'] = 1") + _attempt("take(tag + '_out')['value'] = 1")
+
+    result = run(_READ_THE_TOKEN + forge + _NEVER_RUNS, save=["mine"])
+
+    assert result.ok, result.error
+    assert result.returned == {}
+    assert "take" not in shelf.names()
+
+
+@pytest.mark.parametrize("definition", _EVAL_IN_A_DEFAULT)
+def test_a_default_keeps_no_real_eval_to_erase_a_raise_with(run, shelf, definition):
+    run(definition, save=list(top_level_defs(definition)))
+    caught = "try:\n    bad()\nexcept RuntimeError:\n    pass\n"
+    erase = _attempt("take(tag + '_in').pop('bad')") + _attempt("take(tag + '_out').pop('bad', None)")
+
+    result = run(_READ_THE_TOKEN + caught + erase + "\ndef mine() -> int:\n    return 3\n\n1", save=["mine"])
+
+    assert result.ok, result.error
+    assert result.shelf_raised == ["bad"]
+    assert result.raised["bad"] == shelf.versions()["bad"]
+
+
+def test_a_helper_in_a_default_is_refused_and_the_rewrite_around_it_is_counted(pool, tmp_path, fns):
+    shelf = Shelf(tmp_path / "other")
+    runner = ScriptRunner(pool, shelf=shelf)
+    helper = "def helper(place: str) -> str:\n    return go_to(place)\n\n"
+    guarded = "def uses(place: str{}) -> int:\n    try:\n        {}(place)\n    except RuntimeError:\n        pass\n    return 7\n\n"
+
+    in_a_default = runner.run(helper + guarded.format(", fn=helper", "fn") + 'uses("shelf")', fns, save=["helper", "uses"])
+
+    assert in_a_default.ok, in_a_default.error
+    assert in_a_default.saved == ["helper"]
+    assert "literal" in in_a_default.refused["uses"]
+
+    assert runner.run(guarded.format("", "helper"), fns, save=["uses"]).saved == ["uses"]
+
+    result = runner.run('uses("does not exist")', fns)
+
+    assert (result.ok, result.output) == (True, 7), result.error
+    assert (result.shelf_used, result.shelf_raised) == (["helper", "uses"], ["helper"])
+    assert result.raised == {"helper": shelf.versions()["helper"]}
+
+
+_SHADOWED = ["locals", "eval", "exec"]
+
+
+@pytest.mark.parametrize("name", _SHADOWED)
+def test_a_name_the_loader_defines_is_never_watched(name):
+    code = f"def {name}() -> int:\n    return 73\n\n{name}()"
+
+    watch = Watch(code, {"value": "sha"}, watch_own=True)
+
+    assert watch.own_versions == {}
+    assert watch.code == code
+    assert watch.stubs == ""
+
+
+@pytest.mark.parametrize("name", _SHADOWED)
+def test_a_name_the_loader_defines_runs_as_written_and_is_neither_saved_nor_credited(run, shelf, name):
+    result = run(f"def {name}() -> int:\n    return 73\n\n{name}()", save=[name])
+
+    assert (result.ok, result.output) == (True, 73), result.error
+    assert result.saved == []
+    assert "built-in" in result.refused[name]
+    assert result.returned == {}
+    assert name not in shelf.names()
+
+
+@pytest.mark.parametrize("name", _SHADOWED)
+def test_a_script_may_define_a_name_the_loader_defines_for_its_own_use(run, shelf, name):
+    result = run(f"def {name}() -> int:\n    return 73\n\nvalue()\n{name}()")
+
+    assert (result.ok, result.output) == (True, 73), result.error
+    assert result.returned == {"value": shelf.versions()["value"]}
+
+
+def test_locals_shows_nothing_hidden(run):
+    result = run("value()\nlocals()")
+
+    assert result.ok, result.error
+    assert result.output == {}
+
+
+def test_nothing_hidden_reaches_the_ledger_or_the_print(run):
+    code = (
+        "try:\n    mine()\nexcept Exception as error:\n    print(error)\n"
+        "print(value)\nvalue()\nprint(locals())\n\n"
+        "def mine() -> int:\n    return 3\n"
+    )
+
+    result = run(code, save=["mine"])
+
+    assert result.ok, result.error
+    assert "mine is not allowed" in result.printed
+    assert not HIDDEN.search(result.printed)
+    assert result.calls == [{"tool": "mine", "status": "denied"}]
+
+
+def test_a_run_with_nothing_to_watch_has_no_loader(pool, fns, tmp_path):
+    empty = Shelf(tmp_path / "empty")
+
+    assert Watch("say('hi')", {}).loader == ""
+    assert ScriptRunner(pool, shelf=empty).run("len(locals())", fns).ok
+
+
+def test_a_definition_saved_and_called_in_its_own_script_has_evidence(run, shelf, fns):
+    code = "def mine() -> int:\n    return 3\n\nmine()"
+
+    result = run(code, save=["mine"])
+
+    assert (result.ok, result.output, result.saved) == (True, 3, ["mine"])
+    assert result.returned == {"mine": shelf.versions()["mine"]}
+    # It is the script's own, so it is no reuse of the shelf.
+    assert result.shelf_used == []
+    assert shelf.counts()["mine"]["run"] == 0
+
+
+def test_a_definition_saved_but_never_called_has_no_evidence(run):
+    result = run("def mine() -> int:\n    return 3\n", save=["mine"])
+
+    assert result.saved == ["mine"]
+    assert result.returned == {}
+
+
+def test_a_definition_in_dead_code_is_not_called(run):
+    result = run("def mine() -> int:\n    return 3\n\nif False:\n    mine()\n1", save=["mine"])
+
+    assert result.saved == ["mine"]
+    assert result.returned == {}
+
+
+def test_a_definition_that_raised_under_a_catch_has_evidence_of_that(run, shelf):
+    code = 'def mine() -> str:\n    return go_to("garage")\n\ntry:\n    mine()\nexcept RuntimeError:\n    pass\n1'
+
+    result = run(code, save=["mine"])
+
+    assert result.ok
+    assert result.saved == ["mine"]
+    assert result.returned == {}
+    assert result.raised == {"mine": shelf.versions()["mine"]}
+
+
+def test_a_definition_not_saved_earns_no_evidence(run):
+    code = "def mine() -> int:\n    return 3\n\ndef other() -> int:\n    return 4\n\nmine() + other()"
+
+    result = run(code, save=["other"])
+
+    assert result.output == 7
+    assert list(result.returned) == ["other"]
+
+
+def test_a_refused_save_earns_no_evidence(run):
+    code = "LIMIT = 3\n\ndef over() -> int:\n    return LIMIT\n\nover()"
+
+    result = run(code, save=["over"])
+
+    assert result.ok, result.error
+    assert result.saved == []
+    assert result.returned == {}
+
+
+@pytest.mark.parametrize(
+    ("code", "output"),
+    [
+        ("def mine() -> int:\n    return 1\n\ndef mine() -> int:\n    return 2\n\nmine()", 2),
+        ("def mine() -> int:\n    return 1\n\nfirst = mine()\nmine = 5  # type: ignore\nfirst", 1),
+    ],
+)
+def test_a_definition_bound_twice_runs_as_written_and_earns_no_evidence(run, code, output):
+    result = run(code, save=["mine"])
+
+    assert (result.ok, result.output) == (True, output), result.error
+    assert result.returned == {}
+    # Unwatched, so a raise through it would go unseen: the scorer counts it as raised.
+    assert result.raised == {}
+    assert {name for name, _ in result.unwatched} == {"mine"}
+
+
+def test_a_saved_definition_keeps_its_line_numbers_and_name_in_errors(run):
+    code = "# Line one.\ndef mine() -> float:\n    return 1 / 0\n\nmine()"
+
+    result = run(code, save=["mine"])
+
+    assert result.phase == "runtime"
+    assert "line 3, in mine" in result.error
+    assert "line 5" in result.error
+    assert not HIDDEN.search(result.error)
+
+
+def test_a_saved_definition_keeps_its_signature_in_the_type_check(run):
+    code = 'def mine(n: int) -> int:\n    return n\n\nmine("one")'
+
+    result = run(code, save=["mine"])
+
+    assert result.phase == "type_check"
+    assert not HIDDEN.search(result.error)
+
+
+def test_a_saved_definition_with_a_body_type_error_is_caught(run):
+    code = 'def mine() -> int:\n    return say(1)\n\nmine()'
+
+    result = run(code, save=["mine"])
+
+    assert result.phase == "type_check"
+    assert not HIDDEN.search(result.error)
+
+
+def test_calling_a_saved_definition_before_it_exists_fails_under_its_own_name(run):
+    code = "mine()\n\ndef mine() -> int:\n    return 3\n"
+
+    result = run(code, save=["mine"])
+
+    assert not result.ok
+    assert result.calls == [{"tool": "mine", "status": "denied"}]
+    assert "mine" in result.error
+    assert not HIDDEN.search(result.error)
+
+
+def test_a_frozen_shelf_watches_what_it_loads_and_no_definition(run, pool, shelf, fns):
+    shelf.mark_verified(shelf.versions())
+    frozen = ScriptRunner(pool, shelf=Shelf(shelf.root, frozen=True))
+
+    result = frozen.run("def mine() -> int:\n    return value()\n\nmine()", fns, save=["mine"])
+
+    assert result.output == 1
+    assert result.shelf_used == ["value"]
+    assert list(result.returned) == ["value"]
+
+
+def test_a_verified_function_naming_one_that_never_ran_stays_off_the_frozen_shelf(pool, tmp_path, fns):
+    shelf = Shelf(tmp_path / "other")
+    code = (
+        "def helper() -> int:\n    return 1\n\n"
+        "def uses(flag: bool) -> int:\n    return helper() if flag else 2\n\n"
+        "def leaf() -> int:\n    return 3\n"
+    )
+    assert shelf.save(code, ["helper", "uses", "leaf"])[0] == ["helper", "leaf", "uses"]
+    runner = ScriptRunner(pool, shelf=shelf)
+
+    shelf.mark_verified(runner.run("uses(False) + leaf()", fns).returned)
+
+    frozen = Shelf(shelf.root, frozen=True)
+    assert frozen.names() == ["leaf"]
+    assert ScriptRunner(pool, shelf=frozen).run("leaf()", fns).output == 3

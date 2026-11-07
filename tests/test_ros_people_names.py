@@ -18,7 +18,6 @@ from test_ros_vision import QUIET, Rig, StubBase, person, with_vectors
 from test_scene_file import CHULA_LOCATIONS, CHULA_SCENE, STREAM_ID, camera_info, living_room_camera
 from walkie_vision_msgs.msg import PersonDetectionArray
 
-from walkie_agent.atomics import find_people, recognize_person, remember_person
 from walkie_agent.capabilities import CancelToken, Ctx
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import load_locations
@@ -28,6 +27,7 @@ from walkie_agent.perception.people_memory import InMemoryPeopleMemory
 from walkie_agent.ros import RosVision
 from walkie_agent.sim.oracle_perception import ORACLE_QOS, draw_detections
 from walkie_agent.sim.scene_file import load_scene
+from walkie_agent.tools.atomic import find_people, recognize_person, remember_person
 
 
 class Silent:

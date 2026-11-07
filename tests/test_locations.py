@@ -1,9 +1,9 @@
 import pytest
 
 from conftest import PROJECT_ROOT
-from walkie_agent.atomics import list_places
 from walkie_agent.capabilities.fake import CHULA_PAT14_6_PLACES, FakeRobot
 from walkie_agent.locations import Location, load_locations
+from walkie_agent.tools.atomic import list_places
 
 
 def write(tmp_path, text):

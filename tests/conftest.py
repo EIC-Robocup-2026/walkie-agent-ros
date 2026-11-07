@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import os
 import random
 import threading
@@ -20,6 +21,16 @@ os.environ["PYTHON_DOTENV_DISABLED"] = "1"
 from walkie_agent.locations import load_locations  # noqa: E402
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# The Mahoraga gym's tests need inspect-ai and the GPSR generator, which only the
+# mahoraga pixi environment has, so the default environment does not collect them.
+# Their fixtures are in this file because tests/mahoraga can have no conftest.py of
+# its own: a second module named conftest would replace this one in sys.modules,
+# and every test module that imports PROJECT_ROOT from it would fail to import.
+GYM_TESTS = PROJECT_ROOT / "tests" / "mahoraga"
+GYM_DEPENDENCIES = ("inspect_ai", "robocupathome_generator")
+if any(importlib.util.find_spec(name) is None for name in GYM_DEPENDENCIES):
+    collect_ignore_glob = ["mahoraga/test_*.py"]
 
 
 @pytest.fixture(scope="session")
@@ -56,6 +67,88 @@ def no_tracing(monkeypatch):
 @pytest.fixture
 def locations():
     return load_locations(PROJECT_ROOT / "tests" / "fixtures" / "locations.toml")
+
+
+# run_script's fixtures, shared by tests/scripting and tests/mahoraga. A module that
+# defines its own `robot` fixture keeps it. The imports wait for a test that asks.
+
+
+@pytest.fixture(scope="session")
+def pool():
+    """Two Monty workers inside bwrap, shared by every test of the session."""
+    from walkie_agent.scripting.sandbox import open_pool
+
+    with open_pool(max_processes=2) as shared:
+        yield shared
+
+
+@pytest.fixture
+def robot():
+    from walkie_agent.capabilities.fake import FakeRobot
+
+    return FakeRobot(seed=1)
+
+
+@pytest.fixture
+def fns(robot):
+    from walkie_agent.scripting.driver import allow_list
+    from walkie_agent.tools.atomic import GPSR
+
+    return allow_list(GPSR, robot.ctx)
+
+
+@pytest.fixture
+def runner(pool):
+    from walkie_agent.scripting.driver import ScriptRunner
+
+    return ScriptRunner(pool)
+
+
+@pytest.fixture(autouse=True)
+def isolated_home(request):
+    """Keep a gym test's shelf, gate results and logs out of the real home, and off the network.
+
+    Every other test is left alone.
+    """
+    if GYM_TESTS not in request.path.parents:
+        return None
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    home = request.getfixturevalue("tmp_path") / "mahoraga-home"
+    monkeypatch.setenv("MAHORAGA_HOME", str(home))
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    return home
+
+
+@pytest.fixture
+def gated():
+    """Record a whole, passing gate for some data, for gym tests about what runs after the gate."""
+    from walkie_agent.mahoraga import home
+    from walkie_agent.mahoraga.gate import _file_hash, code_digest, pair_digests
+
+    def record(records, epochs=1):
+        root = home() / "gate"
+        path = root / f"gate-{code_digest()}-fixture.json"
+        root.mkdir(parents=True, exist_ok=True)
+        # Not named .eval: a report test may read tmp_path, which holds this home, for logs.
+        logs = [root / "fixture-1.log", root / "fixture-2.log"]
+        for log in logs:
+            log.write_text(log.name)
+        path.write_text(
+            json.dumps(
+                {
+                    "passed": True,
+                    "code_digest": code_digest(),
+                    "digests": ["same", "same"],
+                    "failures": [],
+                    "logs": [str(log) for log in logs],
+                    "log_hashes": [_file_hash(log) for log in logs],
+                    "pairs": sorted(pair_digests(records, epochs)),
+                }
+            )
+        )
+        return path
+
+    return record
 
 
 @pytest.fixture

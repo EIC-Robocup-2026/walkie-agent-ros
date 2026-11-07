@@ -340,13 +340,20 @@ decision, and it can run beside the vision chain.
   drive check before every base motion, the `FORBIDDEN_NAMES` additions, the
   fake arm model, the commander's stop on every runtime stop, and the sim's
   `moveit` and `commander` parts. The gate rerun passed with episode logs
-  identical to the previous code's but for the commit. The sim check below
-  has not run yet, and nothing has run against the real commander.
+  identical to the previous code's but for the commit. The sim check ran
+  after the review fixes, below.
 - **Review fixes** as S6-14 and S6-15, from the Codex review of the second
   part: a failed start-pose read no longer hides the base's refusal of a
   turn, and shutdown closes the commander client only once no arm goal is
   outstanding, so a goal accepted after a stop is still cancelled. The gate
   rerun on the new digest passed with identical episode logs.
+- **Sim run** as S6-16 and S6-17: in the Chula simulation with `--arms`,
+  "raise your hands" and then "drive to the kitchen room" worked with the
+  real model. It moved the arms home before the drive by itself, so the
+  refusal did not come up; a direct check through `RosBase` showed the
+  refusal. A shutdown during a move waited for the cancelled goal's result
+  and exited cleanly, once the agent counted the SIGINT that `pixi run`
+  forwards as the same signal. Nothing has run against the real commander.
 
 ### S7: Take a bag, and hand an object over
 

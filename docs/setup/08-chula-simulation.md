@@ -105,10 +105,21 @@ scripts/chula-sim.sh check --agent
 - walkie-ros's own `commander.launch.py` declares no `use_sim_time`, so
   passing `use_sim_time:=true` to it does nothing. `launch/commander_sim.launch.py`
   includes that file and sets the parameter on its node.
-- `up --arms` has not been run yet. The agent bounds each call to the
-  commander in wall-clock time, and the simulation's real-time factor, which
-  those bounds depend on, has not been measured (decision S6-4 in
-  [Mahoraga Demo Decisions](../architecture/mahoraga-demo-decisions.md)).
+- `up --arms` was first run on 2026-11-07 (decision S6-17 in
+  [Mahoraga Demo Decisions](../architecture/mahoraga-demo-decisions.md)). The
+  real-time factor was 0.91 over 10 s of wall-clock time. A move of both arms
+  to `hands_up` or `home` took 8.4 s to 8.9 s, of which MoveIt's planning
+  took up to 5 s, a read 0.1 s and a gripper command 0.2 s to 0.5 s, well
+  inside `SIM_ARM_BOUNDS`. With the arms in `hands_up`, a drive was refused
+  before it started, and after `home` it drove. MuJoCo starts the right
+  gripper closed, so the first read reports it closed.
+- The commander takes a cancel during MoveIt's planning but answers it only
+  once the plan is done, a few seconds later. A `down` during a move then
+  waits for that answer: the agent logs that the move "has not ended: a
+  cancel was sent, but no result has come", publishes "stop" again on each
+  retry, and exits once the result comes. walkie-ros's commander then
+  panics in Zenoh's thread-local storage as it exits, with code -6, after
+  the goal has ended.
 - `up` refuses to start beside another `nav_mujoco_omnibot.launch.py`, on any
   graph, because two simulations compete for the CPU.
 - `up` returns only when the oracle and the agent have logged that they are up,

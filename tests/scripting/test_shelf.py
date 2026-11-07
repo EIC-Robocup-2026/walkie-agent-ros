@@ -14,6 +14,7 @@ from walkie_agent.scripting.driver import ScriptRunner, script_summary
 from walkie_agent.scripting.shelf import (
     PACKAGE_STORE,
     Shelf,
+    StoreRefused,
     definition_source,
     require_ignored,
     shape,
@@ -92,7 +93,7 @@ def test_git_ignores_what_the_shelf_writes_in_the_package_folder():
 
 @needs_git
 def test_a_store_in_a_git_work_tree_that_does_not_ignore_it_is_refused_before_it_is_created(repo):
-    with pytest.raises(ValueError, match="does not ignore") as refused:
+    with pytest.raises(StoreRefused, match="does not ignore") as refused:
         Shelf(repo / "store")
 
     assert "WALKIE_TOOLS_HOME" in str(refused.value)
@@ -174,6 +175,57 @@ def test_a_version_verified_after_a_rewrite_goes_to_bundled_as_it_ran(shelf):
     shelf.mark_verified(shelf.versions())
     assert (shelf.bundled / "value.py").read_text() == VALUE_2
     assert Shelf(shelf.root, frozen=True).examples() == VALUE_2
+
+
+def test_an_older_version_scored_after_the_latest_was_verified_leaves_the_latest_in_bundled(shelf):
+    shelf.save(VALUE_1, ["value"])
+    first = shelf.versions()
+    shelf.save(VALUE_2, ["value"])
+    shelf.mark_verified(shelf.versions())
+
+    shelf.mark_verified(first)
+
+    verified = [event["sha"] for event in events(shelf) if event["event"] == "verified"]
+    assert verified == [source_sha(VALUE_2), source_sha(VALUE_1)]
+    assert (shelf.bundled / "value.py").read_text() == VALUE_2
+    assert Shelf(shelf.root, frozen=True).examples() == VALUE_2
+
+
+def test_saving_a_verified_version_again_puts_it_back_in_bundled(shelf):
+    shelf.save(VALUE_1, ["value"])
+    shelf.mark_verified(shelf.versions())
+    shelf.save(VALUE_2, ["value"])
+    shelf.mark_verified(shelf.versions())
+
+    shelf.save(VALUE_1, ["value"])
+
+    assert events(shelf)[-1]["event"] == "saved"
+    assert (shelf.bundled / "value.py").read_text() == VALUE_1
+    assert Shelf(shelf.root, frozen=True).examples() == VALUE_1
+
+
+@pytest.mark.parametrize(
+    "steps",
+    [
+        [("save", VALUE_1), ("verify", VALUE_1)],
+        [("save", VALUE_1), ("verify", VALUE_1), ("save", VALUE_2)],
+        [("save", VALUE_1), ("save", VALUE_2), ("verify", VALUE_1), ("verify", VALUE_2)],
+        [("save", VALUE_1), ("save", VALUE_2), ("verify", VALUE_2), ("verify", VALUE_1)],
+        [("save", VALUE_1), ("verify", VALUE_1), ("save", VALUE_2), ("verify", VALUE_2), ("save", VALUE_1)],
+        [("save", VALUE_1), ("verify", VALUE_1), ("save", VALUE_2), ("save", VALUE_1), ("verify", VALUE_2)],
+    ],
+)
+def test_a_frozen_shelf_offers_the_latest_versions_counts_report_verified_in_any_scoring_order(shelf, steps):
+    for step, source in steps:
+        if step == "save":
+            shelf.save(source, ["value"])
+        else:
+            shelf.mark_verified({"value": source_sha(source)})
+
+    verified = [name for name, entry in shelf.counts().items() if entry["verified"]]
+    assert Shelf(shelf.root, frozen=True).names() == verified
+    for name in verified:
+        assert (shelf.bundled / f"{name}.py").read_text() == (shelf.temporary / f"{name}.py").read_text()
 
 
 def test_a_frozen_shelf_loads_only_verified_files_in_bundled(shelf):

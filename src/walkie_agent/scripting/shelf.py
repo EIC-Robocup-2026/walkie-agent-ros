@@ -1,14 +1,15 @@
 """The script shelf: saved functions in two tier folders, with a ledger of how they fared.
 
 A store root holds `temporary/<name>.py`, the latest saved version of each
-function, `bundled/<name>.py`, the last version of each that a passing episode
-verified, and `ledger.jsonl` with saved, run, fail and verified events, each keyed
-to the exact source it is about. The ledger is the record, and the two folders hold
-the text. A script's run saves into a writable shelf, whose callable set is
-temporary/. Only the harness calls mark_verified, after the ground-truth scorer,
-with what the driver saw run. A frozen shelf fixes its callable set at construction,
-to the functions verified by then, read from bundled/, and takes no more
-definitions, while it keeps counting runs for the report.
+function, `bundled/<name>.py`, a version of each that a passing episode verified,
+the latest saved one whenever that one is verified, and `ledger.jsonl` with saved,
+run, fail and verified events, each keyed to the exact source it is about. The
+ledger is the record, and the two folders hold the text. A script's run saves into
+a writable shelf, whose callable set is temporary/. Only the harness calls
+mark_verified, after the ground-truth scorer, with what the driver saw run. A
+frozen shelf fixes its callable set at construction, to the functions verified by
+then, read from bundled/, and takes no more definitions, while it keeps counting
+runs for the report.
 
 The store root is the tools package's own folder, src/walkie_agent/tools, unless
 WALKIE_TOOLS_HOME names another. Git must ignore every file the shelf writes there
@@ -51,6 +52,10 @@ _PROBES = (
 SHADOWED = frozenset({"locals", "eval", "exec"})
 
 
+class StoreRefused(ValueError):
+    """A store root the shelf will not use. The message says what to do instead."""
+
+
 def store_root(path: str | Path | None = None) -> Path:
     """A shelf's store root, resolved: `path`, then WALKIE_TOOLS_HOME, then the tools package's own folder."""
     chosen = path or os.environ.get(TOOLS_HOME)
@@ -58,7 +63,7 @@ def store_root(path: str | Path | None = None) -> Path:
 
 
 def require_ignored(root: Path) -> None:
-    """Raise ValueError unless git ignores every file a shelf writes under the resolved `root`.
+    """Raise StoreRefused unless git ignores every file a shelf writes under the resolved `root`.
 
     A root with no `.git` at or above it is outside every git work tree, so it passes,
     with or without git. Inside a work tree, `git check-ignore` must report a saved
@@ -76,7 +81,7 @@ def require_ignored(root: Path) -> None:
     if git is None:
         if root == PACKAGE_STORE:
             return
-        raise ValueError(
+        raise StoreRefused(
             f"{root} is inside the git work tree at {top}, and git is not installed to check that it "
             f"ignores what the shelf writes there. Install git, {elsewhere}, or unset {TOOLS_HOME} "
             f"to use {PACKAGE_STORE}."
@@ -95,15 +100,15 @@ def require_ignored(root: Path) -> None:
             check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise ValueError(f"git check-ignore could not run in {top}: {exc}. Fix git there, or {elsewhere}.") from exc
+        raise StoreRefused(f"git check-ignore could not run in {top}: {exc}. Fix git there, or {elsewhere}.") from exc
     # 0 means some path is ignored and 1 means none is. Anything else is an error.
     if done.returncode not in (0, 1):
-        raise ValueError(
+        raise StoreRefused(
             f"git check-ignore failed in {top}: {done.stderr.strip()} Fix git there, or {elsewhere}."
         )
     missing = sorted(set(probes) - set(done.stdout.split("\0")))
     if missing:
-        raise ValueError(
+        raise StoreRefused(
             f"{root} is inside the git work tree at {top}, and git does not ignore {', '.join(missing)}, "
             f"so saved functions could be committed. Ignore them in a .gitignore there, or {elsewhere}."
         )
@@ -284,11 +289,18 @@ class Shelf:
         problem = check("\n".join(chosen.values())) if chosen else None
         if problem:
             return [], {**refused, **{name: problem for name in chosen}}
-        self.temporary.mkdir(parents=True, exist_ok=True)
-        for name, source in chosen.items():
-            self._texts[name, source_sha(source)] = source
-            _write_atomically(self.temporary / f"{name}.py", source)
-            self._log("saved", name, source_sha(source))
+        with self._lock:
+            self.temporary.mkdir(parents=True, exist_ok=True)
+            verified = self._verified_versions() if chosen else set()
+            for name, source in chosen.items():
+                sha = source_sha(source)
+                self._texts[name, sha] = source
+                _write_atomically(self.temporary / f"{name}.py", source)
+                self._append("saved", name, sha)
+                # A version verified before is the latest saved one again, so bundled/ holds it.
+                if (name, sha) in verified:
+                    self.bundled.mkdir(parents=True, exist_ok=True)
+                    _write_atomically(self.bundled / f"{name}.py", source)
         return sorted(chosen), refused
 
     def record_run(self, versions: Mapping[str, str], ok: bool) -> None:
@@ -300,20 +312,29 @@ class Shelf:
         """For the harness only, with the versions that ran in an episode the scorer passed.
 
         A version is the sha of the source that ran, so a rewrite since then stays
-        unverified. Each version gets its verified event, then its text as written goes
-        to bundled/<name>.py, even when temporary/ already holds a rewrite. Raises
-        ValueError, with nothing logged or written, for a version this shelf never read
-        or wrote, because its text is not known.
+        unverified. Each version gets its verified event. Then bundled/<name>.py gets
+        the text, as written, of the version temporary/ holds if that one is verified,
+        and otherwise of the version just verified. So bundled/ holds a verified
+        latest version whatever order episodes are scored in: an episode that ran an
+        older version and is scored after the latest version was verified does not
+        replace it. Raises ValueError, with nothing logged or written, for a version
+        this shelf never read or wrote, because its text is not known.
         """
         texts = {name: self._text_of(name, sha) for name, sha in versions.items()}
         unknown = [f"{name} {versions[name]}" for name, text in texts.items() if text is None]
         if unknown:
             raise ValueError(f"This shelf never held these versions, so none was verified: {', '.join(unknown)}.")
         with self._lock:
-            self.bundled.mkdir(parents=True, exist_ok=True)
             for name, sha in versions.items():
                 self._append("verified", name, sha)
-                _write_atomically(self.bundled / f"{name}.py", texts[name])
+            verified = self._verified_versions()
+            self.bundled.mkdir(parents=True, exist_ok=True)
+            for name in versions:
+                latest = self.temporary / f"{name}.py"
+                text = latest.read_text() if latest.is_file() else None
+                if text is None or (name, source_sha(text)) not in verified:
+                    text = texts[name]
+                _write_atomically(self.bundled / f"{name}.py", text)
 
     def counts(self) -> dict[str, dict[str, int]]:
         """Saved, run, fail and verified counts per function.
@@ -370,12 +391,15 @@ class Shelf:
 
         A file in bundled/ counts only if the ledger holds a verified event for its sha,
         and only while temporary/ holds the same version, so a rewrite that has not been
-        verified keeps its function off, as a rewrite starts with nothing. A verified
-        function may name another that never ran, in a branch it did not take. On a
-        frozen shelf it could not stand alone, so it stays off as well (M18).
+        verified keeps its function off, as a rewrite starts with nothing. Whenever the
+        version in temporary/ is verified, save and mark_verified keep that version in
+        bundled/, so this is the set of latest versions with a verified event, as counts()
+        reports them. A verified function may name another that never ran, in a branch
+        it did not take. On a frozen shelf it could not stand alone, so it stays off as
+        well (M18).
         """
         saved = {name: source_sha(source) for name, source in self._all_sources().items()}
-        verified = {(event["name"], event["sha"]) for event in self._events() if event["event"] == "verified"}
+        verified = self._verified_versions()
         kept = {
             name: source
             for name, source in self._read(self.bundled).items()
@@ -390,6 +414,10 @@ class Shelf:
         if not self._ledger.exists():
             return []
         return [json.loads(line) for line in self._ledger.read_text().splitlines()]
+
+    def _verified_versions(self) -> set[tuple[str, str]]:
+        """Each (name, sha) the ledger holds a verified event for."""
+        return {(event["name"], event["sha"]) for event in self._events() if event["event"] == "verified"}
 
     def _log(self, event: str, name: str, sha: str) -> None:
         with self._lock:

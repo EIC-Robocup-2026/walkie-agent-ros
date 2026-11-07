@@ -99,8 +99,10 @@ Zenoh router on port 7499 and `ROS_DOMAIN_ID` 77. It launches
 `nav_mujoco_omnibot.launch.py world:=chula_pat14_6` from a local walkie-ros
 worktree of `feat/chula-pat14-6-simulation`, the G3 scene driver, and the
 agent with `--use-sim-time` and the Chula places. For the arms it adds
-`moveit_only.launch.py hardware_type:=mujoco` and the commander with
-`use_sim_time:=true`. For memory it runs `db-seed-sim`, `db-restore` (P22)
+`moveit_only.launch.py hardware_type:=mujoco` and the commander on sim time.
+The commander's own `commander.launch.py` declares no `use_sim_time`, so
+passing `use_sim_time:=true` to it does nothing; this tree's
+`launch/commander_sim.launch.py` sets the parameter around it. For memory it runs `db-seed-sim`, `db-restore` (P22)
 and `db-memory`, retrying until `/clock` arrives (P25). Voice goes to a
 null sink, so nothing is audible.
 Built as G4-1 to G4-12: `scripts/chula-sim.sh up` starts the router, the
@@ -332,9 +334,14 @@ decision, and it can run beside the vision chain.
   in CI. Sim slower than real time strains the timeouts.
 - **Core built** as S6-1 to S6-5: the poses, the arm state, the two TOMLs,
   `ros/commander.py`'s `CommanderClient` and `sim/fake_commander.py`. The
-  `Arms` verbs, the atomics, `--arms`, the drive's travel-safe check and the
-  `FORBIDDEN_NAMES` additions are next (S6-1). The 104 commander tests passed
-  in every run against the fake. Nothing has run against the real commander.
+  104 commander tests passed in every run against the fake.
+- **Second part built** as S6-6 to S6-13: the `Arms` verbs and records,
+  `RosArms`, the four atomics in HRI and the new arms set, `--arms`, the
+  drive check before every base motion, the `FORBIDDEN_NAMES` additions, the
+  fake arm model, the commander's stop on every runtime stop, and the sim's
+  `moveit` and `commander` parts. The gate rerun passed with episode logs
+  identical to the previous code's but for the commit. The sim check below
+  has not run yet, and nothing has run against the real commander.
 
 ### S7: Take a bag, and hand an object over
 

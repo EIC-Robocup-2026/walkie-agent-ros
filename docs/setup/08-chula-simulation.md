@@ -2,7 +2,8 @@
 
 `scripts/chula-sim.sh` runs walkie-ros's MuJoCo world of the Chula PAT14-6 room
 with Nav2, the oracle that stands in for walkie-vision, a speech log and the
-agent. Everything it starts joins a ROS graph of its own.
+agent, and, when asked, MoveIt and the arm commander. Everything it starts joins
+a ROS graph of its own.
 
 **Why a private graph.** Every `pixi run` in this repository and in walkie-ros
 connects to a Zenoh router on `localhost:7447`. A simulation started there shares
@@ -38,7 +39,17 @@ The overlay relies on the rest of the checkout's `install/`. Apart from the two
 packages, the branch differs from main 6ad4e42 only in the `navigation` submodule
 (main b6bb293, the branch 359719f) and in one dependency,
 `ros-jazzy-trac-ik-kinematics-plugin`. Nav2 therefore runs whatever navigation
-commit the checkout last built, and nothing here uses MoveIt.
+commit the checkout last built, and only `up --arms` uses MoveIt.
+
+**For `--arms`, walkie-ros's arm packages.** `up --arms` runs MoveIt from
+`openarm_bimanual_moveit_config` and the arm commander from
+`openarm_bimanual_commander_cpp`. The overlay builds neither, so both come from
+the checkout's `install/`, and `up --arms` refuses to start if either is not
+built there. MoveIt's `kinematics.yaml` names TRAC-IK for every arm group, and
+the plugin is the one dependency only the branch adds. If the checkout's
+environment lacks it, move_group starts with no IK solver for the arms
+(walkie-ros f695b3a). The agent's arm tools send joint goals and gripper
+commands only, and neither needs one.
 
 **This repository, built.** You need `pixi run build-ros2`, for
 `walkie_vision_msgs` and `rai_interfaces`. You also need `pixi run build-rmw-zenoh`
@@ -63,22 +74,41 @@ scripts/chula-sim.sh up --agent
 scripts/chula-sim.sh check --agent
 ```
 
-`up` starts five parts in order and waits for each one that others need.
+`up` starts its parts in order and waits for each one that others need.
 
 | Part | What it runs | `up` waits until |
 | --- | --- | --- |
 | `router` | `rmw_zenohd`, listening on `localhost:7499` | the port accepts connections |
 | `bringup` | `nav_mujoco_omnibot.launch.py world:=chula_pat14_6`, headless | Nav2 logs `Managed nodes are active` (300 s at most) |
+| `moveit` | `moveit_only.launch.py hardware_type:=mujoco use_rviz:=false`, with `--arms` only | move_group logs `MoveGroup context initialization complete` (120 s at most) |
+| `commander` | `launch/commander_sim.launch.py`, the arm commander on sim time, with `--arms` only | the commander logs `Bimanual Commander Node Initialized` (120 s at most) |
 | `oracle` | `pixi run oracle-chula` | |
 | `speech` | `ros2 topic echo /to_human`, into `speech.log` | |
 | `agent` | `pixi run agent-sim-chula --tool-log ...`, with `--agent` only | |
 
-- Running `up` again starts only the parts that are not running.
+- Running `up` again starts only the parts that are not running. A part that
+  runs keeps the arguments it started with, so an agent started without
+  `--arms` stays without it until `down`.
 - `--gui` opens MuJoCo's viewer and RViz.
 - Arguments after `--` go to the agent, and need `--agent`:
   `scripts/chula-sim.sh up --agent -- --tool-set hri` runs the HRI tool set.
   `agent-sim-chula` already passes `--vision`, so `find_people` reads the
   oracle's people.
+- `--arms` starts MoveIt once Nav2 is up, and the arm commander once MoveIt
+  is ready, since the commander connects to move_group as it starts. Both run
+  in walkie-ros's environment with the overlay sourced, as `bringup` does, so
+  they load the packages that `bringup` loads. With `--agent`, the agent also
+  gets `--arms`, after the arguments given after `--`, so those must pick a set
+  with the arm tools: `-- --tool-set hri` or `-- --tool-set arms`. With the
+  default set the agent exits with code 2 at startup. Without `--arms`, `up`
+  starts what it always did.
+- walkie-ros's own `commander.launch.py` declares no `use_sim_time`, so
+  passing `use_sim_time:=true` to it does nothing. `launch/commander_sim.launch.py`
+  includes that file and sets the parameter on its node.
+- `up --arms` has not been run yet. The agent bounds each call to the
+  commander in wall-clock time, and the simulation's real-time factor, which
+  those bounds depend on, has not been measured (decision S6-4 in
+  [Mahoraga Demo Decisions](../architecture/mahoraga-demo-decisions.md)).
 - `up` refuses to start beside another `nav_mujoco_omnibot.launch.py`, on any
   graph, because two simulations compete for the CPU.
 - `up` returns only when the oracle and the agent have logged that they are up,
@@ -116,6 +146,14 @@ The camera line matches the constants that the oracle's tests assume, in
 `tests/test_projection.py`. The gestures are those that `perception/gestures.py`
 reads from the oracle's keypoints, as walkie-vision's would be read.
 
+`check --arms` adds a `commander` line. It passes once it finds a server for
+each of the three names the agent's arm client moves and reads the arms
+through: the `/set_joint_position` and `/control_gripper` actions and the
+`/get_joint_states` service. It looks for them through clients of the same
+names and types, and sends no request. So it cannot tell a commander built
+from another `my_robot_interfaces`: `rmw_zenoh_cpp` finds such a server by its
+type's name, but delivers requests by the type's hash, so none ever arrives.
+
 ## Talk to the agent
 
 `env` prints three exports. Run any `pixi run` command after them, and it joins
@@ -142,7 +180,8 @@ the tool log shows `find_people` returning `person_1`.
 scripts/chula-sim.sh down
 ```
 
-`down` stops the parts in reverse order. It sends each process of a part SIGINT,
+`down` stops the parts in reverse order: the agent first, and the commander and
+MoveIt before `bringup`. It sends each process of a part SIGINT,
 as Ctrl+C would. If the part still runs 10 s later, it sends SIGTERM, and 5 s
 after that SIGKILL, then SIGKILL again 2 s later. Each check starts the helper,
 so these waits run a little longer.
@@ -336,9 +375,8 @@ kitchen table, succeeded from the living room and from the shelf.
 
 ## Not in the recipe
 
-- **Arms.** MoveIt and the arm commander come with S6 of the
-  [roadmap](../architecture/see-remember-act.md). The commander is not in this
-  repository yet.
+- **MoveIt's RViz.** `--gui` opens `bringup`'s RViz only. MoveIt runs with
+  `use_rviz:=false`.
 - **The people database.** `--people-memory mock` keeps the people memory in
   the agent's process. walkie-database's node, for `--people-memory ros`, and
   its sim seed are not started by the script.

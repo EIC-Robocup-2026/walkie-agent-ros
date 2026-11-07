@@ -28,11 +28,28 @@
 
 ## Step 1: One deny list for every capability endpoint
 
-The list is in `src/walkie_agent/ros/policy.py`. `RosBase` and `RosSpeech` call
-`check_endpoint` when they are built:
+The list is in `src/walkie_agent/ros/policy.py`. Every ROS-backed capability,
+`RosBase`, `RosSpeech`, `RosVision`, the people memory and the arm commander's
+client, calls `check_endpoint` for each name it uses when it is built:
 
 ```python title="src/walkie_agent/ros/policy.py"
-FORBIDDEN_NAMES = ("/cmd_vel", "/walkie/reset", "/walkie/task", "/walkie/todos")
+FORBIDDEN_NAMES = (
+    "/cmd_vel",
+    "/cmd_vel_nav",
+    "/cmd_vel_joy",
+    "/cmd_vel_key",
+    "/omni_wheel_drive_controller/cmd_vel",
+    "/go_to_home",
+    "/go_to_pose",
+    "/go_to_pose_relative",
+    "/go_to_pose_quat",
+    "/lift_controller/follow_joint_trajectory",
+    "/lift_controller/commands",
+    "/lift/cmd",
+    "/walkie/reset",
+    "/walkie/task",
+    "/walkie/todos",
+)
 
 
 def check_endpoint(node, name, forbidden=FORBIDDEN_NAMES):
@@ -42,13 +59,24 @@ def check_endpoint(node, name, forbidden=FORBIDDEN_NAMES):
     return resolved
 ```
 
-- `/cmd_vel`: raw velocity commands would bypass Nav2's obstacle avoidance.
+- `/cmd_vel` and the other base velocity inputs: raw velocity commands would bypass
+  Nav2's obstacle avoidance. `/cmd_vel_nav` is Nav2's own input to `twist_mux`,
+  `/cmd_vel_joy` and `/cmd_vel_key` the operator's, and
+  `/omni_wheel_drive_controller/cmd_vel` drives the wheels directly.
+- `/go_to_home` and the three `/go_to_pose*` actions: the commander's other motions.
+  The arms move only through `/set_joint_position` to a named pose
+  ([ADR-0021](../architecture/decisions/0021-arm-control-through-commander.md)).
+- The three lift names: the agent never commands the lift, whose action rejects every
+  cancel.
 - `/walkie/reset`: the agent must not wipe its own memory.
 - `/walkie/task`: the agent must not queue its own tasks or seed locked steps.
 - `/walkie/todos`: this is the operator's view, and only `update_todos` edits the list.
 
+`/trajectory_execution_event` is not on the list: the commander client publishes
+`"stop"` there.
+
 Both sides go through the node, so a relative name or a remap cannot hide a match.
-The operator bridge, `RosBridge`, owns the last three names on purpose. It is not a
+The operator bridge, `RosBridge`, owns the three `/walkie` names on purpose. It is not a
 capability, and it does not pass through this check. It has one check of its own: a
 console topic that resolves to `/to_human` is refused at startup, so replies never reach
 the speaker.

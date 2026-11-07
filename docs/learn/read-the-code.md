@@ -11,7 +11,8 @@ The first group imports no ROS, and most of the tests for it need no ROS either.
 | ---- | ------------- | ----- |
 | `src/walkie_agent/errors.py` | `StepError` and its codes | `tests/test_errors.py` |
 | `src/walkie_agent/capabilities/` | The verb protocols on `ctx`, the guards, the cancel token, `SystemFacts`, `FakeRobot` | `tests/test_capabilities.py`, `tests/test_facts.py`, `tests/test_fake_robot.py` |
-| `src/walkie_agent/atomics/` | The tools, as plain functions, and the three tool sets | `tests/test_atomics.py`, `tests/test_facts.py`, `tests/test_tool_sets.py` |
+| `src/walkie_agent/atomics/` | The tools, as plain functions, and the four tool sets | `tests/test_atomics.py`, `tests/test_arm_atomics.py`, `tests/test_facts.py`, `tests/test_tool_sets.py` |
+| `src/walkie_agent/arm/` | The named arm poses and the robot model they are checked against, what the arms are known to be in, and the wording and the drive check every arm backend shares | `tests/test_arm_poses.py`, `tests/test_arm_answers.py`, `tests/test_fake_arms.py` |
 | `src/walkie_agent/adapter.py` | Turns an atomic into a LangChain tool or a plain callable | `tests/test_adapter.py` |
 | `src/walkie_agent/runtime/todos.py` | The list, the rules, the ledger and `WalkieTodos` | `tests/test_runtime_todos.py` |
 | `src/walkie_agent/runtime/middleware.py` | The smaller middlewares | `tests/test_runtime.py` |
@@ -30,12 +31,13 @@ connector, against a fake robot on a private domain. None of them is the robot's
 | File | What's in it | Tests |
 | ---- | ------------- | ----- |
 | `src/walkie_agent/ros/base.py` | `RosBase`: goals, TF, cancels and their limits | `tests/test_ros_base.py` |
+| `src/walkie_agent/ros/commander.py`, `arms.py` | `CommanderClient`, for `bimanual_commander`'s actions and services, and `RosArms`, the `ctx.arms` built on it | `tests/test_commander.py`, `tests/test_ros_arms.py` |
 | `src/walkie_agent/ros/speech.py` | `RosSpeech`, which publishes on `/to_human` | `tests/test_ros_speech.py` |
 | `src/walkie_agent/ros/vision.py` | `UnavailableVision`, which refuses, and `RosVision`, which reads `/walkie_vision/people` with `--vision` | `tests/test_ros_vision.py`, `tests/test_ros_base.py` |
 | `src/walkie_agent/perception/people.py` | The pose and gesture phrases `find_people` gives, from the gesture rules' names | `tests/test_ros_vision.py` |
 | `src/walkie_agent/perception/geometry.py` | The map-frame yaw of a pixel's ray, the torso and ankle pixels a person's bearing comes from, and the person's distance where the ankles' rays meet the floor | `tests/test_perception_geometry.py`, `tests/test_ros_vision.py` |
 | `src/walkie_agent/ros/io.py` | `RosBridge`, for the operator's topics | `tests/test_ros_bridge.py` |
-| `src/walkie_agent/ros/policy.py` | `FORBIDDEN_NAMES`, and the check on every endpoint | `tests/test_ros_base.py` |
+| `src/walkie_agent/ros/policy.py` | `FORBIDDEN_NAMES`, and the check on every endpoint | `tests/test_ros_base.py`, `tests/test_commander.py` |
 | `src/walkie_agent/main.py` | Assembly, flags, signals, exit codes | `tests/test_main.py` |
 | `src/walkie_agent/voice.py`, `half_duplex.py` | The voice processes, on RAI | `tests/test_voice.py`, `tests/test_half_duplex.py` |
 | `src/walkie_agent/sim/fake_walkie.py` | A fake robot as a ROS node | `tests/test_ros_integration.py` |

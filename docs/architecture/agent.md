@@ -28,8 +28,8 @@ still a proposal: see [Self-Evolving Agent (Proposed)](self-evolving-agent.md).
   ([ADR-0060](decisions/0060-atomic-tools-and-adapter.md)). It reaches the robot
   only through verbs such as `ctx.base.go_to`, which have fake and ROS-backed
   backends ([ADR-0052](decisions/0052-capability-verbs-and-backends.md)).
-- **One fixed tool set.** `--tool-set` picks `default`, `gpsr` or `hri` at startup,
-  and the whole set is bound for the life of the agent
+- **One fixed tool set.** `--tool-set` picks `default`, `gpsr`, `hri` or `arms` at
+  startup, and the whole set is bound for the life of the agent
   ([ADR-0067](decisions/0067-static-tool-sets.md)). There is no tool search and no
   tool is added at runtime.
 - **A todo list for every task.** For a task with several steps, the LLM writes the
@@ -386,15 +386,20 @@ come from the todo middleware, in every set.
 
 | Tool | Sets | What it does on the robot's `ctx` |
 | --- | --- | --- |
-| `list_places` | default, hri | Lists the named places in the `--locations` file |
-| `go_to` | default, gpsr, hri | Drives to a named place with Nav2, with every wait bounded |
-| `move_relative` | default, gpsr, hri | Moves up to 3 m from here, then turns, through Nav2 |
-| `say` | default, gpsr, hri | Publishes one line on `/to_human` |
+| `list_places` | default, hri, arms | Lists the named places in the `--locations` file |
+| `go_to` | default, gpsr, hri, arms | Drives to a named place with Nav2, with every wait bounded. With `--arms`, refuses while an arm is out of every travel-safe pose ([ADR-0025](decisions/0025-travel-safe-interlock.md)) |
+| `move_relative` | default, gpsr, hri, arms | Moves up to 3 m from here, then turns, through Nav2, with the same arm check as `go_to` |
+| `say` | default, gpsr, hri, arms | Publishes one line on `/to_human` |
 | `find_objects` | default, gpsr | `UNAVAILABLE`: live object perception is not connected |
 | `object_info` | default, gpsr | `UNAVAILABLE`, for the same reason |
 | `find_people` | default, gpsr, hri | With `--vision`, the people in the newest `/walkie_vision/people` array, left to right, with a pose, a gesture and the room. Without it, `UNAVAILABLE`: live people perception is not connected |
 | `face_person` | default, hri | Turns once, on the spot, by the person's bearing from the newest people array, through Nav2. No turn within 10°. With no `--vision`, `UNAVAILABLE`, as for `find_people` |
-| `pick`, `place_on`, `hand_over` | gpsr | `UNAVAILABLE`: no arm commander client exists |
+| `remember_person`, `recognize_person` | hri | With `--people-memory mock` or `ros`, stores a person in view under a name, or says who they are, from the faces and appearances `--vision` collects ([ADR-0070](decisions/0070-people-memory-capability.md)). Otherwise `UNAVAILABLE` |
+| `list_arm_poses` | hri, arms, with `--arms` | Lists the named arm poses offered here, with the arms each takes |
+| `move_arm_to_pose` | hri, arms, with `--arms` | Moves one arm or both to a named pose through `bimanual_commander`'s `/set_joint_position`, then checks the joints against the pose ([ADR-0021](decisions/0021-arm-control-through-commander.md), [ADR-0022](decisions/0022-named-arm-poses.md)) |
+| `set_gripper` | hri, arms, with `--arms` | Opens, half opens or closes one gripper or both through `/control_gripper`, and says whether a close is holding something. A close in the `receive` pose starts 5 s after the call |
+| `get_arm_state` | hri, arms, with `--arms` | Reads both arms and the fingers, and says whether Walkie may drive |
+| `pick`, `place_on`, `hand_over` | gpsr | `UNAVAILABLE`: Walkie has no grasp skill yet |
 | `get_facts` | default, gpsr | Reads the time and the date from the computer's clock, in the timezone of `config.toml`'s `[team]`, and the team's name, country and affiliation from that table |
 | `update_todos` | always | Adds, updates and removes steps by id, all or nothing |
 | `wait_for_person` | always | Asks a question out loud and ends the run until the answer |
@@ -403,6 +408,12 @@ come from the todo middleware, in every set.
 That shows what a tool does with a verb. It shows nothing about real perception or arms.
 An unavailable verb must keep raising `UNAVAILABLE`: an empty list would say that nothing
 is in view, and a remembered database row is not a current view.
+
+The four arm tools are the exception: without `--arms` they are not bound at all, rather
+than bound to answer `UNAVAILABLE`. `--tool-set arms` needs `--arms`, and `--arms` needs
+`hri` or `arms`; any other pair exits with code 2 before ROS starts. With `--arms` the
+agent reads `config/arm_poses.toml` against `config/robot_model.toml` at startup, and a
+bad pose file stops it there.
 
 When a tool fails, the LLM reads `CODE: message`, for example `NOT_FOUND: Unknown place
 'attic'. Known places: kitchen.`, and the result is marked as an error. The codes are

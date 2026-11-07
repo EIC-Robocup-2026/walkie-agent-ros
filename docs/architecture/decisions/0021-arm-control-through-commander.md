@@ -30,6 +30,11 @@ The agent's arm tools use only `/set_joint_position`, `/control_gripper` and
 `/get_joint_states`, plus `"stop"` on `/trajectory_execution_event` for
 emergency stops. The LLM never chooses joint values or coordinates.
 
+The demo's client (`ros/commander.py`) also reads two of the commander's
+parameters, `grasp_detect_min` and `grasp_detect_max`, from
+`/bimanual_commander/get_parameters`, to judge a close by the commander's own
+grasp band. It reads nothing else there and sets nothing.
+
 **Consequences**
 
 - MoveIt plans every motion with collision checking. Named states and joint

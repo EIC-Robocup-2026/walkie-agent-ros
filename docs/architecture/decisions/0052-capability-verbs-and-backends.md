@@ -54,9 +54,10 @@ reservation until Nav2 reports an end.
 `say` returns once the line is published. Nothing acknowledges playback, so nothing
 claims it. `say` does not check the stop token, so the fixed stop line still speaks.
 
-`ros/policy.py` refuses four names for a capability endpoint: `/cmd_vel`,
-`/walkie/reset`, `/walkie/task` and `/walkie/todos`. Both sides are resolved through the
-node. This guards against a configuration mistake, and is not a security boundary
+`ros/policy.py` refuses a fixed list of names for a capability endpoint: `/cmd_vel`,
+`/walkie/reset`, `/walkie/task` and `/walkie/todos` at first, and since S6 also the
+other base velocity inputs, the commander's other motion actions and the lift
+([tool access](/setup/05-tool-access.md)). Both sides are resolved through the node. This guards against a configuration mistake, and is not a security boundary
 ([ADR-0009](/architecture/decisions/0009-forbidden-names-guard-rail.md)).
 
 This amends two accepted decisions and replaces neither.

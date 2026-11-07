@@ -702,6 +702,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/1e/41/f7dcf80b81ee8e71c1a2b59f14208bc723edbd89ed027a73b175abf6348e/opentelemetry_api-1.45.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/1e/5b/1f16b421f5de996abfb10472d47c72bc829a56cbedacfbf908ebf8cc0469/langfuse-3.15.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/1e/68/c2ff6043d93fda69e5c12a834d0be3b3fa6c762e89732160532566be621b/google_auth-2.61.0-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/23/3e/827db7c549b4b33cf3d3c66ec3e53920ec40ce86228b85ee3687053150e9/pydantic_monty_client-1.4.0-cp312-cp312-manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/23/93/4e45e37f26c820216704b36b8e67cc55c490a7abd287a78a26a2c0e21386/lazy_loader-0.6-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/26/83/d2fbd2e4e3afb1167daa825187d196f313cbaa1a4768f311fb041bb0e3d2/regex-2026.9.29-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/2a/2d/d4bf65e47cea8ff2c794a600c4fd1273a7902f268757c531e0ee9f18aa58/pooch-1.9.0-py3-none-any.whl
@@ -814,6 +815,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/cb/67/0c0f18e38d7f2d2af8c24b3315bc4046e73bbdd4a5540405506671ad0c0d/pandas-3.0.6-cp312-cp312-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/d1/89/5d4c86da1130d9059681e5b6cd7645df5c10279a6a079c5c37dcb2cc6f3f/narwhals-2.27.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/d2/fd/6668e5aec43ab844de6fc74927e155a3b37bf40d7c3790e49fc0406b6578/httpx_sse-0.4.3-py3-none-any.whl
+      - pypi: https://files.pythonhosted.org/packages/d3/4a/fdf0ff01c3ee23f5af7a017e970967fc88d6d263a79db03d3dfce5c028a1/pydantic_monty_runtime-1.4.0-py3-none-manylinux_2_28_x86_64.whl
       - pypi: https://files.pythonhosted.org/packages/d4/19/0b6647bf5e331521e55d2b63bfbdc210bd9cd605189273f03614a05f702d/colorlog-6.12.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/d7/8b/f837f52905395ba4510fe61f753c24833fb0a9c76e21267bb9f828b664a9/filelock-4.1.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/d7/c1/eb8f9debc45d3b7918a32ab756658a0904732f75e555402972246b0b8e71/tenacity-9.1.4-py3-none-any.whl
@@ -838,6 +840,7 @@ environments:
       - pypi: https://files.pythonhosted.org/packages/ef/9a/91285d01a9293d0b3d86167f9c7bd13f08c960d3fa365782751ce9bcbfb1/openai-3.29.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/f1/3b/bca42f8f7b76e567c66cc39bacc6bf31b353c9edfbb0fb1f5c534fc65369/boto3-1.43.111-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/f3/82/68ccd49add4d21937f087871350905ffc709f32c92bf95334e7abf442147/torch-2.3.1-cp312-cp312-manylinux1_x86_64.whl
+      - pypi: https://files.pythonhosted.org/packages/f8/5a/5cb59f15ca5b89df8ea810397523877d0ffba33419a8975f5bde8795b262/pydantic_monty-1.4.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fa/29/accef8eea16670b88f3a23102c35dee62c6f159db30d9628908043b3e21b/jsonpointer-3.2.1-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fa/e3/5c9d2e88563c9974e53ac744b1523ebb1fd8f0ebb1ecc28a5f6f6bb0baea/streamlit-1.65.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fb/76/641ae371508676492379f16e2fa48f4e2c11741bd63c48be4b12a6b09cba/aiosignal-1.4.0-py3-none-any.whl

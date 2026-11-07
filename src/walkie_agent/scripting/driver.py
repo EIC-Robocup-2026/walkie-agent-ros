@@ -16,7 +16,8 @@ How a failed call reaches the script:
 
 Spending a budget ends the script with an error no script can catch, and so does a
 stop, through the cancel token a run may be given. A run a stop ended has phase
-cancelled, whether or not the script caught the error of the call the stop ended.
+cancelled, whether or not the script caught the error of the call the stop ended,
+and it writes no run or fail event to the shelf's ledger.
 """
 
 import ast
@@ -268,7 +269,10 @@ class ScriptRunner:
         result.shelf_used = sorted(used)
         result.shelf_raised = sorted(watch.raised & set(used))
         if self.shelf is not None:
-            self.shelf.record_run(used, result.ok)
+            # A stop ended the run, not the functions in it, and they did not finish
+            # either, so the ledger counts the run neither for nor against them (T36).
+            if result.phase != "cancelled":
+                self.shelf.record_run(used, result.ok)
             if save and result.ok:
                 result.saved, result.refused = self.shelf.save(
                     code,

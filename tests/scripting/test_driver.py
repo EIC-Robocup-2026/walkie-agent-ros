@@ -17,6 +17,7 @@ from walkie_agent.scripting.driver import (
     script_summary,
     stubs_for,
 )
+from walkie_agent.scripting.shelf import Shelf
 from walkie_agent.tools.atomic import GPSR, go_to
 
 
@@ -269,6 +270,35 @@ def test_a_stop_ends_a_running_script_and_no_script_can_catch_it(runner, code):
     assert [(call["tool"], call["status"]) for call in result.calls] == [("go_to", "CANCELLED")]
     assert robot.said == []
     assert robot.snapshot()["at"] != "table"
+
+
+def test_a_stop_counts_neither_for_nor_against_a_shelf_function(pool, tmp_path):
+    # The stop ended the function's drive. The function did nothing wrong, and it did
+    # not finish either, so the ledger gets no run and no fail event (T36).
+    robot = FakeRobot(seed=1, drive_s=60.0)
+    fns = allow_list(GPSR, robot.ctx)
+    shelf = Shelf(tmp_path / "shelf")
+    assert shelf.save('def visit(place: str) -> str:\n    return go_to(place)\n', ["visit"])[0] == ["visit"]
+
+    def stop_once_driving():
+        deadline = time.monotonic() + 10.0
+        while not any(call["verb"] == "base.go_to" for call in list(robot.calls)):
+            assert time.monotonic() < deadline, "the drive never started"
+            time.sleep(0.005)
+        robot.stop()
+        robot.cancel.cancel()
+
+    stopper = threading.Thread(target=stop_once_driving, daemon=True)
+    stopper.start()
+    result = ScriptRunner(pool, shelf=shelf).run('visit("table")', fns, cancel=robot.cancel)
+    stopper.join(1.0)
+
+    assert result.phase == "cancelled"
+    assert result.shelf_used == ["visit"]
+    assert shelf.counts()["visit"] == {"saved": 1, "run": 0, "fail": 0, "verified": 0}
+    # The evidence still says the stop raised through it, so no verdict can verify it.
+    assert result.raised == shelf.versions()
+    assert result.returned == {}
 
 
 def test_a_stop_before_the_script_starts_runs_no_call(runner, fns, robot):

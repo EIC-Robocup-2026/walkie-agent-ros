@@ -31,6 +31,9 @@ from walkie_agent.runtime import STOP_LINE, Runner, Session, ToolLog, is_stop_ut
 from walkie_agent.runtime.middleware import AFTER_STOP
 from walkie_agent.runtime.runner import FAILURE_LINE
 from walkie_agent.runtime.todos import STOPPED_NOTE, TodoRejected
+from walkie_agent.scripting.agent_tool import AgentScripts
+from walkie_agent.scripting.shelf import Shelf
+from walkie_agent.tools.atomic import DEFAULT
 
 DONE = AIMessage("Done.")
 
@@ -42,7 +45,7 @@ def serve():
 
     def start(
         *script, then=None, delay_s=0.0, robot=None, tool_log=None, callbacks=(), on_reply=None,
-        on_reset=None, on_stop=None, **build,
+        on_reset=None, on_stop=None, on_task_start=None, on_task_end=None, **build,
     ):
         stack = make_stack(
             *script, then=then, delay_s=delay_s, robot=robot, tool_log=tool_log, **build
@@ -56,6 +59,8 @@ def serve():
             tool_log=tool_log,
             on_reset=on_reset,
             on_stop=on_stop,
+            on_task_start=on_task_start,
+            on_task_end=on_task_end,
         )
         runners.append(stack.runner)
         stack.runner.start()
@@ -201,6 +206,70 @@ def test_stop_ends_a_drive_through_the_token_and_makes_no_more_model_calls(serve
     assert stack.verbs().count("base.go_to") == 1
     assert stack.robot.said == [STOP_LINE]
     assert stack.robot.cancel.cancelled
+
+
+def test_stop_ends_a_running_script_and_the_run_and_the_task_ends_once(serve, pool, tmp_path):
+    robot = FakeRobot(drive_s=30)
+    tool_log = ToolLog(tmp_path / "tools.jsonl")
+    scripts = AgentScripts(pool, Shelf(), tool_log=tool_log)
+    marks = []
+    code = (
+        'for place in ["sofa", "table"]:\n'
+        "    try:\n"
+        "        go_to(place)\n"
+        "    except BaseException:\n"
+        "        pass\n"
+        'say("Done.")\n'
+    )
+    stack = serve(
+        ai(call("run_script", {"code": code}, "s")),
+        robot=robot,
+        tool_log=tool_log,
+        extra_tools=[scripts.tool(DEFAULT, robot.ctx)],
+        on_task_start=lambda: (marks.append("start"), scripts.begin()),
+        on_task_end=lambda: (marks.append("end"), scripts.end()),
+    )
+    stack.runner.submit("Go to the sofa, then the table.")
+    drive_started(stack)
+
+    started = time.monotonic()
+    stack.runner.hear("Stop!")
+    idle(stack)
+
+    assert time.monotonic() - started < 5.0
+    answer = stack.answer("s")
+    assert answer.status == "error"
+    assert answer.content.startswith(f"{ErrorCode.CANCELLED}: A stop ended the script")
+    assert "go_to: CANCELLED" in answer.content
+    assert len(stack.model.received) == 1
+    assert stack.verbs().count("base.go_to") == 1
+    assert stack.robot.said == [STOP_LINE]
+    # The stop's own pass is not a task, so the stopped run is the one to judge.
+    assert marks == ["start", "end"]
+    assert scripts.verdict(False).startswith("Recorded a failed verdict")
+    logged = [record for record in log_records(tool_log) if record["tool"] == "run_script"]
+    assert [record["status"] for record in logged] == ["error"]
+    assert "go_to: CANCELLED" in logged[0]["result"]
+
+
+def test_each_task_is_marked_at_its_start_and_its_end_even_when_it_fails(serve):
+    marks = []
+    stack = serve(
+        DONE,
+        RuntimeError("provider down"),
+        on_task_start=lambda: marks.append("start"),
+        on_task_end=lambda: marks.append("end"),
+        on_reply=lambda text: marks.append(f"reply {text}"),
+    )
+    stack.runner.submit("Hello.")
+    idle(stack)
+    stack.runner.submit("Again.")
+    idle(stack)
+    stack.runner.stop()
+    stack.runner.reset()
+    idle(stack)
+
+    assert marks == ["start", "end", "reply Done.", "start", "end", f"reply {FAILURE_LINE}"]
 
 
 def test_stop_during_an_llm_call_runs_none_of_the_tools_it_returns(serve):

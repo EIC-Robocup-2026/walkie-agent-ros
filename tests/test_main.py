@@ -28,7 +28,7 @@ from rai_interfaces.msg import HRIMessage
 from rclpy.signals import SignalHandlerOptions
 from ros_fakes import WATCHDOG_S, FakeActionClient, FakeConnector, FakeNode
 from runtime_harness import ScriptedModel, ai, call, wait_until
-from std_msgs.msg import Empty
+from std_msgs.msg import Bool, Empty
 from test_ros_vision import CAMERA_FRAME, person, with_vectors
 from test_scene_file import camera_info
 from walkie_vision_msgs.msg import PersonDetectionArray
@@ -54,6 +54,10 @@ from walkie_agent.ros import (
 )
 from walkie_agent.ros.commander import READ_TIMEOUT_S
 from walkie_agent.runtime import Runner, ToolLog, build_model
+from walkie_agent.scripting import agent_tool
+from walkie_agent.scripting.agent_tool import AgentScripts
+from walkie_agent.scripting.sandbox import SandboxUnavailable
+from walkie_agent.scripting.shelf import Shelf
 from walkie_agent.tasks import TaskTemplate
 from walkie_agent.tools.atomic import ARM_TOOLS, ARMS, DEFAULT, GPSR, HRI, get_facts, list_places
 
@@ -533,6 +537,45 @@ def test_each_tool_set_gets_a_matching_prompt(build, tool_set):
     assert ("`list_places`" in system.content) == (tool_set != "gpsr")
 
 
+@pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri", "arms"])
+def test_only_scripts_add_the_run_script_rule_to_a_prompt(tool_set):
+    arms = tool_set == "arms"
+    without = main.build_system_prompt(tool_set, PLACES, ROBOT, arms=arms)
+    with_scripts = main.build_system_prompt(tool_set, PLACES, ROBOT, arms=arms, scripts=True)
+
+    assert "run_script" not in without
+    assert main.build_system_prompt(tool_set, PLACES, ROBOT, arms=arms, scripts=False) == without
+    assert with_scripts.count(main._SCRIPTS_RULE) == 1
+    assert with_scripts.replace(main._SCRIPTS_RULE, "") == without
+    # The rule sits in the rules, before the general ones that close them.
+    assert with_scripts.index("`run_script`") < with_scripts.index("If a tool reports a failure")
+
+
+def test_with_scripts_the_agent_binds_run_script_and_takes_the_verdict(build, pool):
+    built = build(tool_set="hri", scripts=AgentScripts(pool, Shelf()))
+    node = built.node
+    built.app.start()
+    run_one(built)
+
+    bound = set(built.model.bound[0])
+    assert bound == tool_names("hri") | {"run_script"}
+    system = built.model.received[0][0].content
+    assert set(re.findall(r"`(\w+)`", system)) <= bound
+    assert "`run_script`" in system
+    assert "/walkie/verdict" in topics(node.subscriptions)
+
+    # The task just ended, so its verdict is taken, and the answer goes to the console.
+    callbacks = {s.topic: s.callback for s in node.subscriptions}
+    callbacks["/walkie/verdict"](Bool(data=True))
+    callbacks["/walkie/verdict"](Bool(data=True))
+    console = next(p for p in node.publishers if p.topic == "/walkie/console")
+    assert [message.text for message in console.published] == [
+        "Done.",
+        "Recorded a passed verdict on the last task. It proved no saved function, so nothing was verified.",
+        "Ignored the verdict: no task has ended since the last one.",
+    ]
+
+
 def test_gpsr_says_so_when_no_place_is_configured(build):
     built = build(tool_set="gpsr", locations={})
     built.app.start()
@@ -669,6 +712,22 @@ def test_close_stops_at_a_run_that_has_not_ended(build, nav, monkeypatch):
     assert built.app.unresolved() == ["The agent's current run has not ended."]
 
     monkeypatch.undo()
+    assert built.app.close(WATCHDOG_S)
+    assert built.app.unresolved() == []
+
+
+def test_a_script_sandbox_that_has_not_closed_keeps_close_false(build, pool):
+    release = threading.Event()
+    scripts = AgentScripts(pool, Shelf(), closer=lambda: release.wait(WATCHDOG_S))
+    built = build(scripts=scripts)
+    built.app.start()
+
+    assert built.app.close(0.05) is False
+    # The sandbox closes last, so everything else has closed already.
+    assert set(built.node.publishers) <= set(built.node.destroyed)
+    assert built.app.unresolved() == ["The script sandbox's workers have not closed."]
+
+    release.set()
     assert built.app.close(WATCHDOG_S)
     assert built.app.unresolved() == []
 
@@ -1130,6 +1189,8 @@ def test_cli_defaults_keep_the_existing_paths_and_topics():
     assert args.people_memory == "unavailable"
     assert args.resume_people_session is False
     assert args.arms is False
+    assert args.scripts is False
+    assert main._parse_args(["--scripts"]).scripts is True
     assert main._parse_args(["--tool-set", "hri"]).tool_set == "hri"
     with pytest.raises(SystemExit):
         main._parse_args(["--tool-set", "garage"])
@@ -1315,6 +1376,84 @@ def test_with_arms_the_shutdown_waits_for_the_commander_to_close_before_the_conn
     ]
     positions = [timeline.index(event) for event in expected]
     assert positions == sorted(positions), timeline
+
+
+def test_cli_with_scripts_opens_the_sandbox_before_ros_and_closes_it_at_shutdown(
+    cli, monkeypatch, isolated_tools_home
+):
+    opened = []
+    real_open = AgentScripts.open.__func__
+
+    def recording_open(cls, shelf, **kwargs):
+        cli.events.append("sandbox")
+        opened.append(real_open(cls, shelf, **kwargs))
+        return opened[-1]
+
+    monkeypatch.setattr(main.AgentScripts, "open", classmethod(recording_open))
+    apps = []
+
+    def started(app):
+        apps.append(app)
+        send()
+
+    cli.on_started = started
+    assert cli.run("--scripts") == 0
+
+    [scripts] = opened
+    assert apps[0]._scripts is scripts
+    assert cli.index("sandbox") < cli.index("init")
+    assert scripts.shelf.root == isolated_tools_home.resolve()
+    assert (isolated_tools_home / "temporary").is_dir()
+    # Application.close closed the pool, and main's own close found nothing left.
+    assert scripts.unresolved() == []
+    with pytest.raises(RuntimeError, match="not active"), scripts._runner.pool.checkout():
+        pass
+
+
+def test_without_scripts_no_sandbox_or_shelf_is_made(cli, monkeypatch, isolated_tools_home):
+    def never(*_args, **_kwargs):
+        raise AssertionError("no sandbox without --scripts")
+
+    monkeypatch.setattr(main.AgentScripts, "open", never)
+    received = {}
+
+    def assemble(**kwargs):
+        received.update(kwargs)
+        app = FakeApp(cli)
+        app.on_start = send
+        return app
+
+    monkeypatch.setattr(main, "assemble", assemble)
+    assert cli.run() == 0
+    assert received["scripts"] is None
+    assert not isolated_tools_home.exists()
+
+
+def test_scripts_without_the_sandbox_stop_with_one_line_before_ros_init(cli, capsys, monkeypatch):
+    def no_bwrap(**_kwargs):
+        raise SandboxUnavailable("bwrap is not installed. Install it, or pass --no-bwrap on purpose.")
+
+    monkeypatch.setattr(agent_tool, "open_pool", no_bwrap)
+
+    assert cli.run("--scripts") == main.STARTUP_ERROR_EXIT_CODE
+    assert capsys.readouterr().err == (
+        "walkie-agent: --scripts runs scripts only inside bwrap, and bwrap is not installed. "
+        "Install bwrap, or start without --scripts.\n"
+    )
+    assert "init" not in cli.events
+    assert cli.connectors == []
+
+
+def test_scripts_with_a_store_git_does_not_ignore_stop_with_one_line(cli, capsys, monkeypatch, tmp_path):
+    store = tmp_path / "repo" / "tools"
+    subprocess.run(["git", "init", "-q", str(store.parent)], check=True)
+    monkeypatch.setenv("WALKIE_TOOLS_HOME", str(store))
+
+    assert cli.run("--scripts") == main.STARTUP_ERROR_EXIT_CODE
+    error = capsys.readouterr().err
+    assert error.startswith("walkie-agent: ")
+    assert error.count("\n") == 1
+    assert "init" not in cli.events
 
 
 def test_models_and_files_are_ready_before_ros_starts(cli):

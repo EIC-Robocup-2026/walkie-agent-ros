@@ -236,6 +236,22 @@ class Shelf:
         """The sha of each callable function's current source, by name."""
         return {name: source_sha(source) for name, source in self._sources().items()}
 
+    def unverified(self) -> list[str]:
+        """The callable functions whose current version has no verified event, sorted.
+
+        A frozen shelf calls only verified versions, so it has none.
+        """
+        verified = self._verified_versions()
+        return sorted(name for name, sha in self.versions().items() if (name, sha) not in verified)
+
+    def describe_marked(self, mark: str) -> str:
+        """As describe(), with `mark` on a line of its own above each unverified function."""
+        unverified = set(self.unverified())
+        return "\n\n".join(
+            f"{mark}\n{header(source)}" if name in unverified else header(source)
+            for name, source in self._sources().items()
+        )
+
     def source_for(self, code: str) -> tuple[str, dict[str, str]]:
         """The shelf functions `code` names, transitively, as source to run first, and each one's sha.
 

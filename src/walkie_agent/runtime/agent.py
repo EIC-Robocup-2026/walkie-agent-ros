@@ -11,6 +11,7 @@ from langchain.agents.middleware import (
     ModelFallbackMiddleware,
 )
 from langchain_core.language_models import BaseChatModel
+from langchain_core.tools import BaseTool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
@@ -108,6 +109,7 @@ def build_agent(
     ctx: Ctx,
     *,
     tools: Iterable[Callable[..., Any]] = DEFAULT,
+    extra_tools: Iterable[BaseTool] = (),
     run_limit: int = 25,
     deadline_s: float = 60.0,
     on_todos: Callable[[list[dict[str, Any]], list[dict[str, Any]]], None] | None = None,
@@ -120,9 +122,15 @@ def build_agent(
 
     `run_limit` and `deadline_s` default to provisional values, which `[agent]` in
     config.toml overrides through `agent_settings`. No fallback is configured by
-    default, since that choice is the team's (decision 19).
+    default, since that choice is the team's (decision 19). `extra_tools` are tools
+    already built over `ctx`, such as run_script with --scripts, bound after the atomics.
+    Raises ValueError for a tool name used twice.
     """
     bound = as_tools(tools, ctx)
+    for tool in extra_tools:
+        if tool.name in {other.name for other in bound}:
+            raise ValueError(f"Tool names used twice: {tool.name}.")
+        bound.append(tool)
     if len(bound) + TODO_TOOL_COUNT > MAX_BOUND_TOOLS:
         logger.warning(
             "%d tools are bound, more than %d; a small model may pick the wrong one.",

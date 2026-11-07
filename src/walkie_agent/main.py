@@ -39,6 +39,14 @@ poses not yet tried on the robot are offered too, and the commander's bounds are
 simulation's. --arms needs a set with the arm atomics, and the arms set needs --arms: a
 bad combination stops the agent at once, with exit code 2.
 
+--scripts adds the run_script tool to any set: the LLM writes a short Python script over
+the bound tools, which runs in a Monty worker inside bwrap, and may save functions from
+it for later tasks. The workers start before ROS does, and if bwrap cannot start them the
+agent stops at once, with exit code 2. The saved functions are kept in
+src/walkie_agent/tools, or in WALKIE_TOOLS_HOME when it is set. After a task, the operator
+judges it on /walkie/verdict (std_msgs/msg/Bool): true verifies the saved functions that
+the task proved, and false verifies nothing.
+
 A missing or broken file, a missing setting or API key, or a bad [team] table stops the
 agent before ROS starts, with one line on stderr and exit code 2.
 
@@ -108,6 +116,9 @@ from walkie_agent.runtime.model import (
     build_model,
     load_config,
 )
+from walkie_agent.scripting.agent_tool import AgentScripts
+from walkie_agent.scripting.sandbox import SandboxUnavailable
+from walkie_agent.scripting.shelf import Shelf
 from walkie_agent.tasks import TaskTemplate, check_required_tools, load_task_templates
 from walkie_agent.tools.atomic import ARM_TOOLS, ARMS, DEFAULT, GPSR, HRI
 
@@ -239,6 +250,20 @@ _LIVE_MEMORY_RULE = (
     "  remembered. A null name is someone you do not know, so never guess it.\n"
 )
 
+# The run_script rule of a run with --scripts. Without the flag the prompt is unchanged.
+_SCRIPTS_RULE = (
+    "- `run_script` runs one short Python script that calls your other tools as\n"
+    "  functions. Use it for several steps that need no decision from you in\n"
+    "  between, such as visiting places in turn. When you must see a result before\n"
+    "  you choose the next step, call the tools one at a time instead.\n"
+    "- To keep a step you will need again, write it as a function whose changing\n"
+    "  parts are parameters, and list its name in the save argument. Later scripts\n"
+    "  may call the saved functions that the tool lists. One marked unverified may\n"
+    "  be wrong, so check what it returns.\n"
+    "- A todo step that names a tool is proven only by your own call of that tool,\n"
+    "  never by a call inside a script.\n"
+)
+
 _RULES_END = """\
 - If a tool reports a failure, tell the person what went wrong with `say`
   and do not pretend the action succeeded. When one call of a message fails,
@@ -269,13 +294,15 @@ def build_system_prompt(
     vision: bool = False,
     memory: bool = False,
     arms: bool = False,
+    scripts: bool = False,
 ) -> str:
     """The rules for the tools a run binds, then the static robot description, once.
 
     GPSR lacks `list_places`, so its prompt carries the configured places as data.
     `vision` says that find_people reads live people perception, and `memory` that
     remember_person and recognize_person have a people memory. `arms` keeps the arm
-    atomics in the set (bound_tools), and with them the arm rule.
+    atomics in the set (bound_tools), and with them the arm rule. `scripts` adds the
+    run_script rule after the tools' own.
     """
     names = _atomic_names(tool_set, arms=arms)
     rules = dict(_TOOL_RULES)
@@ -285,6 +312,8 @@ def build_system_prompt(
         rules["remember_person"] = _LIVE_MEMORY_RULE
     prompt = _RULES_START
     prompt += "".join(rule for tool, rule in rules.items() if tool in names)
+    if scripts:
+        prompt += _SCRIPTS_RULE
     prompt += _RULES_END
     if "list_places" not in names:
         prompt += "\n" + _places_section(locations)
@@ -375,6 +404,7 @@ class Application:
 
     The connector and the ROS context belong to the caller, and outlive `close`.
     `commander` is the arm commander client of a run with --arms, else None.
+    `scripts` is run_script's sandbox of a run with --scripts, else None.
     """
 
     def __init__(
@@ -386,6 +416,7 @@ class Application:
         speech: RosSpeech,
         vision: RosVision | None = None,
         commander: CommanderClient | None = None,
+        scripts: AgentScripts | None = None,
     ) -> None:
         self.ctx = ctx
         self.runner = runner
@@ -394,6 +425,7 @@ class Application:
         self._speech = speech
         self._vision = vision
         self._commander = commander
+        self._scripts = scripts
         self._run_ended = True
 
     def start(self) -> None:
@@ -415,6 +447,10 @@ class Application:
         has not ended, such as one the commander accepts only after the stop, so that
         the goal's cancel and result still reach it. Until it has closed, close() returns
         False with speech, vision and the bridge still open.
+
+        With --scripts, the script sandbox's workers close last, once the Runner's run,
+        and with it any script, has ended. A worker that does not exit within
+        `timeout_s` makes close() return False, and a later call waits for it again.
         """
         self.bridge.close_ingress()
         self.ctx.cancel.cancel()
@@ -437,13 +473,14 @@ class Application:
         if self._vision is not None:
             self._vision.close()
         self.bridge.close()
-        return True
+        return self._scripts is None or self._scripts.close(timeout_s)
 
     def unresolved(self) -> list[str]:
         """What kept the last close() from finishing, as sentences for the operator's log."""
         worker = [] if self._run_ended else ["The agent's current run has not ended."]
         arms = [] if self._commander is None else self._commander.unresolved()
-        return [*worker, *self._base.unresolved(), *arms]
+        scripts = [] if self._scripts is None else self._scripts.unresolved()
+        return [*worker, *self._base.unresolved(), *arms, *scripts]
 
 
 def assemble(
@@ -469,6 +506,7 @@ def assemble(
     people_memory: str = "unavailable",
     resume_people_session: bool = False,
     arm_poses: ArmPoses | None = None,
+    scripts: AgentScripts | None = None,
 ) -> Application:
     """Wire the runtime and the ROS wrappers over a connector the caller already made.
 
@@ -492,6 +530,11 @@ def assemble(
     UnavailableArms, the RosBase drives with no arm check, and the arm atomics are
     dropped from the set (bound_tools). Raises ValueError for a set that does not go
     with the arms (check_arms) before anything is built.
+
+    `scripts`, the AgentScripts that main() opens for --scripts, adds run_script over
+    the bound atomics and the run_script rule. The Runner marks each task's start and
+    end on it, and the bridge subscribes to /walkie/verdict for its verdict. The
+    Application closes it last. A failure here leaves it open for the caller.
     """
     arms = arm_poses is not None
     check_templates(templates, tool_set, arms=arms)
@@ -499,7 +542,13 @@ def assemble(
     check_people_memory(people_memory, vision=vision, resume=resume_people_session)
     remembers = people_memory != "unavailable"
     prompt = build_system_prompt(
-        tool_set, locations, robot_description, vision=vision, memory=remembers, arms=arms
+        tool_set,
+        locations,
+        robot_description,
+        vision=vision,
+        memory=remembers,
+        arms=arms,
+        scripts=scripts is not None,
     )
     clock = connector.node.get_parameter("use_sim_time").value
     if bool(clock) != use_sim_time:
@@ -562,12 +611,15 @@ def assemble(
             reset_topic=reset_topic,
             task_topic=task_topic,
             todos_topic=todos_topic,
+            on_verdict=None if scripts is None else scripts.verdict,
         )
         built.append(bridge.close)
+        atomics = bound_tools(tool_set, arms=arms)
         agent = build_agent(
             model,
             ctx,
-            tools=bound_tools(tool_set, arms=arms),
+            tools=atomics,
+            extra_tools=() if scripts is None else (scripts.tool(atomics, ctx),),
             on_todos=bridge.on_todos,
             fallback=fallback,
             tool_log=tool_log,
@@ -584,12 +636,14 @@ def assemble(
             on_reset=on_reset,
             # A stop also halts an arm goal whose call already gave up (ADR-0021).
             on_stop=None if commander is None else commander.stop,
+            on_task_start=None if scripts is None else scripts.begin,
+            on_task_end=None if scripts is None else scripts.end,
         )
     except BaseException:
         for close in reversed(built):
             close()
         raise
-    return Application(ctx, runner, bridge, base, speech, live, commander)
+    return Application(ctx, runner, bridge, base, speech, live, commander, scripts)
 
 
 class _Signals:
@@ -792,6 +846,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "--use-sim-time, poses not yet tried on the robot are offered too. Needs a tool "
         "set with the arm tools, such as hri or arms.",
     )
+    parser.add_argument(
+        "--scripts",
+        action="store_true",
+        help="Add run_script, which runs a short Python script over the bound tools inside "
+        "bwrap and keeps the functions it saves. Needs bwrap. The operator judges each "
+        "task on /walkie/verdict.",
+    )
     args = parser.parse_args(argv)
     try:
         check_arms(args.tool_set, arms=args.arms)
@@ -826,23 +887,41 @@ def main(argv: list[str] | None = None) -> int:
         callbacks = build_callbacks(config)
         facts = facts_from_config(config)
         tool_log = ToolLog(args.tool_log) if args.tool_log else None
+        # WALKIE_TOOLS_HOME or the tools package's folder. StoreRefused is a ValueError,
+        # so a store that git does not ignore stops the agent here, in one line.
+        shelf = Shelf() if args.scripts else None
     except STARTUP_ERRORS as error:
         print(f"walkie-agent: {_startup_message(error, args.config)}", file=sys.stderr)
         return STARTUP_ERROR_EXIT_CODE
 
-    return _run(
-        args,
-        model=model,
-        config=config,
-        locations=locations,
-        templates=templates,
-        robot_description=robot_description,
-        callbacks=callbacks,
-        tool_log=tool_log,
-        fallback=fallback,
-        facts=facts,
-        arm_poses=arm_poses,
-    )
+    # From the main thread, which outlives every run: a worker dies with the thread
+    # that started it. Without bwrap no script may run, so the agent does not start.
+    scripts = None
+    if shelf is not None:
+        try:
+            scripts = AgentScripts.open(shelf, tool_log=tool_log)
+        except SandboxUnavailable as error:
+            print(f"walkie-agent: {_startup_message(error, args.config)}", file=sys.stderr)
+            return STARTUP_ERROR_EXIT_CODE
+    try:
+        return _run(
+            args,
+            model=model,
+            config=config,
+            locations=locations,
+            templates=templates,
+            robot_description=robot_description,
+            callbacks=callbacks,
+            tool_log=tool_log,
+            fallback=fallback,
+            facts=facts,
+            arm_poses=arm_poses,
+            scripts=scripts,
+        )
+    finally:
+        # Application.close closed it already, unless the run failed before assembling.
+        if scripts is not None and not scripts.close(CLOSE_TIMEOUT_S):
+            logger.warning("The script sandbox's workers did not close; the exit ends them.")
 
 
 if __name__ == "__main__":

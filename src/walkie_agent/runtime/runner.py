@@ -99,6 +99,11 @@ class Runner:
     the caller's thread. main passes the arm commander's stop() with --arms, which
     stops every MoveIt execution, also that of an arm goal whose call already gave
     up. It must not block, and an exception it raises is logged.
+
+    `on_task_start()` and `on_task_end()` run on the loop thread around each task's
+    run, the end also after a failed or stopped one and before on_reply. main passes
+    the run_script record's begin() and end() with --scripts. They must not block,
+    and an exception they raise is logged.
     """
 
     def __init__(
@@ -112,6 +117,8 @@ class Runner:
         tool_log: ToolLog | None = None,
         on_reset: Callable[[], None] | None = None,
         on_stop: Callable[[], None] | None = None,
+        on_task_start: Callable[[], None] | None = None,
+        on_task_end: Callable[[], None] | None = None,
     ) -> None:
         self.agent = agent
         self.ctx = ctx
@@ -120,6 +127,8 @@ class Runner:
         self._on_reply = on_reply
         self._on_reset = on_reset
         self._on_stop = on_stop
+        self._on_task_start = on_task_start
+        self._on_task_end = on_task_end
         self._callbacks = list(callbacks)
         self._tool_log = tool_log
         # The lock makes "take a task and clear the token" one step against "set the
@@ -301,7 +310,11 @@ class Runner:
             await self.agent.ainvoke({"messages": messages, "stopping": True}, config)
         else:
             payload = {"messages": [HumanMessage(item.text)], "todo_seed": item.seed}
-            result = await self.agent.ainvoke(payload, config)
+            self._call(self._on_task_start)
+            try:
+                result = await self.agent.ainvoke(payload, config)
+            finally:
+                self._call(self._on_task_end)
             last = result["messages"][-1]
             if isinstance(last, AIMessage) and not last.tool_calls and last.content:
                 self._call(self._on_reply, last.text)

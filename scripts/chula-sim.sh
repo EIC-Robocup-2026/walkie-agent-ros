@@ -4,16 +4,21 @@
 # and ROS_DOMAIN_ID SIM_DOMAIN_ID. Nothing started here connects to the router on 7447, so
 # it neither sees nor disturbs a robot or another simulation on this computer.
 #
-#   scripts/chula-sim.sh up [--agent] [--gui]   router, MuJoCo with Nav2, oracle, speech log, agent
-#       [-- ARGS]                               ARGS go to the agent, such as --tool-set hri
-#   scripts/chula-sim.sh check [--agent]        wait for the clock, TF, head camera and arrays
+#   scripts/chula-sim.sh up [--agent] [--arms] [--gui] [-- ARGS]
+#                                               router, MuJoCo with Nav2, oracle, speech log;
+#                                               --agent adds the agent, given ARGS such as
+#                                               --tool-set hri; --arms adds MoveIt and the arm
+#                                               commander, and gives the agent --arms
+#   scripts/chula-sim.sh check [--agent] [--arms]
+#                                               wait for the clock, TF, head camera and arrays
 #   scripts/chula-sim.sh status                 which parts are running, and their logs
 #   scripts/chula-sim.sh env                    the exports that put a shell on the private graph
 #   scripts/chula-sim.sh down                   stop everything this script started
 #
 # docs/setup/08-chula-simulation.md explains each step. Environment:
 #   WALKIE_ROS          a walkie-ros workspace, with its pixi environment installed and its
-#                       install/ built (required)
+#                       install/ built (required); for --arms, install/ must hold
+#                       openarm_bimanual_moveit_config and openarm_bimanual_commander_cpp
 #   WALKIE_ROS_OVERLAY  a colcon workspace sourced over WALKIE_ROS's install, such as a
 #                       worktree of feat/chula-pat14-6-simulation with only robot_bringup and
 #                       walkie_mujoco_worlds built (optional)
@@ -44,11 +49,20 @@ SIM_SPAWN_POSE=${SIM_SPAWN_POSE:-1.7629 -1.483 0}
 SIM_CPUS=${SIM_CPUS:-}
 
 WORLD=chula_pat14_6
-PARTS=(router bringup oracle speech agent)
+# down stops them in reverse order: the commander and MoveIt before bringup.
+PARTS=(router bringup moveit commander oracle speech agent)
 # Nav2's lifecycle manager logs this once every navigation server is active.
 BRINGUP_READY="Managed nodes are active"
 BRINGUP_TIMEOUT_S=300
 ROUTER_TIMEOUT_S=30
+# What move_group logs once it is ready, and what walkie-ros's commander logs once its
+# node is up (commander_template.cpp). The commander needs move_group at its start.
+MOVEIT_READY="MoveGroup context initialization complete"
+COMMANDER_READY="Bimanual Commander Node Initialized"
+# What up --arms needs in WALKIE_ROS's install/. The overlay that
+# docs/setup/08-chula-simulation.md builds holds neither package.
+MOVEIT_LAUNCH=openarm_bimanual_moveit_config/share/openarm_bimanual_moveit_config/launch/moveit_only.launch.py
+COMMANDER_EXECUTABLE=openarm_bimanual_commander_cpp/lib/openarm_bimanual_commander_cpp/commander
 # What the oracle and the agent log once their nodes exist (oracle_scene.py, main.py).
 ORACLE_READY="Drawing "
 AGENT_READY="Walkie's agent is running"
@@ -278,10 +292,19 @@ wait_for_log() {
     return 1
 }
 
+# check_prerequisites WITH_ARMS: what up needs, and with WITH_ARMS true also MoveIt's
+# config and the commander, both from WALKIE_ROS's install/.
 check_prerequisites() {
+    local with_arms=$1
     [[ -n $WALKIE_ROS ]] || die "set WALKIE_ROS to a walkie-ros workspace"
     [[ -f $WALKIE_ROS/pixi.toml && -f $WALKIE_ROS/install/setup.bash ]] ||
         die "WALKIE_ROS=$WALKIE_ROS has no pixi.toml or no built install/"
+    if $with_arms; then
+        [[ -f $WALKIE_ROS/install/$MOVEIT_LAUNCH ]] ||
+            die "--arms needs openarm_bimanual_moveit_config, and WALKIE_ROS=$WALKIE_ROS has not built it in install/"
+        [[ -x $WALKIE_ROS/install/$COMMANDER_EXECUTABLE ]] ||
+            die "--arms needs openarm_bimanual_commander_cpp, and WALKIE_ROS=$WALKIE_ROS has not built it in install/"
+    fi
     if [[ -n $WALKIE_ROS_OVERLAY && ! -f $WALKIE_ROS_OVERLAY/install/local_setup.bash ]]; then
         die "WALKIE_ROS_OVERLAY=$WALKIE_ROS_OVERLAY has no built install/"
     fi
@@ -294,10 +317,11 @@ check_prerequisites() {
 }
 
 up() {
-    local with_agent=false headless=true rviz=false agent_args=()
+    local with_agent=false with_arms=false headless=true rviz=false agent_args=()
     while (($#)); do
         case $1 in
             --agent) with_agent=true ;;
+            --arms) with_arms=true ;;
             --gui) headless=false rviz=true ;;
             --) shift; agent_args=("$@"); break ;;
             *) die "unknown option for up: $1" ;;
@@ -306,7 +330,7 @@ up() {
     done
     ((${#agent_args[@]} == 0)) || $with_agent ||
         die "the arguments after -- are the agent's, so up needs --agent with them"
-    check_prerequisites
+    check_prerequisites "$with_arms"
     lock
     mkdir -p "$SIM_DIR"/{logs,pids,worlds,ros/log}
 
@@ -328,10 +352,14 @@ up() {
         port_open || fail "the router is not listening on $SIM_ZENOH_PORT; see $SIM_DIR/logs/router.log"
     fi
 
+    # walkie-ros's parts run in its environment, with the overlay, when set, sourced over
+    # its install/, so that MoveIt and the commander load the packages bringup loads.
+    # --as-is: run walkie-ros's environment as installed; never install or update it.
+    local walkie_ros=("$PIXI" run --as-is --manifest-path "$WALKIE_ROS/pixi.toml"
+        bash -c '[[ -z $0 ]] || source "$0"; exec "$@"'
+        "${WALKIE_ROS_OVERLAY:+$WALKIE_ROS_OVERLAY/install/local_setup.bash}")
     if ! running bringup; then
-        # --as-is: run walkie-ros's environment as installed; never install or update it.
-        start bringup "$SIM_DIR" "$PIXI" run --as-is --manifest-path "$WALKIE_ROS/pixi.toml" \
-            bash -c '[[ -z $0 ]] || source "$0"; exec "$@"' "${WALKIE_ROS_OVERLAY:+$WALKIE_ROS_OVERLAY/install/local_setup.bash}" \
+        start bringup "$SIM_DIR" "${walkie_ros[@]}" \
             ros2 launch robot_bringup nav_mujoco_omnibot.launch.py "world:=$WORLD" \
             "spawn_pose:=$SIM_SPAWN_POSE" "headless:=$headless" "use_rviz:=$rviz" \
             "world_output_dir:=$SIM_DIR/worlds"
@@ -339,6 +367,24 @@ up() {
     echo "waiting up to ${BRINGUP_TIMEOUT_S} s for Nav2 ..."
     wait_for_log bringup "$BRINGUP_READY" "$BRINGUP_TIMEOUT_S" ||
         fail "the simulation did not become ready; see $SIM_DIR/logs/bringup.log"
+
+    if $with_arms; then
+        # MoveIt drives the arm controllers that bringup spawns, and the commander
+        # connects to MoveIt as it starts, so each waits for the part before it.
+        echo "waiting up to ${PART_TIMEOUT_S} s each for MoveIt and the arm commander ..."
+        running moveit || start moveit "$SIM_DIR" "${walkie_ros[@]}" \
+            ros2 launch openarm_bimanual_moveit_config moveit_only.launch.py \
+            hardware_type:=mujoco use_rviz:=false
+        wait_for_log moveit "$MOVEIT_READY" "$PART_TIMEOUT_S" ||
+            fail "MoveIt did not start; see $SIM_DIR/logs/moveit.log"
+        # commander.launch.py sets no use_sim_time; this launch file sets it around it.
+        running commander || start commander "$SIM_DIR" "${walkie_ros[@]}" \
+            ros2 launch "$REPO/launch/commander_sim.launch.py"
+        wait_for_log commander "$COMMANDER_READY" "$PART_TIMEOUT_S" ||
+            fail "the arm commander did not start; see $SIM_DIR/logs/commander.log"
+        # With --agent, the agent then drives the arms through the commander.
+        agent_args+=(--arms)
+    fi
 
     running oracle || start oracle "$REPO" "$PIXI" run --frozen --manifest-path "$REPO/pixi.toml" oracle-chula
     # The agent's say needs a listener on /to_human. This one writes each line to
@@ -358,13 +404,16 @@ up() {
     fi
     sleep "$SETTLE_S"
     local name wanted=(router bringup oracle speech)
+    if $with_arms; then
+        wanted+=(moveit commander)
+    fi
     if $with_agent; then
         wanted+=(agent)
     fi
     for name in "${wanted[@]}"; do
         running "$name" || fail "$name exited; see $SIM_DIR/logs/$name.log"
     done
-    echo "up. Next: scripts/chula-sim.sh check$($with_agent && echo " --agent" || true)"
+    echo "up. Next: scripts/chula-sim.sh check$($with_agent && echo " --agent" || true)$($with_arms && echo " --arms" || true)"
 }
 
 check() {
@@ -414,6 +463,6 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
         status) status ;;
         env) print_env ;;
         down) down ;;
-        *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+        *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
     esac
 fi

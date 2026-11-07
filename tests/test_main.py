@@ -6,6 +6,7 @@ this process, which is why `main` runs on the test's main thread. One test runs 
 entry point in a fresh interpreter, to see what the operator's terminal gets.
 """
 
+import inspect
 import logging
 import os
 import re
@@ -21,7 +22,7 @@ import pytest
 from action_msgs.msg import GoalStatus
 from action_msgs.srv import CancelGoal
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from rai_interfaces.msg import HRIMessage
 from rclpy.signals import SignalHandlerOptions
 from ros_fakes import WATCHDOG_S, FakeActionClient, FakeConnector, FakeNode
@@ -32,7 +33,10 @@ from test_scene_file import camera_info
 from walkie_vision_msgs.msg import PersonDetectionArray
 
 import walkie_agent.main as main
-from walkie_agent.atomics import DEFAULT, GPSR, HRI, get_facts, list_places
+from walkie_agent.arm.poses import ArmPoses, load_arm_poses
+from walkie_agent.arm.results import ClientSnapshot, DriveCheck
+from walkie_agent.arm.state import ArmsState, ArmState
+from walkie_agent.atomics import ARM_TOOLS, ARMS, DEFAULT, GPSR, HRI, get_facts, list_places
 from walkie_agent.capabilities import Team, UnavailableArms, UnavailableFacts, UnavailableMemory
 from walkie_agent.capabilities.facts import SystemFacts
 from walkie_agent.errors import ErrorCode, StepError
@@ -40,7 +44,15 @@ from walkie_agent.locations import Location, load_locations
 from walkie_agent.perception import PEOPLE_TOPIC
 from walkie_agent.perception.memory import TrackMemory
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory
-from walkie_agent.ros import RosBase, RosSpeech, RosVision, UnavailableVision
+from walkie_agent.ros import (
+    CommanderClient,
+    RosArms,
+    RosBase,
+    RosSpeech,
+    RosVision,
+    UnavailableVision,
+)
+from walkie_agent.ros.commander import READ_TIMEOUT_S
 from walkie_agent.runtime import Runner, ToolLog, build_model
 from walkie_agent.tasks import TaskTemplate
 
@@ -52,17 +64,27 @@ PLACES = {
 }
 ROBOT = "Walkie is a test robot with a unique marker 7f3a."
 MIDDLEWARE_TOOLS = {"update_todos", "wait_for_person"}
-TOOL_SET_LISTS = {"default": DEFAULT, "gpsr": GPSR, "hri": HRI}
+TOOL_SET_LISTS = {"default": DEFAULT, "gpsr": GPSR, "hri": HRI, "arms": ARMS}
+# The sets a run without --arms may use, and those a run with --arms may use.
+SETS_WITHOUT_ARMS = ("default", "gpsr", "hri")
+SETS_WITH_ARMS = ("hri", "arms")
 FIXTURE_LOCATIONS = PROJECT_ROOT / "tests" / "fixtures" / "locations.toml"
 MODEL_CONFIG = '[vendor]\ncomplex_model = "openai"\n[openai]\ncomplex_model = "m"\n'
 TEAM_CONFIG = (
     '[team]\nname = "EIC"\ncountry = "Thailand"\naffiliation = "Chulalongkorn University"\n'
     'timezone = "Asia/Bangkok"\n'
 )
+POSES = load_arm_poses(
+    PROJECT_ROOT / "config" / "arm_poses.toml", PROJECT_ROOT / "config" / "robot_model.toml"
+)
+HOME = ArmState(pose="home", travel_safe=True)
+HANDS_UP = ArmState(pose="hands_up", travel_safe=False)
 
 
-def tool_names(tool_set):
-    return {fn.__name__ for fn in TOOL_SET_LISTS[tool_set]} | MIDDLEWARE_TOOLS
+def tool_names(tool_set, arms=False):
+    """What a run binds: the set's atomics, without the arm atomics unless `arms`."""
+    atomics = {fn.__name__ for fn in TOOL_SET_LISTS[tool_set]}
+    return (atomics if arms else atomics - ARM_TOOLS) | MIDDLEWARE_TOOLS
 
 
 def template(*todos, name="tour"):
@@ -80,6 +102,68 @@ def nav(monkeypatch):
 
     monkeypatch.setattr(main, "RosBase", partial(RosBase, client_factory=factory))
     return clients
+
+
+class StandInCommander:
+    """CommanderClient's constructor, and the part of the client that main and RosArms use.
+
+    FakeNode makes no service clients, so the real client cannot be made over it.
+    `state` is what every read of the arms finds, and `log` records the drive checks'
+    bounds and the calls of stop and destroy, in order.
+    """
+
+    def __init__(self, connector, cancel, poses=None, **bounds):
+        self.connector = connector
+        self.cancel = cancel
+        self.poses = poses
+        self.bounds = bounds
+        self.state = ArmsState(left=HOME, right=HOME)
+        self.log = []
+        self.on_destroy = None
+
+    @property
+    def read_timeout_s(self):
+        return self.bounds.get("read_timeout_s", READ_TIMEOUT_S)
+
+    @property
+    def last_state(self):
+        return self.state
+
+    def available(self):
+        return True
+
+    def read_arms(self):
+        return self.state
+
+    def snapshot(self):
+        return ClientSnapshot(self.state, None, 0, None)
+
+    def check_for_driving(self, timeout_s=None):
+        self.log.append(("check", timeout_s))
+        return DriveCheck(self.state)
+
+    def stop(self):
+        self.log.append("stop")
+        self.cancel.cancel()
+
+    def destroy(self):
+        self.log.append("destroy")
+        if self.on_destroy is not None:
+            self.on_destroy()
+
+
+@pytest.fixture
+def commanders(monkeypatch):
+    """Gives main a StandInCommander in place of CommanderClient. Holds the ones it made."""
+    made = []
+
+    class Recording(StandInCommander):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            made.append(self)
+
+    monkeypatch.setattr(main, "CommanderClient", Recording)
+    return made
 
 
 @pytest.fixture
@@ -240,6 +324,7 @@ def test_without_a_people_memory_the_memory_tools_are_unavailable_and_the_prompt
     app = built.app
     assert isinstance(app.ctx.memory, UnavailableMemory)
     assert app.runner._on_reset is None
+    assert app.runner._on_stop is None  # no commander without --arms
     assert app.ctx.vision._namer is None
     app.start()
     run_one(built)
@@ -411,11 +496,13 @@ def test_each_tool_set_gets_a_matching_prompt(build, tool_set):
 
     bound = set(built.model.bound[0])
     assert bound == tool_names(tool_set)
+    assert not bound & ARM_TOOLS, "without --arms no set binds the arm tools"
     system = built.model.received[0][0]
     assert isinstance(system, SystemMessage)
     named = set(re.findall(r"`(\w+)`", system.content))
     assert named <= bound, f"The prompt names tools it lacks: {named - bound}"
     assert {"say", "go_to", "move_relative", "update_todos", "wait_for_person"} <= named
+    assert "You also have two arms" not in system.content
 
     # A prompt says plainly that what its set offers is not connected yet.
     assert "UNAVAILABLE" in system.content
@@ -460,12 +547,16 @@ def test_the_shipped_robot_description_claims_only_what_is_connected():
     assert "Chulalongkorn" in text and "polite, patient and brief" in text
     assert "Two robot arms" in text
     assert "not connected" in text
-    # Seeing people depends on the run, so it defers to the prompt's rules.
-    assert "when the agent runs with people perception" in text
+    # Seeing people and moving the arms depend on the run, so it defers to the prompt.
+    flat = " ".join(text.split())
+    assert "when the agent runs with people perception" in flat
+    assert "when the agent runs with the arm tools" in flat
+    assert "has no grasp skill yet" in flat
     # It describes the robot. How to use a tool is the prompt's job, set by set. Some tool
     # names are plain English ("pick up"), so only the unmistakable ones are looked for.
     assert "`" not in text
-    for name in tool_names("default") | tool_names("gpsr") | tool_names("hri"):
+    every = {name for tool_set in TOOL_SET_LISTS for name in tool_names(tool_set, arms=True)}
+    for name in every:
         assert "_" not in name or name not in text, name
     # It claims the facts get_facts reads, and names the team as config.toml does.
     assert "the time and the date from the computer's clock" in text
@@ -474,7 +565,7 @@ def test_the_shipped_robot_description_claims_only_what_is_connected():
         assert team[key] in text, key
 
 
-def test_template_requirements_must_be_bound(build):
+def test_template_requirements_must_be_bound(build, commanders):
     bound = template({"content": "Pick", "requires_tool": "pick"})
     unbound = {"tour": bound}
     build(tool_set="gpsr", templates=unbound)
@@ -491,9 +582,22 @@ def test_template_requirements_must_be_bound(build):
             build(templates=stale)
 
     # A person can be asked in every set, and a step with no requirement is always valid.
-    for tool_set in TOOL_SET_LISTS:
+    runs = [*((s, None) for s in SETS_WITHOUT_ARMS), *((s, POSES) for s in SETS_WITH_ARMS)]
+    assert {tool_set for tool_set, _ in runs} == set(TOOL_SET_LISTS)
+    for tool_set, arm_poses in runs:
         asks = {"tour": template("Plain", {"content": "Ask", "requires_tool": "wait_for_person"})}
-        build(tool_set=tool_set, templates=asks)
+        build(tool_set=tool_set, templates=asks, arm_poses=arm_poses)
+
+
+def test_a_template_step_on_an_arm_tool_needs_the_arms(build, commanders):
+    steps = {"tour": template({"content": "Open the hand", "requires_tool": "set_gripper"})}
+    connector = FakeConnector()
+    with pytest.raises(ValueError, match=r"tour\.t1 requires set_gripper"):
+        build(tool_set="hri", templates=steps, connector=connector)
+    assert connector.node.publishers == []
+    assert commanders == []
+
+    build(tool_set="hri", templates=steps, arm_poses=POSES)
 
 
 @pytest.mark.parametrize("wanted", [True, False])
@@ -552,6 +656,181 @@ def test_close_stops_at_a_run_that_has_not_ended(build, nav, monkeypatch):
     monkeypatch.undo()
     assert built.app.close(WATCHDOG_S)
     assert built.app.unresolved() == []
+
+
+# -- The arms ------------------------------------------------------------------------
+
+
+def test_with_arms_the_commander_shares_the_token_and_the_base_checks_the_arms(
+    build, commanders, monkeypatch
+):
+    made_before_the_base = []
+    base = main.RosBase
+
+    def recording_base(*args, **kwargs):
+        made_before_the_base.append(len(commanders))
+        return base(*args, **kwargs)
+
+    monkeypatch.setattr(main, "RosBase", recording_base)
+    built = build(tool_set="hri", arm_poses=POSES)
+    app = built.app
+
+    [commander] = commanders
+    assert made_before_the_base == [1]
+    assert commander.connector is built.connector
+    assert commander.cancel is app.ctx.cancel
+    assert commander.poses is POSES
+    assert commander.bounds == {}, "off the simulation the client keeps its robot bounds"
+
+    arms = app.ctx.arms
+    assert isinstance(arms, RosArms)
+    assert arms._client is commander
+    assert arms._cancel is app.ctx.cancel
+    assert (arms._sim, arms._min_move_timeout_s) == (False, 0.0)
+    assert app.ctx.base._arms_check == arms.check_for_driving
+    assert list(arms.poses()) == list(POSES.offered_poses(sim=False))
+    # A runtime stop or reset also publishes the commander's stop.
+    assert app.runner._on_stop == commander.stop
+    app.runner.stop()
+    assert commander.log == ["stop"]
+
+
+def test_under_sim_time_the_commander_gets_the_sim_bounds(build, commanders):
+    connector = FakeConnector()
+    connector.node.use_sim_time = True
+    built = build(connector=connector, use_sim_time=True, tool_set="arms", arm_poses=POSES)
+
+    [commander] = commanders
+    bounds = dict(main.SIM_ARM_BOUNDS)
+    min_move_timeout_s = bounds.pop("min_move_timeout_s")
+    assert commander.bounds == bounds
+    # The stand-in takes any keyword, so the real constructor must take these.
+    inspect.signature(CommanderClient).bind(connector, built.app.ctx.cancel, POSES, **bounds)
+    assert bounds["read_timeout_s"] > READ_TIMEOUT_S
+    arms = built.app.ctx.arms
+    assert (arms._sim, arms._min_move_timeout_s) == (True, min_move_timeout_s)
+    assert min_move_timeout_s > 0
+    # The simulation offers the poses not yet tried on the robot.
+    assert list(arms.poses()) == list(POSES.offered_poses(sim=True))
+    assert len(arms.poses()) > len(POSES.offered_poses(sim=False))
+
+
+@pytest.mark.parametrize("tool_set", SETS_WITH_ARMS)
+def test_with_arms_the_agent_gets_the_arm_tools_and_the_arm_rule(build, commanders, tool_set):
+    built = build(ai(call("list_arm_poses")), tool_set=tool_set, arm_poses=POSES)
+    built.app.start()
+    run_one(built, "Which arm poses do you know?")
+
+    bound = set(built.model.bound[0])
+    assert bound == tool_names(tool_set, arms=True)
+    assert ARM_TOOLS <= bound
+    system = built.model.received[0][0].content
+    assert system == main.build_system_prompt(tool_set, PLACES, ROBOT, arms=True)
+    named = set(re.findall(r"`(\w+)`", system))
+    assert named <= bound, f"The prompt names tools it lacks: {named - bound}"
+    assert "You also have two arms with grippers." in system
+    assert "Never pick up an object by combining poses" in system
+    # The drive check refuses an arm out with its own words, so no rule repeats them.
+    assert "Before you drive" not in system
+    assert "need an arm commander client" not in system
+
+    # list_arm_poses reads ctx.arms, so it answers with the poses offered on the robot.
+    answer = built.model.received[1][-1]
+    assert isinstance(answer, ToolMessage)
+    for name in POSES.offered_poses(sim=False):
+        assert f"{name}: " in answer.content
+    assert "receive: " not in answer.content, "a pose not tried on the robot stays out"
+
+
+def test_with_an_arm_out_the_agents_drive_is_refused_before_a_goal(build, commanders, nav):
+    built = build(ai(call("go_to", {"place": "kitchen"})), tool_set="hri", arm_poses=POSES)
+    [commander] = commanders
+    commander.state = ArmsState(left=HANDS_UP, right=HOME)
+    built.app.start()
+    run_one(built, "Drive to the kitchen.")
+
+    answer = built.model.received[1][-1]
+    assert isinstance(answer, ToolMessage)
+    assert answer.content.startswith(
+        "PRECONDITION_FAILED: Not starting the drive to kitchen: the left arm is"
+    )
+    assert "move_arm_to_pose" in answer.content
+    assert nav[0].goals == []
+    # One read, bounded by the client's read timeout.
+    assert commander.log == [("check", READ_TIMEOUT_S)]
+
+
+@pytest.mark.parametrize(
+    ("tool_set", "arm_poses", "words"),
+    [
+        ("arms", None, "--tool-set arms needs --arms"),
+        ("default", POSES, "the default set has no move_arm_to_pose"),
+        ("gpsr", POSES, "the gpsr set has no move_arm_to_pose"),
+    ],
+)
+def test_assembly_refuses_a_set_that_does_not_go_with_the_arms_before_building_anything(
+    build, commanders, tool_set, arm_poses, words
+):
+    connector = FakeConnector()
+    with pytest.raises(ValueError, match=re.escape(words)):
+        build(connector=connector, tool_set=tool_set, arm_poses=arm_poses)
+    assert connector.node.publishers == []
+    assert connector.node.subscriptions == []
+    assert commanders == []
+
+
+def test_close_stops_the_arms_at_once_and_destroys_the_commander_after_the_base(
+    build, commanders, nav, monkeypatch
+):
+    built = build(tool_set="hri", arm_poses=POSES)
+    app = built.app
+    [commander] = commanders
+    real_shutdown = app.runner.shutdown
+
+    def shutdown(timeout=None):
+        commander.log.append("runner")
+        return real_shutdown(timeout)
+
+    monkeypatch.setattr(app.runner, "shutdown", shutdown)
+    commander.on_destroy = lambda: commander.log.append(("base destroyed", nav[0].destroyed))
+    app.start()
+
+    assert app.close(WATCHDOG_S)
+    assert commander.log == ["stop", "runner", "destroy", ("base destroyed", 1)]
+    assert set(built.node.publishers) <= set(built.node.destroyed)
+
+    # A repeated close sends "stop" again, which never raises, and destroys nothing twice.
+    assert app.close(WATCHDOG_S)
+    assert commander.log.count("destroy") == 1
+
+
+@pytest.mark.parametrize("stage", ["runner", "base"])
+def test_a_close_that_has_not_finished_keeps_the_commander(build, commanders, nav, monkeypatch, stage):
+    built = build(tool_set="hri", arm_poses=POSES)
+    app = built.app
+    [commander] = commanders
+    app.start()
+    if stage == "runner":
+        monkeypatch.setattr(app.runner, "shutdown", lambda timeout=None: False)
+    else:
+        monkeypatch.setattr(app._base, "close", lambda timeout_s=None: False)
+
+    assert app.close(WATCHDOG_S) is False
+    assert commander.log == ["stop"], "a goal still live may need the commander's clients"
+
+    monkeypatch.undo()
+    assert app.close(WATCHDOG_S)
+    assert commander.log == ["stop", "stop", "destroy"]
+
+
+@pytest.mark.parametrize("stage", ["RosBase", "RosSpeech", "build_agent"])
+def test_a_failure_after_the_commander_destroys_it_once(build, commanders, nav, monkeypatch, stage):
+    raise_in(monkeypatch, stage)
+    with pytest.raises(RuntimeError, match=f"{stage} failed"):
+        build(tool_set="hri", arm_poses=POSES)
+    [commander] = commanders
+    assert commander.log == ["destroy"]
+    assert all(client.destroyed == 1 for client in nav)
 
 
 # -- The command line --------------------------------------------------------------
@@ -757,6 +1036,7 @@ def test_cli_passes_files_and_flags_into_the_assembly(cli, monkeypatch):
     assert isinstance(received["facts"], SystemFacts)
     assert received["facts"].team() == Team("EIC", "Thailand", "Chulalongkorn University")
     assert received["facts"].timezone == "Asia/Bangkok"
+    assert received["arm_poses"] is None, "without --arms no pose file is read"
     assert (
         received["input_topic"],
         received["output_topic"],
@@ -786,6 +1066,7 @@ def test_cli_defaults_keep_the_existing_paths_and_topics():
     assert args.vision is False
     assert args.people_memory == "unavailable"
     assert args.resume_people_session is False
+    assert args.arms is False
     assert main._parse_args(["--tool-set", "hri"]).tool_set == "hri"
     with pytest.raises(SystemExit):
         main._parse_args(["--tool-set", "garage"])
@@ -857,6 +1138,104 @@ def test_a_people_memory_without_vision_stops_before_ros_init(cli, capsys):
     assert cli.connectors == []
 
 
+@pytest.mark.parametrize("tool_set", SETS_WITH_ARMS)
+def test_a_set_with_the_arm_tools_is_accepted_with_arms(tool_set):
+    args = main._parse_args(["--arms", "--tool-set", tool_set])
+    assert (args.arms, args.tool_set) == (True, tool_set)
+
+
+@pytest.mark.parametrize(
+    ("flags", "words"),
+    [
+        (["--tool-set", "arms"], "--tool-set arms needs --arms"),
+        (
+            ["--arms"],
+            (
+                "--arms needs a tool set with the arm tools, such as hri or arms: the default "
+                "set has no move_arm_to_pose"
+            ),
+        ),
+        (["--arms", "--tool-set", "gpsr"], "the gpsr set has no move_arm_to_pose"),
+    ],
+)
+def test_a_set_that_does_not_go_with_the_arms_is_a_usage_error(capsys, flags, words):
+    with pytest.raises(SystemExit) as exited:
+        main._parse_args(flags)
+    assert exited.value.code == 2
+    error = capsys.readouterr().err
+    assert error.startswith("usage: ")
+    assert words in error
+
+
+def test_the_arms_set_without_arms_stops_before_ros_init(cli, capsys):
+    with pytest.raises(SystemExit) as exited:
+        cli.run("--tool-set", "arms")
+    assert exited.value.code == 2
+    assert "--tool-set arms needs --arms" in capsys.readouterr().err
+    assert cli.events == []
+    assert cli.connectors == []
+
+
+def test_cli_with_arms_loads_the_checked_poses_into_the_assembly(cli, monkeypatch):
+    received = {}
+
+    def assemble(**kwargs):
+        received.update(kwargs)
+        app = FakeApp(cli)
+        app.on_start = send
+        return app
+
+    monkeypatch.setattr(main, "assemble", assemble)
+    # The pose files are read from the working directory, as on the robot.
+    monkeypatch.chdir(PROJECT_ROOT)
+    assert cli.run("--arms", "--tool-set", "hri", "--use-sim-time") == 0
+    assert isinstance(received["arm_poses"], ArmPoses)
+    assert received["arm_poses"] == POSES
+    assert (received["tool_set"], received["use_sim_time"]) == ("hri", True)
+
+
+@pytest.mark.parametrize(
+    ("text", "words"),
+    [
+        (None, "No such file or directory: 'config/arm_poses.toml'"),
+        ("not toml = [", "config/arm_poses.toml: 1 problem: - Not valid TOML: "),
+        ('[poses.home]\ndescription = "x"\n', "config/arm_poses.toml: "),
+    ],
+    ids=["no-pose-file", "bad-toml", "bad-pose"],
+)
+def test_a_broken_arm_pose_file_stops_with_one_line_before_ros_init(cli, capsys, monkeypatch, text, words):
+    (cli.tmp_path / "config").mkdir()
+    model = PROJECT_ROOT / "config" / "robot_model.toml"
+    (cli.tmp_path / "config" / "robot_model.toml").write_bytes(model.read_bytes())
+    if text is not None:
+        (cli.tmp_path / "config" / "arm_poses.toml").write_text(text)
+    monkeypatch.chdir(cli.tmp_path)
+    assert words in startup_error(cli, capsys, "--arms", "--tool-set", "hri")
+    assert cli.connectors == []
+
+
+def test_with_arms_the_shutdown_destroys_the_commander_before_the_connector(cli, commanders, monkeypatch):
+    events = cli.events
+
+    def started(app):
+        [commander] = commanders
+        assert app.ctx.arms._client is commander
+        commander.on_destroy = lambda: events.append(("commander destroyed", cli.nav[0].destroyed))
+        send()
+
+    cli.on_started = started
+    monkeypatch.chdir(PROJECT_ROOT)
+    assert cli.run("--arms", "--tool-set", "hri") == 0
+
+    [commander] = commanders
+    assert commander.bounds == {}
+    assert commander.log == ["stop", "destroy"]
+    timeline = events[events.index("started") :]
+    expected = [("commander destroyed", 1), "destroy /to_human", "connector.shutdown", "try_shutdown"]
+    positions = [timeline.index(event) for event in expected]
+    assert positions == sorted(positions), timeline
+
+
 def test_models_and_files_are_ready_before_ros_starts(cli):
     stop_when_started(cli)
     assert cli.run() == 0
@@ -903,6 +1282,11 @@ def startup_error(cli, capsys, *flags, **paths):
             '[templates.tour]\ntask = "x"\ntodos = [{ content = "a", requires_tool = "pick" }]\n',
             ("--tool-set", "hri"),
         ),
+        (
+            "task_templates",
+            '[templates.tour]\ntask = "x"\ntodos = [{ content = "a", requires_tool = "set_gripper" }]\n',
+            ("--tool-set", "hri"),
+        ),
         ("robot_description", None, ()),
     ],
     ids=[
@@ -918,6 +1302,7 @@ def startup_error(cli, capsys, *flags, **paths):
         "nan-place",
         "empty-template",
         "unbound-requirement",
+        "arm-requirement-without-arms",
         "no-robot-description",
     ],
 )

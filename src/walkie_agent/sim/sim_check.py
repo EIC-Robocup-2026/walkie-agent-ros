@@ -1,7 +1,7 @@
 """Check that a simulation's ROS graph has what the agent and the oracle need.
 
-    scripts/chula-sim.sh check [--agent]
-    python -m walkie_agent.sim.sim_check [--timeout 120] [--agent]
+    scripts/chula-sim.sh check [--agent] [--arms]
+    python -m walkie_agent.sim.sim_check [--timeout 120] [--agent] [--arms]
 
 It joins the graph it is started in, and chula-sim.sh starts it in the
 simulation's private graph. It listens until every item below has arrived,
@@ -14,20 +14,31 @@ every item arrived:
 - people: walkie-vision's people array, with each person's gestures.
 - objects: walkie-vision's objects array, with each detection's label.
 - agent: the agent's node, with --agent only.
+- commander: a server for each of the arm commander's /set_joint_position
+  and /control_gripper actions and its /get_joint_states service, with
+  --arms only.
 
 An array with nobody in it still counts as arrived: who is in view depends
-on where the robot looks. It publishes nothing.
+on where the robot looks. It publishes nothing and sends no request: the
+commander item looks for the servers, as CommanderClient.available() does,
+through clients of the same names and types that it never calls. So, like
+available(), it cannot tell a commander built from another
+my_robot_interfaces, which rmw_zenoh_cpp finds but never delivers a request
+to (commander.STALE_PIN_HINT).
 """
 
 import argparse
 import math
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
 import rclpy
+from my_robot_interfaces.action import ControlGripper, SetJointPosition
+from my_robot_interfaces.srv import GetJointStates
+from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
@@ -40,6 +51,11 @@ from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
 from walkie_agent.perception.gestures import classify_gestures
 from walkie_agent.ros.base import MAP_FRAME, ROBOT_FRAME
+from walkie_agent.ros.commander import (
+    CONTROL_GRIPPER_ACTION,
+    GET_JOINT_STATES_SERVICE,
+    SET_JOINT_POSITION_ACTION,
+)
 from walkie_agent.sim.oracle_perception import HEAD_CAMERA_INFO_TOPIC, transform_matrix
 
 NODE_NAME = "sim_check"
@@ -97,7 +113,11 @@ def describe_camera(info: CameraInfo, robot_from_camera: np.ndarray | None) -> s
 
 
 class SimCheck:
-    """Listens to one graph and keeps the newest of every item."""
+    """Listens to one graph and keeps the newest of every item.
+
+    close() destroys the action clients that expect_arms creates, which the
+    node's destroy_node() leaves behind; call it before destroying the node.
+    """
 
     def __init__(
         self,
@@ -107,9 +127,24 @@ class SimCheck:
         people_topic: str = PEOPLE_TOPIC,
         objects_topic: str = OBJECTS_TOPIC,
         expect_agent: bool = False,
+        expect_arms: bool = False,
     ) -> None:
         self._node = node
         self._expect_agent = expect_agent
+        self._expect_arms = expect_arms
+        # The commander's servers, each with what tells whether it is discovered.
+        self._actions: list[ActionClient] = []
+        self._servers: list[tuple[str, Callable[[], bool]]] = []
+        if expect_arms:
+            for action_type, name in (
+                (SetJointPosition, SET_JOINT_POSITION_ACTION),
+                (ControlGripper, CONTROL_GRIPPER_ACTION),
+            ):
+                action = ActionClient(node, action_type, name)
+                self._actions.append(action)
+                self._servers.append((f"{name} (action)", action.server_is_ready))
+            service = node.create_client(GetJointStates, GET_JOINT_STATES_SERVICE)
+            self._servers.append((f"{GET_JOINT_STATES_SERVICE} (service)", service.service_is_ready))
         self._topics = {
             "camera": camera_info_topic,
             "people": people_topic,
@@ -153,7 +188,18 @@ class SimCheck:
         items.append(self._array_item("objects", self._objects, describe_objects))
         if self._expect_agent:
             items.append(self._agent_item())
+        if self._expect_arms:
+            items.append(self._commander_item())
         return items
+
+    def close(self) -> None:
+        """Destroy the commander item's action clients, once the report is taken.
+
+        items() must not be called after it. The node stays.
+        """
+        for action in self._actions:
+            action.destroy()
+        self._actions.clear()
 
     def _clock_item(self) -> Item:
         clock = self._clock
@@ -190,6 +236,12 @@ class SimCheck:
             return Item("agent", True, f"node {AGENT_NODE_NAME} is up")
         return Item("agent", False, f"no node named {AGENT_NODE_NAME}")
 
+    def _commander_item(self) -> Item:
+        missing = [name for name, discovered in self._servers if not discovered()]
+        if missing:
+            return Item("commander", False, "no server for " + ", ".join(missing))
+        return Item("commander", True, "serves " + ", ".join(name for name, _ in self._servers))
+
 
 def wait_for_items(
     check: SimCheck, executor: SingleThreadedExecutor, timeout_s: float
@@ -224,6 +276,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--agent", action="store_true", help=f"Also wait for the agent's node, {AGENT_NODE_NAME}"
     )
+    parser.add_argument(
+        "--arms",
+        action="store_true",
+        help="Also wait for the arm commander's two actions and its joint state service",
+    )
     return parser.parse_args(argv)
 
 
@@ -233,11 +290,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     node = rclpy.create_node(NODE_NAME)
     executor = SingleThreadedExecutor()
     executor.add_node(node)
+    check: SimCheck | None = None
     try:
-        items = wait_for_items(SimCheck(node, expect_agent=args.agent), executor, args.timeout)
+        check = SimCheck(node, expect_agent=args.agent, expect_arms=args.arms)
+        items = wait_for_items(check, executor, args.timeout)
     except KeyboardInterrupt:
         return CHECK_FAILED_EXIT_CODE
     finally:
+        if check is not None:
+            check.close()
         executor.shutdown()
         node.destroy_node()
         rclpy.try_shutdown()

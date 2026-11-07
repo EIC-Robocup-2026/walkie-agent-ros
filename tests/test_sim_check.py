@@ -2,7 +2,8 @@
 
 The report's text is checked without ROS. The listening is checked on a
 private test graph, against a node that publishes what a simulation and the
-oracle would.
+oracle would, and FakeCommander, which serves the arm commander's names and
+types.
 """
 
 import math
@@ -28,6 +29,7 @@ from test_projection import CAMERA_PITCH_DEG, CAMERA_XYZ, FX, HEIGHT, K, WIDTH, 
 from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
 from walkie_agent.ros.base import MAP_FRAME, ROBOT_FRAME
 from walkie_agent.sim import sim_check
+from walkie_agent.sim.fake_commander import CONTROL_GRIPPER, GET_JOINT_STATES, FakeCommander
 from walkie_agent.sim.oracle_perception import HEAD_CAMERA_INFO_TOPIC
 from walkie_agent.sim.sim_check import (
     AGENT_NODE_NAME,
@@ -41,6 +43,9 @@ from walkie_agent.sim.sim_check import (
 
 CAMERA_FRAME = "test_camera_optical"
 ROBOT_X, ROBOT_Y, ROBOT_YAW_DEG = 1.0, 2.0, 90.0
+COMMANDER_SERVERS = (
+    "/set_joint_position (action), /control_gripper (action), /get_joint_states (service)"
+)
 
 
 def test_the_agent_node_name_is_the_agents():
@@ -70,10 +75,11 @@ def test_the_report_marks_each_item_and_lines_up_the_names():
     assert report.splitlines() == ["ok       clock    1.0 s", "MISSING  objects  nothing"]
 
 
-def test_the_defaults_wait_two_minutes_without_the_agent():
+def test_the_defaults_wait_two_minutes_without_the_agent_or_the_arms():
     args = sim_check.parse_args([])
-    assert (args.timeout, args.agent) == (sim_check.DEFAULT_TIMEOUT_S, False)
+    assert (args.timeout, args.agent, args.arms) == (sim_check.DEFAULT_TIMEOUT_S, False, False)
     assert sim_check.parse_args(["--agent", "--timeout", "5"]).agent
+    assert sim_check.parse_args(["--arms"]).arms
 
 
 class FakeSimulation:
@@ -152,11 +158,15 @@ def check_node(ros):
 def test_every_item_arrives_and_is_described(check_node):
     node, executor = check_node
     simulation = FakeSimulation(rclpy, agent=True)
+    commander = FakeCommander()
+    check = SimCheck(node, expect_agent=True, expect_arms=True)
     try:
         started = time.monotonic()
-        items = wait_for_items(SimCheck(node, expect_agent=True), executor, timeout_s=10.0)
+        items = wait_for_items(check, executor, timeout_s=10.0)
         elapsed = time.monotonic() - started
     finally:
+        check.close()
+        commander.destroy_node()
         simulation.close()
 
     details = {item.name: item.detail for item in items}
@@ -167,6 +177,7 @@ def test_every_item_arrives_and_is_described(check_node):
     assert details["people"] == "1 in view: track 3 (no gesture)"
     assert details["objects"] == "1 in view: mug (track 5); classes ['mug']"
     assert details["agent"] == f"node {AGENT_NODE_NAME} is up"
+    assert details["commander"] == "serves " + COMMANDER_SERVERS
     # It returns once everything has arrived, not at the timeout.
     assert elapsed < 10.0
 
@@ -187,7 +198,7 @@ def test_items_that_never_arrive_are_missing_at_the_timeout(check_node):
     assert missing["camera"] == "nothing on /sim_check_test/no_camera_info"
     assert missing["people"] == "nothing on /sim_check_test/no_people"
     assert missing["objects"] == "nothing on /sim_check_test/no_objects"
-    assert "agent" not in {item.name for item in items}
+    assert {"agent", "commander"}.isdisjoint(item.name for item in items)
 
 
 def test_an_empty_people_array_still_counts_as_arrived(check_node):
@@ -196,3 +207,36 @@ def test_an_empty_people_array_still_counts_as_arrived(check_node):
     check._on_people(PersonDetectionArray())
     people = next(item for item in check.items() if item.name == "people")
     assert people == Item("people", True, "0 people in view")
+
+
+@pytest.fixture
+def arms_check(check_node):
+    node, _ = check_node
+    check = SimCheck(node, expect_arms=True)
+    yield check
+    check.close()
+
+
+def commander_becomes(check: SimCheck, expected: Item, timeout_s: float = 10.0) -> None:
+    """Wait until the commander item is `expected`, as discovery catches up with the graph."""
+    deadline = time.monotonic() + timeout_s
+    while (item := next(i for i in check.items() if i.name == "commander")) != expected:
+        assert time.monotonic() < deadline, f"the commander item stayed {item}"
+        time.sleep(0.05)
+
+
+def test_without_the_commander_the_item_names_every_server_it_misses(arms_check):
+    commander_becomes(arms_check, Item("commander", False, "no server for " + COMMANDER_SERVERS))
+
+
+def test_the_commander_item_names_the_servers_that_go(arms_check):
+    commander = FakeCommander()
+    try:
+        commander_becomes(arms_check, Item("commander", True, "serves " + COMMANDER_SERVERS))
+        commander.vanish(CONTROL_GRIPPER, GET_JOINT_STATES)
+        commander_becomes(
+            arms_check,
+            Item("commander", False, "no server for /control_gripper (action), /get_joint_states (service)"),
+        )
+    finally:
+        commander.destroy_node()

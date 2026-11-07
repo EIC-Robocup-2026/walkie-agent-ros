@@ -11,13 +11,43 @@ from walkie_agent.errors import ErrorCode, StepError
 logger = logging.getLogger(__name__)
 
 # ROS names that no capability endpoint may use. This guards against a configuration
-# mistake and is not a security boundary. The operator bridge owns the last three
-# on purpose, and is not a capability.
-#   /cmd_vel       raw velocity commands would bypass Nav2's obstacle avoidance
+# mistake and is not a security boundary. A name matches only exactly, once the node
+# has resolved it. The operator bridge owns the /walkie names on purpose, and is not
+# a capability.
+#   /cmd_vel and the other base velocity inputs: raw velocity commands would bypass
+#                  Nav2's obstacle avoidance. /cmd_vel_nav is Nav2's own input to
+#                  twist_mux, /cmd_vel_joy and /cmd_vel_key the operator's, and
+#                  /omni_wheel_drive_controller/cmd_vel twist_mux's output, which
+#                  drives the wheels directly
+#   /go_to_home and /go_to_pose*: the commander's other motion actions. The arms
+#                  move only through /set_joint_position to a named pose, whose
+#                  joints the agent checks, and /go_to_pose* take Cartesian targets
+#                  that ADR-0021 reserves for robot-side skills
+#   /lift_controller/follow_joint_trajectory, /lift_controller/commands and
+#                  /lift/cmd: the lift, which the agent never commands, since its
+#                  action rejects every cancel (ADR-0026)
 #   /walkie/reset  the agent must not wipe its own memory
 #   /walkie/task   the agent must not queue its own tasks or seed locked steps
 #   /walkie/todos  the operator's view of the list; only update_todos edits it
-FORBIDDEN_NAMES = ("/cmd_vel", "/walkie/reset", "/walkie/task", "/walkie/todos")
+# /trajectory_execution_event is not listed: CommanderClient publishes "stop" there,
+# as the one publisher while no MotionSupervisor exists.
+FORBIDDEN_NAMES = (
+    "/cmd_vel",
+    "/cmd_vel_nav",
+    "/cmd_vel_joy",
+    "/cmd_vel_key",
+    "/omni_wheel_drive_controller/cmd_vel",
+    "/go_to_home",
+    "/go_to_pose",
+    "/go_to_pose_relative",
+    "/go_to_pose_quat",
+    "/lift_controller/follow_joint_trajectory",
+    "/lift_controller/commands",
+    "/lift/cmd",
+    "/walkie/reset",
+    "/walkie/task",
+    "/walkie/todos",
+)
 
 # What an rclpy call raises once its handle or its context is gone.
 ROS_GONE = (_rclpy.RCLError, _rclpy.InvalidHandle)

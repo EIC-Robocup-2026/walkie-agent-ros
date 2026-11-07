@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 # Relative to the working directory, like main.py's other config files.
 DEFAULT_POSES_PATH = Path("config/arm_poses.toml")
@@ -51,8 +51,14 @@ GRASP_DETECT_MAX = 0.044
 DEFAULT_TIMEOUT_S = 30.0
 
 GRIPPER_KEYS = ("open_position", "half_position", "closed_position")
+# A value of set_gripper's `state` argument: a named gripper position.
+GripperState = Literal["open", "half", "close"]
 # The gripper position of each value of set_gripper's `state` argument.
-GRIPPER_STATES = {"open": "open_position", "half": "half_position", "close": "closed_position"}
+GRIPPER_STATES: Mapping[GripperState, str] = {
+    "open": "open_position",
+    "half": "half_position",
+    "close": "closed_position",
+}
 _POSE_BOOLS = ("travel_safe", "offered", "both_arms", "tried_on_robot")
 _POSE_KEYS = frozenset(("description", "srdf_state", "timeout_s", *_POSE_BOOLS, *ARMS))
 
@@ -108,7 +114,7 @@ class GripperPositions:
     half_position: float
     closed_position: float
 
-    def position(self, state: str) -> float:
+    def position(self, state: GripperState) -> float:
         """The position for set_gripper's `state`: "open", "half" or "close"."""
         return getattr(self, GRIPPER_STATES[state])
 
@@ -171,8 +177,7 @@ class ArmPoses:
 
 def load_robot_model(path: str | Path = DEFAULT_MODEL_PATH) -> RobotModel:
     """Read config/robot_model.toml. Raises ArmPoseError when it lacks what the loader needs."""
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
+    data = _load_toml(path, f"{path} (regenerate it with scripts/snapshot_robot_model.py)")
     errors: list[str] = []
     groups: dict[str, tuple[str, ...]] = {}
     for name, joints in _table(data.get("groups")).items():
@@ -221,9 +226,17 @@ def load_arm_poses(
 ) -> ArmPoses:
     """Read and check config/arm_poses.toml. Raises ArmPoseError listing every problem."""
     model = load_robot_model(model_path)
-    with open(path, "rb") as f:
-        data = tomllib.load(f)
+    data = _load_toml(path, str(path))
     return check_arm_poses(data, model, source=str(path))
+
+
+def _load_toml(path: str | Path, source: str) -> dict[str, Any]:
+    """Parse the TOML file at `path`. A syntax error is an ArmPoseError naming `source`."""
+    with open(path, "rb") as f:
+        try:
+            return tomllib.load(f)
+        except tomllib.TOMLDecodeError as e:
+            raise ArmPoseError(source, [f"Not valid TOML: {e}."]) from e
 
 
 def check_arm_poses(

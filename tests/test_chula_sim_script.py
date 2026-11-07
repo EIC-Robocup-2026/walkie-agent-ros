@@ -3,25 +3,36 @@
 Each run gets a SIM_DIR of its own and no WALKIE_ROS, so none of them can
 reach a simulation or a router. The ownership tests stand a `sleep` in for a
 part, in a session of its own. Tests that call the script's functions, or
-shorten its timeouts, source it in a bash of their own.
+shorten its timeouts, source it in a bash of their own. The tests of up's
+steps replace the functions that start, find and wait for parts with
+stand-ins that record each call, so up runs through and starts nothing.
 """
 
 import fcntl
 import importlib.util
 import os
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "chula-sim.sh"
+REPO = Path(__file__).resolve().parent.parent
+SCRIPT = REPO / "scripts" / "chula-sim.sh"
 OWNED = SCRIPT.parent / "chula_sim_owned.py"
+PARTS = ("router", "bringup", "moveit", "commander", "oracle", "speech", "agent")
+MOVEIT_LAUNCH = Path(
+    "openarm_bimanual_moveit_config/share/openarm_bimanual_moveit_config/launch/moveit_only.launch.py"
+)
+COMMANDER_EXECUTABLE = Path(
+    "openarm_bimanual_commander_cpp/lib/openarm_bimanual_commander_cpp/commander"
+)
 BOOT_ID = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
 # The lowest ID Linux gives out once the IDs have gone past pid_max.
 RESERVED_PIDS = 300
@@ -86,9 +97,12 @@ def test_the_script_parses():
 def test_without_a_known_command_it_prints_the_usage(tmp_path, args):
     result = run(*args, sim_dir=tmp_path)
     assert result.returncode == 2
-    assert "up [--agent] [--gui]" in result.stdout
-    assert "[-- ARGS]" in result.stdout
-    assert "down" in result.stdout
+    assert "up [--agent] [--arms] [--gui] [-- ARGS]" in result.stdout
+    assert "check [--agent] [--arms]" in result.stdout
+    # From the header's first line to its last command, and no further.
+    lines = result.stdout.splitlines()
+    assert lines[0].startswith("Run walkie-ros's Chula PAT14-6 simulation")
+    assert lines[-1].startswith("  scripts/chula-sim.sh down ")
 
 
 def test_env_prints_the_private_graph(tmp_path):
@@ -118,9 +132,227 @@ def test_up_refuses_a_workspace_that_is_not_built(tmp_path):
 
 
 def test_up_refuses_an_unknown_option(tmp_path):
-    result = run("up", "--arms", sim_dir=tmp_path)
+    result = run("up", "--robot", sim_dir=tmp_path)
     assert result.returncode == 1
-    assert "unknown option for up: --arms" in result.stderr
+    assert "unknown option for up: --robot" in result.stderr
+
+
+def walkie_ros_workspace(path: Path, *, moveit: bool, commander: bool) -> Path:
+    """A built-looking walkie-ros workspace at `path`, with or without the arm packages."""
+    (path / "install").mkdir(parents=True)
+    (path / "pixi.toml").touch()
+    (path / "install" / "setup.bash").touch()
+    if moveit:
+        (path / "install" / MOVEIT_LAUNCH).parent.mkdir(parents=True)
+        (path / "install" / MOVEIT_LAUNCH).touch()
+    if commander:
+        (path / "install" / COMMANDER_EXECUTABLE).parent.mkdir(parents=True)
+        (path / "install" / COMMANDER_EXECUTABLE).touch(mode=0o755)
+    return path
+
+
+@pytest.mark.parametrize(
+    ("moveit", "commander", "missing"),
+    [
+        (False, True, "openarm_bimanual_moveit_config"),
+        (True, False, "openarm_bimanual_commander_cpp"),
+        (False, False, "openarm_bimanual_moveit_config"),
+    ],
+)
+def test_up_with_the_arms_needs_moveit_and_the_commander_built_in_walkie_ros(
+    tmp_path, moveit, commander, missing
+):
+    workspace = walkie_ros_workspace(tmp_path / "walkie-ros", moveit=moveit, commander=commander)
+    result = run("up", "--arms", sim_dir=tmp_path / "sim", WALKIE_ROS=str(workspace))
+    assert result.returncode == 1
+    assert f"--arms needs {missing}, and WALKIE_ROS={workspace} has not built it" in result.stderr
+    assert not (tmp_path / "sim").exists()
+
+
+def test_up_with_the_arms_refuses_a_commander_that_is_not_executable(tmp_path):
+    workspace = walkie_ros_workspace(tmp_path / "walkie-ros", moveit=True, commander=True)
+    (workspace / "install" / COMMANDER_EXECUTABLE).chmod(0o644)
+    result = run("up", "--arms", sim_dir=tmp_path / "sim", WALKIE_ROS=str(workspace))
+    assert result.returncode == 1
+    assert "--arms needs openarm_bimanual_commander_cpp" in result.stderr
+
+
+def test_the_arm_packages_are_looked_for_only_with_the_arms(tmp_path):
+    repo = tmp_path / "repo"
+    (repo / "ros2_ws" / "install" / "walkie_vision_msgs").mkdir(parents=True)
+    zenoh = repo / "rmw_zenoh_ws" / "install" / "rmw_zenoh_cpp" / "lib" / "librmw_zenoh_cpp.so"
+    zenoh.parent.mkdir(parents=True)
+    zenoh.touch()
+    bare = walkie_ros_workspace(tmp_path / "bare", moveit=False, commander=False)
+    armed = walkie_ros_workspace(tmp_path / "armed", moveit=True, commander=True)
+    for workspace, with_arms in ((bare, "false"), (armed, "true")):
+        result = sourced(
+            f"WALKIE_ROS={shlex.quote(str(workspace))} REPO={shlex.quote(str(repo))}\n"
+            f"check_prerequisites {with_arms} && echo passed",
+            tmp_path,
+        )
+        assert (result.returncode, result.stdout, result.stderr) == (0, "passed\n", "")
+
+
+# Stand-ins for what up does to the system, for a bash that has sourced the script.
+# Each records its call as a line of SIM_DIR/calls, the arguments separated by \x1f.
+# A part runs once started, or when SIM_DIR/started-NAME exists before up, and the
+# router listens while it runs. wait_for_log fails for the part named in NOT_READY.
+UP_STAND_INS = r"""
+record() { local IFS=$'\x1f'; echo "$*" >> "$SIM_DIR/calls"; }
+check_prerequisites() { record check "$@"; }
+pgrep() { :; }
+running() { [[ -e $SIM_DIR/started-$1 ]]; }
+port_open() { running router; }
+start() { record start "$@"; touch "$SIM_DIR/started-$1"; }
+wait_for_log() { record wait "$@"; [[ $1 != "$NOT_READY" ]]; }
+SETTLE_S=0 PIXI=pixi WALKIE_ROS=/walkie-ros WALKIE_ROS_OVERLAY=/overlay
+"""
+WALKIE_ROS_RUN = (
+    "pixi",
+    "run",
+    "--as-is",
+    "--manifest-path",
+    "/walkie-ros/pixi.toml",
+    "bash",
+    "-c",
+    '[[ -z $0 ]] || source "$0"; exec "$@"',
+    "/overlay/install/local_setup.bash",
+)
+
+
+def up_with_stand_ins(
+    sim_dir: Path, *args: str, running: Sequence[str] = (), not_ready: str = ""
+) -> tuple[subprocess.CompletedProcess, list[tuple[str, ...]]]:
+    """Run up with UP_STAND_INS, and return its result and the calls it made."""
+    sim_dir.mkdir(parents=True, exist_ok=True)
+    for name in running:
+        (sim_dir / f"started-{name}").touch()
+    result = sourced(
+        UP_STAND_INS + f"NOT_READY={shlex.quote(not_ready)}\nup {shlex.join(args)}", sim_dir
+    )
+    calls = sim_dir / "calls"
+    lines = calls.read_text().splitlines() if calls.exists() else []
+    return result, [tuple(line.split("\x1f")) for line in lines]
+
+
+def router_and_bringup(sim_dir: Path) -> list[tuple[str, ...]]:
+    """The calls up makes to start the router and bringup and wait for Nav2."""
+    return [
+        (
+            "start", "router", str(sim_dir), "env",
+            'ZENOH_CONFIG_OVERRIDE=listen/endpoints=["tcp/localhost:7499"]',
+            "pixi", "run", "--as-is", "--manifest-path", "/walkie-ros/pixi.toml",
+            "ros2", "run", "rmw_zenoh_cpp", "rmw_zenohd",
+        ),
+        (
+            "start", "bringup", str(sim_dir), *WALKIE_ROS_RUN,
+            "ros2", "launch", "robot_bringup", "nav_mujoco_omnibot.launch.py",
+            "world:=chula_pat14_6", "spawn_pose:=1.7629 -1.483 0", "headless:=true",
+            "use_rviz:=false", f"world_output_dir:={sim_dir}/worlds",
+        ),
+        ("wait", "bringup", "Managed nodes are active", "300"),
+    ]  # fmt: skip
+
+
+def the_arms(sim_dir: Path) -> list[tuple[str, ...]]:
+    """The calls up --arms makes to start MoveIt and the commander, each after the last."""
+    return [
+        (
+            "start", "moveit", str(sim_dir), *WALKIE_ROS_RUN,
+            "ros2", "launch", "openarm_bimanual_moveit_config", "moveit_only.launch.py",
+            "hardware_type:=mujoco", "use_rviz:=false",
+        ),
+        ("wait", "moveit", "MoveGroup context initialization complete", "120"),
+        (
+            "start", "commander", str(sim_dir), *WALKIE_ROS_RUN,
+            "ros2", "launch", f"{REPO}/launch/commander_sim.launch.py",
+        ),
+        ("wait", "commander", "Bimanual Commander Node Initialized", "120"),
+    ]  # fmt: skip
+
+
+def oracle_speech_and_agent(sim_dir: Path, *agent_args: str) -> list[tuple[str, ...]]:
+    """The calls up --agent makes after bringup, or after the arms, with the agent's arguments."""
+    pixi_run = ("pixi", "run", "--frozen", "--manifest-path", f"{REPO}/pixi.toml")
+    return [
+        ("start", "oracle", str(REPO), *pixi_run, "oracle-chula"),
+        (
+            "start", "speech", str(REPO), "env", "PYTHONUNBUFFERED=1", *pixi_run,
+            "ros2", "topic", "echo", "/to_human", "rai_interfaces/msg/HRIMessage", "--field", "text",
+        ),
+        (
+            "start", "agent", str(REPO), *pixi_run, "agent-sim-chula",
+            "--tool-log", f"{sim_dir}/logs/agent-tools.jsonl", *agent_args,
+        ),
+        ("wait", "oracle", "Drawing ", "120"),
+        ("wait", "agent", "Walkie's agent is running", "120"),
+    ]  # fmt: skip
+
+
+def test_up_without_the_arms_starts_what_it_always_did(tmp_path):
+    result, calls = up_with_stand_ins(tmp_path, "--agent", "--", "--tool-set", "hri")
+    assert result.returncode == 0, result.stderr
+    assert calls == [
+        ("check", "false"),
+        *router_and_bringup(tmp_path),
+        *oracle_speech_and_agent(tmp_path, "--tool-set", "hri"),
+    ]
+    assert result.stdout.splitlines()[-1] == "up. Next: scripts/chula-sim.sh check --agent"
+
+
+def test_up_with_the_arms_starts_moveit_then_the_commander_once_nav2_is_up(tmp_path):
+    result, calls = up_with_stand_ins(tmp_path, "--agent", "--arms", "--", "--tool-set", "hri")
+    assert result.returncode == 0, result.stderr
+    assert calls == [
+        ("check", "true"),
+        *router_and_bringup(tmp_path),
+        *the_arms(tmp_path),
+        # The agent gets --arms after the arguments given to up.
+        *oracle_speech_and_agent(tmp_path, "--tool-set", "hri", "--arms"),
+    ]
+    assert result.stdout.splitlines()[-1] == "up. Next: scripts/chula-sim.sh check --agent --arms"
+
+
+def test_up_with_the_arms_and_no_agent_starts_no_agent(tmp_path):
+    result, calls = up_with_stand_ins(tmp_path, "--arms")
+    assert result.returncode == 0, result.stderr
+    assert calls == [
+        ("check", "true"),
+        *router_and_bringup(tmp_path),
+        *the_arms(tmp_path),
+        *oracle_speech_and_agent(tmp_path)[:2],
+        ("wait", "oracle", "Drawing ", "120"),
+    ]
+    assert result.stdout.splitlines()[-1] == "up. Next: scripts/chula-sim.sh check --arms"
+
+
+def test_up_with_the_arms_starts_only_what_is_not_running_and_waits_for_each(tmp_path):
+    result, calls = up_with_stand_ins(
+        tmp_path, "--agent", "--arms", running=("router", "bringup", "moveit", "oracle", "speech")
+    )
+    assert result.returncode == 0, result.stderr
+    arms = the_arms(tmp_path)
+    assert calls == [
+        ("check", "true"),
+        router_and_bringup(tmp_path)[-1],
+        *arms[1:],
+        *oracle_speech_and_agent(tmp_path, "--arms")[2:],
+    ]
+
+
+@pytest.mark.parametrize(
+    ("part", "message"),
+    [("moveit", "MoveIt did not start"), ("commander", "the arm commander did not start")],
+)
+def test_up_stops_at_an_arm_part_that_never_logs_it_is_ready(tmp_path, part, message):
+    result, calls = up_with_stand_ins(tmp_path, "--agent", "--arms", not_ready=part)
+    assert result.returncode == 1
+    assert f"chula-sim: {message}; see {tmp_path}/logs/{part}.log" in result.stderr
+    # The wait for that part's line is the last call: up starts nothing after it.
+    arms = the_arms(tmp_path)
+    waits = {"moveit": arms[1], "commander": arms[3]}
+    assert calls[-1] == waits[part]
 
 
 def test_up_takes_the_agents_arguments_after_two_dashes_only_with_the_agent(tmp_path):
@@ -137,9 +369,7 @@ def test_up_takes_the_agents_arguments_after_two_dashes_only_with_the_agent(tmp_
 def test_with_nothing_started_every_part_is_stopped(tmp_path):
     result = run("status", sim_dir=tmp_path)
     assert result.returncode == 0
-    assert result.stdout.splitlines() == [
-        f"{part}: stopped" for part in ("router", "bringup", "oracle", "speech", "agent")
-    ]
+    assert result.stdout.splitlines() == [f"{part}: stopped" for part in PARTS]
     assert run("down", sim_dir=tmp_path).returncode == 0
 
 
@@ -200,6 +430,25 @@ def test_the_part_s_own_group_is_running_and_down_stops_it(tmp_path, stand_in):
     assert result.returncode == 0
     assert "stopped agent" in result.stdout
     assert stand_in.wait(timeout=10) == -2  # SIGINT, the first signal down sends
+
+
+def test_status_lists_the_arm_parts_and_down_stops_them_before_bringup(tmp_path):
+    parts = {name: sleep_with_token(f"{name}-1") for name in ("bringup", "moveit", "commander")}
+    try:
+        for name, process in parts.items():
+            write_record(tmp_path, f"{process.pid} {BOOT_ID} {name}-1", name)
+        status = run("status", sim_dir=tmp_path).stdout
+        for name, process in parts.items():
+            assert f"{name}: running, process group {process.pid}," in status
+        result = run("down", sim_dir=tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == ["stopped commander", "stopped moveit", "stopped bringup"]
+        for process in parts.values():
+            assert process.wait(timeout=10) == -signal.SIGINT
+    finally:
+        for process in parts.values():
+            process.kill()
+            process.wait(timeout=10)
 
 
 def test_down_refuses_while_another_up_or_down_holds_the_lock(tmp_path):

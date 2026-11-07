@@ -10,6 +10,7 @@ walkie_agent.adapter.
 from collections.abc import Callable
 from typing import Any
 
+from walkie_agent.atomics.arms import get_arm_state, list_arm_poses, move_arm_to_pose, set_gripper
 from walkie_agent.atomics.facts import get_facts
 from walkie_agent.atomics.manipulation import hand_over, pick, place_on
 from walkie_agent.atomics.memory import recognize_person, remember_person
@@ -18,16 +19,21 @@ from walkie_agent.atomics.perception import find_objects, find_people, object_in
 from walkie_agent.atomics.speech import say
 
 __all__ = [
+    "ARMS",
+    "ARM_TOOLS",
     "DEFAULT",
     "GPSR",
     "HRI",
     "face_person",
     "find_objects",
     "find_people",
+    "get_arm_state",
     "get_facts",
     "go_to",
     "hand_over",
+    "list_arm_poses",
     "list_places",
+    "move_arm_to_pose",
     "move_relative",
     "object_info",
     "pick",
@@ -35,7 +41,19 @@ __all__ = [
     "recognize_person",
     "remember_person",
     "say",
+    "set_gripper",
 ]
+
+# The atomics that move or read the arms through the commander. A set may hold them
+# whether or not the robot has arms connected: main.py drops them by these names
+# unless it runs with --arms.
+_ARM_ATOMICS: list[Callable[..., Any]] = [
+    list_arm_poses,
+    move_arm_to_pose,
+    set_gripper,
+    get_arm_state,
+]
+ARM_TOOLS: frozenset[str] = frozenset(fn.__name__ for fn in _ARM_ATOMICS)
 
 # The tool sets are plain lists in code (decision 3). Commands name their
 # places, so GPSR has no list_places, as in the spike it was measured with.
@@ -54,7 +72,8 @@ GPSR: list[Callable[..., Any]] = [
 ]
 # face_person is not in GPSR, whose tool text the Mahoraga runs measured (decision S2-6).
 # The two memory atomics are in HRI alone, so DEFAULT and GPSR stay as they were:
-# no effect covers a memory write yet (ADR-0070).
+# no effect covers a memory write yet (ADR-0070). The arm atomics come last, so HRI
+# without them is the set it was before them.
 HRI: list[Callable[..., Any]] = [
     list_places,
     go_to,
@@ -64,9 +83,20 @@ HRI: list[Callable[..., Any]] = [
     face_person,
     remember_person,
     recognize_person,
+    *_ARM_ATOMICS,
 ]
-# Every atomic that needs no arms, which the robot does not have yet, and writes no
-# people memory, which no effect covers yet (ADR-0070).
+# The arms on their own: the base verbs the drive check guards, speech to say what the
+# arms will do, and the arm atomics. GPSR and DEFAULT have no arm atomics, so their
+# tool text stays the one the Mahoraga runs measured.
+ARMS: list[Callable[..., Any]] = [
+    list_places,
+    go_to,
+    move_relative,
+    say,
+    *_ARM_ATOMICS,
+]
+# Every atomic that needs no arms, which the robot runs without unless --arms connects
+# them, and writes no people memory, which no effect covers yet (ADR-0070).
 DEFAULT: list[Callable[..., Any]] = [
     list_places,
     go_to,

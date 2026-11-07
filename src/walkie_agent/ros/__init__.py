@@ -3,7 +3,9 @@
 The foundation (capabilities, atomics, adapter, runtime) never imports this package.
 """
 
+from walkie_agent.ros.arms import RosArms
 from walkie_agent.ros.base import RosBase
+from walkie_agent.ros.commander import CommanderClient
 from walkie_agent.ros.io import RosBridge
 from walkie_agent.ros.people_memory import RosPeopleMemory
 from walkie_agent.ros.policy import FORBIDDEN_NAMES, check_endpoint
@@ -12,6 +14,8 @@ from walkie_agent.ros.vision import RosVision, UnavailableVision
 
 __all__ = [
     "FORBIDDEN_NAMES",
+    "CommanderClient",
+    "RosArms",
     "RosBase",
     "RosBridge",
     "RosPeopleMemory",

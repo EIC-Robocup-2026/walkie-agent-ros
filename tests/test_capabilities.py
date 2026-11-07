@@ -6,7 +6,15 @@ import time
 
 import pytest
 
-from walkie_agent.capabilities import Ctx, ObjectSeen, Pose2D, UnavailableArms, UnavailableFacts
+from walkie_agent.arm.state import ArmsState
+from walkie_agent.capabilities import (
+    NO_ARMS,
+    Ctx,
+    ObjectSeen,
+    Pose2D,
+    UnavailableArms,
+    UnavailableFacts,
+)
 from walkie_agent.capabilities.guards import (
     MAX_MOVE_M,
     CancelToken,
@@ -203,13 +211,27 @@ def test_a_cancel_from_another_thread_ends_the_wait_quickly():
 @pytest.mark.parametrize(
     "call",
     [
+        lambda arms: arms.poses(),
+        lambda arms: arms.read(),
+        lambda arms: arms.move_to("home"),
+        lambda arms: arms.gripper("left", "open"),
         lambda arms: arms.pick("apple_1"),
         lambda arms: arms.place_on("table"),
         lambda arms: arms.hand_over("operator"),
     ],
 )
-def test_unavailable_arms_refuse_every_verb(call):
-    assert code_of(call, UnavailableArms()) is ErrorCode.UNAVAILABLE
+def test_unavailable_arms_refuse_every_verb_but_state(call):
+    with pytest.raises(StepError) as caught:
+        call(UnavailableArms())
+    assert str(caught.value) == f"UNAVAILABLE: {NO_ARMS}"
+
+
+@pytest.mark.parametrize("read", [None, True, False])
+def test_unavailable_arms_say_the_arms_are_unknown(read):
+    report = UnavailableArms().state(read=read)
+    assert report.arms == ArmsState()
+    assert report.travel_safe is None
+    assert report.sentence() == "Arms: state unknown."
 
 
 def test_ctx_defaults_to_unavailable_arms():

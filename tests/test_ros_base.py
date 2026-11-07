@@ -6,6 +6,7 @@ get somewhere. A call that could deadlock runs under a watchdog, so a deadlock f
 """
 
 import dataclasses
+import inspect
 import math
 import threading
 import time
@@ -32,10 +33,14 @@ from ros_fakes import (
     transform,
 )
 
+from walkie_agent.arm.answers import drive_verdict
+from walkie_agent.arm.results import NOT_FOUND, DriveCheck
+from walkie_agent.arm.state import ARMS_OUT, ArmsState, ArmState
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location
 from walkie_agent.ros import FORBIDDEN_NAMES, RosBase, UnavailableVision
+from walkie_agent.ros.commander import STOP_TOPIC
 
 PLACES = {
     "kitchen": Location("kitchen", 1.0, 2.0, math.pi / 2),
@@ -594,6 +599,13 @@ def test_guards_refuse_without_sending(move):
         ("walkie/task", FakeNode()),
         ("/walkie/todos", FakeNode()),
         ("/nav_alias", FakeNode(remaps={"/nav_alias": "/cmd_vel"})),
+        ("cmd_vel_nav", FakeNode()),
+        ("/go_to_pose", FakeNode()),
+        ("lift/cmd", FakeNode()),
+        (
+            "/arm_alias",
+            FakeNode(remaps={"/arm_alias": "/lift_controller/follow_joint_trajectory"}),
+        ),
     ],
 )
 def test_forbidden_action_is_refused(name, node):
@@ -608,7 +620,195 @@ def test_forbidden_action_is_refused(name, node):
         )
     assert raised.value.code is ErrorCode.REFUSED
     assert clients == []
-    assert set(FORBIDDEN_NAMES) == {"/cmd_vel", "/walkie/reset", "/walkie/task", "/walkie/todos"}
+
+
+def test_forbidden_names_cover_velocity_pose_goal_and_lift_names():
+    assert set(FORBIDDEN_NAMES) == {
+        "/cmd_vel",
+        "/cmd_vel_nav",
+        "/cmd_vel_joy",
+        "/cmd_vel_key",
+        "/omni_wheel_drive_controller/cmd_vel",
+        "/go_to_home",
+        "/go_to_pose",
+        "/go_to_pose_relative",
+        "/go_to_pose_quat",
+        "/lift_controller/follow_joint_trajectory",
+        "/lift_controller/commands",
+        "/lift/cmd",
+        "/walkie/reset",
+        "/walkie/task",
+        "/walkie/todos",
+    }
+    assert len(FORBIDDEN_NAMES) == len(set(FORBIDDEN_NAMES))
+    # CommanderClient publishes its stop there, as the one publisher while no
+    # MotionSupervisor exists.
+    assert STOP_TOPIC not in FORBIDDEN_NAMES
+
+
+# -- Arm check ----------------------------------------------------------------------
+
+
+class ArmsCheck:
+    """Stands in for RosArms.check_for_driving: notes each call, runs `during`, then raises `refusal`."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, float]] = []
+        self.during: Callable[[str, float], None] | None = None
+        self.refusal: StepError | None = None
+
+    def __call__(self, what: str, budget_s: float) -> None:
+        self.calls.append((what, budget_s))
+        if self.during is not None:
+            self.during(what, budget_s)
+        if self.refusal is not None:
+            raise self.refusal
+
+
+DRIVES = {
+    "go_to": (lambda base, **kw: base.go_to("kitchen", **kw), "the drive to kitchen"),
+    "move_relative": (lambda base, **kw: base.move_relative(forward_m=1.0, **kw), "the move"),
+}
+
+
+@pytest.mark.parametrize("verb", DRIVES)
+def test_every_drive_checks_the_arms_before_discovery_tf_and_the_send(verb):
+    drive, what = DRIVES[verb]
+    check = ArmsCheck()
+    rig = Rig(arms_check=check)
+    seen = []
+
+    def note_what_the_base_had_done(_what, _budget_s):
+        # unresolved() takes the base's lock, so a check run under it would deadlock here.
+        seen.append(
+            (
+                rig.client.ready_polls,
+                len(rig.connector.tf_reads),
+                len(rig.client.goals),
+                rig.base.unresolved(),
+            )
+        )
+
+    check.during = note_what_the_base_had_done
+    answered_at_once(rig)
+    assert bounded(drive, rig.base, timeout_s=5.0) is not None
+    assert seen == [(0, 0, 0, [])]
+    [(checked, budget_s)] = check.calls
+    assert checked == what
+    # The time left to the verb, and not a sub-budget of the base's own.
+    assert 4.0 < budget_s <= 5.0
+    assert len(rig.client.goals) == 1
+
+
+@pytest.mark.parametrize(
+    "code", [ErrorCode.PRECONDITION_FAILED, ErrorCode.INTERNAL, ErrorCode.TIMEOUT]
+)
+def test_a_refused_drive_reads_no_tf_and_sends_nothing(code):
+    check = ArmsCheck()
+    check.refusal = StepError(code, "Not starting the drive: the left arm is out.")
+    rig = Rig(arms_check=check)
+    for drive, _what in DRIVES.values():
+        with pytest.raises(StepError) as raised:
+            drive(rig.base)
+        assert raised.value is check.refusal
+    assert len(check.calls) == len(DRIVES)
+    assert (rig.client.ready_polls, rig.connector.tf_reads, rig.client.goals) == (0, [], [])
+
+    # A refusal leaves no record, so the next drive goes once the arms allow it.
+    check.refusal = None
+    rig.assert_gate_free()
+
+
+HOME = ArmState(pose="home", travel_safe=True)
+HANDS_UP = ArmState(pose="hands_up", travel_safe=False)
+
+
+@pytest.mark.parametrize(
+    ("found", "code", "text"),
+    [
+        (
+            DriveCheck(ArmsState(left=HANDS_UP, right=HOME)),
+            ErrorCode.PRECONDITION_FAILED,
+            f"the left arm is {ARMS_OUT}",
+        ),
+        (DriveCheck(ArmsState(left=HOME)), ErrorCode.INTERNAL, "cannot be checked"),
+        (DriveCheck(ArmsState(left=HOME, right=HOME)), None, ""),
+        (DriveCheck(None, NOT_FOUND), None, ""),
+    ],
+    ids=["arm_out", "arm_unknown", "both_home", "commander_not_found"],
+)
+def test_the_drive_verdict_judges_a_turn(found, code, text):
+    rig = Rig(arms_check=lambda what, _budget_s: drive_verdict(lambda: found, what))
+    if code is None:
+        answered_at_once(rig)
+        assert bounded(rig.base.move_relative, turn_deg=90.0) is not None
+        assert len(rig.client.goals) == 1
+        return
+    with pytest.raises(StepError) as raised:
+        rig.base.move_relative(turn_deg=90.0)
+    assert raised.value.code is code
+    assert raised.value.message.startswith("Not starting the move")
+    assert text in raised.value.message
+    # face_person's turn takes a GoalFailed as a turn that ended, so a refusal is never one.
+    assert not isinstance(raised.value, GoalFailed)
+    assert (rig.client.ready_polls, rig.connector.tf_reads, rig.client.goals) == (0, [], [])
+
+
+def test_no_arm_check_while_another_goal_is_live():
+    check = ArmsCheck()
+    rig = Rig(arms_check=check)
+    verb, handle = send_and_drive(rig)
+    assert len(check.calls) == 1
+    for drive, _what in DRIVES.values():
+        with pytest.raises(StepError) as raised:
+            drive(rig.base)
+        assert raised.value.code is ErrorCode.PRECONDITION_FAILED
+    assert len(check.calls) == 1
+    assert len(rig.client.goals) == 1
+    bounded(handle.finish)
+    verb.result()
+
+
+def test_stop_during_the_arm_check_is_cancelled_and_sends_nothing():
+    check = ArmsCheck()
+    rig = Rig(arms_check=check)
+    checking = threading.Event()
+
+    def wait_like_the_commander(what, budget_s):
+        checking.set()
+        rig.token.wait_for(lambda: False, budget_s, f"checking the arms for {what}")
+
+    check.during = wait_like_the_commander
+    verb = Background(rig.base.move_relative, forward_m=1.0)
+    assert checking.wait(WATCHDOG_S)
+    # A check run inside the fence would hold this stop up until the watchdog.
+    rig.stop()
+    error = verb.step_error()
+    assert error.code is ErrorCode.CANCELLED
+    assert "checking the arms" in error.message
+    assert (rig.client.ready_polls, rig.connector.tf_reads, rig.client.goals) == (0, [], [])
+    assert rig.base.unresolved() == []
+
+    check.during = None
+    rig.assert_gate_free()
+
+
+def test_a_spent_budget_times_out_before_the_arm_check():
+    check = ArmsCheck()
+    rig = Rig(arms_check=check)
+    with pytest.raises(StepError) as raised:
+        rig.base.go_to("kitchen", timeout_s=1e-9)
+    assert raised.value.code is ErrorCode.TIMEOUT
+    assert check.calls == []
+
+
+def test_without_an_arms_check_the_base_drives_unchecked():
+    # main builds the base with no check unless it runs with arms.
+    assert inspect.signature(RosBase).parameters["arms_check"].default is None
+    rig = Rig()
+    answered_at_once(rig)
+    assert bounded(rig.base.move_relative, turn_deg=90.0) is not None
+    assert len(rig.client.goals) == 1
 
 
 # -- Stop --------------------------------------------------------------------------

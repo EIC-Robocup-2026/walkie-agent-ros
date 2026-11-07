@@ -94,6 +94,11 @@ class Runner:
     people memory's clear() (ADR-0070). It may block, so it runs in a worker thread,
     and the next item waits for it; a stop's line is still spoken at once. It runs
     while the reset's stop still holds `ctx.cancel`. An exception it raises is logged.
+
+    `on_stop()` runs at each stop and each reset, right after `ctx.base.stop()`, on
+    the caller's thread. main passes the arm commander's stop() with --arms, which
+    stops every MoveIt execution, also that of an arm goal whose call already gave
+    up. It must not block, and an exception it raises is logged.
     """
 
     def __init__(
@@ -106,6 +111,7 @@ class Runner:
         callbacks: Iterable[BaseCallbackHandler] = (),
         tool_log: ToolLog | None = None,
         on_reset: Callable[[], None] | None = None,
+        on_stop: Callable[[], None] | None = None,
     ) -> None:
         self.agent = agent
         self.ctx = ctx
@@ -113,6 +119,7 @@ class Runner:
         self._on_todos = on_todos
         self._on_reply = on_reply
         self._on_reset = on_reset
+        self._on_stop = on_stop
         self._callbacks = list(callbacks)
         self._tool_log = tool_log
         # The lock makes "take a task and clear the token" one step against "set the
@@ -215,12 +222,18 @@ class Runner:
         refused or failed cancel therefore needs base.stop() to ask again. base.stop()
         also sets the token. Run after the lock, it could set the token of a task that
         started in between. Run first, it can only meet a task that this stop cancels
-        anyway, with the token it sets under the lock.
+        anyway, with the token it sets under the lock. on_stop() runs after it, for
+        the same reason, and its own failure cannot skip the base's stop.
         """
         try:
             self.ctx.base.stop()
         except Exception:  # The protocol says it never raises, and a stop must not fail.
             logger.exception("base.stop failed.")
+        if self._on_stop is not None:
+            try:
+                self._on_stop()
+            except Exception:  # A stop must not fail.
+                logger.exception("on_stop failed.")
 
     def _require_open(self) -> None:
         """Call with the lock held, before any change: the queue holds the shutdown's item."""

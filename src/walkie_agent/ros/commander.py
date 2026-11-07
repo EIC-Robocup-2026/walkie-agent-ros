@@ -562,6 +562,14 @@ class CommanderClient:
         with self._state_lock:
             return self._last_state
 
+    @property
+    def read_timeout_s(self) -> float:
+        """The bound of a read that names no timeout_s, in seconds of wall-clock time.
+
+        Set at construction and never changed. Never waits.
+        """
+        return self._read_timeout_s
+
     def snapshot(self) -> ClientSnapshot:
         """last_state, last_recovery, unverified_count and unverified, read together. Never waits.
 

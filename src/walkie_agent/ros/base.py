@@ -18,6 +18,7 @@ one to a future that is already done. So:
 - The token's commit fence comes before self._lock when a thread needs both.
 - A callback reads the token's flag and never takes the fence.
 - Nothing calls rclpy or attaches a callback while holding self._lock.
+- The arm check runs holding neither, so no lock of the arm backend is taken inside them.
 - The fence holds only send_goal_async, or the final check of a success. No wait runs
   inside it. This orders a send and a success against cancel(), so a stop either sees a
   stored future or stops the send, and no success is committed after cancel() returned.
@@ -120,6 +121,14 @@ class RosBase:
 
     It never spins, never cancels another client's goals and never publishes a velocity.
     `client_factory` exists for the test doubles.
+
+    `arms_check`, when given, is the arm check before every drive (ADR-0025), such as
+    RosArms.check_for_driving. It is called as arms_check(what, budget_s) once no other
+    goal is live, before discovery, the TF read and the send, and it returns to let the
+    drive go on or raises StepError to refuse it. `budget_s` is the time left to the
+    verb, and the check must end within it and on a stop. Its error ends the verb
+    unchanged, so a refused drive reads no TF and sends nothing. Without it, the base
+    drives with no arm check.
     """
 
     def __init__(
@@ -134,6 +143,7 @@ class RosBase:
         acceptance_s: float = ACCEPTANCE_S,
         tf_s: float = TF_S,
         client_factory: Callable[..., Any] = ActionClient,
+        arms_check: Callable[[str, float], None] | None = None,
     ) -> None:
         self._connector = connector
         self._node = connector.node
@@ -146,6 +156,7 @@ class RosBase:
         self._discovery_s = discovery_s
         self._acceptance_s = acceptance_s
         self._tf_s = tf_s
+        self._arms_check = arms_check
         self._lock = threading.Lock()
         self._operation: _Operation | None = None
         self._closing = False
@@ -272,6 +283,9 @@ class RosBase:
         deadline = time.monotonic() + timeout_s
         with self._lock:
             self._require_free()
+        if self._arms_check is not None:
+            # Outside the lock and the fence, since it waits on the commander.
+            self._arms_check(what, self._budget(deadline, math.inf, what))
         self._discover(deadline, what)
         goal = self._goal(target(deadline))
         operation = self._send(goal, what)

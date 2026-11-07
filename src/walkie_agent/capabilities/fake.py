@@ -16,13 +16,28 @@ import math
 import random
 import threading
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from typing import Any, Concatenate, ParamSpec, TypeVar
 
+from walkie_agent.arm import answers
+from walkie_agent.arm.poses import ARMS, BOTH, ArmPoses
+from walkie_agent.arm.results import DriveCheck, GripperResult
+from walkie_agent.arm.state import ArmsState, ArmState
 from walkie_agent.capabilities import (
+    NO_ARMS,
+    Arm,
+    ArmPose,
+    ArmsMoved,
+    ArmsReading,
+    ArmsReport,
     Ctx,
+    Gripper,
+    GripperMoved,
+    GripperReading,
+    GripperState,
     ObjectSeen,
     PersonSeen,
     Pose2D,
@@ -111,6 +126,10 @@ NEAR_PLACE_M = 1.0
 HELD = "robot"
 # The verbs whose records keep the ids they returned.
 LOOKUPS = frozenset({"vision.objects", "vision.people"})
+# The pose both arms start in, which every drive refusal names as its example.
+ARMS_START_POSE = answers.SAFE_EXAMPLE
+# The commander's status for every arm and gripper goal, all of which succeed in the fake.
+ARM_GOAL_STATUS = "Success"
 
 
 def fake_facts(seed: int = 0) -> dict[str, Any]:
@@ -263,6 +282,16 @@ def _facts_problems(facts: Mapping[str, Any]) -> list[str]:
     return problems
 
 
+def _check_arm_poses(arm_poses: ArmPoses) -> None:
+    """Raise ValueError unless both arms can start in ARMS_START_POSE: a table for each arm."""
+    start = arm_poses.poses.get(ARMS_START_POSE)
+    if start is None or start.arms != ARMS:
+        raise ValueError(
+            f"Broken arm poses: the arms start in {ARMS_START_POSE!r}, which needs a table "
+            "for each arm."
+        )
+
+
 class FakeRobot:
     """Implements Base, Speech, Vision, Arms, Facts and Memory over one world description.
 
@@ -277,11 +306,26 @@ class FakeRobot:
     facts remembered, matched by face, and no name for anyone else; remembering a
     person again replaces what was kept, and forget() clears it all. The memory
     stays out of snapshot(), so a run that remembers nobody reads as before.
+
+    The arms take named poses only with `arm_poses`, as load_arm_poses() gives
+    them; without, as in Mahoraga, poses, read, move_to and gripper raise
+    UNAVAILABLE as UnavailableArms does, state() says the arms are unknown, and
+    nothing checks the arms before a drive. With them, the poses offered are the
+    simulation's, both arms start in ARMS_START_POSE and both grippers open, a
+    move or a gripper command succeeds at once and lands exactly, and a close
+    always closes empty, since the fake's grippers never meet an object. go_to
+    and move_relative then refuse to start, as the robot's drive check does,
+    while an arm is in a pose that is not travel-safe; arm_poses lacking a table
+    of ARMS_START_POSE for each arm raises ValueError. pick, place_on and
+    hand_over move the world's objects either way, and never the arms or the
+    grippers. The arm state stays out of snapshot().
+
     `drive_s` makes a drive take real seconds, for stop tests. `calls` logs
     every verb call with the robot's place and room as it ended and, for a
     lookup, the ids returned. `said` logs every line, and `faults` maps a verb
     name such as "base.go_to" to the StepError that each call to it raises.
-    base.stop takes no fault, since it never raises.
+    base.stop takes no fault, since it never raises, and neither does
+    arms.state, which `calls` does not log either (state()).
     """
 
     def __init__(
@@ -290,6 +334,7 @@ class FakeRobot:
         *,
         seed: int = 0,
         drive_s: float = 0.0,
+        arm_poses: ArmPoses | None = None,
     ) -> None:
         described = chula_pat14_6(seed) if world is None else copy.deepcopy(dict(world))
         _check_world(described)
@@ -307,6 +352,16 @@ class FakeRobot:
         self._stopped = threading.Event()
         # The name and facts of each person remembered, by world person id.
         self._remembered: dict[str, tuple[str, dict[str, str]]] = {}
+        if arm_poses is not None:
+            _check_arm_poses(arm_poses)
+        self._arm_poses = arm_poses
+        # The pose each arm is in, each gripper's finger travel in metres, and how
+        # many commands each gripper took, as GripperResult.command counts them.
+        self._arm_at = dict.fromkeys(ARMS, ARMS_START_POSE)
+        self._finger_m: dict[str, float] = (
+            {} if arm_poses is None else dict.fromkeys(ARMS, arm_poses.grippers.open_position)
+        )
+        self._gripper_commands = dict.fromkeys(ARMS, 0)
         self.ctx = Ctx(
             cancel=self.cancel,
             base=self,
@@ -434,7 +489,67 @@ class FakeRobot:
             if who["room"] == room and _matches(query, who["name"], who["pose"], who["gesture"])
         ]
 
-    # ctx.arms
+    # ctx.arms. The pose and gripper verbs answer in the robot's words
+    # (walkie_agent.arm.answers), and move nothing until the token's commit.
+
+    @_verb("arms.poses")
+    def poses(self) -> Mapping[str, ArmPose]:
+        # No token check, as on the robot: listing the poses moves nothing.
+        return self._require_arms().offered_poses(sim=True)
+
+    def state(self, *, read: bool | None = None) -> ArmsReport:
+        """The arms as the fake knows them. Never raises; `read` changes nothing.
+
+        The fake always knows where its arms are, so there is nothing to read and
+        the arms are never unverified. Not logged in `calls`: it moves nothing and
+        cannot fail, and the arm atomics call it to end nearly every answer, so a
+        record would only bury the calls the LLM made.
+        """
+        return ArmsReport(self._arms_state())
+
+    @_verb("arms.read")
+    def read(self) -> ArmsReading:
+        positions = self._require_arms().grippers
+        self.cancel.check("the read of the arms")
+        report = self.state()
+        fingers = dict(self._finger_m)
+        return ArmsReading(
+            before=report,
+            after=report,
+            grippers=tuple(
+                GripperReading(side, fingers[side], answers.reads_as(positions, fingers[side]))
+                for side in ARMS
+            ),
+        )
+
+    @_verb("arms.move_to")
+    def move_to(self, pose: str, arm: Arm = "both") -> ArmsMoved:
+        offered = self._require_arms().offered_poses(sim=True)
+        found = answers.offered_pose(offered, pose, arm, self._arms_sentence)
+        with self._arm_goal(f"the move to {found.name!r}"):
+            for side in ARMS if arm == BOTH else (arm,):
+                self._arm_at[side] = found.name
+        return ArmsMoved(
+            pose=found.name,
+            arm=arm,
+            status=ARM_GOAL_STATUS,
+            max_error_rad=0.0,
+            report=self.state(),
+        )
+
+    @_verb("arms.gripper")
+    def gripper(self, arm: Gripper, state: GripperState) -> GripperMoved:
+        position = self._require_arms().grippers.position(state)
+        with self._arm_goal(f"the {arm} gripper command"):
+            # The count first, so an arm with no gripper changes nothing.
+            self._gripper_commands[arm] += 1
+            self._finger_m[arm] = position
+            command = self._gripper_commands[arm]
+        if state != "close":
+            result = GripperResult(True, ARM_GOAL_STATUS, None, None, command)
+            return GripperMoved(arm=arm, state=state, outcome="moved", result=result)
+        result = GripperResult(True, ARM_GOAL_STATUS, False, position, command)
+        return GripperMoved(arm=arm, state=state, outcome="empty", result=result, finger_m=position)
 
     @_verb("arms.pick")
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str:
@@ -554,7 +669,17 @@ class FakeRobot:
         self.cancel.check(what)
 
     def _drive(self, what: str, goal: Pose2D, at: str | None, timeout_s: float) -> Pose2D:
-        """Wait out one drive of `drive_s`, which a stop or the token ends. Nothing moves until then."""
+        """Wait out one drive of `drive_s`, which a stop or the token ends. Nothing moves until then.
+
+        With arm poses, the arm check (ADR-0025) comes first, after the bound and
+        the latch as on the robot: answers.drive_verdict on the arms as the fake
+        knows them, which raises PRECONDITION_FAILED while an arm is out. It logs
+        no call of its own; the base verb's record gets its error.
+        """
+        require_timeout(timeout_s)
+        self.cancel.check(what)
+        if self._arm_poses is not None:
+            answers.drive_verdict(lambda: DriveCheck(self._arms_state()), what)
         self._stopped.clear()
         started = time.monotonic()
         self.cancel.wait_for(
@@ -567,6 +692,42 @@ class FakeRobot:
         with self.cancel.unless_cancelled(what):
             self._pose, self._at = goal, at
         return goal
+
+    def _require_arms(self) -> ArmPoses:
+        """The arm poses, or StepError UNAVAILABLE without them, in UnavailableArms' words."""
+        if self._arm_poses is None:
+            raise StepError(ErrorCode.UNAVAILABLE, NO_ARMS)
+        return self._arm_poses
+
+    def _arms_state(self) -> ArmsState:
+        """Both arms' poses, each travel-safe as its pose says; ArmsState() without arm poses."""
+        if self._arm_poses is None:
+            return ArmsState()
+        poses = self._arm_poses.poses
+
+        def arm(side: str) -> ArmState:
+            name = self._arm_at[side]
+            return ArmState(pose=name, travel_safe=poses[name].travel_safe)
+
+        return ArmsState(left=arm("left"), right=arm("right"))
+
+    def _arms_sentence(self) -> str:
+        return self.state().sentence()
+
+    @contextmanager
+    def _arm_goal(self, what: str) -> Iterator[None]:
+        """Commit the block, the change of one arm or gripper goal, unless a stop is in effect.
+
+        As CancelToken.unless_cancelled, but its CANCELLED ends with the arm
+        sentence, as every message of move_to and gripper does. An error the
+        block raises passes through as it is.
+        """
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(self.cancel.unless_cancelled(what))
+            except StepError as error:
+                raise answers.with_sentence(error, "", self._arms_sentence()) from None
+            yield
 
     def _known_place(self, place: str) -> str:
         require_text(place=place)

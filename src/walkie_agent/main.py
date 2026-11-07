@@ -31,6 +31,14 @@ view. A message on /walkie/reset ends the task, and forgets the people remembere
 first task instead, so an agent restarted mid-task still knows its guests. `mock` and
 `ros` need --vision: a bad combination stops the agent at once, with exit code 2.
 
+--arms connects the arms through walkie-ros's bimanual_commander (ADR-0021). It binds the
+arm atomics of the chosen tool set, which every set leaves out without it, and go_to and
+move_relative then refuse to drive with an arm out (ADR-0025). The poses come from
+config/arm_poses.toml, checked against config/robot_model.toml. With --use-sim-time, the
+poses not yet tried on the robot are offered too, and the commander's bounds are the
+simulation's. --arms needs a set with the arm atomics, and the arms set needs --arms: a
+bad combination stops the agent at once, with exit code 2.
+
 A missing or broken file, a missing setting or API key, or a bad [team] table stops the
 agent before ROS starts, with one line on stderr and exit code 2.
 
@@ -48,7 +56,7 @@ import threading
 import time
 from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
-from types import FrameType
+from types import FrameType, MappingProxyType
 from typing import Any
 
 import rclpy
@@ -58,12 +66,15 @@ from langchain_core.language_models import BaseChatModel
 from rai.communication.ros2 import ROS2Connector
 from rclpy.signals import SignalHandlerOptions
 
-from walkie_agent.atomics import DEFAULT, GPSR, HRI
+from walkie_agent.arm.poses import ArmPoses, load_arm_poses
+from walkie_agent.atomics import ARM_TOOLS, ARMS, DEFAULT, GPSR, HRI
 from walkie_agent.capabilities import (
+    Arms,
     CancelToken,
     Ctx,
     Facts,
     Memory,
+    UnavailableArms,
     UnavailableFacts,
     UnavailableMemory,
 )
@@ -72,6 +83,8 @@ from walkie_agent.locations import Location, load_locations
 from walkie_agent.perception.memory import TrackMemory
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory, PeopleMemory
 from walkie_agent.ros import (
+    CommanderClient,
+    RosArms,
     RosBase,
     RosBridge,
     RosPeopleMemory,
@@ -99,7 +112,30 @@ from walkie_agent.tasks import TaskTemplate, check_required_tools, load_task_tem
 logger = logging.getLogger(__name__)
 
 NODE_NAME = "walkie_agent"
-TOOL_SETS = {"default": DEFAULT, "gpsr": GPSR, "hri": HRI}
+TOOL_SETS = {"default": DEFAULT, "gpsr": GPSR, "hri": HRI, "arms": ARMS}
+# The set made for the arms. Without --arms its arm atomics are dropped, as from every
+# set, and nothing it exists for is left, so a run without --arms refuses it.
+ARMS_TOOL_SET = "arms"
+# With --arms, the set must bind this one. The drive check's refusals and the client's
+# unverified refusals tell the LLM to call move_arm_to_pose or get_arm_state, so a set
+# without the arm atomics could not act on them.
+ARM_TOOL = "move_arm_to_pose"
+# The commander's bounds under --use-sim-time, in seconds of wall-clock time: the
+# CommanderClient's keyword bounds, and RosArms' floor on every move's timeout. The
+# simulation runs slower than real time, and every bound is wall-clock time, so each is
+# raised over its robot default (decision S6-4). Provisional: the sim run measures the
+# real-time factor and may change them.
+SIM_ARM_BOUNDS: Mapping[str, float] = MappingProxyType(
+    {
+        "read_timeout_s": 6.0,
+        "gripper_timeout_s": 15.0,
+        "cancel_answer_s": 3.0,
+        "abandon_after_s": 120.0,
+        "absent_abandon_s": 10.0,
+        "ready_wait_s": 3.0,
+        "min_move_timeout_s": 60.0,
+    }
+)
 # --people-memory's choices: none, a store in this process, or walkie-database.
 PEOPLE_MEMORIES = ("unavailable", "mock", "ros")
 # A todo step can require this one too. It cannot require update_todos, because the
@@ -157,9 +193,21 @@ _TOOL_RULES = {
         "  remember people, and never pretend that you remembered or know someone.\n"
     ),
     "pick": (
-        "- `pick`, `place_on` and `hand_over` need an arm commander client, which does\n"
-        "  not exist yet, so they report UNAVAILABLE. Say that you cannot do it, and\n"
-        "  never claim you moved an object.\n"
+        "- `pick`, `place_on` and `hand_over` need a grasp skill, which Walkie does not\n"
+        "  have yet, so they report UNAVAILABLE. Say that you cannot do it, and never\n"
+        "  claim you moved an object.\n"
+    ),
+    # A set binds the arm atomics only with --arms, so this rule is always live.
+    # It does not tell the LLM to move the arms home before it drives: the drive
+    # check refuses an arm out with words that say so (ADR-0025).
+    ARM_TOOL: (
+        "- You also have two arms with grippers. `list_arm_poses` lists the poses\n"
+        "  `move_arm_to_pose` takes, and `set_gripper` opens and closes a hand.\n"
+        "- Before you move an arm or a gripper, tell the people near you with `say`.\n"
+        "- If an arm or gripper tool fails, call `get_arm_state`, then try again at most\n"
+        "  once.\n"
+        "- Never pick up an object by combining poses and gripper commands yourself.\n"
+        "  Taking an object a person hands you is fine.\n"
     ),
     "get_facts": (
         "- For the time, the date, the day or your team's name, country or affiliation,\n"
@@ -214,14 +262,16 @@ def build_system_prompt(
     *,
     vision: bool = False,
     memory: bool = False,
+    arms: bool = False,
 ) -> str:
-    """The rules for one tool set, then the static robot description, once.
+    """The rules for the tools a run binds, then the static robot description, once.
 
     GPSR lacks `list_places`, so its prompt carries the configured places as data.
     `vision` says that find_people reads live people perception, and `memory` that
-    remember_person and recognize_person have a people memory.
+    remember_person and recognize_person have a people memory. `arms` keeps the arm
+    atomics in the set (bound_tools), and with them the arm rule.
     """
-    names = _atomic_names(tool_set)
+    names = _atomic_names(tool_set, arms=arms)
     rules = dict(_TOOL_RULES)
     if vision:
         rules["find_people"] = _LIVE_PEOPLE_RULE
@@ -247,16 +297,48 @@ def _places_section(locations: Mapping[str, Location]) -> str:
     return "The named places you can go to with `go_to`:\n" + "\n".join(lines) + "\n"
 
 
-def _atomic_names(tool_set: str) -> set[str]:
+def bound_tools(tool_set: str, *, arms: bool = False) -> list[Callable[..., Any]]:
+    """The atomics a run binds: the set's, in its order, without the arm atomics unless `arms`.
+
+    Without --arms ctx.arms has no commander, so the arm atomics would only report
+    UNAVAILABLE. Raises ValueError for an unknown set.
+    """
     if tool_set not in TOOL_SETS:
         known = ", ".join(TOOL_SETS)
         raise ValueError(f"There is no tool set {tool_set!r}. Known tool sets: {known}.")
-    return {fn.__name__ for fn in TOOL_SETS[tool_set]}
+    return [fn for fn in TOOL_SETS[tool_set] if arms or fn.__name__ not in ARM_TOOLS]
 
 
-def check_templates(templates: Mapping[str, TaskTemplate], tool_set: str) -> None:
-    """Raise ValueError for a template step that this tool set could never complete."""
-    check_required_tools(templates, _atomic_names(tool_set) | {WAIT_TOOL})
+def _atomic_names(tool_set: str, *, arms: bool = False) -> set[str]:
+    return {fn.__name__ for fn in bound_tools(tool_set, arms=arms)}
+
+
+def check_templates(
+    templates: Mapping[str, TaskTemplate], tool_set: str, *, arms: bool = False
+) -> None:
+    """Raise ValueError for a template step that this run's tools could never complete."""
+    check_required_tools(templates, _atomic_names(tool_set, arms=arms) | {WAIT_TOOL})
+
+
+def check_arms(tool_set: str, *, arms: bool) -> None:
+    """Raise ValueError for a tool set that does not go with this run's arms.
+
+    With `arms` the set must bind move_arm_to_pose (ARM_TOOL), and without them it must
+    not be the arms set (ARMS_TOOL_SET). Raises ValueError for an unknown set as well.
+    """
+    names = _atomic_names(tool_set, arms=True)
+    if arms and ARM_TOOL not in names:
+        sets = " or ".join(
+            name for name in TOOL_SETS if ARM_TOOL in _atomic_names(name, arms=True)
+        )
+        raise ValueError(
+            f"--arms needs a tool set with the arm tools, such as {sets}: the {tool_set} "
+            f"set has no {ARM_TOOL}, which the drive check's refusals ask for."
+        )
+    if not arms and tool_set == ARMS_TOOL_SET:
+        raise ValueError(
+            f"--tool-set {ARMS_TOOL_SET} needs --arms, which connects the arms its tools move."
+        )
 
 
 def check_people_memory(people_memory: str, *, vision: bool, resume: bool) -> None:
@@ -286,6 +368,7 @@ class Application:
     """One assembled agent. `start` opens it and `close` drains it, in that order only.
 
     The connector and the ROS context belong to the caller, and outlive `close`.
+    `commander` is the arm commander client of a run with --arms, else None.
     """
 
     def __init__(
@@ -296,6 +379,7 @@ class Application:
         base: RosBase,
         speech: RosSpeech,
         vision: RosVision | None = None,
+        commander: CommanderClient | None = None,
     ) -> None:
         self.ctx = ctx
         self.runner = runner
@@ -303,6 +387,10 @@ class Application:
         self._base = base
         self._speech = speech
         self._vision = vision
+        self._commander = commander
+        # CommanderClient.destroy() may run once only: rclpy refuses a second destroy
+        # of an action client.
+        self._commander_destroyed = False
         self._run_ended = True
 
     def start(self) -> None:
@@ -318,15 +406,25 @@ class Application:
         stays latched. Keep the executor spinning and call this again, because destroying
         ROS under a live worker could lose the cancel of a goal that is still driving.
         A repeated call is safe. The latch stays set for good.
+
+        With arms, the commander's "stop" goes out at once, beside the base's, and its
+        clients are destroyed once the base has closed.
         """
         self.bridge.close_ingress()
         self.ctx.cancel.cancel()
         self._base.stop()
+        if self._commander is not None:
+            # The latch already ends a running arm call, which cancels its goal. "stop"
+            # also halts a move whose call gave up on it earlier.
+            self._commander.stop()
         self._run_ended = self.runner.shutdown(timeout_s)
         if not self._run_ended:
             return False
         if not self._base.close(timeout_s):
             return False
+        if self._commander is not None and not self._commander_destroyed:
+            self._commander_destroyed = True
+            self._commander.destroy()
         # After the Runner's join, so a stop line in flight can still be published.
         self._speech.close()
         if self._vision is not None:
@@ -362,6 +460,7 @@ def assemble(
     vision: bool = False,
     people_memory: str = "unavailable",
     resume_people_session: bool = False,
+    arm_poses: ArmPoses | None = None,
 ) -> Application:
     """Wire the runtime and the ROS wrappers over a connector the caller already made.
 
@@ -376,12 +475,23 @@ def assemble(
     RosVision then names the people find_people reports, and the Runner forgets the
     people remembered at each reset. Raises ValueError for an unknown memory, a memory
     without `vision`, or a resume without ros, before anything is built.
+
+    `arm_poses`, the checked poses that main() loads for --arms, gives the run its arms:
+    a CommanderClient on the connector with the agent's token, made before the RosBase,
+    and ctx.arms a RosArms over it, whose check_for_driving the RosBase runs before
+    every drive. With `use_sim_time` the client takes SIM_ARM_BOUNDS, and RosArms
+    offers the poses not yet tried on the robot. Without `arm_poses`, ctx.arms is
+    UnavailableArms, the RosBase drives with no arm check, and the arm atomics are
+    dropped from the set (bound_tools). Raises ValueError for a set that does not go
+    with the arms (check_arms) before anything is built.
     """
-    check_templates(templates, tool_set)
+    arms = arm_poses is not None
+    check_templates(templates, tool_set, arms=arms)
+    check_arms(tool_set, arms=arms)
     check_people_memory(people_memory, vision=vision, resume=resume_people_session)
     remembers = people_memory != "unavailable"
     prompt = build_system_prompt(
-        tool_set, locations, robot_description, vision=vision, memory=remembers
+        tool_set, locations, robot_description, vision=vision, memory=remembers, arms=arms
     )
     clock = connector.node.get_parameter("use_sim_time").value
     if bool(clock) != use_sim_time:
@@ -394,7 +504,22 @@ def assemble(
     cancel = CancelToken()
     built: list[Callable[[], Any]] = []
     try:
-        base = RosBase(connector, locations, cancel)
+        commander: CommanderClient | None = None
+        ctx_arms: Arms = UnavailableArms()
+        arms_check: Callable[[str, float], None] | None = None
+        if arm_poses is not None:
+            bounds = dict(SIM_ARM_BOUNDS) if use_sim_time else {}
+            min_move_timeout_s = bounds.pop("min_move_timeout_s", 0.0)
+            # The same token as the RosBase and the Runner, so a stop or a reset ends
+            # an arm call and its drive check too. Made first, since the RosBase checks
+            # the arms through it.
+            commander = CommanderClient(connector, cancel, arm_poses, **bounds)
+            built.append(commander.destroy)
+            ros_arms = RosArms(
+                commander, cancel, sim=use_sim_time, min_move_timeout_s=min_move_timeout_s
+            )
+            ctx_arms, arms_check = ros_arms, ros_arms.check_for_driving
+        base = RosBase(connector, locations, cancel, arms_check=arms_check)
         built.append(base.close)
         speech = RosSpeech(connector)
         built.append(speech.close)
@@ -419,6 +544,7 @@ def assemble(
             vision=live or UnavailableVision(cancel),
             facts=facts,
             memory=memory,
+            arms=ctx_arms,
         )
         bridge = RosBridge(
             connector,
@@ -433,7 +559,7 @@ def assemble(
         agent = build_agent(
             model,
             ctx,
-            tools=TOOL_SETS[tool_set],
+            tools=bound_tools(tool_set, arms=arms),
             on_todos=bridge.on_todos,
             fallback=fallback,
             tool_log=tool_log,
@@ -448,12 +574,14 @@ def assemble(
             callbacks=callbacks,
             tool_log=tool_log,
             on_reset=on_reset,
+            # A stop also halts an arm goal whose call already gave up (ADR-0021).
+            on_stop=None if commander is None else commander.stop,
         )
     except BaseException:
         for close in reversed(built):
             close()
         raise
-    return Application(ctx, runner, bridge, base, speech, live)
+    return Application(ctx, runner, bridge, base, speech, live, commander)
 
 
 class _Signals:
@@ -641,8 +769,17 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="With --people-memory ros, keep the database's open session at the first "
         "task instead of forgetting it.",
     )
+    parser.add_argument(
+        "--arms",
+        action="store_true",
+        help="Drive the arms through walkie-ros's bimanual_commander: binds the arm tools, "
+        "and go_to and move_relative then refuse to drive with an arm out. With "
+        "--use-sim-time, poses not yet tried on the robot are offered too. Needs a tool "
+        "set with the arm tools, such as hri or arms.",
+    )
     args = parser.parse_args(argv)
     try:
+        check_arms(args.tool_set, arms=args.arms)
         check_people_memory(
             args.people_memory, vision=args.vision, resume=args.resume_people_session
         )
@@ -664,7 +801,10 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
         locations = load_locations(args.locations)
         templates = load_task_templates(args.task_templates)
-        check_templates(templates, args.tool_set)
+        check_templates(templates, args.tool_set, arms=args.arms)
+        # config/arm_poses.toml and config/robot_model.toml, from the working directory.
+        # ArmPoseError is a ValueError, so a bad pose stops the agent here, in one line.
+        arm_poses = load_arm_poses() if args.arms else None
         robot_description = Path(args.robot_description).read_text(encoding="utf-8")
         model = build_model(config)
         fallback = build_fallback(config)
@@ -686,6 +826,7 @@ def main(argv: list[str] | None = None) -> int:
         tool_log=tool_log,
         fallback=fallback,
         facts=facts,
+        arm_poses=arm_poses,
     )
 
 

@@ -42,7 +42,7 @@ def serve():
 
     def start(
         *script, then=None, delay_s=0.0, robot=None, tool_log=None, callbacks=(), on_reply=None,
-        on_reset=None, **build,
+        on_reset=None, on_stop=None, **build,
     ):
         stack = make_stack(
             *script, then=then, delay_s=delay_s, robot=robot, tool_log=tool_log, **build
@@ -55,6 +55,7 @@ def serve():
             callbacks=callbacks,
             tool_log=tool_log,
             on_reset=on_reset,
+            on_stop=on_stop,
         )
         runners.append(stack.runner)
         stack.runner.start()
@@ -689,6 +690,40 @@ def test_an_on_reset_that_raises_is_logged_and_the_next_task_runs(serve, caplog)
     stack.runner.submit("Hello.")
     idle(stack)
     assert stack.replies == ["Done."]
+
+
+def test_on_stop_runs_at_each_stop_and_reset_after_the_base_stop(serve):
+    seen = []
+    stack = None
+
+    def on_stop():
+        seen.append((threading.current_thread().name, list(stack.verbs())))
+
+    stack = serve(DONE, on_stop=on_stop)
+    stack.runner.submit("Hello.")
+    idle(stack)
+    assert seen == []  # a task is not a stop
+
+    stack.runner.stop()
+    idle(stack)
+    stack.runner.reset()
+    idle(stack)
+    caller = threading.current_thread().name
+    assert seen == [(caller, ["base.stop"]), (caller, ["base.stop", "speech.say", "base.stop"])]
+
+
+def test_an_on_stop_that_raises_is_logged_and_the_stop_still_holds(serve, caplog):
+    def broken():
+        raise RuntimeError("The commander's publisher is gone.")
+
+    stack = serve(DONE, on_stop=broken)
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.runtime.runner"):
+        stack.runner.stop()
+        idle(stack)
+    assert any("on_stop failed." in message for message in caplog.messages)
+    assert stack.verbs() == ["base.stop", "speech.say"]
+    assert stack.robot.said == [STOP_LINE]
+    assert stack.robot.cancel.cancelled
 
 
 def test_a_slow_on_reset_holds_the_next_task_but_not_a_stop_line(serve):

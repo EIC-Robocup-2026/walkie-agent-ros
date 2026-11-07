@@ -95,6 +95,10 @@ def _digested_files() -> list[Path]:
             *(walkie / name for name in ("__init__.py", "errors.py", "adapter.py", "locations.py")),
             *(walkie / "capabilities").glob("*.py"),
             *(walkie / "atomics").glob("*.py"),
+            # The arm records, states and answers that capabilities and the atomics
+            # import. Its loaders read config/*.toml only when called, and no oracle
+            # pass calls them: FakeRobot has no arm poses there.
+            *(walkie / "arm").glob("*.py"),
             # FakeRobot and face_person import the angle wrap from geometry.py, which
             # imports gestures.py. people.py serves only RosVision.
             *(walkie / "perception" / name for name in ("__init__.py", "geometry.py", "gestures.py")),

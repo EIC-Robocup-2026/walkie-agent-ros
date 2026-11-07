@@ -125,6 +125,22 @@ def load_snapshot_script():
 # The committed files.
 
 
+@pytest.mark.parametrize("broken", ["poses", "model"])
+def test_a_file_that_is_not_toml_is_an_arm_pose_error_naming_it(tmp_path, broken):
+    poses = tmp_path / "arm_poses.toml"
+    model = tmp_path / "robot_model.toml"
+    poses.write_bytes((PROJECT_ROOT / "config" / "arm_poses.toml").read_bytes())
+    model.write_bytes((PROJECT_ROOT / "config" / "robot_model.toml").read_bytes())
+    target = poses if broken == "poses" else model
+    target.write_text("not toml = [")
+    with pytest.raises(ArmPoseError) as raised:
+        load_arm_poses(poses, model)
+    assert raised.value.source.startswith(str(target))
+    [problem] = raised.value.errors
+    assert problem.startswith("Not valid TOML: ") and "(at line 1" in problem
+    assert isinstance(raised.value.__cause__, tomllib.TOMLDecodeError)
+
+
 def test_committed_files_load(arm_poses):
     poses = arm_poses.poses
     assert list(poses) == [

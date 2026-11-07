@@ -6,19 +6,29 @@ import pytest
 
 from walkie_agent import atomics
 from walkie_agent.atomics import (
+    ARM_TOOLS,
+    ARMS,
     DEFAULT,
     GPSR,
     HRI,
+    get_arm_state,
     hand_over,
+    list_arm_poses,
+    move_arm_to_pose,
     pick,
     place_on,
     recognize_person,
     remember_person,
+    set_gripper,
 )
 
-ARMS = {pick, place_on, hand_over}
+# The fake's object model: pick, place and hand over one held object.
+MANIPULATION = {pick, place_on, hand_over}
+# Named poses and the grippers, through the commander.
+ARM_ATOMICS = {list_arm_poses, move_arm_to_pose, set_gripper, get_arm_state}
 MEMORY = {remember_person, recognize_person}
-ALL = sorted(set(GPSR) | set(HRI) | set(DEFAULT), key=lambda fn: fn.__name__)
+SETS = {"GPSR": GPSR, "HRI": HRI, "ARMS": ARMS, "DEFAULT": DEFAULT}
+ALL = sorted(set().union(*SETS.values()), key=lambda fn: fn.__name__)
 
 
 def names(tool_set) -> list[str]:
@@ -41,8 +51,44 @@ def test_gpsr_is_the_set_the_spike_used_and_get_facts():
     ]
 
 
-def test_hri_has_no_object_or_arm_tools_and_ends_with_the_memory_tools():
+def test_hri_has_no_object_tools_and_ends_with_the_memory_then_the_arm_tools():
     assert names(HRI) == [
+        "list_places",
+        "go_to",
+        "move_relative",
+        "say",
+        "find_people",
+        "face_person",
+        "remember_person",
+        "recognize_person",
+        "list_arm_poses",
+        "move_arm_to_pose",
+        "set_gripper",
+        "get_arm_state",
+    ]
+
+
+def test_arms_is_the_base_and_speech_then_the_arm_tools():
+    assert names(ARMS) == [
+        "list_places",
+        "go_to",
+        "move_relative",
+        "say",
+        "list_arm_poses",
+        "move_arm_to_pose",
+        "set_gripper",
+        "get_arm_state",
+    ]
+
+
+def test_arm_tools_names_the_arm_atomics():
+    assert ARM_TOOLS == frozenset(fn.__name__ for fn in ARM_ATOMICS)
+    assert isinstance(ARM_TOOLS, frozenset)
+
+
+def test_hri_without_the_arm_tools_is_the_set_it_was_before_them():
+    # main.py drops ARM_TOOLS without --arms, which must leave HRI as it was.
+    assert [name for name in names(HRI) if name not in ARM_TOOLS] == [
         "list_places",
         "go_to",
         "move_relative",
@@ -54,8 +100,16 @@ def test_hri_has_no_object_or_arm_tools_and_ends_with_the_memory_tools():
     ]
 
 
+def test_the_arm_tools_are_in_hri_and_arms_alone():
+    # GPSR and DEFAULT keep the tool text the Mahoraga runs measured.
+    assert ARM_ATOMICS <= set(HRI)
+    assert ARM_ATOMICS <= set(ARMS)
+    assert ARM_ATOMICS.isdisjoint(GPSR)
+    assert ARM_ATOMICS.isdisjoint(DEFAULT)
+
+
 def test_default_is_every_atomic_that_needs_no_arms_and_no_people_memory():
-    assert set(DEFAULT) == set(ALL) - ARMS - MEMORY
+    assert set(DEFAULT) == set(ALL) - MANIPULATION - ARM_ATOMICS - MEMORY
 
 
 def test_default_keeps_its_order_without_the_memory_tools():
@@ -77,6 +131,7 @@ def test_the_memory_tools_are_in_hri_alone():
     assert MEMORY <= set(HRI)
     assert MEMORY.isdisjoint(GPSR)
     assert MEMORY.isdisjoint(DEFAULT)
+    assert MEMORY.isdisjoint(ARMS)
 
 
 def test_every_public_atomic_is_in_a_set():
@@ -88,7 +143,7 @@ def test_every_public_atomic_is_in_a_set():
     assert public == set(ALL)
 
 
-@pytest.mark.parametrize("tool_set", [GPSR, HRI, DEFAULT], ids=["GPSR", "HRI", "DEFAULT"])
+@pytest.mark.parametrize("tool_set", SETS.values(), ids=SETS.keys())
 def test_a_set_has_no_duplicate(tool_set):
     assert len(set(tool_set)) == len(tool_set)
 

@@ -7,7 +7,8 @@ whatever calls a verb gets them. There is no velocity verb.
 
 This package imports no rclpy, rai or ROS message, so a teammate can read and
 test against it without ROS. FakeRobot, in capabilities.fake, implements every
-verb. The ROS-backed verbs live in walkie_agent.ros.
+verb. The ROS-backed verbs live in walkie_agent.ros. The arm records build on
+walkie_agent.arm, which imports no ROS either.
 """
 
 from collections.abc import Mapping
@@ -15,8 +16,19 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import NoReturn, Protocol
 
+from walkie_agent.arm.poses import ArmPose
+from walkie_agent.arm.state import ArmsState
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.capabilities.records import (
+    Arm,
+    ArmsMoved,
+    ArmsReading,
+    ArmsReport,
+    Gripper,
+    GripperMoved,
+    GripperOutcome,
+    GripperReading,
+    GripperState,
     ObjectSeen,
     PersonSeen,
     Pose2D,
@@ -28,11 +40,22 @@ from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location
 
 __all__ = [
+    "NO_ARMS",
+    "Arm",
+    "ArmPose",
     "Arms",
+    "ArmsMoved",
+    "ArmsReading",
+    "ArmsReport",
     "Base",
     "CancelToken",
     "Ctx",
     "Facts",
+    "Gripper",
+    "GripperMoved",
+    "GripperOutcome",
+    "GripperReading",
+    "GripperState",
     "Memory",
     "ObjectSeen",
     "PersonSeen",
@@ -57,7 +80,12 @@ class Base(Protocol):
     navigation backend and SKILL_FAILED when the goal fails. That SKILL_FAILED
     is a GoalFailed when the backend reports that the goal was refused or ended
     without success. A plain StepError SKILL_FAILED is any other failure, such
-    as a goal whose state is unknown or an unusable pose after a success.
+    as a goal whose state is unknown or an unusable pose after a success. They
+    also raise PRECONDITION_FAILED while another goal is live and, with an arm
+    backend, while an arm is out of every travel-safe pose or the arms are busy
+    or unverified, INTERNAL when the arm reading does not show where both arms
+    are, and TIMEOUT when the arm check cannot finish in time, each a plain
+    StepError, never a GoalFailed, raised before the verb sends a goal.
 
     pose waits for the robot's pose in the map until `timeout_s` is up, and then
     for the end of the backend read it began last. It raises
@@ -111,13 +139,64 @@ class Vision(Protocol):
 
 
 class Arms(Protocol):
-    """ctx.arms: picks, places and hands over, each returning the object's id.
+    """ctx.arms: named arm poses and the grippers, through the commander (ADR-0021).
 
-    Raises StepError NOT_FOUND for an unknown object, place or person;
-    PRECONDITION_FAILED when the hand or the robot's position does not allow
-    the step; REFUSED for a place that cannot hold an object; CANCELLED on a
-    stop; TIMEOUT past `timeout_s`; SKILL_FAILED when the motion fails.
+    The LLM picks poses by name and never sees joint values (ADR-0022). Every
+    answer an arm atomic builds from these verbs ends with the arm sentence,
+    ArmsReport.sentence(), so the LLM always knows whether the robot may drive
+    (ADR-0024). A stop or a reset ends a verb's wait through the shared cancel
+    token, and the backend then cancels the commander's goal.
+
+    poses() is the poses offered here, in file order: on the robot only those
+    tried on it. It raises StepError UNAVAILABLE without a commander.
+
+    state() never raises. `read` None reads the arms only when the backend's
+    memory cannot say whether the robot may drive; True always reads them;
+    False never does. A read that fails leaves the memory as it was.
+
+    read() reads both arms now, recovering first while they are unverified,
+    then each gripper's finger. It raises StepError as the read of the arms
+    does: PRECONDITION_FAILED while a goal runs or is outstanding or when
+    recovery refuses, TIMEOUT, UNAVAILABLE, INTERNAL for a reading that lacks
+    a joint, CANCELLED on a stop. A gripper that cannot be read is in its
+    GripperReading, not an error, unless a stop ended the read.
+
+    move_to() moves `arm` to the pose, waits and checks the joints against
+    it. It raises StepError NOT_FOUND for a pose that is unknown or not
+    offered here; REFUSED for an arm the pose does not take, or a right-arm
+    pose that needs openarm_right_joint2 while walkie-ros holds it fixed;
+    PRECONDITION_FAILED while a goal runs or is outstanding, or while the
+    arms are unverified; SKILL_FAILED when the commander fails the goal, or
+    when the joints do not end in the pose or cannot be checked after a
+    reported success; TIMEOUT when the goal does not finish in time;
+    UNAVAILABLE without the commander or when it cannot read the joints;
+    INTERNAL for a rejected goal or joints that do not match the robot
+    model; CANCELLED on a stop or a reset. Every message ends with the arm
+    sentence.
+
+    gripper() moves one gripper to a named position. It raises StepError
+    PRECONDITION_FAILED, TIMEOUT, UNAVAILABLE, INTERNAL or CANCELLED as
+    move_to() does. Every other end is an outcome, not an error
+    (GripperMoved.outcome). Every message ends with the arm sentence.
+
+    pick, place_on and hand_over pick, place and hand over, each returning
+    the object's id. They raise StepError NOT_FOUND for an unknown object,
+    place or person; PRECONDITION_FAILED when the hand or the robot's
+    position does not allow the step; REFUSED for a place that cannot hold
+    an object; CANCELLED on a stop; TIMEOUT past `timeout_s`; SKILL_FAILED
+    when the motion fails; UNAVAILABLE where no grasp skill exists, as on
+    the robot today.
     """
+
+    def poses(self) -> Mapping[str, ArmPose]: ...
+
+    def state(self, *, read: bool | None = None) -> ArmsReport: ...
+
+    def read(self) -> ArmsReading: ...
+
+    def move_to(self, pose: str, arm: Arm = "both") -> ArmsMoved: ...
+
+    def gripper(self, arm: Gripper, state: GripperState) -> GripperMoved: ...
 
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str: ...
 
@@ -126,14 +205,33 @@ class Arms(Protocol):
     def hand_over(self, person_id: str, *, timeout_s: float = 60.0) -> str: ...
 
 
+# Every verb of UnavailableArms raises UNAVAILABLE with this message.
+NO_ARMS = "Walkie cannot use its arms here: no arm commander is connected."
+
+
 class UnavailableArms:
-    """The ctx.arms of a robot with no arm commander client yet: every verb refuses."""
+    """The ctx.arms of a robot run without --arms: every verb but state() refuses.
+
+    state() says the arms are unknown, since the Arms protocol says it never raises.
+    """
 
     def _refuse(self) -> NoReturn:
-        raise StepError(
-            ErrorCode.UNAVAILABLE,
-            "Walkie cannot use its arms here: the arm commander client does not exist yet.",
-        )
+        raise StepError(ErrorCode.UNAVAILABLE, NO_ARMS)
+
+    def poses(self) -> Mapping[str, ArmPose]:
+        self._refuse()
+
+    def state(self, *, read: bool | None = None) -> ArmsReport:
+        return ArmsReport(ArmsState())
+
+    def read(self) -> ArmsReading:
+        self._refuse()
+
+    def move_to(self, pose: str, arm: Arm = "both") -> ArmsMoved:
+        self._refuse()
+
+    def gripper(self, arm: Gripper, state: GripperState) -> GripperMoved:
+        self._refuse()
 
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str:
         self._refuse()

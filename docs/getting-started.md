@@ -353,7 +353,8 @@ simulation, in the same terminal setup as the agent:
 pixi run oracle-chula
 ```
 
-Nothing in the agent reads its messages yet.
+`find_people` reads its people when the agent runs with `--vision`, which
+`agent-sim-chula` passes. Nothing in the agent reads its objects yet.
 
 `scripts/chula-sim.sh` starts that world, the oracle and the agent together, on a
 Zenoh router and domain of their own, and its `check` shows what the oracle draws

@@ -17,8 +17,10 @@ directory (see .env.example). PYTHON_DOTENV_DISABLED=1 turns the .env file off. 
 [team] table names the team and the timezone that `get_facts` reads, with the time from
 the computer's wall clock.
 
-With --vision, `find_people` reads walkie-vision's people on /walkie_vision/people,
-which the simulation's oracle_perception publishes too. Without it, `find_people` reports
+With --vision, `find_people` reads walkie-vision's people on /walkie_vision/people, and
+`find_objects` its objects on /walkie_vision/objects, which the simulation's
+oracle_perception publishes too. --objects-topic reads the objects elsewhere, such as
+walkie-vision's own detector on the simulation's images. Without --vision, both report
 UNAVAILABLE and the prompt says so.
 
 --people-memory chooses where `remember_person` and `recognize_person` keep the people
@@ -89,6 +91,7 @@ from walkie_agent.capabilities import (
 )
 from walkie_agent.capabilities.facts import facts_from_config
 from walkie_agent.locations import Location, load_locations
+from walkie_agent.perception import OBJECTS_TOPIC
 from walkie_agent.perception.memory import TrackMemory
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory, PeopleMemory
 from walkie_agent.ros import (
@@ -242,6 +245,25 @@ _LIVE_PEOPLE_RULE = (
     "  never guess who is there.\n"
 )
 
+# The find_objects rule of a set without object_info, such as HRI, in place of the one above.
+_FIND_OBJECTS_ONLY_RULE = (
+    "- `find_objects` needs live object perception, which is not connected yet, so it\n"
+    "  reports UNAVAILABLE. Say that you cannot see objects, and never guess what is\n"
+    "  there.\n"
+)
+
+# The find_objects rule of a run with --vision, in place of both above, and the line it
+# gains when the set binds object_info.
+_LIVE_OBJECTS_RULE = (
+    "- `find_objects` reports the objects your camera sees now, left to right, each\n"
+    "  with a name, a category and the place you stand at. It sees only what is in\n"
+    "  front of you, so turn or go to a place to look elsewhere. It finds only the\n"
+    "  kinds of object your camera looks for, and says so when you ask for another\n"
+    "  kind: then say that you cannot look for that, not that it is absent. An id\n"
+    "  names the same object only while it stays in view. Never guess what is there.\n"
+)
+_LIVE_OBJECT_INFO_LINE = "  `object_info` cannot measure objects yet, so its measures are null.\n"
+
 # The remember_person rule of a run with a people memory, in place of the one above.
 _LIVE_MEMORY_RULE = (
     "- When someone tells you their name, call `remember_person` with their id from\n"
@@ -299,15 +321,19 @@ def build_system_prompt(
     """The rules for the tools a run binds, then the static robot description, once.
 
     GPSR lacks `list_places`, so its prompt carries the configured places as data.
-    `vision` says that find_people reads live people perception, and `memory` that
+    `vision` says that find_people and find_objects read live perception, and `memory` that
     remember_person and recognize_person have a people memory. `arms` keeps the arm
     atomics in the set (bound_tools), and with them the arm rule. `scripts` adds the
     run_script rule after the tools' own.
     """
     names = _atomic_names(tool_set, arms=arms)
     rules = dict(_TOOL_RULES)
+    measures = "object_info" in names
+    if not measures:
+        rules["find_objects"] = _FIND_OBJECTS_ONLY_RULE
     if vision:
         rules["find_people"] = _LIVE_PEOPLE_RULE
+        rules["find_objects"] = _LIVE_OBJECTS_RULE + (_LIVE_OBJECT_INFO_LINE if measures else "")
     if memory:
         rules["remember_person"] = _LIVE_MEMORY_RULE
     prompt = _RULES_START
@@ -503,6 +529,7 @@ def assemble(
     fallback: BaseChatModel | None = None,
     facts: Facts = UnavailableFacts(),
     vision: bool = False,
+    objects_topic: str = OBJECTS_TOPIC,
     people_memory: str = "unavailable",
     resume_people_session: bool = False,
     arm_poses: ArmPoses | None = None,
@@ -513,7 +540,8 @@ def assemble(
     Nothing here builds a model or a tracer, initializes or spins ROS, or destroys the
     connector. A failure part of the way through closes what was built before it raises.
     `facts` is ctx.facts. main() passes the SystemFacts of config.toml's [team] table.
-    `vision` makes ctx.vision a RosVision, which reads people from walkie-vision.
+    `vision` makes ctx.vision a RosVision, which reads people and objects from
+    walkie-vision, the objects on `objects_topic`.
 
     `people_memory` is one of PEOPLE_MEMORIES. With mock or ros, ctx.memory is a
     TrackMemory over the RosVision's samples and an InMemoryPeopleMemory or a
@@ -580,7 +608,7 @@ def assemble(
         built.append(base.close)
         speech = RosSpeech(connector)
         built.append(speech.close)
-        live = RosVision(connector, base, cancel) if vision else None
+        live = RosVision(connector, base, cancel, objects_topic=objects_topic) if vision else None
         if live is not None:
             built.append(live.close)
         memory: Memory = UnavailableMemory()
@@ -754,6 +782,7 @@ def _run(args: argparse.Namespace, **assembly: Any) -> int:
             todos_topic=args.todos_topic,
             use_sim_time=args.use_sim_time,
             vision=args.vision,
+            objects_topic=args.objects_topic,
             people_memory=args.people_memory,
             resume_people_session=args.resume_people_session,
             **assembly,
@@ -823,7 +852,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument(
         "--vision",
         action="store_true",
-        help="Let find_people read walkie-vision's people, or the simulation's oracle.",
+        help="Let find_people and find_objects read walkie-vision's people and objects, or "
+        "the simulation's oracle.",
+    )
+    parser.add_argument(
+        "--objects-topic",
+        default=OBJECTS_TOPIC,
+        help="Where --vision reads the objects, such as walkie-vision's "
+        "/walkie_vision/sim/objects in the simulation. Needs --vision.",
     )
     parser.add_argument(
         "--people-memory",
@@ -859,6 +895,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         check_people_memory(
             args.people_memory, vision=args.vision, resume=args.resume_people_session
         )
+        if args.objects_topic != OBJECTS_TOPIC and not args.vision:
+            raise ValueError("--objects-topic needs --vision, which reads the objects.")
     except ValueError as error:
         # Exit code 2 and the usage line, as for any other bad command line.
         parser.error(str(error))

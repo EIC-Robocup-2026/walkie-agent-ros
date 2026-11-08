@@ -51,13 +51,14 @@ def test_gpsr_is_the_set_the_spike_used_and_get_facts():
     ]
 
 
-def test_hri_has_no_object_tools_and_ends_with_the_memory_then_the_arm_tools():
+def test_hri_finds_objects_but_cannot_measure_or_move_them_and_ends_with_memory_then_arms():
     assert names(HRI) == [
         "list_places",
         "go_to",
         "move_relative",
         "say",
         "find_people",
+        "find_objects",
         "face_person",
         "remember_person",
         "recognize_person",
@@ -94,6 +95,7 @@ def test_hri_without_the_arm_tools_is_the_set_it_was_before_them():
         "move_relative",
         "say",
         "find_people",
+        "find_objects",
         "face_person",
         "remember_person",
         "recognize_person",

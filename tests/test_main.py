@@ -41,7 +41,7 @@ from walkie_agent.capabilities import Team, UnavailableArms, UnavailableFacts, U
 from walkie_agent.capabilities.facts import SystemFacts
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location, load_locations
-from walkie_agent.perception import PEOPLE_TOPIC
+from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
 from walkie_agent.perception.memory import TrackMemory
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory
 from walkie_agent.ros import (
@@ -302,31 +302,42 @@ def test_assemble_puts_the_facts_it_is_given_on_ctx(build):
 
 
 @pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri"])
-def test_with_vision_find_people_reads_people_and_the_prompt_says_so(build, tool_set):
+def test_with_vision_find_people_and_find_objects_read_live_and_the_prompt_says_so(build, tool_set):
     built = build(tool_set=tool_set, vision=True)
     app, node = built.app, built.node
     assert isinstance(app.ctx.vision, RosVision)
     [people] = [s for s in node.subscriptions if s.topic == PEOPLE_TOPIC]
+    [objects] = [s for s in node.subscriptions if s.topic == OBJECTS_TOPIC]
     app.start()
     run_one(built)
 
     system = built.model.received[0][0].content
     assert "`find_people` reports the people your camera sees now" in system
     assert "live people perception, which is not connected" not in system
+    assert "`find_objects` reports the objects your camera sees now" in system
+    assert "live object perception, which is not" not in system
     assert system == main.build_system_prompt(tool_set, PLACES, ROBOT, vision=True)
     named = set(re.findall(r"`(\w+)`", system))
     assert named <= set(built.model.bound[0])
-    # Only find_people's rule changes. Objects and arms stay unconnected.
-    assert ("live object perception, which is not" in system) == (tool_set != "hri")
+    # object_info is named only where the set binds it.
+    assert ("`object_info`" in system) == (tool_set != "hri")
 
     # Closed with the rest, after the Runner, and once.
     assert app.close(WATCHDOG_S)
     assert app.close(WATCHDOG_S)
     assert node.destroyed.count(people) == 1
+    assert node.destroyed.count(objects) == 1
     app.ctx.cancel.reset()  # close set the latch, which a verb checks first
     with pytest.raises(StepError) as raised:
         app.ctx.vision.people()
     assert str(raised.value) == "UNAVAILABLE: Live people perception has shut down."
+
+
+def test_with_vision_the_objects_topic_is_the_one_given(build):
+    built = build(tool_set="hri", vision=True, objects_topic="/walkie_vision/sim/objects")
+    topics = {s.topic for s in built.node.subscriptions}
+    assert {PEOPLE_TOPIC, "/walkie_vision/sim/objects"} <= topics
+    assert OBJECTS_TOPIC not in topics
 
 
 def guest_array(node, track_id=1):
@@ -525,7 +536,7 @@ def test_each_tool_set_gets_a_matching_prompt(build, tool_set):
 
     # A prompt says plainly that what its set offers is not connected yet.
     assert "UNAVAILABLE" in system.content
-    assert ("`find_objects`" in system.content) == (tool_set != "hri")
+    assert "live object perception, which is not" in system.content
     assert ("`pick`" in system.content) == (tool_set == "gpsr")
     assert "`find_people`" in system.content
     assert "live people perception, which is not connected" in system.content
@@ -1144,6 +1155,7 @@ def test_cli_passes_files_and_flags_into_the_assembly(cli, monkeypatch):
 
     assert code == 0
     assert received["vision"] is True
+    assert received["objects_topic"] == OBJECTS_TOPIC
     assert received["connector"] is cli.connectors[0]
     assert received["model"] is cli.model
     assert received["fallback"] is None
@@ -1212,6 +1224,12 @@ def test_a_people_memory_with_what_it_needs_is_accepted(flags, memory, resume):
     assert (args.people_memory, args.resume_people_session) == (memory, resume)
 
 
+def test_the_objects_topic_is_read_with_vision():
+    args = main._parse_args(["--vision", "--objects-topic", "/walkie_vision/sim/objects"])
+    assert args.objects_topic == "/walkie_vision/sim/objects"
+    assert main._parse_args([]).objects_topic == OBJECTS_TOPIC
+
+
 @pytest.mark.parametrize(
     ("flags", "words"),
     [
@@ -1223,6 +1241,7 @@ def test_a_people_memory_with_what_it_needs_is_accepted(flags, memory, resume):
             "--resume-people-session needs --people-memory ros",
         ),
         (["--vision", "--people-memory", "sqlite"], "invalid choice: 'sqlite'"),
+        (["--objects-topic", "/walkie_vision/sim/objects"], "--objects-topic needs --vision"),
     ],
 )
 def test_a_people_memory_without_what_it_needs_is_a_usage_error(capsys, flags, words):

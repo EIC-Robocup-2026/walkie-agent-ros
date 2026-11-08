@@ -1,19 +1,32 @@
-"""ctx.vision on the robot: UnavailableVision, or RosVision over walkie-vision's people.
+"""ctx.vision on the robot: UnavailableVision, or RosVision over walkie-vision's arrays.
 
 UnavailableVision raises UNAVAILABLE from both verbs. An empty list would say that nothing
 is in view, and a remembered database row is not a current view, so neither stands in
 for a backend. main uses it unless the agent is started with --vision.
 
 RosVision reads people from the newest PersonDetectionArray on /walkie_vision/people,
-which walkie-vision publishes on the robot and oracle_perception in the simulation. Its
-objects() stays UNAVAILABLE, since nothing reads the object arrays yet.
+and objects from the newest ObjectDetectionArray on /walkie_vision/objects, which
+walkie-vision publishes on the robot and oracle_perception in the simulation. The
+objects topic can be another, such as walkie-vision's /walkie_vision/sim/objects, so a
+detector on the simulation's images can stand in for the oracle's objects.
 
 - An array counts only while its header stamp is within MAX_AGE_S of the node's clock,
-  so the age is right under sim time too. people() waits up to WAIT_S for one, then
-  raises UNAVAILABLE with the reason: no array, an old one, or a clock mismatch.
-- One subscription, made in the constructor and destroyed by close(). Its callback runs
-  on the connector's executor and only keeps the newest array by stamp. The reader
-  converts it, on the agent's worker.
+  so the age is right under sim time too. people() and objects() each wait up to
+  WAIT_S for one, then raise UNAVAILABLE with the reason: no array, an old one, or a
+  clock mismatch.
+- Two subscriptions, made in the constructor and destroyed by close(). Their callbacks
+  run on the connector's executor and only keep the newest array of each topic by
+  stamp. The reader converts it, on the agent's worker.
+- An object's name is its label, and its category comes from perception/objects.py.
+  Its id is <label>_<track_id>, with spaces in the label as underscores, as FakeRobot
+  spells its ids; one the tracker has not taken up is <label>_untracked_<n>, numbered
+  left to right in that one array. An id names the object only while it stays in view.
+- An object's place is the configured place within PLACE_TOLERANCE_M of the robot, or
+  UNKNOWN_PLACE away from every place: without depth the object's own position is not
+  known, so the place is where Walkie stands. Size, weight and thickness are None.
+- objects() raises UNAVAILABLE for a query that no class of the array could match,
+  such as "apple" while the detector looks only for seats, since [] would claim that
+  none is in view.
 - A person's id is person_<track_id>, the tracker's id, which walkie-vision keeps while
   the track lasts. A person the tracker has not taken up has track_id 0 and gets
   person_untracked_<n>, numbered left to right in that one array.
@@ -63,12 +76,12 @@ from rclpy.duration import Duration
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from tf2_ros import TransformException
-from walkie_vision_msgs.msg import PersonDetectionArray
+from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 
 from walkie_agent.capabilities import Base, ObjectSeen, PersonSeen, Pose2D
 from walkie_agent.capabilities.guards import CancelToken, require_text, require_timeout
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.perception import PEOPLE_TOPIC
+from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
 from walkie_agent.perception.geometry import (
     ankle_pixels,
     floor_range,
@@ -78,6 +91,7 @@ from walkie_agent.perception.geometry import (
     yaw_from,
 )
 from walkie_agent.perception.gestures import DEFAULT_GESTURE_CONFIG, GestureConfig, classify_gestures
+from walkie_agent.perception.objects import category_of, looks_for, matches
 from walkie_agent.perception.people import gesture_phrase, phrases, pose_phrase
 from walkie_agent.perception.track_vectors import (
     DEFAULT_TRACK_VECTORS_CONFIG,
@@ -96,9 +110,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# BEST_EFFORT matches a reliable and a best-effort publisher alike, where a reliable
-# subscription would miss a best-effort one, and walkie-vision fixes no QoS. VOLATILE
-# and a short depth, because only the newest image matters.
+# Both subscriptions' profile. BEST_EFFORT matches a reliable and a best-effort
+# publisher alike, where a reliable subscription would miss a best-effort one, and
+# walkie-vision fixes no QoS. VOLATILE and a short depth, because only the newest image
+# matters.
 PEOPLE_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     depth=5,
@@ -107,7 +122,7 @@ PEOPLE_QOS = QoSProfile(
 )
 # How old an array may be and still count as what is in view (ADR-0050).
 MAX_AGE_S = 1.0
-# How long people() waits for a fresh array before it reports UNAVAILABLE.
+# How long people() and objects() wait for a fresh array before they report UNAVAILABLE.
 WAIT_S = 1.0
 # An array stamped this much before the newest one means the clock went back, as a
 # simulation restart does. It replaces the newest, which would otherwise hide the new
@@ -117,6 +132,11 @@ EPOCH_JUMP_S = 5.0
 TF_WAIT_S = 0.2
 # The longest wait of people() for the names of the people in view (decision S3-4).
 NAME_WAIT_S = 2.0
+# Within this distance of a configured place, the objects in view are at that place,
+# as FakeRobot's NEAR_PLACE_M has it (decision S4-3).
+PLACE_TOLERANCE_M = 1.0
+# An object's place when Walkie stands at no configured place, or its pose is not known.
+UNKNOWN_PLACE = "unknown"
 PUBLISHER_HINT = "Is walkie-vision or oracle_perception running?"
 
 _POLL_S = 0.02
@@ -154,12 +174,13 @@ class UnavailableVision:
 
 
 class RosVision:
-    """people() from walkie-vision's newest people array. objects() stays UNAVAILABLE.
+    """people() and objects() from walkie-vision's newest people and object arrays.
 
-    `base` gives the pose and the places that name the room. `tf_buffer` is a tf2 Buffer
-    and defaults to the connector's own. `vectors` sets what the vector buffer keeps.
-    Thread-safe: verbs run on LangChain workers, the callback on the executor and
-    close() on any thread.
+    `base` gives the pose and the places that name the room and the objects' place.
+    `topic` is the people topic and `objects_topic` the objects one. `tf_buffer` is a
+    tf2 Buffer and defaults to the connector's own. `vectors` sets what the vector
+    buffer keeps. Thread-safe: verbs run on LangChain workers, the callbacks on the
+    executor and close() on any thread.
     """
 
     def __init__(
@@ -169,6 +190,7 @@ class RosVision:
         cancel: CancelToken,
         *,
         topic: str = PEOPLE_TOPIC,
+        objects_topic: str = OBJECTS_TOPIC,
         forbidden: Iterable[str] = FORBIDDEN_NAMES,
         max_age_s: float = MAX_AGE_S,
         wait_s: float = WAIT_S,
@@ -183,6 +205,7 @@ class RosVision:
         self._node = connector.node
         self._base = base
         self._topic = check_endpoint(self._node, topic, forbidden)
+        self._objects_topic = check_endpoint(self._node, objects_topic, forbidden)
         # RAI's get_transform reads only the latest transform, and a bearing needs the
         # one at the image's stamp. So this reads the Buffer that the connector's own
         # listener fills, a private attribute of the pinned RAI: a RAI that renames it
@@ -198,13 +221,22 @@ class RosVision:
         self._lock = threading.Lock()
         # Notified on every kept array and on close(), so a wait ends at once.
         self._arrived = threading.Condition(self._lock)
+        # The newest array of each topic by stamp, with that stamp in nanoseconds.
         self._newest: tuple[int, PersonDetectionArray] | None = None
+        self._newest_objects: tuple[int, ObjectDetectionArray] | None = None
         # Added to and cleared under _lock, so nothing is added after close().
         self._vectors = TrackVectors(vectors)
         self._closed = False
         self._subscription = self._node.create_subscription(
             PersonDetectionArray, self._topic, self._on_people, PEOPLE_QOS
         )
+        try:
+            self._objects_subscription = self._node.create_subscription(
+                ObjectDetectionArray, self._objects_topic, self._on_objects, PEOPLE_QOS
+            )
+        except BaseException:
+            self._node.destroy_subscription(self._subscription)
+            raise
 
     def set_namer(self, namer: Namer | None) -> None:
         """Let people() name the tracked people in view with `namer`; None stops it.
@@ -215,7 +247,27 @@ class RosVision:
         self._namer = namer
 
     def objects(self, query: str = "", *, timeout_s: float = 5.0) -> list[ObjectSeen]:
-        return _no_objects(self._cancel, query, timeout_s)
+        what = "looking for objects"
+        _begin(self._cancel, query, timeout_s, what)
+        deadline = time.monotonic() + timeout_s
+        message = self._fresh_array(min(self._wait_s, timeout_s), what, objects=True)
+        wanted = query.strip().lower()
+        if not looks_for(wanted, message.classes):
+            raise StepError(ErrorCode.UNAVAILABLE, not_looked_for(query, message.classes))
+        seen = [
+            (label, object_id)
+            for label, object_id in _objects_left_to_right(message)
+            if matches(wanted, label)
+        ]
+        # Before the empty answer too, as in people().
+        self._cancel.check(what)
+        if not seen:
+            return []
+        place = self._place(self._pose(deadline, "find_objects reports the place unknown"))
+        self._cancel.check(what)
+        return [
+            ObjectSeen(object_id, label, category_of(label), place) for label, object_id in seen
+        ]
 
     def people(self, query: str = "", *, timeout_s: float = 5.0) -> list[PersonSeen]:
         what = "looking for people"
@@ -229,7 +281,7 @@ class RosVision:
         self._cancel.check(what)
         if not seen:
             return []
-        pose = self._pose(deadline)
+        pose = self._pose(deadline, "find_people reports no room and no bearings")
         room = self._room(pose)
         camera = None
         if pose is not None:
@@ -245,18 +297,23 @@ class RosVision:
         ]
 
     def close(self) -> None:
-        """Destroy the subscription and drop the samples. Later and waiting calls get UNAVAILABLE."""
+        """Destroy the subscriptions and drop the samples. Later and waiting calls get UNAVAILABLE."""
         with self._arrived:
             if self._closed:
                 return
             self._closed = True
             self._newest = None
+            self._newest_objects = None
             self._vectors.clear()
             self._arrived.notify_all()
-        try:
-            self._node.destroy_subscription(self._subscription)
-        except Exception:
-            logger.exception("Could not destroy the people subscription.")
+        for subscription, kind in (
+            (self._subscription, "people"),
+            (self._objects_subscription, "object"),
+        ):
+            try:
+                self._node.destroy_subscription(subscription)
+            except Exception:
+                logger.exception("Could not destroy the %s subscription.", kind)
 
     # -- The VectorSource of TrackMemory ------------------------------------------
 
@@ -284,7 +341,9 @@ class RosVision:
 
     # -- Reads, on the agent's worker -------------------------------------------
 
-    def _fresh_array(self, wait_s: float, what: str) -> PersonDetectionArray:
+    def _fresh_array(self, wait_s: float, what: str, *, objects: bool = False) -> Any:
+        """The newest people array, or object array with `objects`, once it is fresh enough."""
+        kind, topic = ("object", self._objects_topic) if objects else ("people", self._topic)
         deadline = time.monotonic() + wait_s
         with self._arrived:
             while True:
@@ -292,28 +351,29 @@ class RosVision:
                 self._cancel.check(what)
                 if self._closed:
                     raise StepError(
-                        ErrorCode.UNAVAILABLE, "Live people perception has shut down."
+                        ErrorCode.UNAVAILABLE, f"Live {kind} perception has shut down."
                     )
+                newest = self._newest_objects if objects else self._newest
                 age_s: float | None = None
-                if self._newest is not None:
-                    stamp_ns, message = self._newest
+                if newest is not None:
+                    stamp_ns, message = newest
                     # Again on every pass: the clock moves on while the newest stays.
-                    age_s = self._age_s(stamp_ns)
+                    age_s = self._age_s(stamp_ns, what)
                     if abs(age_s) <= self._max_age_s:
                         return message
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise StepError(
                         ErrorCode.UNAVAILABLE,
-                        stale_message(self._topic, age_s, self._max_age_s, wait_s),
+                        stale_message(topic, age_s, self._max_age_s, wait_s),
                     )
                 self._arrived.wait(min(_POLL_S, remaining))
 
-    def _age_s(self, stamp_ns: int) -> float:
+    def _age_s(self, stamp_ns: int, what: str) -> float:
         try:
             now_ns = self._node.get_clock().now().nanoseconds
         except Exception as error:
-            raise ros_failure(error, "Looking for people") from error
+            raise ros_failure(error, what[:1].upper() + what[1:]) from error
         return (now_ns - stamp_ns) / _NS_PER_S
 
     def _names(self, message: PersonDetectionArray, deadline: float) -> Mapping[str, str]:
@@ -370,36 +430,45 @@ class RosVision:
             seen.append((record, pixels, ankles))
         return seen
 
-    def _pose(self, deadline: float) -> Pose2D | None:
+    def _pose(self, deadline: float, without: str) -> Pose2D | None:
         """The base's pose now, or None when it cannot be read by `deadline`.
 
-        A stop still ends the call.
+        `without` starts the warning logged then, and says what the answer lacks. A
+        stop still ends the call.
         """
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            logger.warning(
-                "find_people reports no room and no bearings: the call's time ran out "
-                "before the pose was read."
-            )
+            logger.warning("%s: the call's time ran out before the pose was read.", without)
             return None
         try:
             return self._base.pose(timeout_s=remaining)
         except StepError as error:
             if error.code is ErrorCode.CANCELLED:
                 raise
-            # The people are still in view, so they are reported without a room or a bearing.
-            logger.warning("find_people reports no room and no bearings: %s", error)
+            # What is in view is still reported, only without what the pose gives.
+            logger.warning("%s: %s", without, error)
             return None
 
     def _room(self, pose: Pose2D | None) -> str:
         """The room of the place nearest `pose`, or "" without a pose or a place."""
+        nearest = self._nearest_place(pose)
+        return "" if nearest is None else nearest.room
+
+    def _place(self, pose: Pose2D | None) -> str:
+        """The name of the place nearest `pose` within PLACE_TOLERANCE_M, or UNKNOWN_PLACE."""
+        nearest = self._nearest_place(pose)
+        if nearest is None or _distance(nearest, pose) > PLACE_TOLERANCE_M:
+            return UNKNOWN_PLACE
+        return nearest.name
+
+    def _nearest_place(self, pose: Pose2D | None) -> Any:
+        """The configured place nearest `pose`, or None without a pose or a place."""
         if pose is None:
-            return ""
+            return None
         places = self._base.places().values()
         if not places:
-            return ""
-        nearest = min(places, key=lambda place: math.hypot(place.x - pose.x, place.y - pose.y))
-        return nearest.room
+            return None
+        return min(places, key=lambda place: _distance(place, pose))
 
     def _camera_transform(self, message: PersonDetectionArray, wait_s: float) -> _Camera | None:
         """The map <- camera transform at the array's stamp; None without one."""
@@ -427,7 +496,7 @@ class RosVision:
             (origin.x, origin.y, origin.z),
         )
 
-    # -- The callback, on the executor --------------------------------------------
+    # -- The callbacks, on the executor -------------------------------------------
 
     def _on_people(self, message: PersonDetectionArray) -> None:
         stamp_ns = message.header.stamp.sec * _NS_PER_S + message.header.stamp.nanosec
@@ -447,6 +516,21 @@ class RosVision:
             # By stamp, so an array that comes late does not hide a newer one.
             if newest is None or stamp_ns >= newest[0] or jumped:
                 self._newest = (stamp_ns, message)
+                self._arrived.notify_all()
+
+    def _on_objects(self, message: ObjectDetectionArray) -> None:
+        stamp_ns = message.header.stamp.sec * _NS_PER_S + message.header.stamp.nanosec
+        with self._arrived:
+            if self._closed:
+                return
+            newest = self._newest_objects
+            # By stamp, and from the start again after the clock went back, as for people.
+            if (
+                newest is None
+                or stamp_ns >= newest[0]
+                or newest[0] - stamp_ns > self._epoch_jump_ns
+            ):
+                self._newest_objects = (stamp_ns, message)
                 self._arrived.notify_all()
 
     def _sightings(self, message: PersonDetectionArray) -> list[Sighting]:
@@ -484,6 +568,39 @@ def _left_to_right(message: PersonDetectionArray) -> list[tuple[Any, str]]:
             person_id = f"person_untracked_{untracked}"
         people.append((person, person_id))
     return people
+
+
+def _objects_left_to_right(message: ObjectDetectionArray) -> list[tuple[str, str]]:
+    """The labels of the objects of `message` with their ids, by the column of their box's centre."""
+    order = sorted(
+        range(len(message.detections)),
+        key=lambda i: (message.detections[i].bbox.center.position.x, i),
+    )
+    objects, untracked = [], 0
+    for i in order:
+        detection = message.detections[i]
+        label = detection.label.strip()
+        stem = label.replace(" ", "_")
+        if detection.track_id:
+            object_id = f"{stem}_{detection.track_id}"
+        else:
+            # Numbered before the query filters, so a query does not renumber them.
+            untracked += 1
+            object_id = f"{stem}_untracked_{untracked}"
+        objects.append((label, object_id))
+    return objects
+
+
+def _distance(place: Any, pose: Pose2D) -> float:
+    return math.hypot(place.x - pose.x, place.y - pose.y)
+
+
+def not_looked_for(query: str, classes: Sequence[str]) -> str:
+    """Why objects() cannot answer `query`: the detector looks only for `classes`."""
+    return (
+        f"The camera is not looking for {query.strip()!r} right now. It looks only for: "
+        f"{', '.join(classes)}."
+    )
 
 
 def _tracked_ids(message: PersonDetectionArray) -> list[str]:

@@ -294,6 +294,14 @@ decision, and it can run beside the vision chain.
   `memory` lacks armchair and stool. The robot's place mislabels objects seen
   across the room. Whether the MuJoCo world frame matches the map frame is
   unverified.
+- **Built** as S4-1 to S4-6. The ids are the tracker's (`mug_13`), not the
+  per-label counter the test above names, so they hold while an object stays
+  in view. The category table lives in `perception/objects.py`, which imports
+  no ROS. A query no class of the array could match answers `UNAVAILABLE`
+  with the classes, so "apple" against a seats-only detector is not reported
+  absent. HRI gains `find_objects` but not `object_info`, so the gate reran.
+  `--objects-topic` lets a detector on the simulation's images, on
+  walkie-vision's `/walkie_vision/sim/objects`, stand in for the oracle.
 
 ### S5: Find a free seat and offer it
 

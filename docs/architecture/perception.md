@@ -1,14 +1,15 @@
 # Perception (Proposed)
 
 !!! note "Status: Proposed"
-    Apart from the simulation's oracle ([In simulation](#in-simulation)) and
-    the live people reader behind `find_people` ([What is built](#what-is-built)),
+    Apart from the simulation's oracle ([In simulation](#in-simulation)), the live
+    people reader behind `find_people` ([What is built](#what-is-built)) and the live
+    object reader behind `find_objects` ([Objects in view](#objects-in-view)),
     nothing on this page is built yet. It is the design for team review. Each
     of the [open questions](#open-questions) says what it blocks.
 
-    Today `find_objects` is a live-view atomic, and on the robot it answers `UNAVAILABLE`.
-    `find_people` reads `/walkie_vision/people` when the agent runs with `--vision`, and
-    answers `UNAVAILABLE` otherwise. The old tool that read remembered rows is retired. Where this page
+    Today `find_objects` is a live-view atomic. It reads `/walkie_vision/objects` and
+    `find_people` reads `/walkie_vision/people` when the agent runs with `--vision`;
+    both answer `UNAVAILABLE` otherwise. The old tool that read remembered rows is retired. Where this page
     describes a memory stage named `find_objects`, read it as a proposed tool that needs its
     own name. A remembered row is never presented as a current view
     ([The Agent](agent.md#tools)).
@@ -263,6 +264,31 @@ S2 added each person's bearing, below.
   `refind_person` falls back to OSNet appearance, compared in the agent
   within one `appearance_model`.
 
+## Objects in view
+
+S4 of the [see, remember and act roadmap](see-remember-act.md) gave the existing
+`find_objects(what="")` atomic a live backend, in a simpler form than the
+memory-first design in the [summary](#summary): `RosVision.objects()` reads the
+newest array on `/walkie_vision/objects`, or the topic `--objects-topic` names, with
+the people feed's QoS, freshness and clock rules
+([mahoraga-demo-decisions.md](mahoraga-demo-decisions.md#see-remember-and-act), S4-1
+to S4-6). The agent uses it only when started with `--vision`, and the HRI set has
+`find_objects` but not `object_info`.
+
+- **Objects.** Left to right by the box's centre. The id is `<label>_<track_id>`,
+  with spaces as underscores, so the oracle's mug is `mug_13`; an untracked object
+  is `<label>_untracked_<n>`. An id lasts only while the object stays in view.
+- **Words.** `perception/objects.py` gives each label FakeRobot's category, or
+  `other`. A query matches the label, the category or its plural, ignoring case.
+- **Place.** The configured place within 1 m of the robot, read only when an object
+  matches, or `unknown`. Without depth, the place is where Walkie stands, so an
+  object across the room carries the robot's place. Size, weight and thickness are
+  null.
+- **What the camera looks for.** A query that none of the array's `classes` could
+  match answers `UNAVAILABLE` and lists the classes, since an empty list would say
+  the object is absent. walkie-vision runs one task's classes at a time, and its
+  `hri` task finds only seats.
+
 ## Captions
 
 Florence-2 runs in walkie-vision, but nothing serves its captions.
@@ -307,9 +333,9 @@ every image of the head camera it publishes both arrays, in
   ([Run the Chula simulation](../setup/08-chula-simulation.md)). Against
   MuJoCo, from the living room place, it draws both people with the scene's
   gestures, and the sofa, the table and the mug. `find_people` reads its
-  people when the agent runs with `--vision`, which `pixi run agent-sim-chula`
-  passes ([What is built](#what-is-built)). Nothing in the agent reads its
-  objects yet.
+  people and `find_objects` its objects when the agent runs with `--vision`,
+  which `pixi run agent-sim-chula` passes ([What is built](#what-is-built),
+  [Objects in view](#objects-in-view)).
 
 Unit tests use `mock_vision.py` with walkie-vision's `hash_vector`, so
 rankings are deterministic. Hash vectors match only on equal input, so a sim

@@ -62,12 +62,13 @@ still a proposal: see [Self-Evolving Agent (Proposed)](self-evolving-agent.md).
   ([ADR-0015](decisions/0015-repository-boundary.md),
   [ADR-0016](decisions/0016-talk-to-walkie-ros-directly.md)). The vision models run
   in walkie-vision ([ADR-0034](decisions/0034-vision-models-in-walkie-vision.md)).
-- **Not connected: memory, object vision and arms.** The agent does not read
-  walkie-database. The old remembered-object tool is retired, because a remembered
-  row is not a current view. `find_objects`, `object_info`, `pick`, `place_on` and
-  `hand_over` all answer `UNAVAILABLE` on the robot's `ctx`. So does `find_people`,
-  unless the agent runs with `--vision`: it then reads walkie-vision's people
-  ([Perception](perception.md#what-is-built)).
+- **Not connected: object memory and manipulation.** The agent does not read
+  walkie-database's objects. The old remembered-object tool is retired, because a
+  remembered row is not a current view. `pick`, `place_on` and `hand_over` answer
+  `UNAVAILABLE` on the robot's `ctx`. So do `find_people`, `find_objects` and
+  `object_info`, unless the agent runs with `--vision`: they then read walkie-vision's
+  people and objects ([Perception](perception.md#what-is-built),
+  [Objects in view](perception.md#objects-in-view)).
 
 ## Layers
 
@@ -408,8 +409,8 @@ set.
 | `go_to` | default, gpsr, hri, arms | Drives to a named place with Nav2, with every wait bounded. With `--arms`, refuses while an arm is out of every travel-safe pose ([ADR-0025](decisions/0025-travel-safe-interlock.md)) |
 | `move_relative` | default, gpsr, hri, arms | Moves up to 3 m from here, then turns, through Nav2, with the same arm check as `go_to` |
 | `say` | default, gpsr, hri, arms | Publishes one line on `/to_human` |
-| `find_objects` | default, gpsr | `UNAVAILABLE`: live object perception is not connected |
-| `object_info` | default, gpsr | `UNAVAILABLE`, for the same reason |
+| `find_objects` | default, gpsr, hri | With `--vision`, the objects in the newest `/walkie_vision/objects` array (or `--objects-topic`), left to right, with a category and the place Walkie stands at. `UNAVAILABLE` for a kind the camera does not look for. Without `--vision`, `UNAVAILABLE`: live object perception is not connected |
+| `object_info` | default, gpsr | With `--vision`, an object in view with null measures, since nothing measures a live object. Without it, `UNAVAILABLE` |
 | `find_people` | default, gpsr, hri | With `--vision`, the people in the newest `/walkie_vision/people` array, left to right, with a pose, a gesture and the room. Without it, `UNAVAILABLE`: live people perception is not connected |
 | `face_person` | default, hri | Turns once, on the spot, by the person's bearing from the newest people array, through Nav2. No turn within 10°. With no `--vision`, `UNAVAILABLE`, as for `find_people` |
 | `remember_person`, `recognize_person` | hri | With `--people-memory mock` or `ros`, stores a person in view under a name, or says who they are, from the faces and appearances `--vision` collects ([ADR-0070](decisions/0070-people-memory-capability.md)). Otherwise `UNAVAILABLE` |

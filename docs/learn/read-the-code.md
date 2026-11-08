@@ -90,10 +90,11 @@ tests it without audio hardware, so a pass doesn't prove the speaker behaves.
 
 These parts are proposed but not built.
 
-- **Live object vision.** `find_objects` answers `UNAVAILABLE`, and so does
-  `find_people` unless the agent runs with `--vision`, when `RosVision` reads
-  walkie-vision's people. The old tool that read remembered rows is retired. Reading
-  objects live is a later slice.
+- **Object memory and measures.** `find_objects` and `find_people` read only the
+  live view, and only when the agent runs with `--vision`; otherwise they answer
+  `UNAVAILABLE`. Nothing measures a live object, so `object_info` gives null
+  measures. The old tool that read remembered rows is retired, and object memory is
+  a later slice.
 - **Arms.** `UnavailableArms` refuses every arm verb. Only `FakeRobot` can pick.
 - **Real places.** `config/locations.toml` ships empty until the team measures them.
 - **A fallback model.** The code can load one. Nobody has selected one, and `run_limit` and

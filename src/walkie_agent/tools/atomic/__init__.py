@@ -73,13 +73,15 @@ GPSR: list[Callable[..., Any]] = [
 # face_person is not in GPSR, whose tool text the Mahoraga runs measured (decision S2-6).
 # The two memory atomics are in HRI alone, so DEFAULT and GPSR stay as they were:
 # no effect covers a memory write yet (ADR-0070). The arm atomics come last, so HRI
-# without them is the set it was before them.
+# without them is the set it was before them. find_objects lets HRI see the seats
+# (decision S4-5); object_info stays out, since nothing measures a live object.
 HRI: list[Callable[..., Any]] = [
     list_places,
     go_to,
     move_relative,
     say,
     find_people,
+    find_objects,
     face_person,
     remember_person,
     recognize_person,

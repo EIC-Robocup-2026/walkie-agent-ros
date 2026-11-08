@@ -36,14 +36,19 @@ from test_perception_gestures import LYING, POINTING_RIGHT, RAISING_LEFT, SITTIN
 from test_projection import CX, FX
 from test_scene_file import CHULA_LOCATIONS, CHULA_SCENE, STREAM_ID, camera_info, living_room_camera
 from tf_transformations import quaternion_from_matrix
-from walkie_vision_msgs.msg import PersonDetection, PersonDetectionArray
+from walkie_vision_msgs.msg import (
+    ObjectDetection,
+    ObjectDetectionArray,
+    PersonDetection,
+    PersonDetectionArray,
+)
 
-from walkie_agent.capabilities import Pose2D
+from walkie_agent.capabilities import ObjectSeen, Pose2D
 from walkie_agent.capabilities.fake import GESTURES, POSES
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location, load_locations
-from walkie_agent.perception import PEOPLE_TOPIC
+from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
 from walkie_agent.perception.geometry import torso_pixels, wrap_deg
 from walkie_agent.perception.gestures import COCO_KEYPOINTS, DEFAULT_GESTURE_CONFIG
 from walkie_agent.perception.people import (
@@ -56,7 +61,7 @@ from walkie_agent.perception.people import (
 from walkie_agent.perception.track_vectors import Collected, TrackVectorsConfig
 from walkie_agent.ros import RosVision, UnavailableVision
 from walkie_agent.ros import vision as vision_module
-from walkie_agent.ros.vision import NAME_WAIT_S, TF_WAIT_S
+from walkie_agent.ros.vision import NAME_WAIT_S, PLACE_TOLERANCE_M, TF_WAIT_S, UNKNOWN_PLACE
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, FAKE_REID_MODEL, hash_vector
 from walkie_agent.sim.oracle_perception import ORACLE_QOS, OracleConfig, draw_detections
 from walkie_agent.sim.projection import camera_position
@@ -76,6 +81,8 @@ PLACES = {
 # The wait of a test whose people() is meant to run out.
 SHORT_WAIT_S = 0.05
 QUIET = OracleConfig(pixel_noise_px=0.0)
+# The classes of the test's object arrays: walkie-vision's memory task's, less two.
+OBJECT_CLASSES = ("cup", "bottle", "apple", "chair", "table", "sofa", "coffee table")
 
 
 class StubBase:
@@ -108,7 +115,25 @@ class Rig:
         self.base = StubBase()
         self.cancel = CancelToken()
         self.vision = RosVision(self.connector, self.base, self.cancel, **options)
-        [self.subscription] = self.node.subscriptions
+        self.subscription, self.objects_subscription = self.node.subscriptions
+
+    def deliver_objects(
+        self,
+        *detections: ObjectDetection,
+        classes: tuple[str, ...] = OBJECT_CLASSES,
+        age_s: float = 0.0,
+    ) -> ObjectDetectionArray:
+        """An object array of `detections` stamped `age_s` before the node's clock, given to the callback."""
+        array = ObjectDetectionArray(
+            detections=list(detections),
+            camera_info=camera_info(),
+            classes=list(classes),
+            stream_id=STREAM_ID,
+        )
+        array.header.frame_id = CAMERA_FRAME
+        array.header.stamp = Time(nanoseconds=self.node.clock.nanoseconds - round(age_s * 1e9)).to_msg()
+        self.objects_subscription.callback(array)
+        return array
 
     def deliver(
         self,
@@ -158,6 +183,13 @@ def person(x: float, body=STANDING, track_id: int = 0) -> PersonDetection:
 
 def seen(people) -> list[tuple]:
     return [(p.id, p.name, p.pose, p.gesture, p.room) for p in people]
+
+
+def thing(label: str, x: float, track_id: int = 0) -> ObjectDetection:
+    """An object detection of `label` whose box is centred at image column `x`."""
+    detection = ObjectDetection(label=label, score=0.9, track_id=track_id)
+    detection.bbox.center.position.x = float(x)
+    return detection
 
 
 def with_vectors(
@@ -288,29 +320,53 @@ def test_the_most_specific_posture_and_gesture_are_reported():
 # -- The subscription ------------------------------------------------------------------
 
 
-def test_one_best_effort_volatile_subscription_of_depth_5_is_made_and_closed_once(rig):
+def test_two_best_effort_volatile_subscriptions_of_depth_5_are_made_and_closed_once(rig):
     made = rig()
-    subscription = made.subscription
+    people, objects = made.subscription, made.objects_subscription
 
-    assert subscription.topic == PEOPLE_TOPIC
-    assert subscription.msg_type is PersonDetectionArray
-    qos = subscription.qos
-    assert (qos.history, qos.depth) == (HistoryPolicy.KEEP_LAST, 5)
-    assert qos.reliability == ReliabilityPolicy.BEST_EFFORT
-    assert qos.durability == DurabilityPolicy.VOLATILE
+    assert (people.topic, people.msg_type) == (PEOPLE_TOPIC, PersonDetectionArray)
+    assert (objects.topic, objects.msg_type) == (OBJECTS_TOPIC, ObjectDetectionArray)
+    for subscription in (people, objects):
+        qos = subscription.qos
+        assert (qos.history, qos.depth) == (HistoryPolicy.KEEP_LAST, 5)
+        assert qos.reliability == ReliabilityPolicy.BEST_EFFORT
+        assert qos.durability == DurabilityPolicy.VOLATILE
 
     made.vision.close()
     made.vision.close()
-    assert made.node.destroyed == [subscription]
-    assert len(made.node.subscriptions) == 1
+    assert made.node.destroyed == [people, objects]
+    assert len(made.node.subscriptions) == 2
 
 
-def test_a_forbidden_topic_is_refused_before_anything_is_made():
+def test_the_objects_can_come_from_another_topic(rig):
+    made = rig(objects_topic="/walkie_vision/sim/objects")
+    assert made.objects_subscription.topic == "/walkie_vision/sim/objects"
+    assert made.subscription.topic == PEOPLE_TOPIC
+
+
+@pytest.mark.parametrize("option", ["topic", "objects_topic"])
+def test_a_forbidden_topic_is_refused_before_anything_is_made(option):
     connector = FakeConnector()
     with pytest.raises(StepError) as raised:
-        RosVision(connector, StubBase(), CancelToken(), topic="/cmd_vel")
+        RosVision(connector, StubBase(), CancelToken(), **{option: "/cmd_vel"})
     assert raised.value.code is ErrorCode.REFUSED
     assert connector.node.subscriptions == []
+
+
+def test_a_failed_objects_subscription_destroys_the_people_one():
+    connector = FakeConnector()
+    made = connector.node.create_subscription
+
+    def create(msg_type, *args, **kwargs):
+        if msg_type is ObjectDetectionArray:
+            raise RuntimeError("no objects")
+        return made(msg_type, *args, **kwargs)
+
+    connector.node.create_subscription = create
+    with pytest.raises(RuntimeError, match="no objects"):
+        RosVision(connector, StubBase(), CancelToken())
+    assert len(connector.node.destroyed) == 1
+    assert connector.node.destroyed == connector.node.subscriptions
 
 
 def test_a_destroy_that_fails_is_logged_and_close_still_ends(rig, caplog):
@@ -319,9 +375,11 @@ def test_a_destroy_that_fails_is_logged_and_close_still_ends(rig, caplog):
     with caplog.at_level(logging.ERROR):
         made.vision.close()
     assert "Could not destroy the people subscription." in caplog.text
-    with pytest.raises(StepError) as raised:
-        made.vision.people()
-    assert raised.value.code is ErrorCode.UNAVAILABLE
+    assert "Could not destroy the object subscription." in caplog.text
+    for verb in (made.vision.people, made.vision.objects):
+        with pytest.raises(StepError) as raised:
+            verb()
+        assert raised.value.code is ErrorCode.UNAVAILABLE
 
 
 # -- What people() returns -------------------------------------------------------------
@@ -618,11 +676,186 @@ def test_a_buffer_given_replaces_the_connectors(rig):
     assert made.connector._tf_buffer.lookups == []
 
 
-def test_objects_stay_unavailable(rig):
+# -- What objects() returns ------------------------------------------------------------
+
+
+def test_objects_come_left_to_right_with_ids_names_categories_and_the_place(rig):
     made = rig()
+    made.base.at = Pose2D(1.2, 0.4, 0.0)  # 0.22 m from the sofa place.
+    made.deliver_objects(
+        thing("sofa", 400, track_id=11),
+        thing("cup", 90, track_id=13),
+        thing("coffee table", 250, track_id=12),
+    )
+    assert made.vision.objects() == [
+        ObjectSeen("cup_13", "cup", "dish", "sofa"),
+        ObjectSeen("coffee_table_12", "coffee table", "other", "sofa"),
+        ObjectSeen("sofa_11", "sofa", "furniture", "sofa"),
+    ]
+
+
+def test_untracked_objects_are_numbered_left_to_right_before_the_query(rig):
+    made = rig()
+    made.deliver_objects(thing("chair", 300), thing("cup", 100), thing("chair", 500, track_id=4))
+    assert [o.id for o in made.vision.objects()] == ["cup_untracked_1", "chair_untracked_2", "chair_4"]
+    assert [o.id for o in made.vision.objects("chair")] == ["chair_untracked_2", "chair_4"]
+
+
+@pytest.mark.parametrize(
+    ("query", "ids"),
+    [
+        ("", ["apple_1", "cup_2", "chair_3"]),
+        ("Cup ", ["cup_2"]),
+        ("dish", ["cup_2"]),
+        ("FRUITS", ["apple_1"]),
+        ("furniture", ["chair_3"]),
+        ("bottle", []),
+        ("drinks", []),
+    ],
+)
+def test_a_query_matches_a_name_a_category_or_its_plural_ignoring_case(rig, query, ids):
+    made = rig()
+    made.deliver_objects(thing("apple", 10, 1), thing("cup", 20, 2), thing("chair", 30, 3))
+    assert [o.id for o in made.vision.objects(query)] == ids
+
+
+@pytest.mark.parametrize("query", ["banana", "snacks", "chairs"])
+def test_a_query_the_detector_cannot_match_is_unavailable_and_names_its_classes(rig, query):
+    made = rig()
+    made.deliver_objects(thing("chair", 30, 3), classes=("chair", "sofa"))
     with pytest.raises(StepError) as raised:
-        made.vision.objects("cup")
-    assert str(raised.value) == "UNAVAILABLE: Live object perception is not connected."
+        made.vision.objects(query)
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+    assert raised.value.message == (
+        f"The camera is not looking for {query!r} right now. It looks only for: chair, sofa."
+    )
+
+
+def test_an_array_without_classes_lets_every_query_through(rig):
+    made = rig()
+    made.deliver_objects(thing("chair", 30, 3), classes=())
+    assert made.vision.objects("banana") == []
+    assert [o.id for o in made.vision.objects("chair")] == ["chair_3"]
+
+
+def test_an_empty_view_or_no_match_reads_no_pose(rig):
+    made = rig()
+    made.deliver_objects()
+    assert made.vision.objects() == []
+    made.deliver_objects(thing("cup", 20, 2))
+    assert made.vision.objects("apple") == []
+    assert made.base.poses == 0
+
+
+def test_the_place_is_unknown_past_the_tolerance_of_every_place(rig):
+    made = rig()
+    made.base.at = Pose2D(1.0 + PLACE_TOLERANCE_M + 0.01, 0.5, 0.0)
+    made.deliver_objects(thing("cup", 20, 2))
+    assert [o.place for o in made.vision.objects()] == [UNKNOWN_PLACE]
+    made.base.at = Pose2D(1.0 + PLACE_TOLERANCE_M - 0.01, 0.5, 0.0)
+    assert [o.place for o in made.vision.objects()] == ["sofa"]
+
+
+def test_without_places_the_place_is_unknown(rig):
+    made = rig()
+    made.base.places_by_name = {}
+    made.deliver_objects(thing("cup", 20, 2))
+    assert [o.place for o in made.vision.objects()] == [UNKNOWN_PLACE]
+
+
+def test_a_pose_that_fails_leaves_the_place_unknown_with_a_warning(rig, caplog):
+    made = rig()
+    made.base.error = StepError(ErrorCode.UNAVAILABLE, "No pose.")
+    made.deliver_objects(thing("cup", 20, 2))
+    with caplog.at_level(logging.WARNING):
+        assert [o.place for o in made.vision.objects()] == [UNKNOWN_PLACE]
+    assert "find_objects reports the place unknown: UNAVAILABLE: No pose." in caplog.text
+
+
+def test_a_stop_while_the_pose_is_read_ends_objects(rig):
+    made = rig()
+    made.base.error = StepError(ErrorCode.CANCELLED, "Stopped while reading the pose.")
+    made.deliver_objects(thing("cup", 20, 2))
+    with pytest.raises(StepError) as raised:
+        made.vision.objects()
+    assert raised.value.code is ErrorCode.CANCELLED
+
+
+def test_objects_have_no_measures(rig):
+    made = rig()
+    made.deliver_objects(thing("apple", 20, 2))
+    [apple] = made.vision.objects()
+    assert (apple.size_cm, apple.weight_g, apple.thickness_cm) == (None, None, None)
+
+
+def test_objects_and_people_keep_their_own_newest_array(rig):
+    made = rig(wait_s=SHORT_WAIT_S)
+    made.deliver_objects(thing("cup", 20, 2))
+    with pytest.raises(StepError) as raised:
+        made.vision.people()
+    assert raised.value.message.startswith("No message on /walkie_vision/people within")
+    made.deliver(person(100, track_id=1))
+    made.advance(2.0)
+    made.deliver_objects(thing("chair", 20, 3))
+    assert [o.id for o in made.vision.objects()] == ["chair_3"]
+    with pytest.raises(StepError) as raised:
+        made.vision.people()
+    assert "/walkie_vision/people is 2.0 s old" in raised.value.message
+
+
+def test_no_object_array_is_unavailable_and_names_the_objects_topic(rig):
+    made = rig(wait_s=SHORT_WAIT_S, objects_topic="/walkie_vision/sim/objects")
+    made.deliver(person(100, track_id=1))
+    with pytest.raises(StepError) as raised:
+        made.vision.objects()
+    assert str(raised.value) == (
+        "UNAVAILABLE: No message on /walkie_vision/sim/objects within 0.05 s. "
+        "Is walkie-vision or oracle_perception running?"
+    )
+
+
+def test_an_old_object_array_is_unavailable(rig):
+    made = rig(wait_s=SHORT_WAIT_S)
+    made.deliver_objects(thing("cup", 20, 2), age_s=1.5)
+    with pytest.raises(StepError) as raised:
+        made.vision.objects()
+    assert "/walkie_vision/objects is 1.5 s old" in raised.value.message
+
+
+def test_a_late_older_object_array_does_not_hide_the_newer_one(rig):
+    made = rig()
+    made.deliver_objects(thing("chair", 20, 3))
+    made.deliver_objects(thing("cup", 20, 2), age_s=0.5)
+    assert [o.id for o in made.vision.objects()] == ["chair_3"]
+
+
+def test_an_object_array_far_behind_the_newest_starts_over(rig):
+    made = rig()
+    made.advance(100.0)
+    made.deliver_objects(thing("chair", 20, 3))
+    made.node.clock.nanoseconds = 0
+    made.deliver_objects(thing("cup", 20, 2))
+    assert [o.id for o in made.vision.objects()] == ["cup_2"]
+
+
+def test_a_stop_ends_a_wait_for_objects(rig):
+    made = rig()
+    read = made.clock_read()
+    made.cancel.cancel()
+    with pytest.raises(StepError) as raised:
+        made.vision.objects()
+    assert raised.value.code is ErrorCode.CANCELLED
+    assert not read.is_set()
+
+
+def test_close_ends_every_later_objects_call(rig):
+    made = rig()
+    made.deliver_objects(thing("cup", 20, 2))
+    made.vision.close()
+    made.deliver_objects(thing("cup", 20, 2))
+    with pytest.raises(StepError) as raised:
+        made.vision.objects()
+    assert str(raised.value) == "UNAVAILABLE: Live object perception has shut down."
 
 
 @pytest.mark.parametrize("vision", ["ros", "unavailable"])
@@ -1090,6 +1323,54 @@ def test_the_oracles_chula_arrays_are_read_over_dds(connector):
         for who in loaded.scene.people:
             truth = degrees_from(place.x, place.y, place.yaw, who)
             assert by_id[f"person_{who.track_id}"].bearing_deg == pytest.approx(truth, abs=0.2)
+    finally:
+        vision.close()
+        publisher_node.destroy_node()
+
+
+def test_the_oracles_chula_objects_are_read_over_dds(connector):
+    """The sofa, the coffee table and the mug of the Chula scene, as find_objects reports them.
+
+    The oracle draws them with the scene file's classes, as `pixi run oracle-chula`
+    does, and the robot stands at the living room place.
+    """
+    loaded = load_scene(CHULA_SCENE)
+    places = load_locations(CHULA_LOCATIONS)
+    place = places["living room"]
+    base = StubBase(place.x, place.y, place.yaw)
+    base.places_by_name = places
+    config = OracleConfig(pixel_noise_px=0.0, classes=tuple(loaded.classes))
+    vision = RosVision(connector, base, CancelToken(), tf_buffer=FakeTfBuffer())
+    publisher_node = rclpy.create_node(f"oracle_stand_in_{random.randint(0, 1_000_000)}")
+    publisher = publisher_node.create_publisher(ObjectDetectionArray, OBJECTS_TOPIC, ORACLE_QOS)
+    rng = np.random.default_rng(0)
+    try:
+        found: list = []
+        deadline = time.monotonic() + WATCHDOG_S
+        while not found and time.monotonic() < deadline:
+            info = camera_info()
+            info.header.stamp = connector.node.get_clock().now().to_msg()
+            _, objects = draw_detections(
+                loaded.scene, info, living_room_camera(), config, rng, stream_id=STREAM_ID
+            )
+            publisher.publish(objects)
+            try:
+                found = vision.objects(timeout_s=0.2)
+            except StepError as error:
+                assert error.code is ErrorCode.UNAVAILABLE, error
+        assert sorted(found, key=lambda seen: seen.id) == [
+            ObjectSeen("mug_13", "mug", "dish", "living room"),
+            ObjectSeen("sofa_11", "sofa", "furniture", "living room"),
+            ObjectSeen("table_12", "table", "furniture", "living room"),
+        ]
+        assert [seen.id for seen in vision.objects("furniture")] == [
+            seen.id for seen in found if seen.category == "furniture"
+        ]
+        with pytest.raises(StepError) as raised:
+            vision.objects("apple")
+        assert raised.value.message.endswith(
+            "It looks only for: chair, sofa, armchair, stool, table, mug."
+        )
     finally:
         vision.close()
         publisher_node.destroy_node()

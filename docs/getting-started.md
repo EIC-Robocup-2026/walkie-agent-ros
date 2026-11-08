@@ -178,11 +178,12 @@ The `default` tool set has `list_places`, `go_to`, `move_relative`, `say`,
 `find_objects`, `object_info`, `find_people`, `face_person` and `get_facts`, which reads the time, the
 date and the team from `config.toml`'s `[team]`. The agent also has `update_todos` and
 `wait_for_person`. `--tool-set gpsr` and `--tool-set hri` pick the other fixed sets.
-`find_objects` and `object_info` answer `UNAVAILABLE`, because live object vision is not
-connected. `find_people` and `face_person` answer `UNAVAILABLE` too, unless you add
-`--vision`: they then read the people on `/walkie_vision/people`, from walkie-vision or
-the simulation's oracle. `pixi run agent-sim-chula` adds it. In the `gpsr` set, `pick`, `place_on` and
-`hand_over` answer `UNAVAILABLE` as well.
+`find_objects`, `find_people` and `face_person` answer `UNAVAILABLE` unless you add
+`--vision`: they then read the people on `/walkie_vision/people` and the objects on
+`/walkie_vision/objects`, from walkie-vision or the simulation's oracle.
+`--objects-topic` reads the objects from another topic. `pixi run agent-sim-chula` adds
+`--vision`. `object_info` answers `UNAVAILABLE` without it and gives null measures with
+it, since nothing measures a live object. In the `gpsr` set, `pick`, `place_on` and `hand_over` answer `UNAVAILABLE` as well.
 
 | Topic             | Direction  | What it carries                                                          |
 | ----------------- | ---------- | ------------------------------------------------------------------------ |
@@ -276,8 +277,9 @@ can delay that up to the deadline. In Langfuse, each conversation shows up as it
 ### Walkie's memory is not connected
 
 The old tool that read remembered objects from walkie-database is retired. `find_objects`
-now means a live view, and it answers `UNAVAILABLE`, because a remembered row is not a
-current view. A real backend is a later slice
+now means a live view: with `--vision` it reads walkie-vision's objects, and without it
+it answers `UNAVAILABLE`, because a remembered row is not a current view. Object memory
+is a later slice
 ([ADR-0052](architecture/decisions/0052-capability-verbs-and-backends.md)).
 
 ### Drive walkie-ros's simulation instead
@@ -353,8 +355,8 @@ simulation, in the same terminal setup as the agent:
 pixi run oracle-chula
 ```
 
-`find_people` reads its people when the agent runs with `--vision`, which
-`agent-sim-chula` passes. Nothing in the agent reads its objects yet.
+`find_people` reads its people and `find_objects` its sofa, table and mug when the
+agent runs with `--vision`, which `agent-sim-chula` passes.
 
 `scripts/chula-sim.sh` starts that world, the oracle and the agent together, on a
 Zenoh router and domain of their own, and its `check` shows what the oracle draws

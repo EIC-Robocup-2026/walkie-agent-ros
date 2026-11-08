@@ -288,6 +288,9 @@ to S4-6). The agent uses it only when started with `--vision`, and the HRI set h
   match answers `UNAVAILABLE` and lists the classes, since an empty list would say
   the object is absent. walkie-vision runs one task's classes at a time, and its
   `hri` task finds only seats.
+- **In the simulation.** The oracle is the object source. walkie-vision's YOLOE
+  on MuJoCo's images found cups, bottles and apples but called the sofa and the
+  TV stand tables and the shelf a chair, so it is a trial only (S4-8).
 
 ## Captions
 

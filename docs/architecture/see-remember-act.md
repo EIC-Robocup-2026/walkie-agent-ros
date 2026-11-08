@@ -299,9 +299,17 @@ decision, and it can run beside the vision chain.
   in view. The category table lives in `perception/objects.py`, which imports
   no ROS. A query no class of the array could match answers `UNAVAILABLE`
   with the classes, so "apple" against a seats-only detector is not reported
-  absent. HRI gains `find_objects` but not `object_info`, so the gate reran.
+  absent. HRI gains `find_objects` but not `object_info`, so the gate reran;
+  it passed with episode logs identical to the previous code's but for the
+  commit.
   `--objects-topic` lets a detector on the simulation's images, on
   walkie-vision's `/walkie_vision/sim/objects`, stand in for the oracle.
+- **Sim run** as S4-7 and S4-8: at the living room place, "what do you see?"
+  listed the oracle's sofa, table and mug, and "is there an apple here?" got
+  the answer that the camera cannot look for one. walkie-vision's YOLOE on
+  MuJoCo's images found cups, bottles and apples but mislabelled or missed the
+  furniture, so the oracle stays the simulation's object source and S5 uses
+  it.
 
 ### S5: Find a free seat and offer it
 

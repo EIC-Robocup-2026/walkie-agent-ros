@@ -468,6 +468,43 @@ kitchen table, succeeded from the living room and from the shelf.
       `visit_and_announce`, which T36 then fixed.
 
     `down` left no record. The saved function stayed in the store, ignored by git.
+- With object perception (S4), on 2026-11-09 at commit 9e8a9b4: `up --agent --
+  --tool-set hri`, then two tasks with the real model against the oracle:
+    - "What do you see in front of you?" `find_people()` returned both guests,
+      and `find_objects()` returned `sofa_11` and `table_12` (furniture) and
+      `mug_13` (dish), all in the living room, in 0.07 s. The agent said "I see
+      a standing person raising their left arm and a sitting person. In front
+      of me there is a sofa, a table and a mug."
+    - "Is there an apple here?" `find_objects("apple")` answered `UNAVAILABLE:
+      The camera is not looking for 'apple' right now. It looks only for: chair,
+      sofa, armchair, stool, table, mug.` The agent said it could not look for
+      an apple, not that none was there.
+
+    Then walkie-vision 64811fe's YOLOE-26s stood in for the oracle's objects:
+    `pixi run vision task:=memory sim:=true` in its own worktree, on the same
+    graph, publishing on `/walkie_vision/sim/objects` at 3.8 Hz on the laptop's
+    RTX 2060, and the agent restarted with `--objects-topic
+    /walkie_vision/sim/objects`. From the living room place it published only a
+    `cup` at score 0.50, the mug. After `/walkie/reset`, "What do you see in
+    front of you? Is there a sofa?" got `find_objects()` with
+    `cup_3158345780`, and the answer "I see one cup, in the living room. There's
+    no sofa in what my camera picks up right now." YOLOE on the saved frame at
+    a 0.02 threshold never gave "sofa" or "couch"; it called the sofa a "coffee
+    table" at 0.26, or a "chair" at 0.43 at 1280 pixels. At five more places,
+    as direct Nav2 goals:
+
+    | Place | Nav2 | YOLOE published | Seen but missed or mislabelled |
+    | --- | --- | --- | --- |
+    | table | no result after 180 s, 0.92 m off | cup 0.80, bottle 0.64, apple 0.52, bottle 0.49, cup 0.34 | the table itself |
+    | bar | SUCCEEDED, 106.9 s | bottle 0.85, table 0.66 (the bar) | the red plate (no such class) |
+    | shelf | SUCCEEDED, 25.2 s | chair 0.37 (the shelf), apple 0.51 | the chips and the Pringles (no such class) |
+    | tv | SUCCEEDED, 74.4 s | table 0.36 (the TV stand) | none |
+    | sofa | SUCCEEDED, 21.6 s | table 0.33 (the sofa, close up) | none |
+
+    So in MuJoCo's flat-shaded renders YOLOE finds the small textured objects
+    and mislabels or misses the furniture (decision S4-8). The `table` goal had
+    reached its place in 54.2 s on 2026-11-06; this time the vision node shared
+    the CPUs. `down` left no record.
 
 ## Not in the recipe
 

@@ -263,6 +263,48 @@ a verdict while a task runs and a second verdict on the same task. A question
 the agent asks ends a task too, so judge after its last reply. Each verdict is
 also a line of `logs/agent-tools.jsonl`, with the tool `verdict`.
 
+### Ask about remembered objects
+
+`--object-tools` starts the agent with `--object-memory`, which adds three
+tools that read walkie-database's object memory: `recall_object`,
+`list_room_objects` and `go_to_object` (decisions SG-16 to SG-21 in
+[Mahoraga Demo Decisions](../architecture/mahoraga-demo-decisions.md)). It
+needs `--memory` and `--agent`, and the `default` or `hri` tool set; `gpsr`
+and `arms` have no object memory tools, and the agent refuses to start with
+them. It also points the agent's `find_objects` at walkie-vision's
+`/walkie_vision/sim/objects`, the detections that fill the memory, since the
+oracle's scene has no cup to check (SG-23). An `--objects-topic` after `--`
+is kept instead.
+
+```bash
+scripts/chula-sim.sh up --agent --vision --memory --object-tools --foxglove
+```
+
+Restore the store from its seed with `db-restore` before each run, as in the
+memory steps above. A store kept from an earlier run holds stamps from that
+run's clock, so the seconds since an object was seen read as unknown or wrong
+(SG-20). The memory only knows what vision has shown it, so drive the robot
+round the rooms first. Then ask:
+
+- "Where did you see a cup?" The tool log shows `recall_object` returning up
+  to 10 remembered cups, each with its memory id, its room, the anchor it
+  stands on (`on`, such as `table 15`), the named place nearest it
+  (`near_place`) and the seconds since vision last saw it. `complete` is false
+  when there are more. An object the detector only once called a cup, such as
+  a bottle, comes after the cups, under its own label.
+- "What is in the living room?" `list_room_objects` lists what the memory
+  holds there. A room name in any case works.
+- "Take me to the cup on the table." `go_to_object` drives to the named place
+  nearest the cup, within 2 m, and turns to face it. The agent then calls
+  `find_objects` to check that the cup is still there.
+
+The ids these tools give are the memory's, numbers such as `18`; they are not
+the ids `find_objects` gives for objects in view. An object more than 2 m from
+every place in `config/locations.chula_pat14_6.toml` cannot be driven to, and
+the agent is told to go to its room and look instead. Without `--object-tools`
+the agent has none of these tools, and its prompt is the one it had before
+them.
+
 ## Watch it in Foxglove
 
 ```bash
@@ -654,6 +696,39 @@ kitchen table, succeeded from the living room and from the shelf.
   about 17 s. The memory stopped 0.8 s after its SIGINT, with no traceback,
   and released its store lock. The store then passed `PRAGMA integrity_check`
   and held the same 20 objects and 3 relations, and 1916 observations.
+- With the object tools, late on 2026-11-12, with walkie-vision at ad7c833
+  and walkie-database at 92c4b19, the store restored from
+  `/var/tmp/scene-graph-demo/seed.db` first: `up --vision --memory
+  --foxglove`, a tour of Nav2 goals (table, shelf, bar and living room
+  succeeded; sofa had no result after 180 s; entrance aborted), then
+  `up --agent --vision --memory --object-tools --foxglove` beside it, on the
+  real model with the `default` tool set. Each request went on `/from_human`:
+    - "Where did you see a cup?" `recall_object("cup")` answered with
+      `complete: true` and 7 objects, ids, rooms, nearest places and ages
+      included, but 3 of them were bottles: `ObjectSummary.labels` holds every
+      label the detector gave, and YOLOE had once called each bottle a cup.
+      The model answered in plain text, which goes to `/walkie/console`, not
+      through `say`.
+    - "What is in the living room?" `list_room_objects("living room")`
+      answered with 7 objects (3 chairs, a sofa, a cabinet and 2 cups),
+      `complete: true`.
+    - "Take me to a cup in the kitchen." The model added two todos, then
+      `go_to_object("26")` drove to `bar` in 98 s and turned 124 degrees left
+      to face the cup. `find_objects("cup")`, on the detector's topic, found a
+      cup at `bar`, and the agent said "Here we are at the bar. The cup is
+      right in front of me, still on the bar."
+    - The agent restarted with cups ranked before alias-only matches
+      (SG-17). "Where did you see a cup? Please tell me out loud." got 5 cups
+      first, then the 3 bottles, with `on` read as `table 51` and `chair 45`
+      from the memory's perceived anchors. The model said "I last saw a cup in
+      the kitchen room, on table 51 near the bar, just a moment ago."
+
+    The memory could not place 27 arrays in `map` for want of a transform.
+    `down` stopped every part. Neither the memory nor the agent logged a
+    traceback. The store passed `PRAGMA integrity_check` and held 28 present
+    objects (10 chairs, 5 cups, 4 bottles, 2 tables, 2 apples, a sofa, a
+    shelf, a cabinet, a bowl and a banana), 7 merged ones, 9 relations and
+    7225 observations.
 
 ## Not in the recipe
 

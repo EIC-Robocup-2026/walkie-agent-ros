@@ -409,6 +409,13 @@ decision, and it can run beside the vision chain.
   removed when M1 lands. M1 is unbuilt and undated.
 - **Risks.** It bends [ADR-0035](decisions/0035-memory-through-walkie-database.md),
   which routes all memory through walkie-database, and overlaps M1's design.
+- **Built instead (2026-11-12).** walkie-database's object memory landed
+  first, so the session log was not built. `recall_object`,
+  `list_room_objects` and `go_to_object` read the memory node's services
+  behind `--object-memory`, as ADR-0035 asks. See SG-16 to SG-23 in
+  [Mahoraga Demo Decisions](mahoraga-demo-decisions.md). The real model ran
+  all three in the Chula simulation the same day; the run is under
+  [What has been run](../setup/08-chula-simulation.md#what-has-been-run).
 
 ### S10: Pick and place a known object in MuJoCo
 

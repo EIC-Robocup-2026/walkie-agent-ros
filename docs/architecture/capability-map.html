@@ -484,10 +484,10 @@ footer p + p { margin-top: 6px; }
 <script type="application/json" id="capability-data">
 {
   "meta": {
-    "asOf": "2026-11-11",
+    "asOf": "2026-11-12",
     "branch": "feat/mahoraga-demo",
-    "commit": "bb1d3f4",
-    "tests": "2553",
+    "commit": "df826f9",
+    "tests": "2703",
     "testsNote": "passed, 1 skipped (pixi run test at bb1d3f4)",
     "gate": "b6279cbf5042e1d7",
     "gateDate": "2026-11-09",
@@ -685,14 +685,14 @@ footer p + p { margin-top: 6px; }
     },
     {
       "area": "Memory",
-      "title": "Recall where an object was seen",
-      "status": "planned",
-      "asks": ["Where did you see the mug?"],
-      "tools": ["where_seen"],
-      "flags": [],
-      "proof": { "fake": false, "sim": false, "robot": false },
-      "note": "Not built (S9): a session log of sightings, labelled as seen this session.",
-      "evidence": "S9"
+      "title": "Recall where an object was seen, and go to it",
+      "status": "works",
+      "asks": ["Where did you see a cup?", "What is in the living room?", "Take me to a cup in the kitchen."],
+      "tools": ["recall_object", "list_room_objects", "go_to_object"],
+      "flags": ["--vision", "--object-memory"],
+      "proof": { "fake": "tests", "sim": "2026-11-12", "robot": false },
+      "note": "Built (S9) on walkie-database's object memory, which walkie-vision fills. `recall_object` searches by label words, with no vectors, and gives each object's memory id, room, the anchor it stands on, the named place nearest it and how long ago it was seen. `go_to_object` drives to the named place within 2 m of the object and turns to face it. In the Chula sim with `scripts/chula-sim.sh up --agent --vision --memory --object-tools`, the real model recalled cups, listed the living room, and drove to the bar for cup 26, where `find_objects` on the detector's topic saw it. Once it answered in plain text instead of with `say`.",
+      "evidence": "S9, SG-16 to SG-23, 08 What has been run"
     },
     {
       "area": "HRI",
@@ -759,7 +759,8 @@ footer p + p { margin-top: 6px; }
     { "verb": "ctx.speech", "status": "works", "does": "say", "backend": "RosSpeech", "graph": "/to_human, logged in sim", "fake": "FakeRobot" },
     { "verb": "ctx.memory", "status": "works", "does": "remember, recognise people", "backend": "TrackMemory (--people-memory)", "graph": "in-process store; the walkie-database store is tested only", "fake": "FakeRobot" },
     { "verb": "ctx.arms", "status": "partial", "does": "poses, grippers, state; no pick or place", "backend": "RosArms (--arms)", "graph": "bimanual_commander, MoveIt", "fake": "FakeRobot" },
-    { "verb": "ctx.facts", "status": "tested", "does": "time, date, team", "backend": "SystemFacts", "graph": "wall clock and config.toml", "fake": "fixed facts" }
+    { "verb": "ctx.facts", "status": "tested", "does": "time, date, team", "backend": "SystemFacts", "graph": "wall clock and config.toml", "fake": "fixed facts" },
+    { "verb": "ctx.object_memory", "status": "works", "does": "search, room, get", "backend": "RosObjectMemory (--object-memory)", "graph": "walkie-database memory node, fed by walkie-vision", "fake": "UnavailableObjectMemory" }
   ],
   "toolsets": {
     "sets": ["default", "gpsr", "hri", "arms"],
@@ -775,6 +776,9 @@ footer p + p { margin-top: 6px; }
       { "name": "get_facts", "sets": ["default", "gpsr"], "backend": "SystemFacts", "status": "tested" },
       { "name": "remember_person", "sets": ["hri"], "backend": "TrackMemory, --people-memory", "status": "works" },
       { "name": "recognize_person", "sets": ["hri"], "backend": "TrackMemory, --people-memory", "status": "tested" },
+      { "name": "recall_object", "sets": ["default", "hri"], "needs": "--object-memory", "backend": "RosObjectMemory, --object-memory", "status": "works" },
+      { "name": "list_room_objects", "sets": ["default", "hri"], "needs": "--object-memory", "backend": "RosObjectMemory, --object-memory", "status": "works" },
+      { "name": "go_to_object", "sets": ["default", "hri"], "needs": "--object-memory", "backend": "RosObjectMemory and RosBase, --object-memory", "status": "works" },
       { "name": "pick", "sets": ["gpsr"], "backend": "UNAVAILABLE on ROS", "status": "fake" },
       { "name": "place_on", "sets": ["gpsr"], "backend": "UNAVAILABLE on ROS", "status": "fake" },
       { "name": "hand_over", "sets": ["gpsr"], "backend": "UNAVAILABLE on ROS", "status": "fake" },
@@ -824,7 +828,7 @@ footer p + p { margin-top: 6px; }
     { "id": "S6", "title": "Arm poses and grippers", "ask": "Raise your hands.", "status": "works", "note": "Sim 2026-11-07, MuJoCo; the model has not used the grippers yet" },
     { "id": "S7", "title": "Take a bag, hand it back", "ask": "Can you hold my bag?", "status": "partial", "note": "Poses and grip check exist; bundles do not" },
     { "id": "S8", "title": "Places, furniture and told facts", "ask": "What rooms do you know?", "status": "planned", "note": "Through walkie-database" },
-    { "id": "S9", "title": "Recall objects seen earlier", "ask": "Where did you see the mug?", "status": "planned", "note": "Session sighting log" },
+    { "id": "S9", "title": "Recall objects seen earlier", "ask": "Where did you see the mug?", "status": "works", "note": "Sim 2026-11-12, on walkie-database's object memory" },
     { "id": "S10", "title": "Pick and place in MuJoCo", "ask": "Bring the apple to the bar.", "status": "planned", "note": "Labelled sim grasp first" },
     { "id": "S11", "title": "Continuous gaze", "ask": "Keeps facing the guest", "status": "blocked", "note": "Decision 14" },
     { "id": "S12", "title": "HRI slice 1 end to end", "ask": "Scored by hri_check", "status": "planned", "note": "Needs S3, S5, S7, S11" },
@@ -1064,8 +1068,9 @@ footer p + p { margin-top: 6px; }
     T.sets.forEach(function (s) {
       var c = el("td", "set");
       var inSet = a.sets.indexOf(s) >= 0;
-      var mark = el("span", inSet ? (a.arm ? "dot-arm" : "dot-in") : "dot-out", inSet ? (a.arm ? "●*" : "●") : "·");
-      mark.setAttribute("aria-label", inSet ? (a.arm ? "in the set with --arms" : "in the set") : "not in the set");
+      var flag = a.arm ? "--arms" : a.needs;
+      var mark = el("span", inSet ? (flag ? "dot-arm" : "dot-in") : "dot-out", inSet ? (flag ? "●*" : "●") : "·");
+      mark.setAttribute("aria-label", inSet ? (flag ? "in the set with " + flag : "in the set") : "not in the set");
       c.appendChild(mark);
       tr.appendChild(c);
     });
@@ -1076,7 +1081,7 @@ footer p + p { margin-top: 6px; }
     tb.appendChild(tr);
   });
   var foot = el("tr");
-  var ftd = el("td", "small", "● in the set   ●* in the set with --arms   · not in the set");
+  var ftd = el("td", "small", "● in the set   ●* in the set with --arms, or with the flag in its backend   · not in the set");
   ftd.colSpan = T.sets.length + 3;
   foot.appendChild(ftd);
   tb.appendChild(foot);

@@ -26,7 +26,9 @@ import pytest
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "chula-sim.sh"
 OWNED = SCRIPT.parent / "chula_sim_owned.py"
-PARTS = ("router", "bringup", "moveit", "commander", "oracle", "speech", "agent")
+PARTS = (
+    "router", "bringup", "moveit", "commander", "vision", "foxglove", "oracle", "speech", "agent",
+)  # fmt: skip
 MOVEIT_LAUNCH = Path(
     "openarm_bimanual_moveit_config/share/openarm_bimanual_moveit_config/launch/moveit_only.launch.py"
 )
@@ -39,7 +41,7 @@ RESERVED_PIDS = 300
 
 
 def environment(sim_dir: Path, **env: str) -> dict[str, str]:
-    clean = {k: v for k, v in os.environ.items() if not k.startswith(("SIM_", "WALKIE_ROS"))}
+    clean = {k: v for k, v in os.environ.items() if not k.startswith(("SIM_", "WALKIE_ROS", "WALKIE_VISION"))}
     return clean | {"SIM_DIR": str(sim_dir)} | env
 
 
@@ -97,7 +99,7 @@ def test_the_script_parses():
 def test_without_a_known_command_it_prints_the_usage(tmp_path, args):
     result = run(*args, sim_dir=tmp_path)
     assert result.returncode == 2
-    assert "up [--agent] [--arms] [--gui] [-- ARGS]" in result.stdout
+    assert "up [--agent] [--arms] [--vision] [--foxglove] [--gui] [-- ARGS]" in result.stdout
     assert "check [--agent] [--arms]" in result.stdout
     # From the header's first line to its last command, and no further.
     lines = result.stdout.splitlines()
@@ -194,19 +196,97 @@ def test_the_arm_packages_are_looked_for_only_with_the_arms(tmp_path):
         assert (result.returncode, result.stdout, result.stderr) == (0, "passed\n", "")
 
 
+def walkie_vision_checkout(path: Path, *, task: str = "memory") -> Path:
+    """A walkie-vision checkout at `path` that looks installed, built and new enough for --vision."""
+    (path / ".pixi" / "envs" / "default").mkdir(parents=True)
+    (path / "pixi.toml").touch()
+    (path / "src" / "walkie_vision").mkdir(parents=True)
+    (path / "src" / "walkie_vision" / "debug_viz.py").touch()
+    (path / "config" / "tasks").mkdir(parents=True)
+    (path / "config" / "tasks" / f"{task}.yaml").touch()
+    (path / "ros2_ws" / "install" / "walkie_vision_msgs").mkdir(parents=True)
+    return path
+
+
+def test_up_with_vision_needs_walkie_vision(tmp_path):
+    result = sourced("check_vision_prerequisites", tmp_path)
+    assert result.returncode == 1
+    assert "--vision needs WALKIE_VISION" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("remove", "message"),
+    [
+        (".pixi/envs/default", "no installed environment"),
+        ("src/walkie_vision/debug_viz.py", "needs feat/scene-graph-prep or later"),
+        ("config/tasks/memory.yaml", "has no task memory in config/tasks/"),
+        ("ros2_ws/install/walkie_vision_msgs", "walkie_vision_msgs is not built"),
+    ],
+)
+def test_up_with_vision_refuses_a_checkout_that_lacks_a_part(tmp_path, remove, message):
+    checkout = walkie_vision_checkout(tmp_path / "walkie-vision")
+    target = checkout / remove
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+    result = sourced(f"WALKIE_VISION={shlex.quote(str(checkout))}\ncheck_vision_prerequisites", tmp_path)
+    assert result.returncode == 1
+    assert message in result.stderr
+
+
+def test_up_with_vision_takes_the_task_from_sim_vision_task(tmp_path):
+    checkout = walkie_vision_checkout(tmp_path / "walkie-vision", task="hri")
+    quoted = shlex.quote(str(checkout))
+    result = sourced(f"WALKIE_VISION={quoted}\ncheck_vision_prerequisites && echo passed", tmp_path)
+    assert "has no task memory" in result.stderr
+    result = sourced(
+        f"WALKIE_VISION={quoted} SIM_VISION_TASK=hri\ncheck_vision_prerequisites && echo passed", tmp_path
+    )
+    assert (result.returncode, result.stdout, result.stderr) == (0, "passed\n", "")
+
+
+def test_up_with_vision_makes_a_relative_walkie_vision_absolute(tmp_path):
+    # The vision part starts in WALKIE_VISION, where a relative path would no longer resolve.
+    checkout = walkie_vision_checkout(tmp_path / "walkie-vision")
+    result = sourced(
+        f"cd {shlex.quote(str(tmp_path))}\nWALKIE_VISION=walkie-vision\n"
+        'check_vision_prerequisites && echo "$WALKIE_VISION"',
+        tmp_path,
+    )
+    assert (result.returncode, result.stdout, result.stderr) == (0, f"{checkout}\n", "")
+
+
+def test_wait_for_log_stops_at_the_fail_text_of_a_part_that_keeps_running(tmp_path):
+    # walkie-vision's launch respawns a node that cannot start, so the part never stops.
+    (tmp_path / "logs").mkdir()
+    (tmp_path / "logs" / "vision.log").write_text("[walkie_vision-1] [FATAL] cannot start: no models\n")
+    started = time.monotonic()
+    result = sourced(
+        'running() { true; }\nwait_for_log vision "loaded the models in" 30 "cannot start:" || echo "returned $?"',
+        tmp_path,
+    )
+    assert time.monotonic() - started < 10
+    assert result.stdout == "returned 1\n"
+    assert "cannot start: no models" in result.stderr
+
+
 # Stand-ins for what up does to the system, for a bash that has sourced the script.
 # Each records its call as a line of SIM_DIR/calls, the arguments separated by \x1f.
 # A part runs once started, or when SIM_DIR/started-NAME exists before up, and the
-# router listens while it runs. wait_for_log fails for the part named in NOT_READY.
+# router listens while it runs. Another port is in use when SIM_DIR/listening-PORT
+# exists. wait_for_log fails for the part named in NOT_READY.
 UP_STAND_INS = r"""
 record() { local IFS=$'\x1f'; echo "$*" >> "$SIM_DIR/calls"; }
 check_prerequisites() { record check "$@"; }
+check_vision_prerequisites() { record check-vision "$@"; }
 pgrep() { :; }
 running() { [[ -e $SIM_DIR/started-$1 ]]; }
 port_open() { running router; }
+tcp_listening() { [[ -e $SIM_DIR/listening-$1 ]]; }
 start() { record start "$@"; touch "$SIM_DIR/started-$1"; }
 wait_for_log() { record wait "$@"; [[ $1 != "$NOT_READY" ]]; }
-SETTLE_S=0 PIXI=pixi WALKIE_ROS=/walkie-ros WALKIE_ROS_OVERLAY=/overlay
+SETTLE_S=0 PIXI=pixi WALKIE_ROS=/walkie-ros WALKIE_ROS_OVERLAY=/overlay WALKIE_VISION=/walkie-vision
 """
 WALKIE_ROS_RUN = (
     "pixi",
@@ -222,14 +302,14 @@ WALKIE_ROS_RUN = (
 
 
 def up_with_stand_ins(
-    sim_dir: Path, *args: str, running: Sequence[str] = (), not_ready: str = ""
+    sim_dir: Path, *args: str, running: Sequence[str] = (), not_ready: str = "", setup: str = ""
 ) -> tuple[subprocess.CompletedProcess, list[tuple[str, ...]]]:
-    """Run up with UP_STAND_INS, and return its result and the calls it made."""
+    """Run up with UP_STAND_INS, after the shell lines in `setup`, and return its result and calls."""
     sim_dir.mkdir(parents=True, exist_ok=True)
     for name in running:
         (sim_dir / f"started-{name}").touch()
     result = sourced(
-        UP_STAND_INS + f"NOT_READY={shlex.quote(not_ready)}\nup {shlex.join(args)}", sim_dir
+        UP_STAND_INS + f"{setup}\nNOT_READY={shlex.quote(not_ready)}\nup {shlex.join(args)}", sim_dir
     )
     calls = sim_dir / "calls"
     lines = calls.read_text().splitlines() if calls.exists() else []
@@ -288,6 +368,110 @@ def oracle_speech_and_agent(sim_dir: Path, *agent_args: str) -> list[tuple[str, 
         ("wait", "oracle", "Drawing ", "120"),
         ("wait", "agent", "Walkie's agent is running", "120"),
     ]  # fmt: skip
+
+
+def vision_and_foxglove(sim_dir: Path) -> list[tuple[str, ...]]:
+    """The calls up --vision --foxglove makes to start the two parts, after bringup and the arms."""
+    return [
+        (
+            "start", "vision", "/walkie-vision",
+            "pixi", "run", "--as-is", "--manifest-path", "/walkie-vision/pixi.toml",
+            "vision", "task:=memory", "sim:=true", "viz:=true",
+        ),
+        (
+            "start", "foxglove", str(sim_dir), *WALKIE_ROS_RUN,
+            "ros2", "launch", "foxglove_bridge", "foxglove_bridge_launch.xml",
+            "port:=8799", "address:=127.0.0.1", "use_sim_time:=true",
+        ),
+    ]  # fmt: skip
+
+
+VISION_AND_FOXGLOVE_WAITS = [
+    ("wait", "vision", "loaded the models in", "300", "cannot start:"),
+    ("wait", "foxglove", "Server listening on port", "120"),
+]
+
+
+def test_up_with_vision_and_foxglove_starts_them_before_the_oracle_and_waits_after_the_agent(
+    tmp_path,
+):
+    result, calls = up_with_stand_ins(tmp_path, "--agent", "--vision", "--foxglove")
+    assert result.returncode == 0, result.stderr
+    after = oracle_speech_and_agent(tmp_path)
+    assert calls == [
+        ("check", "false"),
+        ("check-vision",),
+        *router_and_bringup(tmp_path),
+        *vision_and_foxglove(tmp_path),
+        *after,
+        *VISION_AND_FOXGLOVE_WAITS,
+    ]
+    lines = result.stdout.splitlines()
+    assert lines[-2:] == [
+        "Foxglove: open a connection to ws://localhost:8799",
+        "up. Next: scripts/chula-sim.sh check --agent",
+    ]
+
+
+def test_up_with_the_arms_starts_vision_after_the_commander(tmp_path):
+    result, calls = up_with_stand_ins(tmp_path, "--arms", "--vision")
+    assert result.returncode == 0, result.stderr
+    assert calls == [
+        ("check", "true"),
+        ("check-vision",),
+        *router_and_bringup(tmp_path),
+        *the_arms(tmp_path),
+        vision_and_foxglove(tmp_path)[0],
+        *oracle_speech_and_agent(tmp_path)[:2],
+        ("wait", "oracle", "Drawing ", "120"),
+        VISION_AND_FOXGLOVE_WAITS[0],
+    ]
+
+
+def test_up_with_vision_and_foxglove_already_running_only_waits_for_them(tmp_path):
+    result, calls = up_with_stand_ins(
+        tmp_path,
+        "--vision",
+        "--foxglove",
+        running=("router", "bringup", "vision", "foxglove", "oracle", "speech"),
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls == [
+        ("check", "false"),
+        ("check-vision",),
+        router_and_bringup(tmp_path)[-1],
+        ("wait", "oracle", "Drawing ", "120"),
+        *VISION_AND_FOXGLOVE_WAITS,
+    ]
+
+
+def test_up_with_foxglove_refuses_a_port_in_use_and_starts_nothing_after(tmp_path):
+    tmp_path.mkdir(exist_ok=True)
+    (tmp_path / "listening-8799").touch()
+    result, calls = up_with_stand_ins(tmp_path, "--foxglove")
+    assert result.returncode == 1
+    assert "port 8799 is in use; set SIM_FOXGLOVE_PORT to a free port" in result.stderr
+    assert calls[-1] == router_and_bringup(tmp_path)[-1]
+
+
+def test_up_with_foxglove_takes_its_port_from_sim_foxglove_port(tmp_path):
+    result, calls = up_with_stand_ins(tmp_path, "--foxglove", setup="SIM_FOXGLOVE_PORT=8811")
+    assert result.returncode == 0, result.stderr
+    (foxglove,) = [call for call in calls if call[:2] == ("start", "foxglove")]
+    assert "port:=8811" in foxglove
+    assert "Foxglove: open a connection to ws://localhost:8811" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("part", "message"),
+    [("vision", "walkie-vision did not load its models"), ("foxglove", "foxglove_bridge did not start")],
+)
+def test_up_stops_at_a_vision_or_foxglove_part_that_never_logs_it_is_ready(tmp_path, part, message):
+    result, calls = up_with_stand_ins(tmp_path, "--vision", "--foxglove", not_ready=part)
+    assert result.returncode == 1
+    assert f"chula-sim: {message}; see {tmp_path}/logs/{part}.log" in result.stderr
+    waits = dict(zip(("vision", "foxglove"), VISION_AND_FOXGLOVE_WAITS))
+    assert calls[-1] == waits[part]
 
 
 def test_up_without_the_arms_starts_what_it_always_did(tmp_path):

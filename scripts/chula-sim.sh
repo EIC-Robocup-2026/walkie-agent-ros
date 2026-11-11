@@ -4,11 +4,14 @@
 # and ROS_DOMAIN_ID SIM_DOMAIN_ID. Nothing started here connects to the router on 7447, so
 # it neither sees nor disturbs a robot or another simulation on this computer.
 #
-#   scripts/chula-sim.sh up [--agent] [--arms] [--gui] [-- ARGS]
+#   scripts/chula-sim.sh up [--agent] [--arms] [--vision] [--foxglove] [--gui] [-- ARGS]
 #                                               router, MuJoCo with Nav2, oracle, speech log;
 #                                               --agent adds the agent, given ARGS such as
 #                                               --tool-set hri; --arms adds MoveIt and the arm
-#                                               commander, and gives the agent --arms
+#                                               commander, and gives the agent --arms;
+#                                               --vision adds walkie-vision's node and its
+#                                               debug visualizer; --foxglove adds
+#                                               foxglove_bridge on SIM_FOXGLOVE_PORT
 #   scripts/chula-sim.sh check [--agent] [--arms]
 #                                               wait for the clock, TF, head camera and arrays
 #   scripts/chula-sim.sh status                 which parts are running, and their logs
@@ -22,6 +25,10 @@
 #   WALKIE_ROS_OVERLAY  a colcon workspace sourced over WALKIE_ROS's install, such as a
 #                       worktree of feat/chula-pat14-6-simulation with only robot_bringup and
 #                       walkie_mujoco_worlds built (optional)
+#   WALKIE_VISION       for --vision, a walkie-vision checkout with its pixi environment
+#                       installed, its messages built and its models fetched
+#   SIM_VISION_TASK     the vision task, a file in its config/tasks/ (default memory)
+#   SIM_FOXGLOVE_PORT   foxglove_bridge's port on 127.0.0.1 (default 8799)
 #   SIM_DIR             logs, process groups, ROS logs and the world cache
 #                       (default /var/tmp/walkie-chula-sim)
 #   SIM_ZENOH_PORT      the private router's port (default 7499)
@@ -40,6 +47,9 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 PIXI=${PIXI:-$(command -v pixi || echo "$HOME/.pixi/bin/pixi")}
 WALKIE_ROS=${WALKIE_ROS:-}
 WALKIE_ROS_OVERLAY=${WALKIE_ROS_OVERLAY:-}
+WALKIE_VISION=${WALKIE_VISION:-}
+SIM_VISION_TASK=${SIM_VISION_TASK:-memory}
+SIM_FOXGLOVE_PORT=${SIM_FOXGLOVE_PORT:-8799}
 SIM_DIR=${SIM_DIR:-/var/tmp/walkie-chula-sim}
 SIM_ZENOH_PORT=${SIM_ZENOH_PORT:-7499}
 SIM_DOMAIN_ID=${SIM_DOMAIN_ID:-77}
@@ -50,7 +60,7 @@ SIM_CPUS=${SIM_CPUS:-}
 
 WORLD=chula_pat14_6
 # down stops them in reverse order: the commander and MoveIt before bringup.
-PARTS=(router bringup moveit commander oracle speech agent)
+PARTS=(router bringup moveit commander vision foxglove oracle speech agent)
 # Nav2's lifecycle manager logs this once every navigation server is active.
 BRINGUP_READY="Managed nodes are active"
 BRINGUP_TIMEOUT_S=300
@@ -63,6 +73,16 @@ COMMANDER_READY="Bimanual Commander Node Initialized"
 # docs/setup/08-chula-simulation.md builds holds neither package.
 MOVEIT_LAUNCH=openarm_bimanual_moveit_config/share/openarm_bimanual_moveit_config/launch/moveit_only.launch.py
 COMMANDER_EXECUTABLE=openarm_bimanual_commander_cpp/lib/openarm_bimanual_commander_cpp/commander
+# What walkie-vision's node logs once its models are loaded, how long that may take, and
+# what it logs when it cannot start (its launch then respawns it, so it never stops).
+# The models load in about 18 s here. On a GPU that ONNX Runtime has no machine code
+# for (an RTX 50), the first start also compiles the face models' kernels, which can
+# take minutes; the driver caches them in ~/.nv/ComputeCache.
+VISION_READY="loaded the models in"
+VISION_TIMEOUT_S=300
+VISION_FAILED="cannot start:"
+# What foxglove_bridge logs once its server listens.
+FOXGLOVE_READY="Server listening on port"
 # What the oracle and the agent log once their nodes exist (oracle_scene.py, main.py).
 ORACLE_READY="Drawing "
 AGENT_READY="Walkie's agent is running"
@@ -276,15 +296,23 @@ lock() {
     flock -n 9 || die "another scripts/chula-sim.sh up or down is running on $SIM_DIR"
 }
 
-port_open() {
-    (exec 3<> "/dev/tcp/127.0.0.1/$SIM_ZENOH_PORT") 2>/dev/null
+# tcp_listening PORT: something accepts connections on 127.0.0.1:PORT.
+tcp_listening() {
+    (exec 3<> "/dev/tcp/127.0.0.1/$1") 2>/dev/null
 }
 
-# wait_for_log NAME TEXT SECONDS: until TEXT is in NAME's log; fails when NAME stops.
+port_open() {
+    tcp_listening "$SIM_ZENOH_PORT"
+}
+
+# wait_for_log NAME TEXT SECONDS [FAIL_TEXT]: until TEXT is in NAME's log; fails when
+# NAME stops or FAIL_TEXT appears. A part whose launch respawns it never stops, so
+# its startup failure is only in the log.
 wait_for_log() {
-    local name=$1 text=$2 seconds=$3
+    local name=$1 text=$2 seconds=$3 fail_text=${4:-}
     for _ in $(seq "$seconds"); do
         grep -q -F "$text" "$SIM_DIR/logs/$name.log" 2>/dev/null && return 0
+        [[ -n $fail_text ]] && grep -q -F "$fail_text" "$SIM_DIR/logs/$name.log" 2>/dev/null && break
         running "$name" || break
         sleep 1
     done
@@ -316,12 +344,31 @@ check_prerequisites() {
         die "rmw_zenoh_cpp 0.2.11 is not built here: run pixi run build-rmw-zenoh"
 }
 
+# check_vision_prerequisites: what up --vision needs from WALKIE_VISION. The models are
+# left to the vision launch, which names the command that fetches them.
+check_vision_prerequisites() {
+    [[ -n $WALKIE_VISION ]] || die "--vision needs WALKIE_VISION, a walkie-vision checkout"
+    [[ -f $WALKIE_VISION/pixi.toml && -d $WALKIE_VISION/.pixi/envs/default ]] ||
+        die "WALKIE_VISION=$WALKIE_VISION has no pixi.toml or no installed environment: run pixi install there"
+    [[ -f $WALKIE_VISION/src/walkie_vision/debug_viz.py ]] ||
+        die "WALKIE_VISION=$WALKIE_VISION has no debug visualizer; --vision needs feat/scene-graph-prep or later"
+    [[ -f $WALKIE_VISION/config/tasks/$SIM_VISION_TASK.yaml ]] ||
+        die "WALKIE_VISION=$WALKIE_VISION has no task $SIM_VISION_TASK in config/tasks/"
+    [[ -d $WALKIE_VISION/ros2_ws/install/walkie_vision_msgs ]] ||
+        die "walkie_vision_msgs is not built in WALKIE_VISION=$WALKIE_VISION: run pixi run build-msgs there"
+    # The vision part starts in WALKIE_VISION, so a relative path would resolve twice.
+    WALKIE_VISION=$(cd "$WALKIE_VISION" && pwd)
+}
+
 up() {
-    local with_agent=false with_arms=false headless=true rviz=false agent_args=()
+    local with_agent=false with_arms=false with_vision=false with_foxglove=false
+    local headless=true rviz=false agent_args=()
     while (($#)); do
         case $1 in
             --agent) with_agent=true ;;
             --arms) with_arms=true ;;
+            --vision) with_vision=true ;;
+            --foxglove) with_foxglove=true ;;
             --gui) headless=false rviz=true ;;
             --) shift; agent_args=("$@"); break ;;
             *) die "unknown option for up: $1" ;;
@@ -331,6 +378,9 @@ up() {
     ((${#agent_args[@]} == 0)) || $with_agent ||
         die "the arguments after -- are the agent's, so up needs --agent with them"
     check_prerequisites "$with_arms"
+    if $with_vision; then
+        check_vision_prerequisites
+    fi
     lock
     mkdir -p "$SIM_DIR"/{logs,pids,worlds,ros/log}
 
@@ -386,6 +436,24 @@ up() {
         agent_args+=(--arms)
     fi
 
+    # Vision loads its models while the oracle and the agent start; up waits for it
+    # after them. It runs in walkie-vision's own environment, whose activation sources
+    # its message overlay, on the sim topics (sim:=true) with the debug visualizer.
+    if $with_vision && ! running vision; then
+        start vision "$WALKIE_VISION" "$PIXI" run --as-is --manifest-path "$WALKIE_VISION/pixi.toml" \
+            vision "task:=$SIM_VISION_TASK" sim:=true viz:=true
+    fi
+    # foxglove_bridge comes from walkie-ros's environment, which has no walkie_vision_msgs,
+    # so it serves standard message types only; the visualizer's outputs are all standard.
+    # It listens on the loopback interface only.
+    if $with_foxglove && ! running foxglove; then
+        tcp_listening "$SIM_FOXGLOVE_PORT" &&
+            fail "port $SIM_FOXGLOVE_PORT is in use; set SIM_FOXGLOVE_PORT to a free port"
+        start foxglove "$SIM_DIR" "${walkie_ros[@]}" \
+            ros2 launch foxglove_bridge foxglove_bridge_launch.xml "port:=$SIM_FOXGLOVE_PORT" \
+            address:=127.0.0.1 use_sim_time:=true
+    fi
+
     running oracle || start oracle "$REPO" "$PIXI" run --frozen --manifest-path "$REPO/pixi.toml" oracle-chula
     # The agent's say needs a listener on /to_human. This one writes each line to
     # speech.log instead of voicing it, so the simulation is silent.
@@ -402,10 +470,25 @@ up() {
         wait_for_log agent "$AGENT_READY" "$PART_TIMEOUT_S" ||
             fail "the agent did not start; see $SIM_DIR/logs/agent.log"
     fi
+    if $with_vision; then
+        echo "waiting up to ${VISION_TIMEOUT_S} s for walkie-vision to load its models ..."
+        wait_for_log vision "$VISION_READY" "$VISION_TIMEOUT_S" "$VISION_FAILED" ||
+            fail "walkie-vision did not load its models; see $SIM_DIR/logs/vision.log"
+    fi
+    if $with_foxglove; then
+        wait_for_log foxglove "$FOXGLOVE_READY" "$PART_TIMEOUT_S" ||
+            fail "foxglove_bridge did not start; see $SIM_DIR/logs/foxglove.log"
+    fi
     sleep "$SETTLE_S"
     local name wanted=(router bringup oracle speech)
     if $with_arms; then
         wanted+=(moveit commander)
+    fi
+    if $with_vision; then
+        wanted+=(vision)
+    fi
+    if $with_foxglove; then
+        wanted+=(foxglove)
     fi
     if $with_agent; then
         wanted+=(agent)
@@ -413,6 +496,9 @@ up() {
     for name in "${wanted[@]}"; do
         running "$name" || fail "$name exited; see $SIM_DIR/logs/$name.log"
     done
+    if $with_foxglove; then
+        echo "Foxglove: open a connection to ws://localhost:$SIM_FOXGLOVE_PORT"
+    fi
     echo "up. Next: scripts/chula-sim.sh check$($with_agent && echo " --agent" || true)$($with_arms && echo " --arms" || true)"
 }
 
@@ -463,6 +549,6 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
         status) status ;;
         env) print_env ;;
         down) down ;;
-        *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+        *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
     esac
 fi

@@ -57,6 +57,13 @@ for `rmw_zenoh_cpp` 0.2.11, whose `rmw_wait` does not block forever
 ([ADR-0032](../architecture/decisions/0032-rmw-zenoh-from-source.md)). The script
 refuses to start without them.
 
+**For `--vision`, walkie-vision.** Set `WALKIE_VISION` to a walkie-vision
+checkout of `feat/scene-graph-prep` or later, the first with the debug
+visualizer. Its pixi environment must be installed, and `pixi run build-msgs`
+and `pixi run fetch-models` run there. `up --vision` refuses to start without
+the environment, the visualizer, the task's file or the built messages. The
+vision launch checks the models itself, and names the command that fetches them.
+
 **A model key, for `--agent`.** The agent reads `OPENAI_API_KEY` from the
 environment or from `.env` at the root of this repository. A Git worktree has no
 `.env` of its own. Without a key, the agent exits at startup, and `up` fails with
@@ -82,6 +89,8 @@ scripts/chula-sim.sh check --agent
 | `bringup` | `nav_mujoco_omnibot.launch.py world:=chula_pat14_6`, headless | Nav2 logs `Managed nodes are active` (300 s at most) |
 | `moveit` | `moveit_only.launch.py hardware_type:=mujoco use_rviz:=false`, with `--arms` only | move_group logs `MoveGroup context initialization complete` (120 s at most) |
 | `commander` | `launch/commander_sim.launch.py`, the arm commander on sim time, with `--arms` only | the commander logs `Bimanual Commander Node Initialized` (120 s at most) |
+| `vision` | walkie-vision's `pixi run vision task:=memory sim:=true viz:=true`, with `--vision` only | the node logs `loaded the models in` (300 s at most), after the oracle and the agent |
+| `foxglove` | `foxglove_bridge_launch.xml` on `127.0.0.1:8799`, from walkie-ros's environment, with `--foxglove` only | the bridge logs `Server listening on port` (120 s at most), after `vision` |
 | `oracle` | `pixi run oracle-chula` | |
 | `speech` | `ros2 topic echo /to_human`, into `speech.log` | |
 | `agent` | `pixi run agent-sim-chula --tool-log ...`, with `--agent` only | |
@@ -122,8 +131,9 @@ scripts/chula-sim.sh check --agent
   the goal has ended.
 - `up` refuses to start beside another `nav_mujoco_omnibot.launch.py`, on any
   graph, because two simulations compete for the CPU.
-- `up` returns only when the oracle and the agent have logged that they are up,
-  and every part is still running a few seconds later. If a part exits first,
+- `up` returns only when the oracle, the agent, `vision` and `foxglove`, each
+  when asked for, have logged that they are up, and every part is still
+  running a few seconds later. If a part exits first,
   `up` fails, names it, and lists the parts it leaves running.
 - `up` and `down` hold a lock on `SIM_DIR`, so a second `up` or `down` at the
   same time refuses to run. Each part's starter holds the lock too, until it has
@@ -224,6 +234,65 @@ judged get a `rejected` event in the store's `ledger.jsonl`. It ignores
 a verdict while a task runs and a second verdict on the same task. A question
 the agent asks ends a task too, so judge after its last reply. Each verdict is
 also a line of `logs/agent-tools.jsonl`, with the tool `verdict`.
+
+## Watch it in Foxglove
+
+```bash
+export WALKIE_VISION=/var/tmp/wv-prep   # a checkout of feat/scene-graph-prep
+scripts/chula-sim.sh up --vision --foxglove
+```
+
+**`--vision`** runs walkie-vision's node on the head camera, with the `memory`
+task, on the sim names. `SIM_VISION_TASK` picks another file of its
+`config/tasks/`. The node publishes `/walkie_vision/sim/objects`. The oracle
+still owns `/walkie_vision/objects`, so the agent does not read the node's
+arrays. Its debug visualizer publishes two topics of standard types:
+
+| Topic | Type | What it shows |
+| --- | --- | --- |
+| `/walkie_vision/sim/debug/objects_image/compressed` | `sensor_msgs/CompressedImage` | each array drawn on its own colour image: boxes, classes, scores and track ids |
+| `/walkie_vision/sim/debug/objects_markers` | `visualization_msgs/MarkerArray` | each detection's points and label, in the camera's optical frame |
+
+On MuJoCo's rendered frames, YOLOE finds small textured objects, such as the
+cup, the bottle and the apple, and misses or mislabels most furniture
+(decision S4-8 in
+[Mahoraga Demo Decisions](../architecture/mahoraga-demo-decisions.md)).
+
+**`--foxglove`** runs `foxglove_bridge` on sim time, from walkie-ros's
+environment, on `ws://localhost:8799`. `SIM_FOXGLOVE_PORT` picks another port.
+The script leaves Foxglove's default, 8765, free for a bridge of your own.
+
+To watch it, use the Foxglove desktop app (on this computer, `foxglove-studio`)
+or Lichtblick, which reads the same layout file:
+
+1. Open connection, then Foxglove WebSocket, and enter `ws://localhost:8799`.
+2. Import the layout `config/foxglove/chula-memory-layout.json` (Layouts,
+   then Import from file).
+
+The layout has three panels:
+
+| Panel | What it shows |
+| --- | --- |
+| Map, robot and objects (3D, display frame `map`) | `/map`, the robot model from `/robot_description`, Nav2's `/plan`, the visualizer's markers, and walkie-database's `/walkie_database/objects/markers` and `/walkie_database/objects/cloud` once its memory node runs |
+| Detections (annotated) | `/walkie_vision/sim/debug/objects_image/compressed` |
+| Logs | `/rosout`, at Info and above |
+
+The layout does not subscribe to the raw camera image, which is about 0.7 MB
+a frame in the simulation. The 3D panel needs the whole TF chain from `map` to
+`zed_head_left_camera_frame_optical` to place the visualizer's markers, which
+are in the camera's optical frame.
+
+- The bridge listens on 127.0.0.1 only. To watch from another computer,
+  forward the port: `ssh -L 8799:localhost:8799 <this computer>`.
+- walkie-ros's environment has no `walkie_vision_msgs` and no
+  `rai_interfaces`. The bridge cannot decode `/walkie_vision/objects`,
+  `/walkie_vision/sim/objects`, `/walkie_vision/people` or `/to_human`, so it
+  leaves them out and logs `Failed to load schemaDefinition` for each, again
+  whenever the graph changes. That is expected, and it is why the visualizer
+  publishes standard types.
+- foxglove_bridge 3 speaks the `foxglove.sdk.v1` WebSocket subprotocol. A
+  client that offers only the older `foxglove.websocket.v1` gets HTTP 400 and
+  the bridge logs `handshake failed`.
 
 ## Stop it
 
@@ -505,6 +574,23 @@ kitchen table, succeeded from the living room and from the shelf.
     and mislabels or misses the furniture (decision S4-8). The `table` goal had
     reached its place in 54.2 s on 2026-11-06; this time the vision node shared
     the CPUs. `down` left no record.
+- With vision and Foxglove, on 2026-11-12, with walkie-vision at ad7c833 in
+  `/var/tmp/wv-prep`: `up --vision --foxglove`. The models loaded in about
+  18 s. A client on the bridge, offering the `foxglove.sdk.v1` subprotocol
+  as the desktop app does, saw 141 channels and received over 15 s:
+
+    | Topic | Messages | Rate | Mean size |
+    | --- | --- | --- | --- |
+    | `/walkie_vision/sim/debug/objects_markers` | 51 | 3.4 Hz | 0.3 KiB |
+    | `/walkie_vision/sim/debug/objects_image/compressed` | 51 | 3.4 Hz | 11.3 KiB |
+    | `/tf` | 1600 | 107 Hz | 0.4 KiB |
+    | `/rosout` | 61 | 4.1 Hz | 0.3 KiB |
+    | `/map` | 1 | latched | 79.7 KiB |
+    | `/robot_description` | 1 | latched | 60.0 KiB |
+
+    The debug visualizer drew 796 arrays with one missing its image.
+    `down` stopped every part in about 23 s. Both vision processes finished
+    cleanly, within about 4 s of `down` starting (decision SG-11).
 
 ## Not in the recipe
 

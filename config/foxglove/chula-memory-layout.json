@@ -1,0 +1,104 @@
+{
+  "configById": {
+    "3D!map": {
+      "foxglovePanelTitle": "Map, robot and objects",
+      "lichtblickPanelTitle": "Map, robot and objects",
+      "cameraState": {
+        "perspective": true,
+        "distance": 14,
+        "phi": 50,
+        "thetaOffset": 45,
+        "target": [1.5, -3.2, 0],
+        "targetOffset": [0, 0, 0],
+        "targetOrientation": [0, 0, 0, 1],
+        "fovy": 45,
+        "near": 0.5,
+        "far": 5000
+      },
+      "followMode": "follow-none",
+      "followTf": "map",
+      "scene": {},
+      "transforms": {},
+      "topics": {
+        "/map": { "visible": true, "colorMode": "map" },
+        "/robot_description": { "visible": true },
+        "/plan": {
+          "visible": true,
+          "type": "line",
+          "lineWidth": 0.05,
+          "gradient": ["#00c853ff", "#00c85399"]
+        },
+        "/walkie_vision/sim/debug/objects_markers": { "visible": true },
+        "/walkie_database/objects/markers": { "visible": true },
+        "/walkie_database/objects/cloud": {
+          "visible": true,
+          "pointSize": 3,
+          "pointShape": "circle",
+          "decayTime": 0,
+          "colorMode": "rgb",
+          "colorField": "rgb"
+        }
+      },
+      "layers": {
+        "grid": {
+          "visible": true,
+          "layerId": "foxglove.Grid",
+          "frameId": "map",
+          "size": 20,
+          "divisions": 20,
+          "lineWidth": 1,
+          "color": "#248eff33",
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0],
+          "order": 1
+        }
+      },
+      "imageMode": {}
+    },
+    "Image!annotated": {
+      "foxglovePanelTitle": "Detections (annotated)",
+      "lichtblickPanelTitle": "Detections (annotated)",
+      "imageMode": {
+        "imageTopic": "/walkie_vision/sim/debug/objects_image/compressed"
+      },
+      "cameraState": {
+        "perspective": false,
+        "distance": 20,
+        "phi": 60,
+        "thetaOffset": 45,
+        "target": [0, 0, 0],
+        "targetOffset": [0, 0, 0],
+        "targetOrientation": [0, 0, 0, 1],
+        "fovy": 45,
+        "near": 0.5,
+        "far": 5000
+      },
+      "followMode": "follow-pose",
+      "scene": {},
+      "transforms": {},
+      "topics": {},
+      "layers": {}
+    },
+    "RosOut!log": {
+      "foxglovePanelTitle": "Logs",
+      "lichtblickPanelTitle": "Logs",
+      "searchTerms": [],
+      "minLogLevel": 2,
+      "nameFilter": {}
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": { "speed": 1 },
+  "layout": {
+    "direction": "row",
+    "first": "3D!map",
+    "second": {
+      "direction": "column",
+      "first": "Image!annotated",
+      "second": "RosOut!log",
+      "splitPercentage": 65
+    },
+    "splitPercentage": 60
+  }
+}

@@ -289,7 +289,8 @@ cup, the bottle and the apple, and misses or mislabels most furniture
 
 **`--memory`** runs walkie-database's object memory on those arrays. Every 2 s
 of sim time it merges the detections it has placed in the map, keeps an object
-once two views agree, saves the result in `SIM_MEMORY_DB`, and publishes:
+once three arrays have shown it (`confirm_views`, which the script leaves at
+its default), saves the result in `SIM_MEMORY_DB`, and publishes:
 
 | Topic | Type | What it shows |
 | --- | --- | --- |

@@ -33,6 +33,7 @@ The order matters, and `tests/test_runtime.py` pins it.
 ...
 StopLatch
 SerialGuard
+AnswerEmptyReply
 WalkieTodos
 EndAfterQuestion
 RepairHistory
@@ -49,6 +50,7 @@ An optional `ToolLog` goes first and an optional `ModelFallbackMiddleware` goes 
 | ---------- | --------------- |
 | `StopLatch` | A model call or a tool call after a stop |
 | `SerialGuard` | Later calls of one message after a failed call or a question, and a second `update_todos` |
+| `AnswerEmptyReply` | A final message with no text, which the person never hears. It asks the model once per run, unless the robot already spoke |
 | `WalkieTodos` | Dropped steps and false "done". It holds the list, the reminder, the gate and the ledger |
 | `EndAfterQuestion` | Going on without the answer |
 | `RepairHistory` | A provider's refusal of a tool call with no answer |
@@ -62,6 +64,9 @@ for this order:
 
 - **The limit comes after anything that can jump from `after_model`.** Reverse order then
   runs it first, so it counts every call, gate calls included.
+- **`AnswerEmptyReply` comes before `WalkieTodos`.** A jump skips the `after_model` hooks
+  that have not run yet, so when the todo gate sends the model back, the empty-reply
+  check does not also fire.
 - **The refusals sit outside the ledger.** A call that `StopLatch` or `SerialGuard` refuses
   never ran, so it must not count as a failed step. `WalkieTodos` is inside them.
 - **`ToolErrorMiddleware` is innermost,** so the ledger sees an error as a result.

@@ -144,7 +144,12 @@ from walkie_agent.adapter import as_tools
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.runtime import SYSTEM_PROMPT, ToolLog, build_agent, build_middleware
-from walkie_agent.runtime.middleware import INTERRUPTED, UNREADABLE_ARGUMENTS, RepairHistory
+from walkie_agent.runtime.middleware import (
+    EMPTY_REPLY,
+    INTERRUPTED,
+    UNREADABLE_ARGUMENTS,
+    RepairHistory,
+)
 from walkie_agent.runtime.todos import parse_seed
 from walkie_agent.tools.atomic import DEFAULT, go_to, list_places, say
 
@@ -170,6 +175,7 @@ def test_the_whole_middleware_list_is_pinned(tmp_path):
     assert names() == [
         "StopLatch",
         "SerialGuard",
+        "AnswerEmptyReply",
         "WalkieTodos",
         "EndAfterQuestion",
         "RepairHistory",
@@ -181,6 +187,7 @@ def test_the_whole_middleware_list_is_pinned(tmp_path):
         "ToolLog",
         "StopLatch",
         "SerialGuard",
+        "AnswerEmptyReply",
         "WalkieTodos",
         "EndAfterQuestion",
         "RepairHistory",
@@ -261,6 +268,158 @@ def test_control_with_the_limit_first_gate_calls_overrun_it():
     agent = limit_first_agent(model, robot, run_limit=5)
     invoke(agent, todo_seed=parse_seed(["Patrol the hall"]))
     assert len(model.received) == 6
+
+
+# -- Empty replies ----------------------------------------------------------------
+
+
+def asked_for_a_reply(stack) -> list[int]:
+    """The model calls, counted from 0, whose history holds the empty-reply request."""
+    return [
+        n
+        for n, sent in enumerate(stack.model.received)
+        if any(isinstance(m, HumanMessage) and m.content == EMPTY_REPLY for m in sent)
+    ]
+
+
+def test_an_empty_reply_after_a_tool_is_dropped_and_the_model_is_asked_once():
+    # The 2026-11-12 sim run: list_room_objects, then a reply with no text.
+    stack = make_stack(ai(call("list_places", {}, "places")), ai(), AIMessage("Here it is."))
+    result = stack.run()
+    assert len(stack.model.received) == 3
+    assert stack.model.received[2][-1].content == EMPTY_REPLY
+    assert result["messages"][-1].content == "Here it is."
+    empty = [
+        m for m in stack.messages if isinstance(m, AIMessage) and not m.text and not m.tool_calls
+    ]
+    assert empty == []
+    assert_every_call_answered(stack.messages)
+
+
+def test_an_empty_reply_with_no_tool_call_is_asked_for_too():
+    stack = make_stack(ai(), AIMessage("Hello."))
+    assert stack.run()["messages"][-1].content == "Hello."
+    assert asked_for_a_reply(stack) == [1]
+
+
+def test_a_second_empty_reply_ends_the_task_with_a_warning(caplog):
+    stack = make_stack(ai(), ai())
+    with caplog.at_level(logging.WARNING, logger="walkie_agent.runtime.middleware"):
+        result = stack.run()
+    assert len(stack.model.received) == 2
+    assert result["messages"][-1].text == ""
+    assert "reply was empty again" in caplog.text
+
+
+def test_a_say_after_the_request_ends_the_task_without_a_warning(caplog):
+    said = ai(call("say", {"text": "It is on the sofa."}, "spoke"))
+    stack = make_stack(ai(), said, ai(), then=DONE)
+    with caplog.at_level(logging.WARNING, logger="walkie_agent.runtime.middleware"):
+        stack.run()
+    assert len(stack.model.received) == 3
+    assert asked_for_a_reply(stack) == [1, 2]
+    assert "reply was empty again" not in caplog.text
+
+
+def test_each_task_gets_its_own_request():
+    # The Runner keeps one thread until a reset, so the first task's request is in the
+    # second task's history.
+    stack = make_stack(ai(), AIMessage("First answer."), ai(), AIMessage("Second answer."))
+    assert stack.run("Where is my cup?")["messages"][-1].content == "First answer."
+    assert stack.run("And my keys?")["messages"][-1].content == "Second answer."
+    assert len(stack.model.received) == 4
+
+
+def test_a_stop_during_the_empty_call_ends_the_run_on_it():
+    robot = FakeRobot()
+
+    def empty_while_stopping(messages):
+        robot.ctx.cancel.cancel()
+        return ai()
+
+    stack = make_stack(empty_while_stopping, then=DONE, robot=robot)
+    result = stack.run()
+    assert len(stack.model.received) == 1
+    assert result["messages"][-1].text == ""
+    assert not [m for m in stack.messages if m.content == EMPTY_REPLY]
+
+
+def test_an_empty_reply_after_tools_that_follow_the_request_ends_the_task():
+    # The request is asked once per run, so a later empty one ends the task.
+    stack = make_stack(ai(), ai(call("list_places", {}, "places")), ai())
+    stack.run()
+    assert len(stack.model.received) == 3
+    assert asked_for_a_reply(stack) == [1, 2]
+
+
+def test_an_empty_reply_after_the_robot_spoke_ends_the_task_quietly():
+    stack = make_stack(ai(call("say", {"text": "It is on the table."}, "spoke")), ai())
+    stack.run()
+    assert len(stack.model.received) == 2
+    assert asked_for_a_reply(stack) == []
+
+
+def test_a_failed_say_does_not_count_as_speaking():
+    robot = FakeRobot()
+    robot.faults["speech.say"] = StepError(ErrorCode.TIMEOUT, "The speaker hung.")
+    stack = make_stack(
+        ai(call("say", {"text": "Hi."}, "spoke")), ai(), AIMessage("Could not speak."), robot=robot
+    )
+    stack.run()
+    assert stack.answer("spoke").status == "error"
+    assert asked_for_a_reply(stack) == [2]
+
+
+def test_speaking_in_an_earlier_task_does_not_excuse_an_empty_reply():
+    stack = make_stack(
+        ai(call("say", {"text": "Hi."}, "spoke")), DONE, ai(), AIMessage("Second answer.")
+    )
+    stack.run()
+    assert stack.run("Again.")["messages"][-1].content == "Second answer."
+    assert asked_for_a_reply(stack) == [3]
+
+
+def test_the_todo_gate_wins_over_the_empty_reply_request():
+    stack = make_stack(ai(), then=DONE)
+    stack.run(todos=["Open step"])
+    # The gate sends the model back twice, then the run ends: no third kind of call.
+    assert len(stack.model.received) == 3
+    assert asked_for_a_reply(stack) == []
+    assert str(stack.model.received[1][-2].content).startswith("[todo] Open items")
+
+
+def test_a_say_before_the_todo_gate_still_counts_as_speaking():
+    # The gate's message is not the person's, so the run still starts at the request.
+    stack = make_stack(
+        ai(call("say", {"text": "It is on the table."}, "spoke")),
+        ai(),
+        ai(todo_call(update("t1", status="completed"), call_id="done")),
+        ai(),
+        then=DONE,
+    )
+    stack.run(todos=["Tell them where it is"])
+    assert stack.state["gates"] == 1
+    assert len(stack.model.received) == 4
+    assert asked_for_a_reply(stack) == []
+
+
+def test_a_tool_image_does_not_start_a_new_run():
+    stack = make_stack(
+        ai(call("say", {"text": "Here it is."}, "spoke")),
+        ai(),
+        then=DONE,
+        tool_log=AddsAHumanMessageAfterATool(),
+    )
+    stack.run()
+    assert len(stack.model.received) == 2
+    assert asked_for_a_reply(stack) == []
+
+
+def test_the_limit_counts_the_empty_reply_request():
+    stack = make_stack(ai(), then=AIMessage("Never sent."), run_limit=1)
+    result = stack.run()
+    assert len(stack.model.received) == 1
+    assert "run limit (1/1)" in result["messages"][-1].content
 
 
 # -- Invalid calls and unknown tools ----------------------------------------------
@@ -482,7 +641,8 @@ def test_a_broken_run_is_repaired_and_its_stale_drive_stays_unrun():
         payload = {"messages": [HumanMessage("Go.")], "todo_seed": None}
         stream = stack.agent.astream(payload, stack.config, stream_mode="updates")
         async for chunk in stream:
-            if "WalkieTodos.after_model" in chunk:
+            # The last after_model hook before the tools node, since they run in reverse.
+            if "AnswerEmptyReply.after_model" in chunk:
                 break
         await stream.aclose()
 

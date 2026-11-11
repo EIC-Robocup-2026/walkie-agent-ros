@@ -211,7 +211,9 @@ flowchart TD
   M -->|"only calls with unreadable arguments"| M
   M -->|"no tool call"| GATE{"Todo items open?"}
   GATE -->|"yes: completion gate,<br/>at most twice per task"| M
-  GATE -->|"no, or already twice"| DONE
+  GATE -->|"no, or already twice"| EMPTY{"No text, and nothing<br/>said in this run?"}
+  EMPTY -->|"yes: ask for an answer,<br/>once per run"| M
+  EMPTY -->|"no, or already asked"| DONE
   M -->|"the run's call limit"| DONE
 ```
 
@@ -220,6 +222,7 @@ flowchart TD
 | `ToolLog`, with `--tool-log` | Writes one JSON line per tool call, refusals included |
 | `StopLatch` | Once the token is set: no model call, and every tool call refused |
 | `SerialGuard` | A failed call or a question skips the later calls of its message. Only the first `update_todos` of a message runs. |
+| `AnswerEmptyReply` | A final message with no text goes back to the model once per run, unless a `say` in the run succeeded |
 | `WalkieTodos` | The list, the reminder, the completion gate and the two todo tools |
 | `EndAfterQuestion` | Ends the run after a successful question |
 | `RepairHistory` | Answers calls left open by an earlier run and calls with unreadable arguments |

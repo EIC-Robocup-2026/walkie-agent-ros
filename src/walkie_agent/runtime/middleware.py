@@ -12,16 +12,17 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, NotRequired
 
 from langchain.agents.middleware import (
     AgentMiddleware,
+    AgentState,
     ModelRequest,
     ModelResponse,
     ToolCallRequest,
     hook_config,
 )
-from langchain_core.messages import AIMessage, AnyMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command
 
@@ -43,6 +44,13 @@ AFTER_QUESTION = (
     "Call it again after the answer if it is still needed."
 )
 AFTER_STOP = "Not run: the person said stop, so the task ended."
+EMPTY_REPLY = (
+    "[reply] Your last message was empty, so the person got no answer. "
+    "Answer their request now."
+)
+# The tools whose successful call reaches the person, so an empty message after one
+# of them in the same stretch leaves nobody waiting.
+SPEAKING_TOOLS = frozenset({"say", "wait_for_person"})
 
 
 def tool_result(result: ToolResult, call_id: str) -> ToolMessage | None:
@@ -154,6 +162,73 @@ class SerialGuard(AgentMiddleware):
         elif call["name"] == "wait_for_person":
             self._blocked = (owner.id, AFTER_QUESTION)
         return result
+
+
+class ReplyState(AgentState):
+    """The state AnswerEmptyReply adds."""
+
+    reply_from: NotRequired[str | None]  # the id of the message that started this run
+
+
+class AnswerEmptyReply(AgentMiddleware):
+    """Sends the model back, once per run, when it ends with an empty message unheard.
+
+    Some providers end a turn with no text and no calls, often right after a tool
+    result. The Runner publishes nothing for such a message, so the person would get
+    no answer at all. The empty message is dropped and EMPTY_REPLY asks for one.
+
+    A run starts at the message the Runner sent in, which before_agent marks, so the
+    todo gate's message or a tool's image does not start a new one. It asks only when
+    nothing in this run spoke to the person: an empty message after a successful `say`
+    ends the task quietly, as before, so the robot does not repeat itself. A `say` made
+    inside a `run_script` script is not seen. When this run has asked already and still
+    nothing spoke, another empty message ends the task, with a warning in the log. A
+    stop that lands during the call ends the run on the empty message, so the history
+    holds no request to answer something the person stopped.
+
+    Goes before WalkieTodos, so the todo gate, whose after_model runs first, sends
+    the model back about its open steps instead, and before the limit, which then
+    counts every call this sends back.
+    """
+
+    state_schema = ReplyState
+
+    def __init__(self, cancel: CancelToken) -> None:
+        super().__init__()
+        self.cancel = cancel
+
+    def before_agent(self, state: dict[str, Any], runtime: Any) -> dict[str, Any]:
+        messages = state["messages"]
+        return {"reply_from": messages[-1].id if messages else None}
+
+    @hook_config(can_jump_to=["model"])
+    def after_model(self, state: dict[str, Any], runtime: Any) -> dict[str, Any] | None:
+        messages = state["messages"]
+        last = messages[-1]
+        if not isinstance(last, AIMessage) or last.tool_calls or last.invalid_tool_calls:
+            return None
+        if last.text.strip() or self.cancel.cancelled:
+            return None
+        # A start that is gone counts the whole history, which can only ask less often.
+        start = state.get("reply_from")
+        run = messages[next((i for i, m in enumerate(messages) if m.id == start), 0) :]
+        if any(_spoke(m) for m in run):
+            return None
+        if any(isinstance(m, HumanMessage) and m.content == EMPTY_REPLY for m in run):
+            logger.warning("The model's reply was empty again, so the person gets no answer.")
+            return None
+        return {
+            "jump_to": "model",
+            "messages": [RemoveMessage(id=last.id), HumanMessage(EMPTY_REPLY)],
+        }
+
+
+def _spoke(message: AnyMessage) -> bool:
+    return (
+        isinstance(message, ToolMessage)
+        and message.name in SPEAKING_TOOLS
+        and message.status != "error"
+    )
 
 
 class EndAfterQuestion(AgentMiddleware):

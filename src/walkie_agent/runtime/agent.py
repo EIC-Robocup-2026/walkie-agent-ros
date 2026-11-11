@@ -19,6 +19,7 @@ from langgraph.graph.state import CompiledStateGraph
 from walkie_agent.adapter import as_tools, tool_error_middleware
 from walkie_agent.capabilities import Ctx
 from walkie_agent.runtime.middleware import (
+    AnswerEmptyReply,
     Deadline,
     EndAfterQuestion,
     RepairHistory,
@@ -82,7 +83,9 @@ def build_middleware(
     hooks in reverse, and makes the first wrapper the outermost. So:
 
     - The limit counts in after_model and comes after everything that can jump from
-      there (RepairHistory, the WalkieTodos gate), so it sees every call first.
+      there (AnswerEmptyReply, the WalkieTodos gate, RepairHistory), so it sees every
+      call first. A jump skips the after_model hooks earlier in the list, so
+      AnswerEmptyReply goes before WalkieTodos, and the todo gate wins when both apply.
     - Around a tool call: the log sees every answer. The stop and order refusals come
       next, outside the ledger, so a call that never ran cannot poison completion.
       ToolErrorMiddleware is innermost, so the ledger sees errors as results.
@@ -94,6 +97,7 @@ def build_middleware(
         *([tool_log] if tool_log else []),
         StopLatch(ctx.cancel),
         SerialGuard(),
+        AnswerEmptyReply(ctx.cancel),
         WalkieTodos(ctx.cancel, ctx.speech.say, on_todos),
         EndAfterQuestion(),
         RepairHistory(),

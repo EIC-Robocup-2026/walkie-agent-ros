@@ -737,7 +737,7 @@ footer p + p { margin-top: 6px; }
       "nodes": [
         { "t": "Runner", "s": "queue, stop, reset, one task at a time", "status": "works" },
         { "t": "create_agent", "s": "LangChain agent loop", "status": "works" },
-        { "t": "Middleware", "s": "ToolLog (with --tool-log), StopLatch, SerialGuard, WalkieTodos, EndAfterQuestion, RepairHistory, ModelCallLimit, Deadline, ToolErrorMiddleware", "status": "works" },
+        { "t": "Middleware", "s": "ToolLog (with --tool-log), StopLatch, SerialGuard, AnswerEmptyReply, WalkieTodos, EndAfterQuestion, RepairHistory, ModelCallLimit, Deadline, ToolErrorMiddleware", "status": "works" },
         { "t": "Model", "s": "OpenRouter, set in config.toml; a fallback model is supported but none is set", "status": "works" },
         { "t": "Langfuse", "s": "optional tracing, unit-tested only", "status": "tested" }
       ]

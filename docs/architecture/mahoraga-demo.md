@@ -784,6 +784,7 @@ tool whose name collides with these two is refused at build.
 | `ToolLog`, when configured | Logs every answer, refusals included |
 | `StopLatch` | Once the token is set: no model call, and every tool call refused |
 | `SerialGuard` | A failed call or a question skips the later calls of its message; only the first `update_todos` of a message runs, and a refused copy counts as a failed call |
+| `AnswerEmptyReply` | A final message with no text goes back to the model once per run, unless a `say` in the run succeeded |
 | `WalkieTodos` | The list, the reminder, the completion gate and the two tools |
 | `EndAfterQuestion` | Ends the run after a successful question |
 | `RepairHistory` | Answers calls left open by an earlier run and calls with unreadable arguments |

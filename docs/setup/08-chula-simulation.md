@@ -786,6 +786,59 @@ kitchen table, succeeded from the living room and from the shelf.
     objects (10 chairs, 5 cups, 4 bottles, 2 tables, 2 apples, a sofa, a
     shelf, a cabinet, a bowl and a banana), 7 merged ones, 9 relations and
     7225 observations.
+- With the furniture seed (SG-26), on 2026-11-12 at commit 961d537, with
+  walkie-vision at ad7c833 and walkie-database at 45228e6: `reset-memory`,
+  then `up --agent --vision --memory --object-tools --foxglove`, on the real
+  model with the `default` tool set. The store started with the seed's two
+  rooms and nine pieces of furniture, and no other object. A tour of direct
+  Nav2 goals came first, 180 s at most each:
+
+    | Place | Result | Time | Stopped off the goal by |
+    | --- | --- | --- | --- |
+    | table | SUCCEEDED | 32.4 s | 0.098 m, +0.5° |
+    | sofa | SUCCEEDED | 84.8 s | 0.100 m, -0.1° |
+    | tv | SUCCEEDED | 8.3 s | 0.080 m, +0.0° |
+    | living room | SUCCEEDED | 7.3 s | 0.010 m, +0.4° |
+    | kitchen room | SUCCEEDED | 30.7 s | 0.061 m, -0.3° |
+    | bar | SUCCEEDED | 36.8 s | 0.095 m, -0.2° |
+    | shelf | SUCCEEDED | 25.4 s | 0.053 m, +0.5° |
+
+    Then three requests on `/from_human`:
+    - "Where is the mug?" `recall_object("mug")` answered no objects, with
+      `complete: true`. The model asked again for "cup", and got cups 16 and
+      14 on `table 3`, the kitchen table, near the bar and the shelf, last
+      seen 55 s before; cup 10 on `table 2`, the coffee table, near the sofa,
+      138 s before; and bottle 12, which YOLOE had called a cup in 60 of its
+      207 detections. It said
+      "I have not seen a mug, sorry. I did see cups: two on table 3 in the
+      kitchen room, about a minute ago, and one on table 2 in the living
+      room."
+    - "What's in the living room?" `list_room_objects("living room")`
+      answered the sofa (5), table 9 near the tv, table 2 near the sofa,
+      cabinet 20 near the entrance and cup 10 on table 2, with
+      `complete: true`. Table 2's age, 226 s, was the seed's own stamp: the
+      detector never saw the coffee table (SG-24). The model then ended its
+      turn with an empty message, no text and no call, so the person got no
+      answer, since the Runner publishes nothing for an empty reply. Decision
+      R7 in [Mahoraga Demo Decisions](../architecture/mahoraga-demo-decisions.md)
+      now asks the model for an answer once in that case.
+    - "Where did you see a cup? Please tell me out loud." The model called no
+      tool. It answered from the conversation with two `say` calls: the cups,
+      and then the living room list it had not given before.
+
+    `down` stopped every part in about 18 s. No part logged a traceback, and
+    the memory could not place 3 arrays in `map` for want of a transform. The
+    store passed `PRAGMA integrity_check` and held 21 present objects (5
+    chairs, 4 tables, 4 bottles, 3 cups, 2 apples, a shelf, a sofa and a
+    cabinet), 3 bottles merged into others, 12 relations and 2223
+    observations. The nine seeded anchors kept their IDs. The detector added
+    three anchors of its own: chair 15, a box of 0.78 m by 0.36 m whose
+    centre is 0.27 m from the seeded `stool_3` (chair 8), which that anchor
+    did not absorb; chair 19, a box of 0.89 m by 0.04 m in the kitchen; and cabinet
+    20, a box of 0.64 m by 0.03 m by the entrance, where SG-14 found a wall or
+    a door. 9 of the 12 relations belong to present objects: 5 on the kitchen
+    table, 2 on the shelf, and one each on the coffee table and the bar
+    (`table 1`).
 
 ## Not in the recipe
 

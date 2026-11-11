@@ -486,9 +486,9 @@ footer p + p { margin-top: 6px; }
   "meta": {
     "asOf": "2026-11-12",
     "branch": "feat/mahoraga-demo",
-    "commit": "df826f9",
-    "tests": "2703",
-    "testsNote": "passed, 1 skipped (pixi run test at bb1d3f4)",
+    "commit": "2a53529",
+    "tests": "2731",
+    "testsNote": "passed, 1 skipped (pixi run test at 2a53529)",
     "gate": "b6279cbf5042e1d7",
     "gateDate": "2026-11-09",
     "lastSim": "2026-11-09",
@@ -854,6 +854,7 @@ footer p + p { margin-top: 6px; }
   "commands": [
     { "title": "Start the Chula simulation with the agent", "cmd": "scripts/chula-sim.sh up --agent -- --tool-set hri", "note": "Private Zenoh router on port 7499 and ROS_DOMAIN_ID 77, so it never joins another graph. Needs `WALKIE_ROS` set to a built walkie-ros workspace with the Chula world: built from walkie-ros's feat/chula-pat14-6-simulation branch, or with `WALKIE_ROS_OVERLAY` naming a built worktree of that branch. Also needs `pixi run build-ros2` and `pixi run build-rmw-zenoh` in this repository, and `OPENAI_API_KEY` from the environment or the repository's `.env` (a worktree has none). `up --agent` runs `agent-sim-chula`, which already passes `--use-sim-time`, `--vision`, the Chula places file and `--tool-log`. Add `--arms` before `--` for the arms, and `--people-memory mock` or `--scripts` after it." },
     { "title": "Everything at once", "cmd": "scripts/chula-sim.sh up --agent --arms -- --tool-set hri --people-memory mock --scripts", "note": "The run of 2026-11-08 used this line." },
+    { "title": "Ask about remembered objects", "cmd": "scripts/chula-sim.sh reset-memory\nscripts/chula-sim.sh up --agent --vision --memory --object-tools --foxglove", "note": "Needs `WALKIE_VISION` and `WALKIE_DATABASE` set to checkouts of their `feat/scene-graph-prep` branches. `reset-memory` restores the object memory's store from the furniture seed, and refuses while the memory runs, so run `down` first. Drive the robot round the rooms, then ask \"Where did you see a cup?\" (SG-16 to SG-26)." },
     { "title": "Talk to it", "cmd": "eval \"$(scripts/chula-sim.sh env)\"\npixi run ros2 topic pub -w 1 --once /from_human rai_interfaces/msg/HRIMessage \"{text: 'Who can you see right now?'}\"\ntail -f /var/tmp/walkie-chula-sim/logs/speech.log", "note": "Text replies go to `/walkie/console`, and each tool call is a line of `logs/agent-tools.jsonl`." },
     { "title": "Reset the conversation", "cmd": "pixi run ros2 topic pub -w 1 --once /walkie/reset std_msgs/msg/Empty \"{}\"", "note": "Run after the eval line above. It also forgets the people remembered in the task." },
     { "title": "Judge a script task", "cmd": "pixi run ros2 topic pub -w 1 --once /walkie/verdict std_msgs/msg/Bool \"{data: true}\"", "note": "`true` verifies the saved functions the task proved. `false` verifies nothing and records each of them as rejected in the store's `ledger.jsonl`, so the model then sees them marked as likely wrong. Needs an agent started with `--scripts`. A verdict sent while a task runs is ignored." },

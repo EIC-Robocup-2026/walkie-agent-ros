@@ -13,8 +13,19 @@ from typing import Any
 from walkie_agent.tools.atomic.arms import get_arm_state, list_arm_poses, move_arm_to_pose, set_gripper
 from walkie_agent.tools.atomic.facts import get_facts
 from walkie_agent.tools.atomic.manipulation import hand_over, pick, place_on
-from walkie_agent.tools.atomic.memory import recognize_person, remember_person
-from walkie_agent.tools.atomic.navigation import face_person, go_to, list_places, move_relative
+from walkie_agent.tools.atomic.memory import (
+    list_room_objects,
+    recall_object,
+    recognize_person,
+    remember_person,
+)
+from walkie_agent.tools.atomic.navigation import (
+    face_person,
+    go_to,
+    go_to_object,
+    list_places,
+    move_relative,
+)
 from walkie_agent.tools.atomic.perception import find_objects, find_people, object_info
 from walkie_agent.tools.atomic.speech import say
 
@@ -24,20 +35,24 @@ __all__ = [
     "DEFAULT",
     "GPSR",
     "HRI",
+    "OBJECT_MEMORY_TOOLS",
     "face_person",
     "find_objects",
     "find_people",
     "get_arm_state",
     "get_facts",
     "go_to",
+    "go_to_object",
     "hand_over",
     "list_arm_poses",
     "list_places",
+    "list_room_objects",
     "move_arm_to_pose",
     "move_relative",
     "object_info",
     "pick",
     "place_on",
+    "recall_object",
     "recognize_person",
     "remember_person",
     "say",
@@ -54,6 +69,16 @@ _ARM_ATOMICS: list[Callable[..., Any]] = [
     get_arm_state,
 ]
 ARM_TOOLS: frozenset[str] = frozenset(fn.__name__ for fn in _ARM_ATOMICS)
+
+# The atomics that read the object memory, and the one that drives to what it
+# remembers. main.py drops them by these names unless it runs with --object-memory,
+# so a set without the flag keeps the tool text it had before them (decision SG-16).
+_OBJECT_MEMORY_ATOMICS: list[Callable[..., Any]] = [
+    recall_object,
+    list_room_objects,
+    go_to_object,
+]
+OBJECT_MEMORY_TOOLS: frozenset[str] = frozenset(fn.__name__ for fn in _OBJECT_MEMORY_ATOMICS)
 
 # The tool sets are plain lists in code (decision 3). Commands name their
 # places, so GPSR has no list_places, as in the spike it was measured with.
@@ -74,7 +99,9 @@ GPSR: list[Callable[..., Any]] = [
 # The two memory atomics are in HRI alone, so DEFAULT and GPSR stay as they were:
 # no effect covers a memory write yet (ADR-0070). The arm atomics come last, so HRI
 # without them is the set it was before them. find_objects lets HRI see the seats
-# (decision S4-5); object_info stays out, since nothing measures a live object.
+# (decision S4-5); object_info stays out, since nothing measures a live object. The
+# object memory atomics come before the arm atomics, and both are dropped without
+# their flags.
 HRI: list[Callable[..., Any]] = [
     list_places,
     go_to,
@@ -85,6 +112,7 @@ HRI: list[Callable[..., Any]] = [
     face_person,
     remember_person,
     recognize_person,
+    *_OBJECT_MEMORY_ATOMICS,
     *_ARM_ATOMICS,
 ]
 # The arms on their own: the base verbs the drive check guards, speech to say what the
@@ -98,7 +126,8 @@ ARMS: list[Callable[..., Any]] = [
     *_ARM_ATOMICS,
 ]
 # Every atomic that needs no arms, which the robot runs without unless --arms connects
-# them, and writes no people memory, which no effect covers yet (ADR-0070).
+# them, and writes no people memory, which no effect covers yet (ADR-0070). The object
+# memory atomics only read the memory, and are dropped without --object-memory.
 DEFAULT: list[Callable[..., Any]] = [
     list_places,
     go_to,
@@ -109,4 +138,5 @@ DEFAULT: list[Callable[..., Any]] = [
     find_people,
     face_person,
     get_facts,
+    *_OBJECT_MEMORY_ATOMICS,
 ]

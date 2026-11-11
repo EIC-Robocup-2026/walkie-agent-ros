@@ -11,6 +11,7 @@ name itself. A place with no `room` is in no known room.
 
 import math
 import tomllib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated
@@ -94,6 +95,28 @@ def load_locations(path: str | Path) -> dict[str, Location]:
         name: Location(name, entry.x, entry.y, entry.yaw, entry.description, entry.room)
         for name, entry in entries.items()
     }
+
+
+def nearest_place(
+    places: Iterable[Location], x: float, y: float, *, max_m: float, room: str | None = None
+) -> Location | None:
+    """The place nearest (x, y) within `max_m` meters, leaving the rooms out, or None.
+
+    A room is left out because its pose is somewhere to stand in the room, not a spot
+    near anything. When some place of `room` is within `max_m`, only those count, so
+    a place behind a wall in the next room loses to one in the same room. Rooms
+    compare ignoring case and spaces at either end.
+    """
+    near = [
+        place
+        for place in places
+        if place.room != place.name and math.hypot(place.x - x, place.y - y) <= max_m
+    ]
+    if room:
+        wanted = room.strip().casefold()
+        in_room = [place for place in near if place.room.strip().casefold() == wanted]
+        near = in_room or near
+    return min(near, key=lambda place: math.hypot(place.x - x, place.y - y), default=None)
 
 
 def _check_room(path: str | Path, name: str, room: str, entries: dict[str, _Entry]) -> None:

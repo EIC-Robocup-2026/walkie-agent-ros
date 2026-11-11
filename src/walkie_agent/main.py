@@ -33,6 +33,11 @@ view. A message on /walkie/reset ends the task, and forgets the people remembere
 first task instead, so an agent restarted mid-task still knows its guests. `mock` and
 `ros` need --vision: a bad combination stops the agent at once, with exit code 2.
 
+--object-memory binds `recall_object`, `list_room_objects` and `go_to_object`, which read
+where walkie-database's object memory last saw objects (decisions SG-16 to SG-21). Every
+set leaves them out without it. It needs --vision and a set with those atomics, default
+or hri: a bad combination stops the agent at once, with exit code 2.
+
 --arms connects the arms through walkie-ros's bimanual_commander (ADR-0021). It binds the
 arm atomics of the chosen tool set, which every set leaves out without it, and go_to and
 move_relative then refuse to drive with an arm out (ADR-0025). The poses come from
@@ -85,9 +90,11 @@ from walkie_agent.capabilities import (
     Ctx,
     Facts,
     Memory,
+    ObjectMemory,
     UnavailableArms,
     UnavailableFacts,
     UnavailableMemory,
+    UnavailableObjectMemory,
 )
 from walkie_agent.capabilities.facts import facts_from_config
 from walkie_agent.locations import Location, load_locations
@@ -99,6 +106,7 @@ from walkie_agent.ros import (
     RosArms,
     RosBase,
     RosBridge,
+    RosObjectMemory,
     RosPeopleMemory,
     RosSpeech,
     RosVision,
@@ -123,7 +131,7 @@ from walkie_agent.scripting.agent_tool import AgentScripts
 from walkie_agent.scripting.sandbox import SandboxUnavailable
 from walkie_agent.scripting.shelf import Shelf
 from walkie_agent.tasks import TaskTemplate, check_required_tools, load_task_templates
-from walkie_agent.tools.atomic import ARM_TOOLS, ARMS, DEFAULT, GPSR, HRI
+from walkie_agent.tools.atomic import ARM_TOOLS, ARMS, DEFAULT, GPSR, HRI, OBJECT_MEMORY_TOOLS
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +162,9 @@ SIM_ARM_BOUNDS: Mapping[str, float] = MappingProxyType(
 )
 # --people-memory's choices: none, a store in this process, or walkie-database.
 PEOPLE_MEMORIES = ("unavailable", "mock", "ros")
+# With --object-memory, the set must bind this one, so the flag never connects a
+# memory that no tool reads.
+OBJECT_MEMORY_TOOL = "recall_object"
 # A todo step can require this one too. It cannot require update_todos, because the
 # ledger that proves a step's work leaves that tool out.
 WAIT_TOOL = "wait_for_person"
@@ -232,6 +243,17 @@ _TOOL_RULES = {
     "get_facts": (
         "- For the time, the date, the day or your team's name, country or affiliation,\n"
         "  call `get_facts` and say what it returns. Never guess a fact.\n"
+    ),
+    # A set binds the object memory atomics only with --object-memory, so this rule
+    # is always live too.
+    OBJECT_MEMORY_TOOL: (
+        "- `recall_object` tells where you saw objects before, and `list_room_objects`\n"
+        "  what you saw in a room. They come from your memory, not from what is in view\n"
+        "  now, so say it is where you last saw it. Their ids are memory ids, never ids\n"
+        "  from `find_objects`. To fetch or show a remembered object, call `go_to_object`\n"
+        "  with its id, then `find_objects` to check that it is still there. If they\n"
+        "  report UNAVAILABLE, say that you cannot recall objects right now, and never\n"
+        "  guess where something is.\n"
     ),
 }
 
@@ -316,6 +338,7 @@ def build_system_prompt(
     vision: bool = False,
     memory: bool = False,
     arms: bool = False,
+    object_memory: bool = False,
     scripts: bool = False,
 ) -> str:
     """The rules for the tools a run binds, then the static robot description, once.
@@ -323,10 +346,11 @@ def build_system_prompt(
     GPSR lacks `list_places`, so its prompt carries the configured places as data.
     `vision` says that find_people and find_objects read live perception, and `memory` that
     remember_person and recognize_person have a people memory. `arms` keeps the arm
-    atomics in the set (bound_tools), and with them the arm rule. `scripts` adds the
+    atomics in the set (bound_tools), and with them the arm rule; `object_memory` does
+    the same for the object memory atomics and their rule. `scripts` adds the
     run_script rule after the tools' own.
     """
-    names = _atomic_names(tool_set, arms=arms)
+    names = _atomic_names(tool_set, arms=arms, object_memory=object_memory)
     rules = dict(_TOOL_RULES)
     measures = "object_info" in names
     if not measures:
@@ -358,27 +382,37 @@ def _places_section(locations: Mapping[str, Location]) -> str:
     return "The named places you can go to with `go_to`:\n" + "\n".join(lines) + "\n"
 
 
-def bound_tools(tool_set: str, *, arms: bool = False) -> list[Callable[..., Any]]:
-    """The atomics a run binds: the set's, in its order, without the arm atomics unless `arms`.
+def bound_tools(
+    tool_set: str, *, arms: bool = False, object_memory: bool = False
+) -> list[Callable[..., Any]]:
+    """The atomics a run binds: the set's, in its order, less the atomics of a missing flag.
 
-    Without --arms ctx.arms has no commander, so the arm atomics would only report
-    UNAVAILABLE. Raises ValueError for an unknown set.
+    Without --arms ctx.arms has no commander, and without --object-memory there is no
+    object memory, so their atomics would only report UNAVAILABLE: the arm atomics are
+    dropped unless `arms`, and the object memory atomics unless `object_memory`.
+    Raises ValueError for an unknown set.
     """
     if tool_set not in TOOL_SETS:
         known = ", ".join(TOOL_SETS)
         raise ValueError(f"There is no tool set {tool_set!r}. Known tool sets: {known}.")
-    return [fn for fn in TOOL_SETS[tool_set] if arms or fn.__name__ not in ARM_TOOLS]
+    dropped = (set() if arms else ARM_TOOLS) | (set() if object_memory else OBJECT_MEMORY_TOOLS)
+    return [fn for fn in TOOL_SETS[tool_set] if fn.__name__ not in dropped]
 
 
-def _atomic_names(tool_set: str, *, arms: bool = False) -> set[str]:
-    return {fn.__name__ for fn in bound_tools(tool_set, arms=arms)}
+def _atomic_names(tool_set: str, *, arms: bool = False, object_memory: bool = False) -> set[str]:
+    return {fn.__name__ for fn in bound_tools(tool_set, arms=arms, object_memory=object_memory)}
 
 
 def check_templates(
-    templates: Mapping[str, TaskTemplate], tool_set: str, *, arms: bool = False
+    templates: Mapping[str, TaskTemplate],
+    tool_set: str,
+    *,
+    arms: bool = False,
+    object_memory: bool = False,
 ) -> None:
     """Raise ValueError for a template step that this run's tools could never complete."""
-    check_required_tools(templates, _atomic_names(tool_set, arms=arms) | {WAIT_TOOL})
+    names = _atomic_names(tool_set, arms=arms, object_memory=object_memory)
+    check_required_tools(templates, names | {WAIT_TOOL})
 
 
 def check_arms(tool_set: str, *, arms: bool) -> None:
@@ -422,6 +456,32 @@ def check_people_memory(people_memory: str, *, vision: bool, resume: bool) -> No
         raise ValueError(
             "--resume-people-session needs --people-memory ros, the only memory with a "
             "session to resume."
+        )
+
+
+def check_object_memory(tool_set: str, *, object_memory: bool, vision: bool) -> None:
+    """Raise ValueError for --object-memory in a run that could never use it.
+
+    The set must bind recall_object (OBJECT_MEMORY_TOOL), and the run needs vision,
+    since go_to_object's reply and the prompt send the LLM to find_objects to check
+    that a remembered object is still there. Raises ValueError for an unknown set too.
+    """
+    if not object_memory:
+        return
+    if OBJECT_MEMORY_TOOL not in _atomic_names(tool_set, object_memory=True):
+        sets = " or ".join(
+            name
+            for name in TOOL_SETS
+            if OBJECT_MEMORY_TOOL in _atomic_names(name, object_memory=True)
+        )
+        raise ValueError(
+            f"--object-memory needs a tool set with the object memory tools, such as "
+            f"{sets}: the {tool_set} set has no {OBJECT_MEMORY_TOOL}."
+        )
+    if not vision:
+        raise ValueError(
+            "--object-memory needs --vision: go_to_object leaves the LLM to check with "
+            "find_objects that a remembered object is still there."
         )
 
 
@@ -532,6 +592,7 @@ def assemble(
     objects_topic: str = OBJECTS_TOPIC,
     people_memory: str = "unavailable",
     resume_people_session: bool = False,
+    object_memory: bool = False,
     arm_poses: ArmPoses | None = None,
     scripts: AgentScripts | None = None,
 ) -> Application:
@@ -550,6 +611,11 @@ def assemble(
     people remembered at each reset. Raises ValueError for an unknown memory, a memory
     without `vision`, or a resume without ros, before anything is built.
 
+    `object_memory` makes ctx.object_memory a RosObjectMemory on walkie-database's
+    object services and binds the object memory atomics, which are dropped from the
+    set without it (bound_tools). Raises ValueError for a set without them or a run
+    without `vision` (check_object_memory) before anything is built.
+
     `arm_poses`, the checked poses that main() loads for --arms, gives the run its arms:
     a CommanderClient on the connector with the agent's token, made before the RosBase,
     and ctx.arms a RosArms over it, whose check_for_driving the RosBase runs before
@@ -565,9 +631,10 @@ def assemble(
     Application closes it last. A failure here leaves it open for the caller.
     """
     arms = arm_poses is not None
-    check_templates(templates, tool_set, arms=arms)
+    check_templates(templates, tool_set, arms=arms, object_memory=object_memory)
     check_arms(tool_set, arms=arms)
     check_people_memory(people_memory, vision=vision, resume=resume_people_session)
+    check_object_memory(tool_set, object_memory=object_memory, vision=vision)
     remembers = people_memory != "unavailable"
     prompt = build_system_prompt(
         tool_set,
@@ -576,6 +643,7 @@ def assemble(
         vision=vision,
         memory=remembers,
         arms=arms,
+        object_memory=object_memory,
         scripts=scripts is not None,
     )
     clock = connector.node.get_parameter("use_sim_time").value
@@ -622,6 +690,9 @@ def assemble(
             tracks = TrackMemory(live, store, cancel)
             live.set_namer(tracks.names)
             memory, on_reset = tracks, tracks.clear
+        objects: ObjectMemory = (
+            RosObjectMemory(connector, cancel) if object_memory else UnavailableObjectMemory()
+        )
         ctx = Ctx(
             cancel=cancel,
             base=base,
@@ -630,6 +701,7 @@ def assemble(
             facts=facts,
             memory=memory,
             arms=ctx_arms,
+            object_memory=objects,
         )
         bridge = RosBridge(
             connector,
@@ -642,7 +714,7 @@ def assemble(
             on_verdict=None if scripts is None else scripts.verdict,
         )
         built.append(bridge.close)
-        atomics = bound_tools(tool_set, arms=arms)
+        atomics = bound_tools(tool_set, arms=arms, object_memory=object_memory)
         agent = build_agent(
             model,
             ctx,
@@ -785,6 +857,7 @@ def _run(args: argparse.Namespace, **assembly: Any) -> int:
             objects_topic=args.objects_topic,
             people_memory=args.people_memory,
             resume_people_session=args.resume_people_session,
+            object_memory=args.object_memory,
             **assembly,
         )
         app.start()
@@ -875,6 +948,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "task instead of forgetting it.",
     )
     parser.add_argument(
+        "--object-memory",
+        action="store_true",
+        help="Bind recall_object, list_room_objects and go_to_object, which read the "
+        "objects walkie-database's object memory keeps. Needs --vision and a tool set "
+        "with those tools, such as default or hri.",
+    )
+    parser.add_argument(
         "--arms",
         action="store_true",
         help="Drive the arms through walkie-ros's bimanual_commander: binds the arm tools, "
@@ -895,6 +975,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         check_people_memory(
             args.people_memory, vision=args.vision, resume=args.resume_people_session
         )
+        check_object_memory(args.tool_set, object_memory=args.object_memory, vision=args.vision)
         if args.objects_topic != OBJECTS_TOPIC and not args.vision:
             raise ValueError("--objects-topic needs --vision, which reads the objects.")
     except ValueError as error:
@@ -915,7 +996,9 @@ def main(argv: list[str] | None = None) -> int:
         config = load_config(args.config)
         locations = load_locations(args.locations)
         templates = load_task_templates(args.task_templates)
-        check_templates(templates, args.tool_set, arms=args.arms)
+        check_templates(
+            templates, args.tool_set, arms=args.arms, object_memory=args.object_memory
+        )
         # config/arm_poses.toml and config/robot_model.toml, from the working directory.
         # ArmPoseError is a ValueError, so a bad pose stops the agent here, in one line.
         arm_poses = load_arm_poses() if args.arms else None

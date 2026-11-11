@@ -3,8 +3,9 @@
 import logging
 import math
 
-from walkie_agent.capabilities import Ctx, Pose2D
+from walkie_agent.capabilities import Ctx, Pose2D, RecalledObject
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
+from walkie_agent.locations import Location, nearest_place
 from walkie_agent.perception.geometry import wrap_deg
 
 logger = logging.getLogger(__name__)
@@ -15,6 +16,13 @@ logger = logging.getLogger(__name__)
 # within it of its goal: Nav2's progress checker can abort a turn on the spot that is
 # still settling on its 0.6 degree yaw tolerance (decisions S2-4, S2-9 and S2-11).
 FACE_TOLERANCE_DEG = 10.0
+# How far a named place may be from a remembered object for go_to_object to drive
+# there, and for recall_object to name it as the object's near_place (decision SG-18).
+# In the Chula simulation every object the memory kept was 0.47 to 1.41 m from its
+# nearest place.
+APPROACH_PLACE_MAX_M = 2.0
+# The states in which a remembered object is no longer where Walkie saw it.
+_MOVED_STATES = frozenset({"grasping", "held", "handed_over", "discarded"})
 
 
 def list_places(ctx: Ctx) -> list[dict[str, str]]:
@@ -94,6 +102,95 @@ def face_person(ctx: Ctx, person_id: str) -> str:
     # bearing it was asked to.
     turned = bearing if start is None else wrap_deg(math.degrees(end.yaw - start.yaw))
     return f"Turned {_round(abs(turned), 0):.0f} degrees {_side(turned)} to face {person_id}."
+
+
+def go_to_object(ctx: Ctx, object_id: str) -> str:
+    """Drive to the named place nearest an object Walkie remembers, and turn to face it.
+
+    Use it to fetch or show an object that recall_object or list_room_objects
+    found. Walkie has not looked for the object when it arrives, and it may have
+    moved since, so call find_objects next to see whether it is still there.
+    Returns a sentence that says where Walkie arrived and whether it faces the
+    object.
+
+    Args:
+        object_id: The id of a remembered object, as recall_object or
+            list_room_objects return it, such as "18". Not an id from find_objects.
+    """
+    found = ctx.object_memory.get(object_id)
+    asked = object_id.strip()
+    # The memory follows a merge to the object that took the asked one over.
+    renamed = f"Object {asked} is now remembered as {found.id}. " if found.id != asked else ""
+    label = f"the {found.name} {found.id}"
+    if found.state in _MOVED_STATES:
+        state = found.state.replace("_", " ")
+        raise StepError(
+            ErrorCode.PRECONDITION_FAILED,
+            f"{renamed}Walkie remembers {label} as {state}, so it is not where Walkie saw it.",
+        )
+    room = f" Go to the {found.room} and call find_objects there." if found.room else ""
+    if found.x is None or found.y is None:
+        raise StepError(
+            ErrorCode.PRECONDITION_FAILED, f"{renamed}Walkie does not know where {label} is.{room}"
+        )
+    place = approach_place(ctx, found)
+    if place is None:
+        raise StepError(
+            ErrorCode.PRECONDITION_FAILED,
+            f"{renamed}Walkie knows no named place within {APPROACH_PLACE_MAX_M:g} m of "
+            f"{label}.{room}",
+        )
+    ctx.base.go_to(place.name)
+    facing = _face_point(ctx, found.x, found.y, label)
+    state = "" if found.state == "present" else f" Walkie remembers it as {found.state}."
+    return (
+        f"{renamed}Arrived at {place.name}, the named place nearest {label}, {facing}."
+        f"{state} Walkie has not looked for it yet: call find_objects to see whether it "
+        "is still there."
+    )
+
+
+def approach_place(ctx: Ctx, found: RecalledObject) -> Location | None:
+    """The named place that go_to_object drives to for `found`, or None without one.
+
+    It is the place nearest the object within APPROACH_PLACE_MAX_M, one in the
+    object's room first (locations.nearest_place), and None for an object whose
+    position is unknown.
+    """
+    if found.x is None or found.y is None:
+        return None
+    return nearest_place(
+        ctx.base.places().values(),
+        found.x,
+        found.y,
+        max_m=APPROACH_PLACE_MAX_M,
+        room=found.room,
+    )
+
+
+def _face_point(ctx: Ctx, x: float, y: float, label: str) -> str:
+    """Turn on the spot to face the map point (x, y); words for how that ended.
+
+    The drive has already arrived, so a failed turn goes into the reply instead of
+    failing the step. A stop is raised, since nothing more may run under it.
+    """
+    what = f"the turn to {label}"
+    try:
+        start = ctx.base.pose()
+    except StepError as error:
+        if error.code is ErrorCode.CANCELLED:
+            raise
+        return f"but could not turn to face it: {error.message.rstrip('.')}"
+    bearing = wrap_deg(math.degrees(math.atan2(y - start.y, x - start.x) - start.yaw))
+    if abs(bearing) <= FACE_TOLERANCE_DEG:
+        return f"and it is {_offset(bearing)}"
+    try:
+        _turn(ctx, start, bearing, what)
+    except StepError as error:
+        if error.code is ErrorCode.CANCELLED:
+            raise
+        return f"but could not turn to face it: {error.message.rstrip('.')}"
+    return f"and turned {_round(abs(bearing), 0):.0f} degrees {_side(bearing)} to face it"
 
 
 def _start_pose(ctx: Ctx, what: str) -> Pose2D | None:

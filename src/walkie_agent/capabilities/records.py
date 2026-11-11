@@ -98,6 +98,48 @@ class Recognized:
 
 
 @dataclass(frozen=True)
+class RecalledObject:
+    """One object that the object memory remembers, from ctx.object_memory.
+
+    `id` is the memory's own id, a decimal number such as "18". It is not a live id:
+    find_objects names the objects in view with ids of its own. `name` is the label
+    the memory stored, and `category` its category, from the memory or, when the
+    memory has none, from the label (perception.objects.category_of). `room` is the
+    memory's room for it, or None. `on` names the object it stands on, as "chair 2",
+    when the memory relates it to one that the same answer holds, else None. `state`
+    is the memory's state, such as "present" or "held". `seen_s_ago` is how long ago
+    it was last seen, in seconds of the robot's clock, or None when unknown.
+
+    `x` and `y` are its position in the map frame, in meters, or None when its
+    geometry is not valid. They serve the atomics that approach it and never reach
+    the LLM, which names places only (ADR-0010).
+    """
+
+    id: str
+    name: str
+    category: str
+    room: str | None
+    on: str | None
+    state: str
+    seen_s_ago: float | None
+    x: float | None
+    y: float | None
+
+
+@dataclass(frozen=True)
+class RoomObjects:
+    """The objects that the object memory remembers in one room, from ctx.object_memory.room.
+
+    `room` is the room's name as the memory spells it. `complete` is False when the
+    room holds more objects than the answer carries.
+    """
+
+    room: str
+    objects: tuple[RecalledObject, ...]
+    complete: bool
+
+
+@dataclass(frozen=True)
 class Team:
     """The team that built the robot, as the robot says it."""
 

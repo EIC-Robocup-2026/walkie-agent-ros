@@ -11,12 +11,16 @@ from walkie_agent.tools.atomic import (
     DEFAULT,
     GPSR,
     HRI,
+    OBJECT_MEMORY_TOOLS,
     get_arm_state,
+    go_to_object,
     hand_over,
     list_arm_poses,
+    list_room_objects,
     move_arm_to_pose,
     pick,
     place_on,
+    recall_object,
     recognize_person,
     remember_person,
     set_gripper,
@@ -27,6 +31,8 @@ MANIPULATION = {pick, place_on, hand_over}
 # Named poses and the grippers, through the commander.
 ARM_ATOMICS = {list_arm_poses, move_arm_to_pose, set_gripper, get_arm_state}
 MEMORY = {remember_person, recognize_person}
+# Read the object memory, and drive to what it remembers (decision SG-16).
+OBJECT_MEMORY = {recall_object, list_room_objects, go_to_object}
 SETS = {"GPSR": GPSR, "HRI": HRI, "ARMS": ARMS, "DEFAULT": DEFAULT}
 ALL = sorted(set().union(*SETS.values()), key=lambda fn: fn.__name__)
 
@@ -51,7 +57,7 @@ def test_gpsr_is_the_set_the_spike_used_and_get_facts():
     ]
 
 
-def test_hri_finds_objects_but_cannot_measure_or_move_them_and_ends_with_memory_then_arms():
+def test_hri_finds_objects_but_cannot_measure_or_move_them_and_ends_with_memories_then_arms():
     assert names(HRI) == [
         "list_places",
         "go_to",
@@ -62,6 +68,9 @@ def test_hri_finds_objects_but_cannot_measure_or_move_them_and_ends_with_memory_
         "face_person",
         "remember_person",
         "recognize_person",
+        "recall_object",
+        "list_room_objects",
+        "go_to_object",
         "list_arm_poses",
         "move_arm_to_pose",
         "set_gripper",
@@ -87,9 +96,16 @@ def test_arm_tools_names_the_arm_atomics():
     assert isinstance(ARM_TOOLS, frozenset)
 
 
-def test_hri_without_the_arm_tools_is_the_set_it_was_before_them():
-    # main.py drops ARM_TOOLS without --arms, which must leave HRI as it was.
-    assert [name for name in names(HRI) if name not in ARM_TOOLS] == [
+def test_object_memory_tools_names_the_object_memory_atomics():
+    assert OBJECT_MEMORY_TOOLS == frozenset(fn.__name__ for fn in OBJECT_MEMORY)
+    assert isinstance(OBJECT_MEMORY_TOOLS, frozenset)
+
+
+def test_hri_without_the_arm_and_object_memory_tools_is_the_set_it_was_before_them():
+    # main.py drops ARM_TOOLS without --arms and OBJECT_MEMORY_TOOLS without
+    # --object-memory, which must leave HRI as it was.
+    dropped = ARM_TOOLS | OBJECT_MEMORY_TOOLS
+    assert [name for name in names(HRI) if name not in dropped] == [
         "list_places",
         "go_to",
         "move_relative",
@@ -125,7 +141,32 @@ def test_default_keeps_its_order_without_the_memory_tools():
         "find_people",
         "face_person",
         "get_facts",
+        "recall_object",
+        "list_room_objects",
+        "go_to_object",
     ]
+
+
+def test_default_without_the_object_memory_tools_is_the_set_it_was_before_them():
+    assert [name for name in names(DEFAULT) if name not in OBJECT_MEMORY_TOOLS] == [
+        "list_places",
+        "go_to",
+        "move_relative",
+        "say",
+        "find_objects",
+        "object_info",
+        "find_people",
+        "face_person",
+        "get_facts",
+    ]
+
+
+def test_the_object_memory_tools_are_in_default_and_hri_alone():
+    # GPSR keeps the tool text the Mahoraga runs measured, and ARMS is the arms alone.
+    assert OBJECT_MEMORY <= set(DEFAULT)
+    assert OBJECT_MEMORY <= set(HRI)
+    assert OBJECT_MEMORY.isdisjoint(GPSR)
+    assert OBJECT_MEMORY.isdisjoint(ARMS)
 
 
 def test_the_memory_tools_are_in_hri_alone():

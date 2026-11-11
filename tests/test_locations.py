@@ -2,7 +2,7 @@ import pytest
 
 from conftest import PROJECT_ROOT
 from walkie_agent.capabilities.fake import CHULA_PAT14_6_PLACES, FakeRobot
-from walkie_agent.locations import Location, load_locations
+from walkie_agent.locations import Location, load_locations, nearest_place
 from walkie_agent.tools.atomic import list_places
 
 
@@ -139,3 +139,40 @@ def test_list_places_atomic_lists_names_and_descriptions():
     assert {entry["name"] for entry in listed} == set(robot.places())
     assert all(set(entry) == {"name", "description"} for entry in listed)
     assert all(entry["description"] for entry in listed)
+
+
+# nearest_place: the place go_to_object approaches (decision SG-18)
+
+NEAR = [
+    Location("den", 0.0, 0.0, 0.0, room="den"),
+    Location("desk", 1.0, 0.0, 0.0, room="den"),
+    Location("lamp", 2.5, 0.0, 0.0, room="den"),
+    Location("hall door", 3.2, 0.0, 0.0, room="hall"),
+    Location("plant", 0.0, 5.0, 0.0),
+]
+
+
+@pytest.mark.parametrize(
+    ("x", "y", "room", "expected"),
+    [
+        # The den's own pose is nearer, but a room is never a place to approach.
+        (0.2, 0.0, None, "desk"),
+        (2.4, 0.0, None, "lamp"),
+        # The hall door is nearer, but the object was seen in the den.
+        (3.0, 0.0, "den", "lamp"),
+        (3.0, 0.0, " Den ", "lamp"),
+        (3.0, 0.0, None, "hall door"),
+        # No place of the room within reach: the nearest of any room.
+        (5.0, 0.0, "den", "hall door"),
+        # A place with no room counts for any room.
+        (0.0, 4.5, "den", "plant"),
+    ],
+)
+def test_nearest_place_leaves_the_rooms_out_and_prefers_the_object_s_room(x, y, room, expected):
+    assert nearest_place(NEAR, x, y, max_m=2.0, room=room).name == expected
+
+
+def test_nearest_place_is_none_beyond_its_reach():
+    assert nearest_place(NEAR, 0.0, -3.0, max_m=2.0) is None
+    assert nearest_place(NEAR, 1.0, 2.0, max_m=2.0).name == "desk"
+    assert nearest_place([], 0.0, 0.0, max_m=2.0) is None

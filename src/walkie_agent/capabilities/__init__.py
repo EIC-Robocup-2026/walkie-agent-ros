@@ -1,4 +1,4 @@
-"""The robot's capabilities on ctx: base, speech, vision, arms, facts and memory.
+"""The robot's capabilities on ctx: base, speech, vision, arms, facts, memory and object memory.
 
 Each capability is a Protocol here. An atomic calls its verbs as
 ctx.base.go_to("shelf") and never sees a topic or an action. A failure is a
@@ -7,7 +7,8 @@ whatever calls a verb gets them. There is no velocity verb.
 
 This package imports no rclpy, rai or ROS message, so a teammate can read and
 test against it without ROS. FakeRobot, in capabilities.fake, implements every
-verb. The ROS-backed verbs live in walkie_agent.ros. The arm records build on
+verb but the object memory's, whose ctx field it leaves unavailable. The ROS-backed
+verbs live in walkie_agent.ros. The arm records build on
 walkie_agent.arm, which imports no ROS either.
 """
 
@@ -32,8 +33,10 @@ from walkie_agent.capabilities.records import (
     ObjectSeen,
     PersonSeen,
     Pose2D,
+    RecalledObject,
     Recognized,
     Remembered,
+    RoomObjects,
     Team,
 )
 from walkie_agent.errors import ErrorCode, StepError
@@ -41,6 +44,7 @@ from walkie_agent.locations import Location
 
 __all__ = [
     "NO_ARMS",
+    "NO_OBJECT_MEMORY",
     "Arm",
     "ArmPose",
     "Arms",
@@ -57,16 +61,20 @@ __all__ = [
     "GripperReading",
     "GripperState",
     "Memory",
+    "ObjectMemory",
     "ObjectSeen",
     "PersonSeen",
     "Pose2D",
+    "RecalledObject",
     "Recognized",
     "Remembered",
+    "RoomObjects",
     "Speech",
     "Team",
     "UnavailableArms",
     "UnavailableFacts",
     "UnavailableMemory",
+    "UnavailableObjectMemory",
     "Vision",
 ]
 
@@ -325,6 +333,57 @@ class UnavailableMemory:
         self._refuse()
 
 
+class ObjectMemory(Protocol):
+    """ctx.object_memory: the objects Walkie saw before, as an object memory keeps them.
+
+    An object's id here is the memory's own, a decimal number such as "18", never a
+    live id from find_objects. search gives the objects remembered as present whose
+    name matches `name` as find_objects matches a label (perception.objects.matches):
+    the label, its category or the category's plural, ignoring case and spaces at
+    either end; an empty name matches every object. They come in the memory's order,
+    at most `limit` of them. room gives the objects remembered as present in the room
+    named `room`, ignoring case, at most `limit`. get gives one object in any state,
+    following a merge: the object it returns may have another id than `object_id`.
+    No verb moves anything, so none waits for a stop to commit.
+
+    Every verb raises StepError REFUSED for an argument outside its range, such as
+    an id that is not a memory id; NOT_FOUND for an object or a room the memory does
+    not know; UNAVAILABLE without a memory, or when it is not ready or failed in a
+    way that may pass, so the same call may work later; TIMEOUT when it did not
+    answer within `timeout_s`; and CANCELLED on a stop.
+    """
+
+    def search(
+        self, name: str, *, limit: int = 10, timeout_s: float = 10.0
+    ) -> tuple[RecalledObject, ...]: ...
+
+    def room(self, room: str, *, limit: int = 50, timeout_s: float = 10.0) -> RoomObjects: ...
+
+    def get(self, object_id: str, *, timeout_s: float = 10.0) -> RecalledObject: ...
+
+
+# What UnavailableObjectMemory says, kept here so the atomics' tests can match it.
+NO_OBJECT_MEMORY = "Walkie cannot recall objects here: no object memory is configured."
+
+
+class UnavailableObjectMemory:
+    """The ctx.object_memory of a robot with no object memory: every verb refuses."""
+
+    def _refuse(self) -> NoReturn:
+        raise StepError(ErrorCode.UNAVAILABLE, NO_OBJECT_MEMORY)
+
+    def search(
+        self, name: str, *, limit: int = 10, timeout_s: float = 10.0
+    ) -> tuple[RecalledObject, ...]:
+        self._refuse()
+
+    def room(self, room: str, *, limit: int = 50, timeout_s: float = 10.0) -> RoomObjects:
+        self._refuse()
+
+    def get(self, object_id: str, *, timeout_s: float = 10.0) -> RecalledObject:
+        self._refuse()
+
+
 @dataclass(frozen=True)
 class Ctx:
     """What an atomic runs against. Verbs hold the same `cancel` they are built with."""
@@ -336,3 +395,4 @@ class Ctx:
     arms: Arms = UnavailableArms()
     facts: Facts = UnavailableFacts()
     memory: Memory = UnavailableMemory()
+    object_memory: ObjectMemory = UnavailableObjectMemory()

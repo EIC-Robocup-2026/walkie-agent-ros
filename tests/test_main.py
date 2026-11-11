@@ -37,7 +37,13 @@ import walkie_agent.main as main
 from walkie_agent.arm.poses import ArmPoses, load_arm_poses
 from walkie_agent.arm.results import ClientSnapshot, DriveCheck
 from walkie_agent.arm.state import ArmsState, ArmState
-from walkie_agent.capabilities import Team, UnavailableArms, UnavailableFacts, UnavailableMemory
+from walkie_agent.capabilities import (
+    Team,
+    UnavailableArms,
+    UnavailableFacts,
+    UnavailableMemory,
+    UnavailableObjectMemory,
+)
 from walkie_agent.capabilities.facts import SystemFacts
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location, load_locations
@@ -59,7 +65,16 @@ from walkie_agent.scripting.agent_tool import AgentScripts
 from walkie_agent.scripting.sandbox import SandboxUnavailable
 from walkie_agent.scripting.shelf import Shelf
 from walkie_agent.tasks import TaskTemplate
-from walkie_agent.tools.atomic import ARM_TOOLS, ARMS, DEFAULT, GPSR, HRI, get_facts, list_places
+from walkie_agent.tools.atomic import (
+    ARM_TOOLS,
+    ARMS,
+    DEFAULT,
+    GPSR,
+    HRI,
+    OBJECT_MEMORY_TOOLS,
+    get_facts,
+    list_places,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DONE = AIMessage("Done.")
@@ -86,10 +101,11 @@ HOME = ArmState(pose="home", travel_safe=True)
 HANDS_UP = ArmState(pose="hands_up", travel_safe=False)
 
 
-def tool_names(tool_set, arms=False):
-    """What a run binds: the set's atomics, without the arm atomics unless `arms`."""
+def tool_names(tool_set, arms=False, object_memory=False):
+    """What a run binds: the set's atomics, less the arm and object memory atomics without their flags."""
     atomics = {fn.__name__ for fn in TOOL_SET_LISTS[tool_set]}
-    return (atomics if arms else atomics - ARM_TOOLS) | MIDDLEWARE_TOOLS
+    dropped = (set() if arms else ARM_TOOLS) | (set() if object_memory else OBJECT_MEMORY_TOOLS)
+    return (atomics - dropped) | MIDDLEWARE_TOOLS
 
 
 def template(*todos, name="tour"):
@@ -864,6 +880,80 @@ def test_assembly_refuses_a_set_that_does_not_go_with_the_arms_before_building_a
     assert commanders == []
 
 
+@pytest.fixture
+def object_memories(monkeypatch):
+    """What main makes RosObjectMemory with: FakeNode makes no service clients."""
+    made = []
+
+    class StandIn(UnavailableObjectMemory):
+        def __init__(self, connector, cancel):
+            made.append((connector, cancel))
+
+    monkeypatch.setattr(main, "RosObjectMemory", StandIn)
+    return made
+
+
+@pytest.mark.parametrize("tool_set", ["default", "hri"])
+def test_with_object_memory_the_agent_gets_the_object_tools_and_their_rule(
+    build, object_memories, tool_set
+):
+    built = build(tool_set=tool_set, vision=True, object_memory=True)
+    built.app.start()
+    run_one(built, "Where is the cup?")
+
+    [(connector, cancel)] = object_memories
+    assert connector is built.connector
+    assert cancel is built.app.ctx.cancel
+    assert isinstance(built.app.ctx.object_memory, main.RosObjectMemory)
+    bound = set(built.model.bound[0])
+    assert bound == tool_names(tool_set, object_memory=True)
+    assert OBJECT_MEMORY_TOOLS <= bound
+    system = built.model.received[0][0].content
+    assert system == main.build_system_prompt(
+        tool_set, PLACES, ROBOT, vision=True, object_memory=True
+    )
+    assert "`recall_object` tells where you saw objects before" in system
+    named = set(re.findall(r"`(\w+)`", system))
+    assert named <= bound, f"The prompt names tools it lacks: {named - bound}"
+
+
+@pytest.mark.parametrize("tool_set", ["default", "hri"])
+def test_without_object_memory_the_run_keeps_the_tools_and_prompt_it_had(build, tool_set):
+    built = build(tool_set=tool_set, vision=True)
+    built.app.start()
+    run_one(built)
+
+    assert isinstance(built.app.ctx.object_memory, UnavailableObjectMemory)
+    assert OBJECT_MEMORY_TOOLS.isdisjoint(built.model.bound[0])
+    assert "recall_object" not in built.model.received[0][0].content
+
+
+@pytest.mark.parametrize(
+    ("tool_set", "vision", "words"),
+    [
+        ("default", False, "--object-memory needs --vision"),
+        ("hri", False, "--object-memory needs --vision"),
+        ("gpsr", True, "the gpsr set has no recall_object"),
+        ("arms", True, "the arms set has no recall_object"),
+    ],
+)
+def test_assembly_refuses_an_object_memory_it_cannot_use_before_building_anything(
+    build, object_memories, tool_set, vision, words
+):
+    connector = FakeConnector()
+    with pytest.raises(ValueError, match=re.escape(words)):
+        build(
+            connector=connector,
+            tool_set=tool_set,
+            vision=vision,
+            object_memory=True,
+            arm_poses=POSES if tool_set == "arms" else None,
+        )
+    assert connector.node.publishers == []
+    assert connector.node.subscriptions == []
+    assert object_memories == []
+
+
 def test_close_stops_the_arms_at_once_and_closes_the_commander_after_the_base(
     build, commanders, nav, monkeypatch
 ):
@@ -1310,6 +1400,41 @@ def test_a_set_that_does_not_go_with_the_arms_is_a_usage_error(capsys, flags, wo
     assert words in error
 
 
+@pytest.mark.parametrize("tool_set", ["default", "hri"])
+def test_object_memory_is_accepted_with_vision_and_a_set_that_has_its_tools(tool_set):
+    args = main._parse_args(["--object-memory", "--vision", "--tool-set", tool_set])
+    assert (args.object_memory, args.tool_set) == (True, tool_set)
+    assert main._parse_args([]).object_memory is False
+
+
+@pytest.mark.parametrize(
+    ("flags", "words"),
+    [
+        (
+            ["--object-memory"],
+            (
+                "--object-memory needs --vision: go_to_object leaves the LLM to check with "
+                "find_objects"
+            ),
+        ),
+        (
+            ["--object-memory", "--vision", "--tool-set", "gpsr"],
+            (
+                "--object-memory needs a tool set with the object memory tools, such as "
+                "default or hri: the gpsr set has no recall_object."
+            ),
+        ),
+    ],
+)
+def test_an_object_memory_without_what_it_needs_is_a_usage_error(capsys, flags, words):
+    with pytest.raises(SystemExit) as exited:
+        main._parse_args(flags)
+    assert exited.value.code == 2
+    error = capsys.readouterr().err
+    assert error.startswith("usage: ")
+    assert words in error
+
+
 def test_the_arms_set_without_arms_stops_before_ros_init(cli, capsys):
     with pytest.raises(SystemExit) as exited:
         cli.run("--tool-set", "arms")
@@ -1335,6 +1460,30 @@ def test_cli_with_arms_loads_the_checked_poses_into_the_assembly(cli, monkeypatc
     assert isinstance(received["arm_poses"], ArmPoses)
     assert received["arm_poses"] == POSES
     assert (received["tool_set"], received["use_sim_time"]) == ("hri", True)
+
+
+def test_a_template_on_an_object_memory_tool_starts_only_with_object_memory(
+    cli, capsys, monkeypatch
+):
+    steps = broken_file(
+        cli,
+        '[templates.tour]\ntask = "x"\ntodos = [{ content = "a", requires_tool = "recall_object" }]\n',
+    )
+    flags = ("--vision", "--tool-set", "hri")
+    error = startup_error(cli, capsys, *flags, task_templates=steps)
+    assert "tour.t1 requires recall_object" in error
+
+    received = {}
+
+    def assemble(**kwargs):
+        received.update(kwargs)
+        app = FakeApp(cli)
+        app.on_start = send
+        return app
+
+    monkeypatch.setattr(main, "assemble", assemble)
+    assert cli.run("--object-memory", *flags, task_templates=steps) == 0
+    assert received["object_memory"] is True
 
 
 @pytest.mark.parametrize(

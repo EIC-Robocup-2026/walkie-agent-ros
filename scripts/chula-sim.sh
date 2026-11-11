@@ -4,14 +4,16 @@
 # and ROS_DOMAIN_ID SIM_DOMAIN_ID. Nothing started here connects to the router on 7447, so
 # it neither sees nor disturbs a robot or another simulation on this computer.
 #
-#   scripts/chula-sim.sh up [--agent] [--arms] [--vision] [--foxglove] [--gui] [-- ARGS]
+#   scripts/chula-sim.sh up [--agent] [--arms] [--vision] [--memory] [--foxglove] [--gui] [-- ARGS]
 #                                               router, MuJoCo with Nav2, oracle, speech log;
 #                                               --agent adds the agent, given ARGS such as
 #                                               --tool-set hri; --arms adds MoveIt and the arm
 #                                               commander, and gives the agent --arms;
 #                                               --vision adds walkie-vision's node and its
-#                                               debug visualizer; --foxglove adds
-#                                               foxglove_bridge on SIM_FOXGLOVE_PORT
+#                                               debug visualizer; --memory, with --vision,
+#                                               adds walkie-database's object memory;
+#                                               --foxglove adds foxglove_bridge on
+#                                               SIM_FOXGLOVE_PORT
 #   scripts/chula-sim.sh check [--agent] [--arms]
 #                                               wait for the clock, TF, head camera and arrays
 #   scripts/chula-sim.sh status                 which parts are running, and their logs
@@ -28,6 +30,15 @@
 #   WALKIE_VISION       for --vision, a walkie-vision checkout with its pixi environment
 #                       installed, its messages built and its models fetched
 #   SIM_VISION_TASK     the vision task, a file in its config/tasks/ (default memory)
+#   WALKIE_DATABASE     for --memory, a walkie-database checkout on feat/scene-graph-prep or
+#                       later, with its pixi environment installed and its messages built
+#   SIM_MEMORY_DB       the object memory's store, seeded for this map
+#                       (default /var/tmp/scene-graph-demo/agent/walkie.db)
+#   SIM_MEMORY_MAP_ID   the map ID the store was seeded with (default chula-2026-11-12-714b087d)
+#   SIM_MEMORY_MAP_FOLDER
+#                       the map folder the store was seeded with (default the chula_pat14_6
+#                       map that bringup loads, from WALKIE_ROS_OVERLAY's install/ when set,
+#                       else WALKIE_ROS's)
 #   SIM_FOXGLOVE_PORT   foxglove_bridge's port on 127.0.0.1 (default 8799)
 #   SIM_DIR             logs, process groups, ROS logs and the world cache
 #                       (default /var/tmp/walkie-chula-sim)
@@ -49,6 +60,10 @@ WALKIE_ROS=${WALKIE_ROS:-}
 WALKIE_ROS_OVERLAY=${WALKIE_ROS_OVERLAY:-}
 WALKIE_VISION=${WALKIE_VISION:-}
 SIM_VISION_TASK=${SIM_VISION_TASK:-memory}
+WALKIE_DATABASE=${WALKIE_DATABASE:-}
+SIM_MEMORY_DB=${SIM_MEMORY_DB:-/var/tmp/scene-graph-demo/agent/walkie.db}
+SIM_MEMORY_MAP_ID=${SIM_MEMORY_MAP_ID:-chula-2026-11-12-714b087d}
+SIM_MEMORY_MAP_FOLDER=${SIM_MEMORY_MAP_FOLDER:-${WALKIE_ROS_OVERLAY:-$WALKIE_ROS}/install/walkie_mujoco_worlds/share/walkie_mujoco_worlds/worlds/chula_pat14_6/map}
 SIM_FOXGLOVE_PORT=${SIM_FOXGLOVE_PORT:-8799}
 SIM_DIR=${SIM_DIR:-/var/tmp/walkie-chula-sim}
 SIM_ZENOH_PORT=${SIM_ZENOH_PORT:-7499}
@@ -59,8 +74,9 @@ SIM_SPAWN_POSE=${SIM_SPAWN_POSE:-1.7629 -1.483 0}
 SIM_CPUS=${SIM_CPUS:-}
 
 WORLD=chula_pat14_6
-# down stops them in reverse order: the commander and MoveIt before bringup.
-PARTS=(router bringup moveit commander vision foxglove oracle speech agent)
+# down stops them in reverse order: the commander and MoveIt before bringup, and the
+# object memory, which saves what it merged as it stops, before vision.
+PARTS=(router bringup moveit commander vision memory foxglove oracle speech agent)
 # Nav2's lifecycle manager logs this once every navigation server is active.
 BRINGUP_READY="Managed nodes are active"
 BRINGUP_TIMEOUT_S=300
@@ -81,6 +97,10 @@ COMMANDER_EXECUTABLE=openarm_bimanual_commander_cpp/lib/openarm_bimanual_command
 VISION_READY="loaded the models in"
 VISION_TIMEOUT_S=300
 VISION_FAILED="cannot start:"
+# What walkie-database's node logs once it has loaded the store's objects, and what it
+# logs, before it exits, when the store does not match the map, map ID or clock.
+MEMORY_READY="The object memory starts with"
+MEMORY_FAILED="Not starting:"
 # What foxglove_bridge logs once its server listens.
 FOXGLOVE_READY="Server listening on port"
 # What the oracle and the agent log once their nodes exist (oracle_scene.py, main.py).
@@ -360,14 +380,35 @@ check_vision_prerequisites() {
     WALKIE_VISION=$(cd "$WALKIE_VISION" && pwd)
 }
 
+# check_memory_prerequisites: what up --memory needs from WALKIE_DATABASE, and that the
+# store and the map folder exist. The node itself checks that the store was seeded for
+# this map, map ID and clock, and logs what does not match.
+check_memory_prerequisites() {
+    [[ -n $WALKIE_DATABASE ]] || die "--memory needs WALKIE_DATABASE, a walkie-database checkout"
+    [[ -f $WALKIE_DATABASE/pixi.toml && -d $WALKIE_DATABASE/.pixi/envs/default ]] ||
+        die "WALKIE_DATABASE=$WALKIE_DATABASE has no pixi.toml or no installed environment: run pixi install there"
+    [[ -f $WALKIE_DATABASE/src/walkie_database/object_memory.py ]] ||
+        die "WALKIE_DATABASE=$WALKIE_DATABASE has no object memory; --memory needs feat/scene-graph-prep or later"
+    [[ -d $WALKIE_DATABASE/ros2_ws/install/walkie_database_msgs ]] ||
+        die "walkie_database_msgs is not built in WALKIE_DATABASE=$WALKIE_DATABASE: run pixi run build-msgs there"
+    [[ -f $SIM_MEMORY_DB ]] ||
+        die "SIM_MEMORY_DB=$SIM_MEMORY_DB does not exist; docs/setup/08-chula-simulation.md says how to seed it"
+    [[ -d $SIM_MEMORY_MAP_FOLDER ]] || die "SIM_MEMORY_MAP_FOLDER=$SIM_MEMORY_MAP_FOLDER is not a folder"
+    # The memory part starts in WALKIE_DATABASE, so a relative path would resolve twice.
+    WALKIE_DATABASE=$(cd "$WALKIE_DATABASE" && pwd)
+    SIM_MEMORY_DB=$(cd "$(dirname "$SIM_MEMORY_DB")" && pwd)/$(basename "$SIM_MEMORY_DB")
+    SIM_MEMORY_MAP_FOLDER=$(cd "$SIM_MEMORY_MAP_FOLDER" && pwd)
+}
+
 up() {
-    local with_agent=false with_arms=false with_vision=false with_foxglove=false
+    local with_agent=false with_arms=false with_vision=false with_memory=false with_foxglove=false
     local headless=true rviz=false agent_args=()
     while (($#)); do
         case $1 in
             --agent) with_agent=true ;;
             --arms) with_arms=true ;;
             --vision) with_vision=true ;;
+            --memory) with_memory=true ;;
             --foxglove) with_foxglove=true ;;
             --gui) headless=false rviz=true ;;
             --) shift; agent_args=("$@"); break ;;
@@ -377,9 +418,15 @@ up() {
     done
     ((${#agent_args[@]} == 0)) || $with_agent ||
         die "the arguments after -- are the agent's, so up needs --agent with them"
+    if $with_memory && ! $with_vision; then
+        die "the object memory reads vision's detections, so --memory needs --vision"
+    fi
     check_prerequisites "$with_arms"
     if $with_vision; then
         check_vision_prerequisites
+    fi
+    if $with_memory; then
+        check_memory_prerequisites
     fi
     lock
     mkdir -p "$SIM_DIR"/{logs,pids,worlds,ros/log}
@@ -443,6 +490,14 @@ up() {
         start vision "$WALKIE_VISION" "$PIXI" run --as-is --manifest-path "$WALKIE_VISION/pixi.toml" \
             vision "task:=$SIM_VISION_TASK" sim:=true viz:=true
     fi
+    # The object memory merges vision's sim detections into SIM_MEMORY_DB on the sim
+    # clock, and saves them once more as it stops. It runs in walkie-database's own
+    # environment, whose activation sources its message overlay.
+    if $with_memory && ! running memory; then
+        start memory "$WALKIE_DATABASE" "$PIXI" run --as-is --manifest-path "$WALKIE_DATABASE/pixi.toml" \
+            db-memory -p "db_path:=$SIM_MEMORY_DB" -p "map_folder:=$SIM_MEMORY_MAP_FOLDER" \
+            -p "map_id:=$SIM_MEMORY_MAP_ID" -p use_sim_time:=true -p objects_topic:=/walkie_vision/sim/objects
+    fi
     # foxglove_bridge comes from walkie-ros's environment, which has no walkie_vision_msgs,
     # so it serves standard message types only; the visualizer's outputs are all standard.
     # It listens on the loopback interface only.
@@ -475,6 +530,10 @@ up() {
         wait_for_log vision "$VISION_READY" "$VISION_TIMEOUT_S" "$VISION_FAILED" ||
             fail "walkie-vision did not load its models; see $SIM_DIR/logs/vision.log"
     fi
+    if $with_memory; then
+        wait_for_log memory "$MEMORY_READY" "$PART_TIMEOUT_S" "$MEMORY_FAILED" ||
+            fail "the object memory did not start; see $SIM_DIR/logs/memory.log"
+    fi
     if $with_foxglove; then
         wait_for_log foxglove "$FOXGLOVE_READY" "$PART_TIMEOUT_S" ||
             fail "foxglove_bridge did not start; see $SIM_DIR/logs/foxglove.log"
@@ -486,6 +545,9 @@ up() {
     fi
     if $with_vision; then
         wanted+=(vision)
+    fi
+    if $with_memory; then
+        wanted+=(memory)
     fi
     if $with_foxglove; then
         wanted+=(foxglove)
@@ -549,6 +611,6 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
         status) status ;;
         env) print_env ;;
         down) down ;;
-        *) sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+        *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
     esac
 fi

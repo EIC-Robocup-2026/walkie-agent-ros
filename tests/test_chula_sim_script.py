@@ -27,7 +27,8 @@ REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "chula-sim.sh"
 OWNED = SCRIPT.parent / "chula_sim_owned.py"
 PARTS = (
-    "router", "bringup", "moveit", "commander", "vision", "foxglove", "oracle", "speech", "agent",
+    "router", "bringup", "moveit", "commander", "vision", "memory", "foxglove", "oracle", "speech",
+    "agent",
 )  # fmt: skip
 MOVEIT_LAUNCH = Path(
     "openarm_bimanual_moveit_config/share/openarm_bimanual_moveit_config/launch/moveit_only.launch.py"
@@ -41,7 +42,8 @@ RESERVED_PIDS = 300
 
 
 def environment(sim_dir: Path, **env: str) -> dict[str, str]:
-    clean = {k: v for k, v in os.environ.items() if not k.startswith(("SIM_", "WALKIE_ROS", "WALKIE_VISION"))}
+    prefixes = ("SIM_", "WALKIE_ROS", "WALKIE_VISION", "WALKIE_DATABASE")
+    clean = {k: v for k, v in os.environ.items() if not k.startswith(prefixes)}
     return clean | {"SIM_DIR": str(sim_dir)} | env
 
 
@@ -56,11 +58,11 @@ def run(*args: str, sim_dir: Path, **env: str) -> subprocess.CompletedProcess:
     )
 
 
-def sourced(commands: str, sim_dir: Path) -> subprocess.CompletedProcess:
+def sourced(commands: str, sim_dir: Path, **env: str) -> subprocess.CompletedProcess:
     """Run `commands` in a bash that has sourced the script, so it can call its functions."""
     return subprocess.run(
         ["bash", "-c", f'source "$1"\n{commands}', "bash", str(SCRIPT)],
-        env=environment(sim_dir),
+        env=environment(sim_dir, **env),
         capture_output=True,
         text=True,
         timeout=30,
@@ -99,7 +101,7 @@ def test_the_script_parses():
 def test_without_a_known_command_it_prints_the_usage(tmp_path, args):
     result = run(*args, sim_dir=tmp_path)
     assert result.returncode == 2
-    assert "up [--agent] [--arms] [--vision] [--foxglove] [--gui] [-- ARGS]" in result.stdout
+    assert "up [--agent] [--arms] [--vision] [--memory] [--foxglove] [--gui] [-- ARGS]" in result.stdout
     assert "check [--agent] [--arms]" in result.stdout
     # From the header's first line to its last command, and no further.
     lines = result.stdout.splitlines()
@@ -257,6 +259,84 @@ def test_up_with_vision_makes_a_relative_walkie_vision_absolute(tmp_path):
     assert (result.returncode, result.stdout, result.stderr) == (0, f"{checkout}\n", "")
 
 
+def walkie_database_checkout(path: Path) -> Path:
+    """A walkie-database checkout at `path` that looks installed, built and new enough for --memory."""
+    (path / ".pixi" / "envs" / "default").mkdir(parents=True)
+    (path / "pixi.toml").touch()
+    (path / "src" / "walkie_database").mkdir(parents=True)
+    (path / "src" / "walkie_database" / "object_memory.py").touch()
+    (path / "ros2_ws" / "install" / "walkie_database_msgs").mkdir(parents=True)
+    return path
+
+
+def memory_inputs(root: Path) -> str:
+    """A walkie-database checkout, a store and a map folder under `root`, as shell assignments."""
+    checkout = walkie_database_checkout(root / "walkie-database")
+    (root / "store").mkdir()
+    (root / "store" / "walkie.db").touch()
+    (root / "map").mkdir()
+    return (
+        f"WALKIE_DATABASE={shlex.quote(str(checkout))} "
+        f"SIM_MEMORY_DB={shlex.quote(str(root / 'store' / 'walkie.db'))} "
+        f"SIM_MEMORY_MAP_FOLDER={shlex.quote(str(root / 'map'))}"
+    )
+
+
+def test_up_with_memory_needs_walkie_database(tmp_path):
+    result = sourced("check_memory_prerequisites", tmp_path)
+    assert result.returncode == 1
+    assert "--memory needs WALKIE_DATABASE" in result.stderr
+
+
+@pytest.mark.parametrize(
+    ("remove", "message"),
+    [
+        ("walkie-database/.pixi/envs/default", "no installed environment"),
+        ("walkie-database/src/walkie_database/object_memory.py", "needs feat/scene-graph-prep or later"),
+        ("walkie-database/ros2_ws/install/walkie_database_msgs", "walkie_database_msgs is not built"),
+        ("store/walkie.db", "/store/walkie.db does not exist; docs/setup/08-chula-simulation.md"),
+        ("map", "/map is not a folder"),
+    ],
+)
+def test_up_with_memory_refuses_a_missing_checkout_part_store_or_map(tmp_path, remove, message):
+    inputs = memory_inputs(tmp_path)
+    target = tmp_path / remove
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+    result = sourced(f"{inputs}\ncheck_memory_prerequisites", tmp_path)
+    assert result.returncode == 1
+    assert message in result.stderr
+
+
+def test_up_with_memory_makes_its_relative_paths_absolute(tmp_path):
+    # The memory part starts in WALKIE_DATABASE, where a relative path would no longer resolve.
+    memory_inputs(tmp_path)
+    result = sourced(
+        f"cd {shlex.quote(str(tmp_path))}\n"
+        "WALKIE_DATABASE=walkie-database SIM_MEMORY_DB=store/walkie.db SIM_MEMORY_MAP_FOLDER=map\n"
+        'check_memory_prerequisites && printf "%s\\n" "$WALKIE_DATABASE" "$SIM_MEMORY_DB" "$SIM_MEMORY_MAP_FOLDER"',
+        tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        str(tmp_path / "walkie-database"),
+        str(tmp_path / "store" / "walkie.db"),
+        str(tmp_path / "map"),
+    ]
+
+
+@pytest.mark.parametrize(("overlay", "workspace"), [("/overlay", "/overlay"), ("", "/walkie-ros")])
+def test_the_memory_map_is_the_one_bringup_loads(tmp_path, overlay, workspace):
+    result = sourced(
+        'echo "$SIM_MEMORY_MAP_FOLDER"', tmp_path, WALKIE_ROS="/walkie-ros", WALKIE_ROS_OVERLAY=overlay
+    )
+    assert result.stdout == (
+        f"{workspace}/install/walkie_mujoco_worlds/share/walkie_mujoco_worlds/worlds/chula_pat14_6/map\n"
+    )
+
+
 def test_wait_for_log_stops_at_the_fail_text_of_a_part_that_keeps_running(tmp_path):
     # walkie-vision's launch respawns a node that cannot start, so the part never stops.
     (tmp_path / "logs").mkdir()
@@ -280,6 +360,7 @@ UP_STAND_INS = r"""
 record() { local IFS=$'\x1f'; echo "$*" >> "$SIM_DIR/calls"; }
 check_prerequisites() { record check "$@"; }
 check_vision_prerequisites() { record check-vision "$@"; }
+check_memory_prerequisites() { record check-memory "$@"; }
 pgrep() { :; }
 running() { [[ -e $SIM_DIR/started-$1 ]]; }
 port_open() { running router; }
@@ -287,6 +368,7 @@ tcp_listening() { [[ -e $SIM_DIR/listening-$1 ]]; }
 start() { record start "$@"; touch "$SIM_DIR/started-$1"; }
 wait_for_log() { record wait "$@"; [[ $1 != "$NOT_READY" ]]; }
 SETTLE_S=0 PIXI=pixi WALKIE_ROS=/walkie-ros WALKIE_ROS_OVERLAY=/overlay WALKIE_VISION=/walkie-vision
+WALKIE_DATABASE=/walkie-database SIM_MEMORY_DB=/store/walkie.db SIM_MEMORY_MAP_FOLDER=/map
 """
 WALKIE_ROS_RUN = (
     "pixi",
@@ -443,6 +525,66 @@ def test_up_with_vision_and_foxglove_already_running_only_waits_for_them(tmp_pat
         ("wait", "oracle", "Drawing ", "120"),
         *VISION_AND_FOXGLOVE_WAITS,
     ]
+
+
+MEMORY_START = (
+    "start", "memory", "/walkie-database",
+    "pixi", "run", "--as-is", "--manifest-path", "/walkie-database/pixi.toml",
+    "db-memory", "-p", "db_path:=/store/walkie.db", "-p", "map_folder:=/map",
+    "-p", "map_id:=chula-2026-11-12-714b087d", "-p", "use_sim_time:=true",
+    "-p", "objects_topic:=/walkie_vision/sim/objects",
+)  # fmt: skip
+MEMORY_WAIT = ("wait", "memory", "The object memory starts with", "120", "Not starting:")
+
+
+def test_up_with_memory_starts_it_after_vision_and_waits_for_it_after_vision(tmp_path):
+    result, calls = up_with_stand_ins(tmp_path, "--agent", "--vision", "--memory", "--foxglove")
+    assert result.returncode == 0, result.stderr
+    vision, foxglove = vision_and_foxglove(tmp_path)
+    vision_wait, foxglove_wait = VISION_AND_FOXGLOVE_WAITS
+    assert calls == [
+        ("check", "false"),
+        ("check-vision",),
+        ("check-memory",),
+        *router_and_bringup(tmp_path),
+        vision,
+        MEMORY_START,
+        foxglove,
+        *oracle_speech_and_agent(tmp_path),
+        vision_wait,
+        MEMORY_WAIT,
+        foxglove_wait,
+    ]
+
+
+def test_up_with_memory_already_running_only_waits_for_it(tmp_path):
+    result, calls = up_with_stand_ins(
+        tmp_path, "--vision", "--memory", running=("router", "bringup", "vision", "memory", "oracle", "speech")
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls == [
+        ("check", "false"),
+        ("check-vision",),
+        ("check-memory",),
+        router_and_bringup(tmp_path)[-1],
+        ("wait", "oracle", "Drawing ", "120"),
+        VISION_AND_FOXGLOVE_WAITS[0],
+        MEMORY_WAIT,
+    ]
+
+
+def test_up_with_memory_and_no_vision_stops_before_it_starts_anything(tmp_path):
+    result = run("up", "--memory", sim_dir=tmp_path)
+    assert result.returncode == 1
+    assert "so --memory needs --vision" in result.stderr
+    assert not (tmp_path / "pids").exists()
+
+
+def test_up_stops_at_an_object_memory_that_never_logs_it_is_ready(tmp_path):
+    result, calls = up_with_stand_ins(tmp_path, "--vision", "--memory", "--foxglove", not_ready="memory")
+    assert result.returncode == 1
+    assert f"chula-sim: the object memory did not start; see {tmp_path}/logs/memory.log" in result.stderr
+    assert calls[-1] == MEMORY_WAIT
 
 
 def test_up_with_foxglove_refuses_a_port_in_use_and_starts_nothing_after(tmp_path):

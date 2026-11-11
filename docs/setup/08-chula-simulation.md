@@ -64,6 +64,33 @@ and `pixi run fetch-models` run there. `up --vision` refuses to start without
 the environment, the visualizer, the task's file or the built messages. The
 vision launch checks the models itself, and names the command that fetches them.
 
+**For `--memory`, walkie-database and a seeded store.** Set `WALKIE_DATABASE`
+to a walkie-database checkout of `feat/scene-graph-prep` or later, the first
+with the object memory, with its pixi environment installed and
+`pixi run build-msgs` run there. The memory keeps what it merges in a store
+seeded for this map: `SIM_MEMORY_DB`, by default
+`/var/tmp/scene-graph-demo/agent/walkie.db`. `up --memory` refuses to start
+without the environment, the object memory, the built messages, the store or
+the map folder. The node itself checks that the store was seeded for this map,
+map ID and clock, and stops with `Not starting:` when it was not. These defaults
+are current and will change as the scene graph work goes on:
+
+| Setting | Default |
+| --- | --- |
+| `SIM_MEMORY_DB` | `/var/tmp/scene-graph-demo/agent/walkie.db` |
+| `SIM_MEMORY_MAP_ID` | `chula-2026-11-12-714b087d` |
+| `SIM_MEMORY_MAP_FOLDER` | the `chula_pat14_6` map that `bringup` loads, from the overlay's `install/` |
+
+To empty the store again, stop the memory first (`down`), then reset it to its
+seed from walkie-database's checkout:
+
+```bash
+W=/var/tmp/wr-chula/simulation/mujoco/worlds/chula_pat14_6
+pixi run --frozen db-restore --seed /var/tmp/scene-graph-demo/seed.db \
+  --db /var/tmp/scene-graph-demo/agent/walkie.db --map-folder $W/map \
+  --clock-kind ros_sim --replace
+```
+
 **A model key, for `--agent`.** The agent reads `OPENAI_API_KEY` from the
 environment or from `.env` at the root of this repository. A Git worktree has no
 `.env` of its own. Without a key, the agent exits at startup, and `up` fails with
@@ -90,7 +117,8 @@ scripts/chula-sim.sh check --agent
 | `moveit` | `moveit_only.launch.py hardware_type:=mujoco use_rviz:=false`, with `--arms` only | move_group logs `MoveGroup context initialization complete` (120 s at most) |
 | `commander` | `launch/commander_sim.launch.py`, the arm commander on sim time, with `--arms` only | the commander logs `Bimanual Commander Node Initialized` (120 s at most) |
 | `vision` | walkie-vision's `pixi run vision task:=memory sim:=true viz:=true`, with `--vision` only | the node logs `loaded the models in` (300 s at most), after the oracle and the agent |
-| `foxglove` | `foxglove_bridge_launch.xml` on `127.0.0.1:8799`, from walkie-ros's environment, with `--foxglove` only | the bridge logs `Server listening on port` (120 s at most), after `vision` |
+| `memory` | walkie-database's `pixi run db-memory` on `SIM_MEMORY_DB`, reading `/walkie_vision/sim/objects` on sim time, with `--memory` only, which needs `--vision` | the node logs `The object memory starts with` (120 s at most), after `vision` |
+| `foxglove` | `foxglove_bridge_launch.xml` on `127.0.0.1:8799`, from walkie-ros's environment, with `--foxglove` only | the bridge logs `Server listening on port` (120 s at most), after `memory` |
 | `oracle` | `pixi run oracle-chula` | |
 | `speech` | `ros2 topic echo /to_human`, into `speech.log` | |
 | `agent` | `pixi run agent-sim-chula --tool-log ...`, with `--agent` only | |
@@ -238,8 +266,9 @@ also a line of `logs/agent-tools.jsonl`, with the tool `verdict`.
 ## Watch it in Foxglove
 
 ```bash
-export WALKIE_VISION=/var/tmp/wv-prep   # a checkout of feat/scene-graph-prep
-scripts/chula-sim.sh up --vision --foxglove
+export WALKIE_VISION=/var/tmp/wv-prep     # a checkout of feat/scene-graph-prep
+export WALKIE_DATABASE=/var/tmp/wd-prep   # a checkout of feat/scene-graph-prep
+scripts/chula-sim.sh up --vision --memory --foxglove
 ```
 
 **`--vision`** runs walkie-vision's node on the head camera, with the `memory`
@@ -257,6 +286,20 @@ On MuJoCo's rendered frames, YOLOE finds small textured objects, such as the
 cup, the bottle and the apple, and misses or mislabels most furniture
 (decision S4-8 in
 [Mahoraga Demo Decisions](../architecture/mahoraga-demo-decisions.md)).
+
+**`--memory`** runs walkie-database's object memory on those arrays. Every 2 s
+of sim time it merges the detections it has placed in the map, keeps an object
+once two views agree, saves the result in `SIM_MEMORY_DB`, and publishes:
+
+| Topic | Type | What it shows |
+| --- | --- | --- |
+| `/walkie_database/objects/markers` | `visualization_msgs/MarkerArray` | each confirmed object's box and label in `map`, and its `on` relations |
+| `/walkie_database/objects/cloud` | `sensor_msgs/PointCloud2` | the objects' points in `map` |
+
+Both are latched, so a client that connects later still gets the last one. The
+memory also serves `/walkie_database/search_objects`, `get_object`,
+`find_objects`, `get_room_contents` and `list_rooms`. It saves once more as it
+stops, and `down` stops it before `vision`.
 
 **`--foxglove`** runs `foxglove_bridge` on sim time, from walkie-ros's
 environment, on `ws://localhost:8799`. `SIM_FOXGLOVE_PORT` picks another port.
@@ -300,8 +343,8 @@ are in the camera's optical frame.
 scripts/chula-sim.sh down
 ```
 
-`down` stops the parts in reverse order: the agent first, and the commander and
-MoveIt before `bringup`. It sends each process of a part SIGINT,
+`down` stops the parts in reverse order: the agent first, the object memory
+before `vision`, and the commander and MoveIt before `bringup`. It sends each process of a part SIGINT,
 as Ctrl+C would. If the part still runs 10 s later, it sends SIGTERM, and 5 s
 after that SIGKILL, then SIGKILL again 2 s later. Each check starts the helper,
 so these waits run a little longer.
@@ -356,6 +399,10 @@ Everything goes under `SIM_DIR`, `/var/tmp/walkie-chula-sim` by default.
   the `ros2` daemon, is not in the group and is left running.
 - `ros/`: `ROS_HOME` and the ROS logs.
 - `worlds/`: the world the launch file generates.
+
+The object memory's store, `SIM_MEMORY_DB`, is not under `SIM_DIR` either, so
+`down` and a new `up` keep what it has merged. [What you need](#what-you-need)
+shows how to reset it.
 
 The functions an agent with `--scripts` saves are not under `SIM_DIR`. They go to
 the function store, `WALKIE_TOOLS_HOME` if the shell that runs `up` sets it, and
@@ -591,6 +638,21 @@ kitchen table, succeeded from the living room and from the shelf.
     The debug visualizer drew 796 arrays with one missing its image.
     `down` stopped every part in about 23 s. Both vision processes finished
     cleanly, within about 4 s of `down` starting (decision SG-11).
+- With the object memory, later on 2026-11-12, with walkie-database's
+  uncommitted `feat/scene-graph-prep` work in `/var/tmp/wd-prep` and the store
+  freshly seeded, holding no objects: `up --vision --memory --foxglove`. The
+  memory logged `The object memory starts with no objects.` within a second.
+  The bridge advertised `/walkie_database/objects/markers` and
+  `/walkie_database/objects/cloud`, about one message per merge period
+  (0.45 to 0.5 Hz of wall time). Nav2 goals to the kitchen room, the shelf and the bar succeeded; the goal to
+  the TV did not finish within 200 s. By then the store held 20 objects (4
+  cups, 4 chairs, 4 bottles, 2 tables, 2 sofas, 2 apples, a shelf and a
+  cabinet), 1839 observations and 3 `on` relations, and a marker array was
+  about 10.5 KiB. Over the run, the memory could not place 12 arrays in `map`
+  for want of a transform, and dropped them. `down` stopped every part in
+  about 17 s. The memory stopped 0.8 s after its SIGINT, with no traceback,
+  and released its store lock. The store then passed `PRAGMA integrity_check`
+  and held the same 20 objects and 3 relations, and 1916 observations.
 
 ## Not in the recipe
 

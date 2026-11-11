@@ -107,6 +107,7 @@ def test_without_a_known_command_it_prints_the_usage(tmp_path, args):
         in result.stdout
     )
     assert "check [--agent] [--arms]" in result.stdout
+    assert "  scripts/chula-sim.sh reset-memory " in result.stdout
     # From the header's first line to its last command, and no further.
     lines = result.stdout.splitlines()
     assert lines[0].startswith("Run walkie-ros's Chula PAT14-6 simulation")
@@ -298,7 +299,7 @@ def test_up_with_memory_needs_walkie_database(tmp_path):
         ("walkie-database/.pixi/envs/default", "no installed environment"),
         ("walkie-database/src/walkie_database/object_memory.py", "needs feat/scene-graph-prep or later"),
         ("walkie-database/ros2_ws/install/walkie_database_msgs", "walkie_database_msgs is not built"),
-        ("store/walkie.db", "/store/walkie.db does not exist; docs/setup/08-chula-simulation.md"),
+        ("store/walkie.db", "/store/walkie.db does not exist; scripts/chula-sim.sh reset-memory restores it"),
         ("map", "/map is not a folder"),
     ],
 )
@@ -339,6 +340,145 @@ def test_the_memory_map_is_the_one_bringup_loads(tmp_path, overlay, workspace):
     assert result.stdout == (
         f"{workspace}/install/walkie_mujoco_worlds/share/walkie_mujoco_worlds/worlds/chula_pat14_6/map\n"
     )
+
+
+def stand_in_pixi(path: Path, status: int = 0) -> Path:
+    """An executable at `path` that writes its arguments to `path`.args, one a line, and exits `status`."""
+    path.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$0.args"\nexit {status}\n')
+    path.chmod(0o755)
+    return path
+
+
+def reset_memory_inputs(root: Path, status: int = 0) -> tuple[dict[str, str], Path]:
+    """A walkie-database checkout, a seed, a map folder and a stand-in pixi under `root`.
+
+    Returns the environment that names them and the store, a path not yet made, and the pixi.
+    """
+    checkout = walkie_database_checkout(root / "walkie-database")
+    (root / "seed.db").touch()
+    (root / "map").mkdir()
+    pixi = stand_in_pixi(root / "pixi", status)
+    env = {
+        "PIXI": str(pixi),
+        "WALKIE_DATABASE": str(checkout),
+        "SIM_MEMORY_SEED": str(root / "seed.db"),
+        "SIM_MEMORY_DB": str(root / "new" / "walkie.db"),
+        "SIM_MEMORY_MAP_FOLDER": str(root / "map"),
+    }
+    return env, pixi
+
+
+def test_reset_memory_restores_the_store_from_the_seed_with_db_restore(tmp_path):
+    env, pixi = reset_memory_inputs(tmp_path)
+    result = run("reset-memory", sim_dir=tmp_path / "sim", **env)
+    assert result.returncode == 0, result.stderr
+    assert Path(f"{pixi}.args").read_text().splitlines() == [
+        "run", "--as-is", "--manifest-path", f"{tmp_path}/walkie-database/pixi.toml", "db-restore",
+        "--seed", f"{tmp_path}/seed.db", "--db", f"{tmp_path}/new/walkie.db",
+        "--map-folder", f"{tmp_path}/map", "--clock-kind", "ros_sim", "--replace",
+    ]  # fmt: skip
+    assert (tmp_path / "new").is_dir()
+
+
+def test_reset_memory_makes_its_relative_paths_absolute(tmp_path):
+    # db-restore runs in WALKIE_DATABASE, where a relative path would no longer resolve.
+    _, pixi = reset_memory_inputs(tmp_path)
+    result = sourced(
+        f"cd {shlex.quote(str(tmp_path))}\n"
+        "WALKIE_DATABASE=walkie-database SIM_MEMORY_SEED=seed.db SIM_MEMORY_DB=new/walkie.db\n"
+        "SIM_MEMORY_MAP_FOLDER=map\nreset_memory",
+        tmp_path / "sim",
+        PIXI=str(pixi),
+    )
+    assert result.returncode == 0, result.stderr
+    args = Path(f"{pixi}.args").read_text().splitlines()
+    assert args[3] == f"{tmp_path}/walkie-database/pixi.toml"
+    assert args[5:11] == [
+        "--seed", f"{tmp_path}/seed.db", "--db", f"{tmp_path}/new/walkie.db",
+        "--map-folder", f"{tmp_path}/map",
+    ]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("remove", "message"),
+    [
+        ("WALKIE_DATABASE", "reset-memory needs WALKIE_DATABASE"),
+        ("walkie-database/src/walkie_database/object_memory.py", "reset-memory needs feat/scene-graph-prep"),
+        ("map", "/map is not a folder"),
+        ("seed.db", "/seed.db does not exist; docs/setup/08-chula-simulation.md says how to build it"),
+    ],
+)
+def test_reset_memory_refuses_a_missing_checkout_map_or_seed(tmp_path, remove, message):
+    env, pixi = reset_memory_inputs(tmp_path)
+    if remove in env:
+        del env[remove]
+    elif (tmp_path / remove).is_dir():
+        shutil.rmtree(tmp_path / remove)
+    else:
+        (tmp_path / remove).unlink()
+    result = run("reset-memory", sim_dir=tmp_path / "sim", **env)
+    assert result.returncode == 1
+    assert message in result.stderr
+    assert not Path(f"{pixi}.args").exists()
+
+
+def test_reset_memory_refuses_while_the_memory_runs(tmp_path):
+    env, pixi = reset_memory_inputs(tmp_path)
+    result = sourced("running() { [[ $1 == memory ]]; }\nreset_memory", tmp_path / "sim", **env)
+    assert result.returncode == 1
+    assert "the object memory is running" in result.stderr
+    assert not Path(f"{pixi}.args").exists()
+
+
+def test_reset_memory_refuses_while_another_up_or_down_holds_the_lock(tmp_path):
+    env, pixi = reset_memory_inputs(tmp_path)
+    (tmp_path / "sim").mkdir()
+    with (tmp_path / "sim" / "lock").open("w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = run("reset-memory", sim_dir=tmp_path / "sim", **env)
+    assert result.returncode == 1
+    assert "another scripts/chula-sim.sh up, down or reset-memory is running" in result.stderr
+    assert not Path(f"{pixi}.args").exists()
+
+
+def test_reset_memory_holds_the_lock_from_its_memory_check_through_db_restore(tmp_path):
+    # Each stand-in notes its call, and whether another up could have taken the lock then.
+    env, pixi = reset_memory_inputs(tmp_path)
+    sim_dir = tmp_path / "sim"
+    pixi.write_text(
+        '#!/usr/bin/env bash\necho db-restore >> "$SIM_DIR/calls"\n'
+        'flock -n "$SIM_DIR/lock" true && echo db-restore >> "$SIM_DIR/unlocked"\nexit 0\n'
+    )
+    result = sourced(
+        'running() { echo "running $1" >> "$SIM_DIR/calls"\n'
+        '  flock -n "$SIM_DIR/lock" true && echo "running $1" >> "$SIM_DIR/unlocked"; return 1; }\n'
+        "reset_memory",
+        sim_dir,
+        **env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (sim_dir / "calls").read_text().splitlines() == ["running memory", "db-restore"]
+    assert not (sim_dir / "unlocked").exists()
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root enters any folder")
+def test_reset_memory_stops_at_a_store_folder_it_cannot_enter(tmp_path):
+    env, pixi = reset_memory_inputs(tmp_path)
+    shut = tmp_path / "shut"
+    shut.mkdir(mode=0o600)
+    env["SIM_MEMORY_DB"] = str(shut / "walkie.db")
+    try:
+        result = run("reset-memory", sim_dir=tmp_path / "sim", **env)
+    finally:
+        shut.chmod(0o700)
+    assert result.returncode == 1
+    assert "is in a folder that cannot be made or entered" in result.stderr
+    assert not Path(f"{pixi}.args").exists()
+
+
+def test_reset_memory_fails_when_db_restore_refuses(tmp_path):
+    env, _ = reset_memory_inputs(tmp_path, status=1)
+    assert run("reset-memory", sim_dir=tmp_path / "sim", **env).returncode == 1
 
 
 # The services the object tools call, by name: their type hashes.
@@ -1001,7 +1141,7 @@ def test_down_refuses_while_another_up_or_down_holds_the_lock(tmp_path):
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         result = run("down", sim_dir=tmp_path)
     assert result.returncode == 1
-    assert "another scripts/chula-sim.sh up or down is running" in result.stderr
+    assert "another scripts/chula-sim.sh up, down or reset-memory is running" in result.stderr
     assert run("down", sim_dir=tmp_path).returncode == 0
 
 
@@ -1112,7 +1252,7 @@ def test_a_start_up_gave_up_on_keeps_down_out_until_its_part_has_a_record(tmp_pa
 
         refused = run("down", sim_dir=sim_dir)
         assert refused.returncode == 1
-        assert "another scripts/chula-sim.sh up or down is running" in refused.stderr
+        assert "another scripts/chula-sim.sh up, down or reset-memory is running" in refused.stderr
 
         wait_for(record.exists)
         leader = int(record.read_text().split()[0])

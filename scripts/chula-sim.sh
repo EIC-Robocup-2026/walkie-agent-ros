@@ -19,6 +19,8 @@
 #                                               SIM_FOXGLOVE_PORT
 #   scripts/chula-sim.sh check [--agent] [--arms]
 #                                               wait for the clock, TF, head camera and arrays
+#   scripts/chula-sim.sh reset-memory           restore the object memory's store from its
+#                                               seed, while the memory is stopped
 #   scripts/chula-sim.sh status                 which parts are running, and their logs
 #   scripts/chula-sim.sh env                    the exports that put a shell on the private graph
 #   scripts/chula-sim.sh down                   stop everything this script started
@@ -33,10 +35,14 @@
 #   WALKIE_VISION       for --vision, a walkie-vision checkout with its pixi environment
 #                       installed, its messages built and its models fetched
 #   SIM_VISION_TASK     the vision task, a file in its config/tasks/ (default memory)
-#   WALKIE_DATABASE     for --memory, a walkie-database checkout on feat/scene-graph-prep or
-#                       later, with its pixi environment installed and its messages built
-#   SIM_MEMORY_DB       the object memory's store, seeded for this map
-#                       (default /var/tmp/scene-graph-demo/agent/walkie.db)
+#   WALKIE_DATABASE     for --memory and reset-memory, a walkie-database checkout on
+#                       feat/scene-graph-prep or later, with its pixi environment installed
+#                       and its messages built
+#   SIM_MEMORY_DB       the object memory's store, restored from SIM_MEMORY_SEED by
+#                       reset-memory (default /var/tmp/scene-graph-demo/sim/walkie.db)
+#   SIM_MEMORY_SEED     the seed reset-memory restores the store from, built for this map
+#                       by walkie-database's db-seed-sim
+#                       (default /var/tmp/scene-graph-demo/furniture/seed.db)
 #   SIM_MEMORY_MAP_ID   the map ID the store was seeded with (default chula-2026-11-12-714b087d)
 #   SIM_MEMORY_MAP_FOLDER
 #                       the map folder the store was seeded with (default the chula_pat14_6
@@ -64,7 +70,8 @@ WALKIE_ROS_OVERLAY=${WALKIE_ROS_OVERLAY:-}
 WALKIE_VISION=${WALKIE_VISION:-}
 SIM_VISION_TASK=${SIM_VISION_TASK:-memory}
 WALKIE_DATABASE=${WALKIE_DATABASE:-}
-SIM_MEMORY_DB=${SIM_MEMORY_DB:-/var/tmp/scene-graph-demo/agent/walkie.db}
+SIM_MEMORY_DB=${SIM_MEMORY_DB:-/var/tmp/scene-graph-demo/sim/walkie.db}
+SIM_MEMORY_SEED=${SIM_MEMORY_SEED:-/var/tmp/scene-graph-demo/furniture/seed.db}
 SIM_MEMORY_MAP_ID=${SIM_MEMORY_MAP_ID:-chula-2026-11-12-714b087d}
 SIM_MEMORY_MAP_FOLDER=${SIM_MEMORY_MAP_FOLDER:-${WALKIE_ROS_OVERLAY:-$WALKIE_ROS}/install/walkie_mujoco_worlds/share/walkie_mujoco_worlds/worlds/chula_pat14_6/map}
 SIM_FOXGLOVE_PORT=${SIM_FOXGLOVE_PORT:-8799}
@@ -316,12 +323,12 @@ fail() {
     die "$*"
 }
 
-# lock: one up or down at a time, on this SIM_DIR. The lock is released when the
-# script exits.
+# lock: one up, down or reset-memory at a time, on this SIM_DIR. The lock is released
+# when the script exits.
 lock() {
     mkdir -p "$SIM_DIR"
     exec 9> "$SIM_DIR/lock"
-    flock -n 9 || die "another scripts/chula-sim.sh up or down is running on $SIM_DIR"
+    flock -n 9 || die "another scripts/chula-sim.sh up, down or reset-memory is running on $SIM_DIR"
 }
 
 # tcp_listening PORT: something accepts connections on 127.0.0.1:PORT.
@@ -388,24 +395,30 @@ check_vision_prerequisites() {
     WALKIE_VISION=$(cd "$WALKIE_VISION" && pwd)
 }
 
+# check_database_prerequisites COMMAND: what COMMAND, --memory or reset-memory, needs
+# from WALKIE_DATABASE, and that the map folder exists.
+check_database_prerequisites() {
+    [[ -n $WALKIE_DATABASE ]] || die "$1 needs WALKIE_DATABASE, a walkie-database checkout"
+    [[ -f $WALKIE_DATABASE/pixi.toml && -d $WALKIE_DATABASE/.pixi/envs/default ]] ||
+        die "WALKIE_DATABASE=$WALKIE_DATABASE has no pixi.toml or no installed environment: run pixi install there"
+    [[ -f $WALKIE_DATABASE/src/walkie_database/object_memory.py ]] ||
+        die "WALKIE_DATABASE=$WALKIE_DATABASE has no object memory; $1 needs feat/scene-graph-prep or later"
+    [[ -d $WALKIE_DATABASE/ros2_ws/install/walkie_database_msgs ]] ||
+        die "walkie_database_msgs is not built in WALKIE_DATABASE=$WALKIE_DATABASE: run pixi run build-msgs there"
+    [[ -d $SIM_MEMORY_MAP_FOLDER ]] || die "SIM_MEMORY_MAP_FOLDER=$SIM_MEMORY_MAP_FOLDER is not a folder"
+    # walkie-database's tasks run in WALKIE_DATABASE, so a relative path would resolve twice.
+    WALKIE_DATABASE=$(cd "$WALKIE_DATABASE" && pwd)
+    SIM_MEMORY_MAP_FOLDER=$(cd "$SIM_MEMORY_MAP_FOLDER" && pwd)
+}
+
 # check_memory_prerequisites: what up --memory needs from WALKIE_DATABASE, and that the
 # store and the map folder exist. The node itself checks that the store was seeded for
 # this map, map ID and clock, and logs what does not match.
 check_memory_prerequisites() {
-    [[ -n $WALKIE_DATABASE ]] || die "--memory needs WALKIE_DATABASE, a walkie-database checkout"
-    [[ -f $WALKIE_DATABASE/pixi.toml && -d $WALKIE_DATABASE/.pixi/envs/default ]] ||
-        die "WALKIE_DATABASE=$WALKIE_DATABASE has no pixi.toml or no installed environment: run pixi install there"
-    [[ -f $WALKIE_DATABASE/src/walkie_database/object_memory.py ]] ||
-        die "WALKIE_DATABASE=$WALKIE_DATABASE has no object memory; --memory needs feat/scene-graph-prep or later"
-    [[ -d $WALKIE_DATABASE/ros2_ws/install/walkie_database_msgs ]] ||
-        die "walkie_database_msgs is not built in WALKIE_DATABASE=$WALKIE_DATABASE: run pixi run build-msgs there"
+    check_database_prerequisites --memory
     [[ -f $SIM_MEMORY_DB ]] ||
-        die "SIM_MEMORY_DB=$SIM_MEMORY_DB does not exist; docs/setup/08-chula-simulation.md says how to seed it"
-    [[ -d $SIM_MEMORY_MAP_FOLDER ]] || die "SIM_MEMORY_MAP_FOLDER=$SIM_MEMORY_MAP_FOLDER is not a folder"
-    # The memory part starts in WALKIE_DATABASE, so a relative path would resolve twice.
-    WALKIE_DATABASE=$(cd "$WALKIE_DATABASE" && pwd)
+        die "SIM_MEMORY_DB=$SIM_MEMORY_DB does not exist; scripts/chula-sim.sh reset-memory restores it from SIM_MEMORY_SEED"
     SIM_MEMORY_DB=$(cd "$(dirname "$SIM_MEMORY_DB")" && pwd)/$(basename "$SIM_MEMORY_DB")
-    SIM_MEMORY_MAP_FOLDER=$(cd "$SIM_MEMORY_MAP_FOLDER" && pwd)
 }
 
 # check_object_tools_prerequisites MEMORY_SRV: that the services the object tools call
@@ -668,6 +681,33 @@ print_env() {
     echo "export ZENOH_CONFIG_OVERRIDE='$ZENOH_CONFIG_OVERRIDE'"
 }
 
+# reset-memory: restore SIM_MEMORY_DB from SIM_MEMORY_SEED with walkie-database's
+# db-restore. db-restore keeps the store's ID lineage: it refuses, and changes nothing,
+# when the seed would give an object ID that the store has already given to something
+# else. A store that does not exist yet starts a lineage of its own. db-restore runs
+# only while the memory is stopped, so this refuses while up's memory runs, and
+# db-restore refuses a store whose lock another process holds, as a memory node
+# started by hand does for its whole life. A reader such as db-shell takes no lock.
+reset_memory() {
+    local store_dir
+    check_database_prerequisites reset-memory
+    [[ -f $SIM_MEMORY_SEED ]] ||
+        die "SIM_MEMORY_SEED=$SIM_MEMORY_SEED does not exist; docs/setup/08-chula-simulation.md says how to build it"
+    SIM_MEMORY_SEED=$(cd "$(dirname "$SIM_MEMORY_SEED")" && pwd)/$(basename "$SIM_MEMORY_SEED")
+    # An assignment takes the status of its last substitution, so the folder is found
+    # on its own: a folder that cannot be entered must stop here, not become /.
+    store_dir=$(mkdir -p "$(dirname "$SIM_MEMORY_DB")" && cd "$(dirname "$SIM_MEMORY_DB")" && pwd) ||
+        die "SIM_MEMORY_DB=$SIM_MEMORY_DB is in a folder that cannot be made or entered"
+    SIM_MEMORY_DB=$store_dir/$(basename "$SIM_MEMORY_DB")
+    lock
+    if running memory; then
+        die "the object memory is running, and its store can be restored only while it is stopped; scripts/chula-sim.sh down stops it"
+    fi
+    "$PIXI" run --as-is --manifest-path "$WALKIE_DATABASE/pixi.toml" db-restore \
+        --seed "$SIM_MEMORY_SEED" --db "$SIM_MEMORY_DB" --map-folder "$SIM_MEMORY_MAP_FOLDER" \
+        --clock-kind ros_sim --replace
+}
+
 # down: stop every part, in reverse order. A part that does not stop, or whose processes
 # cannot be looked up or signalled, does not keep down from stopping the others; down
 # then exits 1.
@@ -687,7 +727,8 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
         check) shift; check "$@" ;;
         status) status ;;
         env) print_env ;;
+        reset-memory) reset_memory ;;
         down) down ;;
-        *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+        *) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
     esac
 fi

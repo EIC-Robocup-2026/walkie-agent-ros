@@ -65,30 +65,59 @@ the environment, the visualizer, the task's file or the built messages. The
 vision launch checks the models itself, and names the command that fetches them.
 
 **For `--memory`, walkie-database and a seeded store.** Set `WALKIE_DATABASE`
-to a walkie-database checkout of `feat/scene-graph-prep` or later, the first
-with the object memory, with its pixi environment installed and
-`pixi run build-msgs` run there. The memory keeps what it merges in a store
-seeded for this map: `SIM_MEMORY_DB`, by default
-`/var/tmp/scene-graph-demo/agent/walkie.db`. `up --memory` refuses to start
-without the environment, the object memory, the built messages, the store or
-the map folder. The node itself checks that the store was seeded for this map,
-map ID and clock, and stops with `Not starting:` when it was not. These defaults
-are current and will change as the scene graph work goes on:
+to a walkie-database checkout of `feat/scene-graph-prep` at 45228e6, the
+commit `ros2_ws.repos` pins, or later, with its pixi environment installed and
+`pixi run build-msgs` run there. Two of its commits matter here. From 583bcd8,
+the memory merges a furniture track that lies mostly inside a seeded piece of
+furniture's box into that piece, whatever label the detector gave it; cups and
+other movable objects are never merged, and stand `on` the furniture instead
+(walkie-database's ADR-0028). From 8546d28, `db-seed-sim` measures the
+furniture from the world's MuJoCo scene.
+The memory keeps what it merges in a store seeded for this map,
+`SIM_MEMORY_DB`. `scripts/chula-sim.sh reset-memory` makes that store, or
+empties it again, from the seed `SIM_MEMORY_SEED` (decision SG-26):
+
+```bash
+scripts/chula-sim.sh reset-memory
+```
+
+It runs walkie-database's `db-restore` in `WALKIE_DATABASE`, and refuses while
+the memory runs, so run `down` first. `db-restore` keeps the store's ID
+lineage. It refuses, and changes nothing, when the seed would give an object
+ID that the store has already given to something else, and its message says
+how to rebuild the seed. A new `SIM_MEMORY_DB` path starts a lineage of its
+own. `up --memory` refuses to start without the environment, the object
+memory, the built messages, the store or the map folder. The node itself checks
+that the store was seeded for this map, map ID and clock, and stops with
+`Not starting:` when it was not. These defaults are current and will change as
+the scene graph work goes on:
 
 | Setting | Default |
 | --- | --- |
-| `SIM_MEMORY_DB` | `/var/tmp/scene-graph-demo/agent/walkie.db` |
+| `SIM_MEMORY_DB` | `/var/tmp/scene-graph-demo/sim/walkie.db` |
+| `SIM_MEMORY_SEED` | `/var/tmp/scene-graph-demo/furniture/seed.db` |
 | `SIM_MEMORY_MAP_ID` | `chula-2026-11-12-714b087d` |
 | `SIM_MEMORY_MAP_FOLDER` | the `chula_pat14_6` map that `bringup` loads, from the overlay's `install/` |
 
-To empty the store again, stop the memory first (`down`), then reset it to its
-seed from walkie-database's checkout:
+The seed holds the two rooms and the world's nine pieces of furniture,
+measured from its MuJoCo scene, with object IDs 1 to 9. It was built as
+walkie-database's `docs/setup/15-scene-graph-demo.md` describes, with this
+command in walkie-database's checkout. A rebuild cannot write over the seed it
+starts from: write it to a new `--output`, add `--previous-seed` with the old
+seed so that each piece keeps its ID, and point `SIM_MEMORY_SEED` at the new
+file. If `reset-memory` then refuses it, `db-restore`'s message names the
+`--id-floor` to rebuild with.
 
 ```bash
 W=/var/tmp/wr-chula/simulation/mujoco/worlds/chula_pat14_6
-pixi run --frozen db-restore --seed /var/tmp/scene-graph-demo/seed.db \
-  --db /var/tmp/scene-graph-demo/agent/walkie.db --map-folder $W/map \
-  --clock-kind ros_sim --replace
+A=/var/tmp/wa-demo
+pixi run --as-is db-seed-sim --map-folder $W/map --arena chula --date 2026-11-12 \
+  --clock-kind ros_sim \
+  --world-source $W/authoring/source/30_16102026_ChulaPat14_6_world.toml \
+  --locations $A/config/locations.chula_pat14_6.toml \
+  --room-names /var/tmp/scene-graph-demo/room-names.yaml \
+  --scene $W/scene.xml --furniture tools/furniture/chula_pat14_6.yaml \
+  --output /var/tmp/scene-graph-demo/furniture/seed.db
 ```
 
 **A model key, for `--agent`.** The agent reads `OPENAI_API_KEY` from the
@@ -276,8 +305,9 @@ them. It also points the agent's `find_objects` at walkie-vision's
 oracle's scene has no cup to check (SG-23). An `--objects-topic` after `--`
 is kept instead.
 
-The agent's `walkie_database_msgs` must come from the same walkie-database
-commit as `WALKIE_DATABASE`. Under `rmw_zenoh_cpp` a client built from another
+The agent's `walkie_database_msgs` must define the services as
+`WALKIE_DATABASE`'s build does: build both from the commit `ros2_ws.repos`
+pins, or from commits with the same messages. Under `rmw_zenoh_cpp` a client built from another
 version of a service finds it but is never answered
 ([ADR-0035](../architecture/decisions/0035-memory-through-walkie-database.md)):
 each object tool call would time out after 7 s as if the memory were busy, and
@@ -306,15 +336,15 @@ Then start it:
 scripts/chula-sim.sh up --agent --vision --memory --object-tools --foxglove
 ```
 
-Restore the store from its seed with `db-restore` before each run, as in the
-memory steps above. A store kept from an earlier run holds stamps from that
+Run `scripts/chula-sim.sh reset-memory` before each run, with the memory
+stopped. A store kept from an earlier run holds stamps from that
 run's clock, so the seconds since an object was seen read as unknown or wrong
 (SG-20). The memory only knows what vision has shown it, so drive the robot
 round the rooms first. Then ask:
 
 - "Where did you see a cup?" The tool log shows `recall_object` returning up
   to 10 remembered cups, each with its memory id, its room, the anchor it
-  stands on (`on`, such as `table 15`), the named place nearest it
+  stands on (`on`, such as `table 2`, the coffee table), the named place nearest it
   (`near_place`) and the seconds since vision last saw it. `complete` is false
   when there are more. An object the detector only once called a cup, such as
   a bottle, comes after the cups, under its own label.
@@ -470,8 +500,9 @@ Everything goes under `SIM_DIR`, `/var/tmp/walkie-chula-sim` by default.
 - `worlds/`: the world the launch file generates.
 
 The object memory's store, `SIM_MEMORY_DB`, is not under `SIM_DIR` either, so
-`down` and a new `up` keep what it has merged. [What you need](#what-you-need)
-shows how to reset it.
+`down` and a new `up` keep what it has merged. `scripts/chula-sim.sh
+reset-memory` restores it from `SIM_MEMORY_SEED`, which drops what the last
+run merged; copy the store first to keep it.
 
 The functions an agent with `--scripts` saves are not under `SIM_DIR`. They go to
 the function store, `WALKIE_TOOLS_HOME` if the shell that runs `up` sets it, and

@@ -4,7 +4,7 @@
 # and ROS_DOMAIN_ID SIM_DOMAIN_ID. Nothing started here connects to the router on 7447, so
 # it neither sees nor disturbs a robot or another simulation on this computer.
 #
-#   scripts/chula-sim.sh up [--agent] [--arms] [--vision] [--memory] [--foxglove] [--gui] [-- ARGS]
+#   scripts/chula-sim.sh up [--agent] [--arms] [--vision] [--memory] [--object-tools] [--foxglove] [--gui] [-- ARGS]
 #                                               router, MuJoCo with Nav2, oracle, speech log;
 #                                               --agent adds the agent, given ARGS such as
 #                                               --tool-set hri; --arms adds MoveIt and the arm
@@ -12,6 +12,9 @@
 #                                               --vision adds walkie-vision's node and its
 #                                               debug visualizer; --memory, with --vision,
 #                                               adds walkie-database's object memory;
+#                                               --object-tools, with --memory and --agent,
+#                                               gives the agent --object-memory, and the
+#                                               detector's objects unless ARGS name a topic;
 #                                               --foxglove adds foxglove_bridge on
 #                                               SIM_FOXGLOVE_PORT
 #   scripts/chula-sim.sh check [--agent] [--arms]
@@ -101,6 +104,9 @@ VISION_FAILED="cannot start:"
 # logs, before it exits, when the store does not match the map, map ID or clock.
 MEMORY_READY="The object memory starts with"
 MEMORY_FAILED="Not starting:"
+# walkie-vision's sim detections: the object memory's input, and with --object-tools the
+# agent's find_objects too.
+DETECTOR_OBJECTS=/walkie_vision/sim/objects
 # What foxglove_bridge logs once its server listens.
 FOXGLOVE_READY="Server listening on port"
 # What the oracle and the agent log once their nodes exist (oracle_scene.py, main.py).
@@ -402,13 +408,14 @@ check_memory_prerequisites() {
 
 up() {
     local with_agent=false with_arms=false with_vision=false with_memory=false with_foxglove=false
-    local headless=true rviz=false agent_args=()
+    local with_object_tools=false headless=true rviz=false agent_args=()
     while (($#)); do
         case $1 in
             --agent) with_agent=true ;;
             --arms) with_arms=true ;;
             --vision) with_vision=true ;;
             --memory) with_memory=true ;;
+            --object-tools) with_object_tools=true ;;
             --foxglove) with_foxglove=true ;;
             --gui) headless=false rviz=true ;;
             --) shift; agent_args=("$@"); break ;;
@@ -420,6 +427,9 @@ up() {
         die "the arguments after -- are the agent's, so up needs --agent with them"
     if $with_memory && ! $with_vision; then
         die "the object memory reads vision's detections, so --memory needs --vision"
+    fi
+    if $with_object_tools && ! { $with_memory && $with_agent; }; then
+        die "the object tools are the agent's and read the object memory, so --object-tools needs --memory and --agent"
     fi
     check_prerequisites "$with_arms"
     if $with_vision; then
@@ -496,7 +506,7 @@ up() {
     if $with_memory && ! running memory; then
         start memory "$WALKIE_DATABASE" "$PIXI" run --as-is --manifest-path "$WALKIE_DATABASE/pixi.toml" \
             db-memory -p "db_path:=$SIM_MEMORY_DB" -p "map_folder:=$SIM_MEMORY_MAP_FOLDER" \
-            -p "map_id:=$SIM_MEMORY_MAP_ID" -p use_sim_time:=true -p objects_topic:=/walkie_vision/sim/objects
+            -p "map_id:=$SIM_MEMORY_MAP_ID" -p use_sim_time:=true -p "objects_topic:=$DETECTOR_OBJECTS"
     fi
     # foxglove_bridge comes from walkie-ros's environment, which has no walkie_vision_msgs,
     # so it serves standard message types only; the visualizer's outputs are all standard.
@@ -514,6 +524,15 @@ up() {
     # speech.log instead of voicing it, so the simulation is silent.
     running speech || start speech "$REPO" env PYTHONUNBUFFERED=1 "$PIXI" run --frozen \
         --manifest-path "$REPO/pixi.toml" ros2 topic echo /to_human rai_interfaces/msg/HRIMessage --field text
+    # The agent's recall_object, list_room_objects and go_to_object ask the object memory.
+    # go_to_object leaves find_objects to check that the object is still there, so
+    # find_objects reads the detector that fills the memory, not the oracle, whose scene
+    # has no cup (SG-23). An --objects-topic in ARGS is kept instead.
+    if $with_object_tools; then
+        agent_args+=(--object-memory)
+        [[ " ${agent_args[*]} " == *" --objects-topic"* ]] ||
+            agent_args+=(--objects-topic "$DETECTOR_OBJECTS")
+    fi
     if $with_agent && ! running agent; then
         start agent "$REPO" "$PIXI" run --frozen --manifest-path "$REPO/pixi.toml" agent-sim-chula \
             --tool-log "$SIM_DIR/logs/agent-tools.jsonl" "${agent_args[@]}"
@@ -611,6 +630,6 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
         status) status ;;
         env) print_env ;;
         down) down ;;
-        *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+        *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
     esac
 fi

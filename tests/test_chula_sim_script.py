@@ -101,7 +101,10 @@ def test_the_script_parses():
 def test_without_a_known_command_it_prints_the_usage(tmp_path, args):
     result = run(*args, sim_dir=tmp_path)
     assert result.returncode == 2
-    assert "up [--agent] [--arms] [--vision] [--memory] [--foxglove] [--gui] [-- ARGS]" in result.stdout
+    assert (
+        "up [--agent] [--arms] [--vision] [--memory] [--object-tools] [--foxglove] [--gui] [-- ARGS]"
+        in result.stdout
+    )
     assert "check [--agent] [--arms]" in result.stdout
     # From the header's first line to its last command, and no further.
     lines = result.stdout.splitlines()
@@ -577,6 +580,56 @@ def test_up_with_memory_and_no_vision_stops_before_it_starts_anything(tmp_path):
     result = run("up", "--memory", sim_dir=tmp_path)
     assert result.returncode == 1
     assert "so --memory needs --vision" in result.stderr
+    assert not (tmp_path / "pids").exists()
+
+
+@pytest.mark.parametrize(
+    ("args", "added"),
+    [
+        (
+            ("--tool-set", "hri"),
+            ("--object-memory", "--objects-topic", "/walkie_vision/sim/objects"),
+        ),
+        (("--objects-topic", "/elsewhere"), ("--object-memory",)),
+        (("--objects-topic=/elsewhere",), ("--object-memory",)),
+    ],
+    ids=["detector", "own-topic", "own-topic-with-equals"],
+)
+def test_up_with_the_object_tools_gives_the_agent_object_memory_and_the_detector(
+    tmp_path, args, added
+):
+    result, calls = up_with_stand_ins(
+        tmp_path, "--agent", "--vision", "--memory", "--object-tools", "--", *args
+    )
+    assert result.returncode == 0, result.stderr
+    vision, _ = vision_and_foxglove(tmp_path)
+    assert calls == [
+        ("check", "false"),
+        ("check-vision",),
+        ("check-memory",),
+        *router_and_bringup(tmp_path),
+        vision,
+        MEMORY_START,
+        *oracle_speech_and_agent(tmp_path, *args, *added),
+        VISION_AND_FOXGLOVE_WAITS[0],
+        MEMORY_WAIT,
+    ]
+
+
+@pytest.mark.parametrize(
+    "flags",
+    [
+        ("--object-tools",),
+        ("--agent", "--object-tools"),
+        ("--vision", "--memory", "--object-tools"),
+    ],
+)
+def test_up_with_the_object_tools_and_no_memory_or_agent_stops_before_it_starts_anything(
+    tmp_path, flags
+):
+    result = run("up", *flags, sim_dir=tmp_path)
+    assert result.returncode == 1
+    assert "so --object-tools needs --memory and --agent" in result.stderr
     assert not (tmp_path / "pids").exists()
 
 

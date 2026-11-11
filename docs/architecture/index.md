@@ -9,6 +9,7 @@ costs later.
 | ------------------------------------------------ | ------------------------------------------------------------------------------- |
 | [The Agent](agent.md)                            | The assembled agent, its topics and tools, how it reaches the robot, what has and has not been tested, and what lives where |
 | [Mahoraga Demo Prototype](mahoraga-demo.md)      | The layer contract and public signatures: capability verbs, FakeRobot, atomics, the adapter, the runtime, the ROS wrappers and the wiring |
+| [Capability Map](capability-map.html)            | One page that shows what the demo agent can be asked today, where each ability has run, the tool sets, the Mahoraga gym's results, the roadmap and the known gaps |
 | [Arm Manipulation (Proposed)](manipulation.md)   | How the agent will move the arms and grippers, and run skills such as a VLA policy |
 | [Perception (Proposed)](perception.md)           | How the agent will use walkie-vision's models and walkie-database's memory to find objects and people |
 | [HRI Task (Proposed)](hri.md)                    | The first task the new agent runs end to end: greeting, seating and introducing guests, and the gaze loop |

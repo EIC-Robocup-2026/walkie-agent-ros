@@ -1,0 +1,1286 @@
+<!doctype html>
+<!--
+  Mahoraga Agent Capability Map
+
+  A self-contained status page for the demo agent on feat/mahoraga-demo. It
+  needs no network: open it straight from the repository, or from the built
+  documentation site.
+
+  To update it, edit only the JSON block with id "capability-data" near the end
+  of this file, in the same commit as the docs of the step that changed:
+
+  - meta.asOf and meta.commit: the date and the code commit the page describes.
+  - capabilities[].status: works | tested | partial | fake | planned | blocked.
+    "works" needs a run with the real model; "tested" is built and tested but
+    not yet called by the real model.
+  - capabilities[].proof.sim / .robot: the date of the first run there, false
+    when not yet, or null when it does not apply.
+  - capabilities[].proof.fake: "gym runs" when the real model called it in a
+    Mahoraga gym run, "oracle gate" when only the gym's scripted oracle did,
+    "tests" when only tests against the fake robot did, or false.
+  - roadmap[].status, gaps[], gym.rungs[].status and toolsets.atomics[] the same way.
+
+  Inline code is written between backticks. The page inserts every value as
+  text, never as HTML. Record the decision behind a change in
+  mahoraga-demo-decisions.md, as for any other change.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mahoraga Agent Capability Map</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --surface-2: #f2f1ed;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #6f6d68;
+  --axis: #898781;
+  --grid: #e1e0d9;
+  --baseline: #c3c2b7;
+  --border: rgba(11, 11, 11, 0.10);
+  --accent: #2a78d6;
+  --bar: #2a78d6;
+  --bar-hover: #256abf;
+  --st-works: #0ca30c;
+  --st-tested: #13867a;
+  --st-partial: #c98500;
+  --st-fake: #2a78d6;
+  --st-planned: #898781;
+  --st-blocked: #6250d6;
+  --code-bg: rgba(11, 11, 11, 0.05);
+  --shadow: 0 1px 2px rgba(11, 11, 11, 0.04), 0 4px 16px rgba(11, 11, 11, 0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --page: #0d0d0d;
+    --surface: #1a1a19;
+    --surface-2: #222221;
+    --ink: #f0efec;
+    --ink-2: #c3c2b7;
+    --muted: #a3a29b;
+    --axis: #898781;
+    --grid: #2c2c2a;
+    --baseline: #383835;
+    --border: rgba(255, 255, 255, 0.10);
+    --accent: #3987e5;
+    --bar: #3987e5;
+    --bar-hover: #5598e7;
+    --st-works: #0ca30c;
+    --st-tested: #35b5a5;
+    --st-partial: #fab219;
+    --st-fake: #3987e5;
+    --st-planned: #898781;
+    --st-blocked: #9085e9;
+    --code-bg: rgba(255, 255, 255, 0.07);
+    --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d;
+  --surface: #1a1a19;
+  --surface-2: #222221;
+  --ink: #f0efec;
+  --ink-2: #c3c2b7;
+  --muted: #a3a29b;
+  --axis: #898781;
+  --grid: #2c2c2a;
+  --baseline: #383835;
+  --border: rgba(255, 255, 255, 0.10);
+  --accent: #3987e5;
+  --bar: #3987e5;
+  --bar-hover: #5598e7;
+  --st-works: #0ca30c;
+  --st-tested: #35b5a5;
+  --st-partial: #fab219;
+  --st-fake: #3987e5;
+  --st-planned: #898781;
+  --st-blocked: #9085e9;
+  --code-bg: rgba(255, 255, 255, 0.07);
+  --shadow: none;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-padding-top: 64px; }
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+a { color: var(--accent); }
+code {
+  font: 0.86em/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: var(--code-bg);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  overflow-wrap: break-word;
+}
+h1, h2, h3 { line-height: 1.2; margin: 0; }
+h2 { font-size: 1.35rem; letter-spacing: -0.01em; }
+h3 { font-size: 1rem; }
+p { margin: 0; }
+
+.wrap { max-width: 1160px; margin: 0 auto; padding: 0 16px; }
+
+/* Header */
+header.top { padding: 40px 0 24px; }
+.eyebrow { color: var(--muted); font-size: 0.82rem; letter-spacing: 0.02em; }
+.eyebrow code { background: none; padding: 0; }
+header.top h1 { font-size: clamp(1.7rem, 4vw, 2.4rem); letter-spacing: -0.02em; margin: 6px 0 10px; }
+.lede { color: var(--ink-2); max-width: 70ch; }
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 22px;
+}
+.tile {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+.tile .v { font-size: 1.5rem; font-weight: 650; letter-spacing: -0.01em; }
+.tile .k { color: var(--ink-2); font-size: 0.82rem; }
+
+/* Nav */
+nav.bar {
+  position: sticky; top: 0; z-index: 5;
+  background: color-mix(in srgb, var(--page) 88%, transparent);
+  backdrop-filter: saturate(1.4) blur(8px);
+  -webkit-backdrop-filter: saturate(1.4) blur(8px);
+  border-bottom: 1px solid var(--border);
+}
+nav.bar .wrap { display: flex; align-items: center; gap: 4px; height: 48px; }
+nav.bar .links { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
+nav.bar .links::-webkit-scrollbar { display: none; }
+nav.bar a {
+  color: var(--ink-2); text-decoration: none; font-size: 0.86rem;
+  padding: 6px 10px; border-radius: 6px; white-space: nowrap;
+}
+nav.bar a:hover { background: var(--surface-2); color: var(--ink); }
+button {
+  font: inherit; color: inherit; cursor: pointer;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 10px; font-size: 0.84rem;
+}
+button:hover { background: var(--surface-2); }
+button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Sections */
+section { padding: 36px 0 8px; }
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 16px; margin-bottom: 6px; }
+.section-sub { color: var(--ink-2); max-width: 75ch; margin-bottom: 16px; }
+
+/* Status chips */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 0.78rem; font-weight: 550; color: var(--ink);
+  background: var(--surface-2); border-radius: 999px; padding: 2px 9px 2px 7px;
+  white-space: nowrap;
+}
+/* Status icons are CSS shapes, so they look the same in every font. */
+.chip .ic { flex: none; display: inline-block; width: 10px; height: 10px; }
+.st-works .ic { width: 6px; height: 10px; margin: -3px 2px 0; border: solid var(--st-works); border-width: 0 2px 2px 0; transform: rotate(45deg); }
+.st-tested .ic { width: 9px; height: 9px; border: 1.5px solid var(--st-tested); border-radius: 2px; }
+.st-partial .ic { border: 1.5px solid var(--st-partial); border-radius: 50%; background: linear-gradient(90deg, var(--st-partial) 50%, transparent 50%); }
+.st-fake .ic { width: 8px; height: 8px; margin: 0 1px; border: 1.5px solid var(--st-fake); transform: rotate(45deg); }
+.st-planned .ic { border: 1.5px dashed var(--st-planned); border-radius: 50%; }
+.st-blocked .ic { width: 8px; margin: 0 1px; border: solid var(--st-blocked); border-width: 0 3px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; color: var(--ink-2); font-size: 0.84rem; margin-bottom: 14px; }
+.legend > span { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Filters */
+.filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 16px; }
+.filters button[aria-pressed="true"] { background: var(--ink); color: var(--surface); border-color: var(--ink); }
+.filters .count { color: var(--muted); margin-left: 4px; font-variant-numeric: tabular-nums; }
+.filters button[aria-pressed="true"] .count { color: inherit; opacity: 0.75; }
+
+/* Capability cards */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 16px; display: flex; flex-direction: column; gap: 10px; box-shadow: var(--shadow);
+  min-width: 0;
+}
+.card-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+.card .area { color: var(--muted); font-size: 0.76rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.card h3 { margin-top: 2px; }
+.asks { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; }
+.asks li {
+  font-size: 0.9rem; color: var(--ink); padding-left: 12px; border-left: 2px solid var(--grid);
+}
+.meta-row { display: flex; flex-wrap: wrap; gap: 4px 6px; font-size: 0.82rem; color: var(--ink-2); align-items: center; }
+.meta-row .lbl { color: var(--muted); margin-right: 2px; }
+.proof { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.proof div {
+  background: var(--surface-2); border-radius: 8px; padding: 6px 8px; font-size: 0.78rem; min-width: 0;
+}
+.proof .p-k { color: var(--muted); display: block; font-size: 0.72rem; }
+.proof .p-v { font-weight: 550; overflow-wrap: anywhere; }
+.proof .yes .p-v::before { content: "✓ "; color: var(--st-works); }
+.proof .no .p-v { color: var(--muted); font-weight: 450; }
+.proof .na .p-v { color: var(--muted); font-weight: 450; }
+.note { font-size: 0.86rem; color: var(--ink-2); }
+.evidence { font-size: 0.76rem; color: var(--muted); border-top: 1px solid var(--grid); padding-top: 8px; margin-top: auto; }
+.empty { color: var(--ink-2); padding: 16px; border: 1px dashed var(--grid); border-radius: 10px; }
+
+/* Layers */
+.flow { display: flex; flex-direction: column; gap: 0; }
+.layer {
+  display: grid; grid-template-columns: 150px 1fr; gap: 12px; align-items: start;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px;
+}
+.layer .ll { font-weight: 650; font-size: 0.9rem; }
+.layer .ls { color: var(--muted); font-size: 0.78rem; margin-top: 2px; }
+.nodes { display: flex; flex-wrap: wrap; gap: 6px; }
+.node {
+  display: inline-flex; flex-direction: column; gap: 2px;
+  border: 1px solid var(--border); border-left-width: 3px; border-radius: 8px;
+  padding: 6px 10px; background: var(--surface-2); min-width: 0; max-width: 100%;
+}
+.node .n-t { font-size: 0.86rem; font-weight: 600; overflow-wrap: anywhere; }
+.node .n-s { font-size: 0.76rem; color: var(--ink-2); overflow-wrap: anywhere; }
+.node.st-works { border-left-color: var(--st-works); }
+.node.st-tested { border-left-color: var(--st-tested); }
+.node.st-partial { border-left-color: var(--st-partial); }
+.node.st-fake { border-left-color: var(--st-fake); }
+.node.st-planned { border-left-color: var(--st-planned); border-style: dashed; border-left-style: solid; }
+.node.st-blocked { border-left-color: var(--st-blocked); }
+.arrow { display: flex; justify-content: center; color: var(--axis); height: 22px; align-items: center; font-size: 0.9rem; }
+
+.columns { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+.col { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.col h3 { font-size: 0.95rem; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.col .step { font-size: 0.8rem; color: var(--ink-2); overflow-wrap: anywhere; }
+.col .step b { display: block; color: var(--muted); font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; }
+.col .down { color: var(--axis); text-align: center; font-size: 0.8rem; line-height: 1; }
+
+/* Table */
+.table-scroll { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+#toolset-table { min-width: 680px; }
+#toolset-table td code { white-space: nowrap; }
+th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+thead th { color: var(--ink-2); font-weight: 600; font-size: 0.78rem; background: var(--surface-2); white-space: nowrap; }
+tbody tr:last-child td { border-bottom: 0; }
+td.set { text-align: center; width: 64px; }
+th.set { text-align: center; }
+.dot-in { color: var(--ink); font-weight: 700; }
+.dot-arm { color: var(--ink-2); font-size: 0.78rem; }
+.dot-out { color: var(--baseline); }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.small { font-size: 0.8rem; color: var(--ink-2); }
+
+/* Gym */
+.rungs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.rung { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.rung .rid { font-size: 0.74rem; color: var(--muted); font-weight: 600; letter-spacing: 0.04em; }
+.rung h3 { font-size: 0.95rem; }
+.rung p { font-size: 0.82rem; color: var(--ink-2); }
+.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 16px; }
+.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; min-width: 0; }
+.panel h3 { margin-bottom: 4px; }
+.panel .sub { color: var(--ink-2); font-size: 0.84rem; margin-bottom: 12px; }
+.arms-list { display: grid; grid-template-columns: auto 1fr; gap: 6px 12px; font-size: 0.86rem; }
+.arms-list dt { font-weight: 650; }
+.arms-list dd { margin: 0; color: var(--ink-2); }
+.kinds { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+
+/* Bar chart */
+.multiples { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.mult h4 { margin: 0 0 8px; font-size: 0.84rem; font-weight: 600; }
+.bars { position: relative; }
+.bar-row { display: grid; grid-template-columns: 30px 1fr; align-items: center; gap: 8px; height: 26px; }
+.bar-row .lab { font-size: 0.8rem; color: var(--ink-2); text-align: right; font-variant-numeric: tabular-nums; }
+/* The plot area stops 48px short of the column, so the value at the tip of the longest bar fits. */
+.track { position: relative; height: 100%; margin-right: 48px; border-left: 1px solid var(--baseline); }
+.gridline { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--grid); }
+.hbar {
+  position: absolute; left: 0; top: 50%; height: 14px; margin-top: -7px;
+  background: var(--bar); border-radius: 0 4px 4px 0; outline-offset: 2px; cursor: default;
+}
+.hbar::after { content: ""; position: absolute; inset: -6px 0; }
+.hbar:hover, .hbar:focus-visible { background: var(--bar-hover); }
+.bar-val { position: absolute; top: 50%; transform: translateY(-50%); margin-left: 6px; font-size: 0.76rem; color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ticks { display: grid; grid-template-columns: 30px 1fr; gap: 8px; margin-top: 2px; }
+.ticks .tk { position: relative; height: 16px; margin-right: 48px; font-size: 0.7rem; color: var(--axis); font-variant-numeric: tabular-nums; }
+.ticks .tk span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.chart-note { color: var(--ink-2); font-size: 0.82rem; margin-top: 12px; }
+details { margin-top: 12px; }
+summary { cursor: pointer; color: var(--accent); font-size: 0.86rem; }
+.tooltip {
+  position: fixed; z-index: 20; pointer-events: none; opacity: 0;
+  background: var(--surface); color: var(--ink); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px; font-size: 0.8rem; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  transition: opacity 0.08s;
+}
+.tooltip strong { display: block; font-size: 0.95rem; font-variant-numeric: tabular-nums; }
+.tooltip span { color: var(--ink-2); }
+
+/* Roadmap */
+.road { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.road-item {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 6px; min-width: 0;
+}
+.road-item .r-top { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.road-item .rid { font-weight: 700; font-size: 0.86rem; }
+.road-item .r-t { font-size: 0.86rem; font-weight: 600; }
+.road-item .r-a { font-size: 0.8rem; color: var(--ink-2); font-style: italic; }
+.road-item .r-n { font-size: 0.78rem; color: var(--muted); }
+.progress { display: flex; height: 10px; border-radius: 5px; overflow: hidden; gap: 2px; margin: 4px 0 16px; background: var(--surface); }
+.progress span { display: block; height: 100%; }
+
+/* Gaps */
+.gaps { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px; }
+.gap { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.gap h3 { font-size: 0.92rem; }
+.gap p { font-size: 0.84rem; color: var(--ink-2); }
+.gap .kind { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+
+/* Run */
+.cmds { display: flex; flex-direction: column; gap: 10px; }
+.cmd { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; min-width: 0; }
+.cmd-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+.cmd-head h3 { font-size: 0.92rem; }
+.cmd pre {
+  margin: 0; padding: 10px 12px; background: var(--surface-2); border-radius: 8px; overflow-x: auto;
+  font: 0.8rem/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--ink);
+}
+.cmd .note { margin-top: 6px; }
+
+footer { padding: 40px 0 48px; color: var(--muted); font-size: 0.8rem; }
+footer p + p { margin-top: 6px; }
+
+@media (max-width: 1000px) {
+  .columns { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .rungs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .two { grid-template-columns: minmax(0, 1fr); }
+  .multiples { grid-template-columns: minmax(0, 1fr); }
+  .layer { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .rungs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cards { grid-template-columns: minmax(0, 1fr); }
+  .gaps { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 420px) {
+  .columns, .rungs { grid-template-columns: minmax(0, 1fr); }
+  .proof div { padding: 6px; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+@media print { nav.bar, .filters, #theme { display: none; } }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <div class="eyebrow" id="eyebrow"></div>
+    <h1>Mahoraga Agent Capability Map</h1>
+    <p class="lede" id="lede"></p>
+    <div class="tiles" id="tiles"></div>
+  </div>
+</header>
+
+<nav class="bar" aria-label="Sections">
+  <div class="wrap">
+    <div class="links">
+      <a href="#ask">Ask it</a>
+      <a href="#fit">How it fits</a>
+      <a href="#tools">Tool sets</a>
+      <a href="#gym">Mahoraga gym</a>
+      <a href="#roadmap">Roadmap</a>
+      <a href="#gaps">Known gaps</a>
+      <a href="#run">Run it</a>
+    </div>
+    <button id="theme" type="button" title="Switch the colour theme">Theme</button>
+  </div>
+</nav>
+
+<main class="wrap">
+
+  <section id="ask">
+    <div class="section-head"><h2>What you can ask it</h2></div>
+    <p class="section-sub">Each card is one thing a person can ask the agent, the tools it uses, the flags that turn it on, and where it has been shown to work. A card marked as works has run with the real model in at least one of the three places. In the fake world, gym runs means the real model called it in a Mahoraga gym run, oracle gate means only the gym's scripted oracle did, and tests means only tests against the fake robot did.</p>
+    <div class="legend" id="legend"></div>
+    <div class="filters" id="filters" role="group" aria-label="Filter by status"></div>
+    <div class="cards" id="cards" aria-live="polite"></div>
+  </section>
+
+  <section id="fit">
+    <div class="section-head"><h2>How it fits together</h2></div>
+    <p class="section-sub">A request goes down these layers. The LLM sees only the tools. Each atomic calls a capability verb on <code>ctx</code>, which has a fake backend for tests and the gym, and a real one for the simulation and the robot: ROS wrappers for most verbs, and the wall clock and <code>config.toml</code> for <code>ctx.facts</code>. On ROS the grasp verbs only answer UNAVAILABLE, and <code>--people-memory mock</code> keeps the people store in process. <code>update_todos</code> and <code>wait_for_person</code> come from the runtime's middleware, and <code>run_script</code> from <code>--scripts</code>.</p>
+    <div class="flow" id="flow"></div>
+    <div class="columns" id="columns"></div>
+  </section>
+
+  <section id="tools">
+    <div class="section-head"><h2>Tool sets</h2></div>
+    <p class="section-sub">The LLM gets one set, chosen with <code>--tool-set</code>. Arm tools join a set only with <code>--arms</code>, which needs the hri or arms set, and the arms set needs <code>--arms</code>. <code>update_todos</code> and <code>wait_for_person</code> are always bound, and <code>run_script</code> joins any set with <code>--scripts</code>.</p>
+    <div class="table-scroll"><table id="toolset-table"></table></div>
+  </section>
+
+  <section id="gym">
+    <div class="section-head"><h2>Mahoraga research gym</h2></div>
+    <p class="section-sub" id="gym-sub"></p>
+    <div class="rungs" id="rungs"></div>
+    <div class="two">
+      <div class="panel">
+        <h3>Arms of the comparison</h3>
+        <p class="sub">They differ only in what the model is given. All share the prompt, the GPSR atomics and the fake world.</p>
+        <dl class="arms-list" id="arms"></dl>
+        <div class="kinds" id="kinds"></div>
+      </div>
+      <div class="panel">
+        <h3 id="run-title"></h3>
+        <p class="sub" id="run-sub"></p>
+        <div class="multiples" id="multiples"></div>
+        <p class="chart-note" id="run-note"></p>
+        <details>
+          <summary>Table view</summary>
+          <div class="table-scroll" style="margin-top:8px"><table id="run-table"></table></div>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <section id="roadmap">
+    <div class="section-head"><h2>Roadmap: see, remember and act</h2></div>
+    <p class="section-sub">The robot-path steps from <code>docs/architecture/see-remember-act.md</code>. Groundwork G1 to G6 is done.</p>
+    <div class="progress" id="progress" role="img"></div>
+    <div class="road" id="road"></div>
+  </section>
+
+  <section id="gaps">
+    <div class="section-head"><h2>Known gaps and loose ends</h2></div>
+    <p class="section-sub">Things that are built but have a recorded defect, or that block the robot. The roadmap above holds the features that are not built yet.</p>
+    <div class="gaps" id="gap-list"></div>
+  </section>
+
+  <section id="run">
+    <div class="section-head"><h2>Run it</h2></div>
+    <p class="section-sub">From the repository root. The simulation recipe is <code>docs/setup/08-chula-simulation.md</code>; the gym is in <code>docs/architecture/mahoraga-demo.md</code>.</p>
+    <div class="cmds" id="cmds"></div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap" id="footer"></div>
+</footer>
+
+<div class="tooltip" id="tooltip" role="status" aria-hidden="true"></div>
+
+<script type="application/json" id="capability-data">
+{
+  "meta": {
+    "asOf": "2026-11-11",
+    "branch": "feat/mahoraga-demo",
+    "commit": "bb1d3f4",
+    "tests": "2553",
+    "testsNote": "passed, 1 skipped (pixi run test at bb1d3f4)",
+    "gate": "b6279cbf5042e1d7",
+    "gateDate": "2026-11-09",
+    "lastSim": "2026-11-09",
+    "robotRuns": "0",
+    "lede": "What the demo agent can do today, where each part has been shown to work, and what is still to build. The agent runs in the Chula MuJoCo simulation with the real model; Mahoraga's research gym runs in a fake world. Nothing on this branch has run on the real robot yet."
+  },
+  "capabilities": [
+    {
+      "area": "Navigation",
+      "title": "Go to a named place",
+      "status": "works",
+      "asks": ["Please go to the kitchen room.", "Go to the sofa, then the table, then come back to the living room."],
+      "tools": ["list_places", "go_to"],
+      "flags": [],
+      "proof": { "fake": "gym runs", "sim": "2026-11-06", "robot": false },
+      "note": "Nav2 drives to the places in the chosen places file. All ten Chula places were reached as direct Nav2 goals with no model, after `instruction point` moved once and `trash` twice (G4-6). With the real model, `go_to` has reached the kitchen room, sofa, table and living room. It gives up after 120 s, and `go_to(\"entrance\")` hit that limit inside a script on 2026-11-08. On 2026-11-09 a direct goal to `table` got no result in 180 s while walkie-vision shared the CPUs. On the robot, `config/locations.toml` ships empty on purpose, so `go_to` answers NOT_FOUND until real places are measured.",
+      "evidence": "G2, G4 · 08-chula-simulation.md, What has been run"
+    },
+    {
+      "area": "Navigation",
+      "title": "Turn and make short moves",
+      "status": "works",
+      "asks": ["Please turn around to look behind you.", "Move half a metre forward."],
+      "tools": ["move_relative"],
+      "flags": [],
+      "proof": { "fake": "tests", "sim": "2026-11-07", "robot": false },
+      "note": "15 of 17 direct turns ended within 0.72° of the goal. A pure turn of more than 10° that Nav2 aborts within 10° of its goal counts as done (S2-11). Only turns have run in the simulation, and a forward or sideways move only in tests. No gym arm has called `move_relative`.",
+      "evidence": "S2, S2-11"
+    },
+    {
+      "area": "Speech",
+      "title": "Say something aloud",
+      "status": "works",
+      "asks": ["Please say hello."],
+      "tools": ["say"],
+      "flags": [],
+      "proof": { "fake": "gym runs", "sim": "2026-11-06", "robot": false },
+      "note": "`say` publishes on `/to_human`. The simulation logs it as text, so nothing is audible (G4-4). The voice entry points `voice-asr` and `voice-tts` exist but have not run with the new runtime.",
+      "evidence": "G4-4, W6"
+    },
+    {
+      "area": "Perception",
+      "title": "See the people in view",
+      "status": "works",
+      "asks": ["Is anyone waving at you?", "Who can you see right now?", "Who is sitting down?"],
+      "tools": ["find_people"],
+      "flags": ["--vision"],
+      "proof": { "fake": "gym runs", "sim": "2026-11-07", "robot": false },
+      "note": "Reads `/walkie_vision/people`. In the simulation the oracle draws two static guests, one waving and one sitting. A person's id, `person_<track>`, lasts only while they stay in view.",
+      "evidence": "S1, G3"
+    },
+    {
+      "area": "Perception",
+      "title": "Turn to face a person",
+      "status": "works",
+      "asks": ["Look at me, I am the one waving.", "Turn to the person who is sitting."],
+      "tools": ["find_people", "face_person"],
+      "flags": ["--vision"],
+      "proof": { "fake": "tests", "sim": "2026-11-07", "robot": false },
+      "note": "One discrete Nav2 turn by the person's bearing: 39.3° in 9.1 s, leaving the guest 4° off the heading. It does not keep facing them while talking; that is S11.",
+      "evidence": "S2, S2-3"
+    },
+    {
+      "area": "Memory",
+      "title": "Remember people and know them again",
+      "status": "works",
+      "asks": ["Hi, my name is Sam, please remember me.", "Who can you see right now? (names the people it knows)"],
+      "tools": ["remember_person", "find_people", "recognize_person"],
+      "flags": ["--vision", "--tool-set hri", "--people-memory mock|ros"],
+      "proof": { "fake": "tests", "sim": "2026-11-07", "robot": false },
+      "note": "With `mock`, a store inside the agent: Sam's 18 faces and 20 appearance vectors were stored, and `find_people` named him again after the robot turned away and back. `/walkie/reset` forgot him, and the mock store is lost when the agent restarts. `recognize_person` has not been called with the real model yet. The `ros` store, through walkie-database's people services, is built and unit-tested, but the agent has never used it against a running walkie-database. Only with `ros` does `--resume-people-session` keep the database's open session.",
+      "evidence": "S3, ADR-0070 (Proposed)"
+    },
+    {
+      "area": "Perception",
+      "title": "See the objects in view",
+      "status": "works",
+      "asks": ["What do you see in front of you?", "Is there a mug here?", "Is there an apple here?"],
+      "tools": ["find_objects"],
+      "flags": ["--vision", "--objects-topic"],
+      "proof": { "fake": "gym runs", "sim": "2026-11-09", "robot": false },
+      "note": "Against the oracle it listed `sofa_11`, `table_12` and `mug_13`. The oracle's scene covers the living room only and looks for six classes: chair, sofa, armchair, stool, table and mug. A class the camera is not looking for answers UNAVAILABLE, so the agent says it cannot look rather than that nothing is there. walkie-vision's YOLOE on MuJoCo's images finds cups, bottles and apples but misses or mislabels the furniture, and a class it has but misses is reported absent (S4-8).",
+      "evidence": "S4-1 to S4-8"
+    },
+    {
+      "area": "Facts",
+      "title": "Tell the time, the date and the team",
+      "status": "tested",
+      "asks": ["What time is it?", "What day is it today?", "What is the name of your team?"],
+      "tools": ["get_facts"],
+      "flags": [],
+      "proof": { "fake": "oracle gate", "sim": false, "robot": false },
+      "note": "On the agent it reads the computer's wall clock and the `[team]` table of `config.toml`. In the gym each world has a fixed seeded time and team, and the oracle's talk scripts pass the gate with it. No real-model run has used it yet. It is in the default and GPSR sets, not HRI.",
+      "evidence": "M35 to M43"
+    },
+    {
+      "area": "Arms",
+      "title": "Move the arms to named poses",
+      "status": "works",
+      "asks": ["Raise your hands.", "Put your arms down.", "Open your left hand."],
+      "tools": ["list_arm_poses", "move_arm_to_pose", "set_gripper", "get_arm_state"],
+      "flags": ["--arms", "--tool-set hri|arms"],
+      "proof": { "fake": "tests", "sim": "2026-11-07", "robot": false },
+      "note": "Joint presets through walkie-ros's bimanual_commander and MoveIt in MuJoCo; a move of both arms took 8.4 s to 8.9 s. The model has called `list_arm_poses` and `move_arm_to_pose`, but not `set_gripper` or `get_arm_state` yet; in the first `up --arms` run, gripper commands (0.2 s to 0.5 s) and joint reads (0.1 s) were timed against the simulated commander without the model. `go_to` and `move_relative` refuse to drive with an arm out (ADR-0025). The receive, carry and point poses were recorded in the simulation and tray comes from the SRDF. None of the four has run on the robot, so only a run with `--use-sim-time` offers them.",
+      "evidence": "S6-1 to S6-17"
+    },
+    {
+      "area": "Scripts",
+      "title": "Do several steps in one script, and save functions",
+      "status": "works",
+      "asks": ["Use one script for this. Visit the tv and then the sofa, and at each one say which place you reached. Save the step as a function."],
+      "tools": ["run_script"],
+      "flags": ["--scripts"],
+      "proof": { "fake": "gym runs", "sim": "2026-11-08", "robot": false },
+      "note": "The script runs in a Monty worker inside bwrap and calls only the bound tools, within 40 calls and 300 s of wall clock. A saved function goes into `temporary/` and can be called at once, marked unverified. The operator's `true` on `/walkie/verdict` verifies it and writes a copy to `bundled/`. In the 2026-11-08 run the next task called the saved `visit_and_announce` without defining it again; its bar leg succeeded, then `go_to(\"entrance\")` timed out at 120 s and `run_script` raised SKILL_FAILED. In the same run the model skipped `run_script` for one multi-place task it was not told to script.",
+      "evidence": "T18 to T36"
+    },
+    {
+      "area": "Runtime",
+      "title": "Stop, reset and track the todo list",
+      "status": "works",
+      "asks": ["stop", "never mind"],
+      "tools": ["update_todos"],
+      "flags": [],
+      "proof": { "fake": "tests", "sim": "2026-11-08", "robot": false },
+      "note": "A bare stop cancels the Nav2 goal, and with `--arms` it also sends the arm commander's stop. The agent says \"Okay, stopping.\" in the same second. `/walkie/reset` forgets the conversation, and the todo list is published on `/walkie/todos`. Only stop, never mind and nevermind count as a stop, once case and end punctuation are dropped.",
+      "evidence": "R1 to R6, ADR-0061, ADR-0008, ADR-0041"
+    },
+    {
+      "area": "Runtime",
+      "title": "Start a seeded task from a template",
+      "status": "partial",
+      "asks": ["(operator) a template name on /walkie/task"],
+      "tools": ["update_todos"],
+      "flags": [],
+      "proof": { "fake": "tests", "sim": false, "robot": false },
+      "note": "Seeding is built and tested over ROS against fake robots, but `config/task_templates.toml` ships with no templates, so there is no HRI or GPSR template to seed.",
+      "evidence": "ADR-0041, ADR-0069"
+    },
+    {
+      "area": "Manipulation",
+      "title": "Pick, place and hand over objects",
+      "status": "fake",
+      "asks": ["Bring the apple from the kitchen table to the bar.", "Give me the cup."],
+      "tools": ["pick", "place_on", "hand_over"],
+      "flags": ["--tool-set gpsr"],
+      "proof": { "fake": "gym runs", "sim": false, "robot": false },
+      "note": "Only the fake world moves objects. On ROS all three answer UNAVAILABLE, since no grasp skill exists: GPSR, the only set that has them, cannot run with `--arms`, and `RosArms` refuses them too. S10 plans a sim-only pick in MuJoCo, behind `--sim-grasp`, that moves the object by teleport and says the grasp is simulated.",
+      "evidence": "ros/arms.py, S10"
+    },
+    {
+      "area": "Perception",
+      "title": "Measure an object",
+      "status": "fake",
+      "asks": ["How heavy is the apple?", "Which is the biggest object on the shelf?"],
+      "tools": ["object_info"],
+      "flags": [],
+      "proof": { "fake": "oracle gate", "sim": false, "robot": false },
+      "note": "Live objects carry no size, weight or thickness, so on ROS, with `--vision`, `object_info` returns them as null. Only the fake world's objects have measures. The default and GPSR sets still bind it.",
+      "evidence": "S4-5"
+    },
+    {
+      "area": "HRI",
+      "title": "Find a free seat and offer it",
+      "status": "planned",
+      "asks": ["Can you find me a seat?"],
+      "tools": ["find_seats"],
+      "flags": ["--vision", "--tool-set hri"],
+      "proof": { "fake": false, "sim": false, "robot": false },
+      "note": "Not built (S5). The oracle scene already has a sofa and a seated host, and `find_seats.py` and `seating.py` can be ported from `experiment/hri-agent`.",
+      "evidence": "S5"
+    },
+    {
+      "area": "HRI",
+      "title": "Take a bag and give it back",
+      "status": "partial",
+      "asks": ["Can you hold my bag?", "Give me my bag back."],
+      "tools": ["move_arm_to_pose", "set_gripper", "get_arm_state"],
+      "flags": ["--arms", "--tool-set hri"],
+      "proof": { "fake": false, "sim": false, "robot": false },
+      "note": "The receive and carry poses and the grip check (holding or empty, by the commander's grasp band) exist, so the model can already hold out a hand and close it on an object, as `robot.md` allows. The `receive_object` and `release_object` bundles that sequence this safely do not exist yet (S7).",
+      "evidence": "S7"
+    },
+    {
+      "area": "Memory",
+      "title": "Remember rooms, objects and told facts",
+      "status": "planned",
+      "asks": ["What rooms do you know?", "Remember that Anna likes tea."],
+      "tools": ["list_rooms", "remember_event"],
+      "flags": [],
+      "proof": { "fake": false, "sim": false, "robot": false },
+      "note": "Not built (S8). `ctx.memory` holds only the people verbs.",
+      "evidence": "S8"
+    },
+    {
+      "area": "Memory",
+      "title": "Recall where an object was seen",
+      "status": "planned",
+      "asks": ["Where did you see the mug?"],
+      "tools": ["where_seen"],
+      "flags": [],
+      "proof": { "fake": false, "sim": false, "robot": false },
+      "note": "Not built (S9): a session log of sightings, labelled as seen this session.",
+      "evidence": "S9"
+    },
+    {
+      "area": "HRI",
+      "title": "Keep facing the guest while talking",
+      "status": "blocked",
+      "asks": ["(keeps the guest in view during the conversation)"],
+      "tools": ["look_at", "stop_looking"],
+      "flags": [],
+      "proof": { "fake": false, "sim": false, "robot": false },
+      "note": "Waits on decision 14, where the gaze loop runs (S11). `face_person` turns once.",
+      "evidence": "S11, ADR-0051 (Proposed)"
+    },
+    {
+      "area": "HRI",
+      "title": "Describe a guest",
+      "status": "planned",
+      "asks": ["What is the guest wearing?"],
+      "tools": ["describe_person"],
+      "flags": ["--vision"],
+      "proof": { "fake": false, "sim": false, "robot": false },
+      "note": "Not built (S13). A cloud VLM counts as External Computing and must be declared to the Technical Committee a month ahead.",
+      "evidence": "S13"
+    }
+  ],
+  "layers": [
+    {
+      "name": "Inputs and outputs",
+      "sub": "ROS topics",
+      "nodes": [
+        { "t": "/from_human", "s": "a person's request, text", "status": "works" },
+        { "t": "/walkie/task", "s": "a seeded task, JSON: inline todos or a template name (none ship)", "status": "tested" },
+        { "t": "/walkie/reset", "s": "forget the conversation", "status": "works" },
+        { "t": "/walkie/verdict", "s": "operator judges a script task", "status": "works" },
+        { "t": "/to_human", "s": "what it says aloud", "status": "works" },
+        { "t": "/walkie/console", "s": "text replies, todo changes", "status": "works" },
+        { "t": "/walkie/todos", "s": "the todo list, latched", "status": "works" }
+      ]
+    },
+    {
+      "name": "Runtime",
+      "sub": "walkie_agent.runtime",
+      "nodes": [
+        { "t": "Runner", "s": "queue, stop, reset, one task at a time", "status": "works" },
+        { "t": "create_agent", "s": "LangChain agent loop", "status": "works" },
+        { "t": "Middleware", "s": "ToolLog (with --tool-log), StopLatch, SerialGuard, WalkieTodos, EndAfterQuestion, RepairHistory, ModelCallLimit, Deadline, ToolErrorMiddleware", "status": "works" },
+        { "t": "Model", "s": "OpenRouter, set in config.toml; a fallback model is supported but none is set", "status": "works" },
+        { "t": "Langfuse", "s": "optional tracing, unit-tested only", "status": "tested" }
+      ]
+    },
+    {
+      "name": "Tools",
+      "sub": "what the LLM sees",
+      "nodes": [
+        { "t": "Tool set", "s": "default, gpsr, hri or arms", "status": "works" },
+        { "t": "update_todos", "s": "always bound, from WalkieTodos", "status": "works" },
+        { "t": "wait_for_person", "s": "always bound; asks and ends the turn", "status": "tested" },
+        { "t": "run_script", "s": "--scripts: Monty in bwrap, shelf, verdict", "status": "works" }
+      ]
+    }
+  ],
+  "columns": [
+    { "verb": "ctx.base", "status": "works", "does": "places, go_to, move_relative (which also turns), stop, pose", "backend": "RosBase", "graph": "Nav2 on MuJoCo, chula_pat14_6", "fake": "FakeRobot" },
+    { "verb": "ctx.vision", "status": "works", "does": "people, objects", "backend": "RosVision (--vision)", "graph": "oracle scene, or walkie-vision", "fake": "FakeRobot" },
+    { "verb": "ctx.speech", "status": "works", "does": "say", "backend": "RosSpeech", "graph": "/to_human, logged in sim", "fake": "FakeRobot" },
+    { "verb": "ctx.memory", "status": "works", "does": "remember, recognise people", "backend": "TrackMemory (--people-memory)", "graph": "in-process store; the walkie-database store is tested only", "fake": "FakeRobot" },
+    { "verb": "ctx.arms", "status": "partial", "does": "poses, grippers, state; no pick or place", "backend": "RosArms (--arms)", "graph": "bimanual_commander, MoveIt", "fake": "FakeRobot" },
+    { "verb": "ctx.facts", "status": "tested", "does": "time, date, team", "backend": "SystemFacts", "graph": "wall clock and config.toml", "fake": "fixed facts" }
+  ],
+  "toolsets": {
+    "sets": ["default", "gpsr", "hri", "arms"],
+    "atomics": [
+      { "name": "list_places", "sets": ["default", "hri", "arms"], "backend": "the places file", "status": "works" },
+      { "name": "go_to", "sets": ["default", "gpsr", "hri", "arms"], "backend": "RosBase, Nav2", "status": "works" },
+      { "name": "move_relative", "sets": ["default", "gpsr", "hri", "arms"], "backend": "RosBase, Nav2", "status": "works" },
+      { "name": "say", "sets": ["default", "gpsr", "hri", "arms"], "backend": "RosSpeech, /to_human", "status": "works" },
+      { "name": "find_people", "sets": ["default", "gpsr", "hri"], "backend": "RosVision, --vision", "status": "works" },
+      { "name": "find_objects", "sets": ["default", "gpsr", "hri"], "backend": "RosVision, --vision", "status": "works" },
+      { "name": "face_person", "sets": ["default", "hri"], "backend": "RosVision and RosBase", "status": "works" },
+      { "name": "object_info", "sets": ["default", "gpsr"], "backend": "RosVision, --vision; measures null", "status": "partial" },
+      { "name": "get_facts", "sets": ["default", "gpsr"], "backend": "SystemFacts", "status": "tested" },
+      { "name": "remember_person", "sets": ["hri"], "backend": "TrackMemory, --people-memory", "status": "works" },
+      { "name": "recognize_person", "sets": ["hri"], "backend": "TrackMemory, --people-memory", "status": "tested" },
+      { "name": "pick", "sets": ["gpsr"], "backend": "UNAVAILABLE on ROS", "status": "fake" },
+      { "name": "place_on", "sets": ["gpsr"], "backend": "UNAVAILABLE on ROS", "status": "fake" },
+      { "name": "hand_over", "sets": ["gpsr"], "backend": "UNAVAILABLE on ROS", "status": "fake" },
+      { "name": "list_arm_poses", "sets": ["hri", "arms"], "arm": true, "backend": "RosArms, --arms", "status": "works" },
+      { "name": "move_arm_to_pose", "sets": ["hri", "arms"], "arm": true, "backend": "RosArms, --arms", "status": "works" },
+      { "name": "set_gripper", "sets": ["hri", "arms"], "arm": true, "backend": "RosArms, --arms", "status": "tested" },
+      { "name": "get_arm_state", "sets": ["hri", "arms"], "arm": true, "backend": "RosArms, --arms", "status": "tested" }
+    ]
+  },
+  "gym": {
+    "sub": "Research add-on in the `mahoraga` pixi environment. It never imports ROS: every episode runs a generated GPSR command in a fake Chula world and scores it from the world before and after and the calls the robot made. It asks whether letting the model write scripts, and keep the functions that work, beats calling one tool at a time.",
+    "rungs": [
+      { "id": "R0", "title": "Gym and oracle gate", "status": "works", "note": "No LLM arm starts until the oracle scores 100% twice with identical logs. Last pass on 2026-11-09." },
+      { "id": "R1", "title": "run_script on Monty", "status": "works", "note": "In the gym, scripts call only allow-listed atomics, within 40 calls, 30 s and 64 MiB. The full 600-episode trial has not run." },
+      { "id": "R2", "title": "The shelf", "status": "works", "note": "induct saves functions; C calls them frozen, C2 sees them as examples. Two small runs used a real shelf; the full trial has not run." },
+      { "id": "R3", "title": "MuJoCo validation", "status": "planned", "note": "Replay the top shelf functions through the real atomics in MuJoCo. Not built." },
+      { "id": "R4", "title": "Promotion", "status": "planned", "note": "Ten verified runs and a Wilson lower bound of 0.6, then a reviewed bundle by pull request. Not built." }
+    ],
+    "arms": [
+      { "id": "A", "what": "One tool call at a time, as on main." },
+      { "id": "B", "what": "run_script, with no shelf." },
+      { "id": "C", "what": "run_script with a frozen, verified, callable shelf." },
+      { "id": "C2", "what": "run_script, with the same verified scripts shown as examples only." },
+      { "id": "D", "what": "One tool call at a time, plus stand-in bundles." },
+      { "id": "induct", "what": "run_script with a writable shelf, for training only." }
+    ],
+    "kinds": ["move_object", "count_objects", "best_object", "count_people", "person_info", "relay_info", "talk", "escort"],
+    "run": {
+      "title": "Third small run, 2026-11-05",
+      "sub": "30 held-out commands, one epoch, deepseek/deepseek-v4.1-flash:nitro, in the fake world.",
+      "note": "A check that the pipeline works, not the comparison. No difference in success is significant (McNemar p of 0.5 or more in every pair), and success is near the ceiling. Tokens per success include cached input. The run predates M30 to M41: 4 of the 30 held-out commands asked for a fact that nothing in the world supplied, the arms made one up, and the checker of that time passed such lines, so about 13% of each arm's commands were free (M30). Today's checker judges those facts, so these scores are not comparable with a new run (M40).",
+      "rows": [
+        { "arm": "A", "success": 30, "rounds": 7.0, "longest": 13, "tps": 16911, "shelf": "n/a" },
+        { "arm": "B", "success": 29, "rounds": 4.2, "longest": 7, "tps": 10277, "shelf": "n/a" },
+        { "arm": "C", "success": 28, "rounds": 5.2, "longest": 22, "tps": 20885, "shelf": "30% of episodes" },
+        { "arm": "C2", "success": 30, "rounds": 3.4, "longest": 6, "tps": 12554, "shelf": "as examples" },
+        { "arm": "D", "success": 30, "rounds": 6.2, "longest": 13, "tps": 19908, "shelf": "n/a" }
+      ]
+    }
+  },
+  "roadmap": [
+    { "id": "S1", "title": "See people in view", "ask": "Is anyone here?", "status": "works", "note": "Sim 2026-11-07" },
+    { "id": "S2", "title": "Turn to face a person", "ask": "Look at me.", "status": "works", "note": "Sim 2026-11-07" },
+    { "id": "S3", "title": "Remember people by name", "ask": "I'm Anna, please remember me.", "status": "works", "note": "Sim with the in-process store; the agent's walkie-database path has not run" },
+    { "id": "S4", "title": "See objects in view", "ask": "Is there a mug here?", "status": "works", "note": "Sim 2026-11-09, oracle" },
+    { "id": "S5", "title": "Find a free seat and offer it", "ask": "Can you find me a seat?", "status": "planned", "note": "Next. Port from experiment/hri-agent" },
+    { "id": "S6", "title": "Arm poses and grippers", "ask": "Raise your hands.", "status": "works", "note": "Sim 2026-11-07, MuJoCo; the model has not used the grippers yet" },
+    { "id": "S7", "title": "Take a bag, hand it back", "ask": "Can you hold my bag?", "status": "partial", "note": "Poses and grip check exist; bundles do not" },
+    { "id": "S8", "title": "Places, furniture and told facts", "ask": "What rooms do you know?", "status": "planned", "note": "Through walkie-database" },
+    { "id": "S9", "title": "Recall objects seen earlier", "ask": "Where did you see the mug?", "status": "planned", "note": "Session sighting log" },
+    { "id": "S10", "title": "Pick and place in MuJoCo", "ask": "Bring the apple to the bar.", "status": "planned", "note": "Labelled sim grasp first" },
+    { "id": "S11", "title": "Continuous gaze", "ask": "Keeps facing the guest", "status": "blocked", "note": "Decision 14" },
+    { "id": "S12", "title": "HRI slice 1 end to end", "ask": "Scored by hri_check", "status": "planned", "note": "Needs S3, S5, S7, S11" },
+    { "id": "S13", "title": "Describe a guest", "ask": "What is the guest wearing?", "status": "planned", "note": "External Computing declaration" }
+  ],
+  "gaps": [
+    { "kind": "Robot", "title": "Nothing has run on the real robot", "status": "planned", "note": "No robot runbook: `pixi run agent` passes none of the robot's flags (`--vision`, `--arms`, a places file), and the places file is empty. The receive, carry and point arm poses were recorded in sim only, voice runs on laptop defaults, and the vision task per test is a team call. There is no MotionSupervisor or e-stop integration." },
+    { "kind": "Safety", "title": "--scripts has no sim-only guard", "status": "partial", "note": "Scripts can call only the bound tools, but nothing stops the flag on the robot. ADR-0040's interlock is not built." },
+    { "kind": "Runtime", "title": "One network error ends a task", "status": "partial", "note": "The model client makes no retry (`max_retries=0`) and no fallback model is configured, although the fallback route is built. It ended a task in the 2026-11-08 run." },
+    { "kind": "Speech", "title": "Only three stop phrases stop", "status": "partial", "note": "Only stop, never mind and nevermind count, once case and end punctuation are dropped. \"Stop it.\" or \"Stop there.\" goes to the LLM as a task." },
+    { "kind": "Speech", "title": "voice-tts can drop a stop", "status": "partial", "note": "Its subscriptions keep RAI's depth-1 default, so a stop can be lost behind a line." },
+    { "kind": "Navigation", "title": "An unknown Nav2 goal locks motion", "status": "partial", "note": "If Nav2 restarts and forgets a goal, every base motion (`go_to`, `move_relative`, `face_person`) stays refused until the agent restarts (W13, by design)." },
+    { "kind": "Scripts", "title": "The verdict has no task id", "status": "partial", "note": "`/walkie/verdict` judges whichever task ended last, so a late verdict lands on the next task." },
+    { "kind": "Tools", "title": "object_info is bound but empty on ROS", "status": "partial", "note": "Live objects carry no measurements, yet the default and GPSR sets offer the tool." },
+    { "kind": "Prompt", "title": "The robot description contradicts the vision and memory tools", "status": "partial", "note": "`main.py` appends `robot.md` to every system prompt (`--robot-description`). It still tells the model that Walkie cannot tell which objects are in view or who a person is, and must not offer to. With `--vision` or `--people-memory`, that contradicts the tool rules in the same prompt." },
+    { "kind": "Docs", "title": "Some pages are out of date", "status": "partial", "note": "`agent.md` still says live vision and the arms are not connected. `hri.md` says the arm atomics do not exist." },
+    { "kind": "Build", "title": "The vision and database pins exist only here", "status": "partial", "note": "The walkie-vision 64811fe and walkie-database 522ab92 pins are local-only commits, so a fresh clone cannot fetch them. CI tests only the default environment, so the gym's tests in the `mahoraga` environment never run there." },
+    { "kind": "Review", "title": "S4 and the scripts fixes T31 to T36 have no recorded review", "status": "planned", "note": "The decision log records Codex reviews of S1, S2, S3, S6 and G4. It records an unnamed check and security review of T18 to T30, which produced T31 to T35. It records no review of S4, no re-check of T31 to T35, and no review of T36, which came from the simulation run." },
+    { "kind": "Arms", "title": "A commander restart mid-goal leaves a stale goal", "status": "partial", "note": "The old goal's status goes stale. Until the client abandons it, 60 s after the call gave up (120 s in the sim), arm goals and drives are refused. After that the arms stay unverified until the next arm read or drive check sees the goal ended (S6-5)." },
+    { "kind": "Runtime", "title": "A task ends after 25 model calls", "status": "partial", "note": "`ModelCallLimitMiddleware` ends a run after 25 model calls, and each call has a 60 s deadline. An `[agent]` table in `config.toml` with `run_limit` and `deadline_s` changes them; `config.toml` has none, so the defaults apply." },
+    { "kind": "Scope", "title": "Following a person is not planned", "status": "planned", "note": "`see-remember-act.md` lists following the host under Not planned: it needs person range from lidar leg clustering, synthetic legs in the sim scans and an unpushed navigation commit. The gym still scores escort commands in the fake world." }
+  ],
+  "commands": [
+    { "title": "Start the Chula simulation with the agent", "cmd": "scripts/chula-sim.sh up --agent -- --tool-set hri", "note": "Private Zenoh router on port 7499 and ROS_DOMAIN_ID 77, so it never joins another graph. Needs `WALKIE_ROS` set to a built walkie-ros workspace with the Chula world: built from walkie-ros's feat/chula-pat14-6-simulation branch, or with `WALKIE_ROS_OVERLAY` naming a built worktree of that branch. Also needs `pixi run build-ros2` and `pixi run build-rmw-zenoh` in this repository, and `OPENAI_API_KEY` from the environment or the repository's `.env` (a worktree has none). `up --agent` runs `agent-sim-chula`, which already passes `--use-sim-time`, `--vision`, the Chula places file and `--tool-log`. Add `--arms` before `--` for the arms, and `--people-memory mock` or `--scripts` after it." },
+    { "title": "Everything at once", "cmd": "scripts/chula-sim.sh up --agent --arms -- --tool-set hri --people-memory mock --scripts", "note": "The run of 2026-11-08 used this line." },
+    { "title": "Talk to it", "cmd": "eval \"$(scripts/chula-sim.sh env)\"\npixi run ros2 topic pub -w 1 --once /from_human rai_interfaces/msg/HRIMessage \"{text: 'Who can you see right now?'}\"\ntail -f /var/tmp/walkie-chula-sim/logs/speech.log", "note": "Text replies go to `/walkie/console`, and each tool call is a line of `logs/agent-tools.jsonl`." },
+    { "title": "Reset the conversation", "cmd": "pixi run ros2 topic pub -w 1 --once /walkie/reset std_msgs/msg/Empty \"{}\"", "note": "Run after the eval line above. It also forgets the people remembered in the task." },
+    { "title": "Judge a script task", "cmd": "pixi run ros2 topic pub -w 1 --once /walkie/verdict std_msgs/msg/Bool \"{data: true}\"", "note": "`true` verifies the saved functions the task proved. `false` verifies nothing and records each of them as rejected in the store's `ledger.jsonl`, so the model then sees them marked as likely wrong. Needs an agent started with `--scripts`. A verdict sent while a task runs is ignored." },
+    { "title": "Stop the simulation", "cmd": "scripts/chula-sim.sh down", "note": "Takes about 12 s, most of it waiting for Nav2's servers, which outlive SIGINT until ros2 launch kills them." },
+    { "title": "Run the gym's oracle gate", "cmd": "pixi run --frozen -e mahoraga python -m walkie_agent.mahoraga gate", "note": "Offline and free: 1080 episodes, twice, in about a minute." },
+    { "title": "A small real-model gym run", "cmd": "pixi run --frozen -e mahoraga python -m walkie_agent.mahoraga run --arms A,B --commands 5\npixi run --frozen -e mahoraga python -m walkie_agent.mahoraga report --log-dir <the run's directory>", "note": "Calls the real model, with the key in `OPENAI_API_KEY`. `report` prints the run's metrics as JSON, against arm A by default." }
+  ]
+}
+</script>
+
+<script>
+(function () {
+  "use strict";
+  var DATA = JSON.parse(document.getElementById("capability-data").textContent);
+
+  var STATUS = {
+    works:   { label: "Works",           desc: "Built and run with the real model" },
+    tested:  { label: "Tested only",     desc: "Built and tested, not yet run with the real model" },
+    partial: { label: "Partly built",    desc: "Some parts built, or built with a known gap" },
+    fake:    { label: "Fake world only", desc: "No ROS backend yet" },
+    planned: { label: "Not built",       desc: "Planned, no code yet" },
+    blocked: { label: "Waiting on team", desc: "Needs a team decision first" }
+  };
+  var ORDER = ["works", "tested", "partial", "fake", "planned", "blocked"];
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+  // Text with `inline code`, inserted as text nodes and <code> elements only.
+  function rich(tag, cls, text) {
+    var n = el(tag, cls);
+    String(text || "").split("`").forEach(function (part, i) {
+      if (!part) return;
+      n.appendChild(i % 2 ? el("code", null, part) : document.createTextNode(part));
+    });
+    return n;
+  }
+  function chip(status) {
+    var s = STATUS[status] || STATUS.planned;
+    var c = el("span", "chip st-" + status);
+    c.title = s.desc;
+    var ic = el("span", "ic");
+    ic.setAttribute("aria-hidden", "true");
+    c.appendChild(ic);
+    c.appendChild(document.createTextNode(s.label));
+    return c;
+  }
+  function byId(id) { return document.getElementById(id); }
+
+  // Header
+  var m = DATA.meta;
+  var eb = byId("eyebrow");
+  eb.appendChild(document.createTextNode("walkie-agent-ros · "));
+  eb.appendChild(el("code", null, m.branch + " @ " + m.commit));
+  eb.appendChild(document.createTextNode(" · as of " + m.asOf));
+  byId("lede").textContent = m.lede;
+  var works = DATA.capabilities.filter(function (c) { return c.status === "works"; }).length;
+  [
+    [String(works), "things it can do today"],
+    [m.tests, "tests " + m.testsNote],
+    [m.gateDate, "last gym gate pass"],
+    [m.lastSim, "last simulation run"],
+    [m.robotRuns, "runs on the real robot"]
+  ].forEach(function (t) {
+    var d = el("div", "tile");
+    d.appendChild(el("div", "v", t[0]));
+    d.appendChild(el("div", "k", t[1]));
+    byId("tiles").appendChild(d);
+  });
+
+  // Legend and filters
+  ORDER.forEach(function (k) {
+    var s = el("span");
+    s.appendChild(chip(k));
+    s.appendChild(document.createTextNode(STATUS[k].desc));
+    byId("legend").appendChild(s);
+  });
+  var filter = "all";
+  try { filter = localStorage.getItem("capmap-filter") || "all"; } catch (e) { /* storage off */ }
+  function count(k) {
+    return DATA.capabilities.filter(function (c) { return k === "all" || c.status === k; }).length;
+  }
+  var buttons = [];
+  ["all"].concat(ORDER).forEach(function (k) {
+    if (k !== "all" && !count(k)) return;
+    var b = el("button");
+    b.type = "button";
+    b.dataset.k = k;
+    b.appendChild(document.createTextNode(k === "all" ? "All" : STATUS[k].label));
+    b.appendChild(el("span", "count", count(k)));
+    b.addEventListener("click", function () { setFilter(k); });
+    byId("filters").appendChild(b);
+    buttons.push(b);
+  });
+  function setFilter(k) {
+    filter = k;
+    try { localStorage.setItem("capmap-filter", k); } catch (e) { /* storage off */ }
+    buttons.forEach(function (b) { b.setAttribute("aria-pressed", String(b.dataset.k === k)); });
+    renderCards();
+  }
+
+  function proofCell(label, v) {
+    var d = el("div");
+    var cls = v === null ? "na" : v ? "yes" : "no";
+    d.className = cls;
+    d.appendChild(el("span", "p-k", label));
+    var text = v === null ? "n/a" : v === true ? "yes" : v === false ? "not yet" : v;
+    d.appendChild(el("span", "p-v", text));
+    return d;
+  }
+
+  function renderCards() {
+    var root = byId("cards");
+    root.textContent = "";
+    var list = DATA.capabilities.filter(function (c) { return filter === "all" || c.status === filter; });
+    if (!list.length) { root.appendChild(el("p", "empty", "Nothing with this status.")); return; }
+    list.forEach(function (c) {
+      var card = el("article", "card");
+      var top = el("div", "card-top");
+      var h = el("div");
+      h.appendChild(el("div", "area", c.area));
+      h.appendChild(el("h3", null, c.title));
+      top.appendChild(h);
+      top.appendChild(chip(c.status));
+      card.appendChild(top);
+
+      var ul = el("ul", "asks");
+      c.asks.forEach(function (a) { ul.appendChild(el("li", null, "“" + a + "”")); });
+      card.appendChild(ul);
+
+      var tools = el("div", "meta-row");
+      tools.appendChild(el("span", "lbl", "Tools"));
+      c.tools.forEach(function (t) { tools.appendChild(el("code", null, t)); });
+      card.appendChild(tools);
+      if (c.flags && c.flags.length) {
+        var flags = el("div", "meta-row");
+        flags.appendChild(el("span", "lbl", "Flags"));
+        c.flags.forEach(function (f) { flags.appendChild(el("code", null, f)); });
+        card.appendChild(flags);
+      }
+
+      var proof = el("div", "proof");
+      proof.appendChild(proofCell("Fake world", c.proof.fake));
+      proof.appendChild(proofCell("Chula sim", c.proof.sim));
+      proof.appendChild(proofCell("Real robot", c.proof.robot));
+      card.appendChild(proof);
+
+      card.appendChild(rich("p", "note", c.note));
+      if (c.evidence) card.appendChild(el("p", "evidence", "Recorded as " + c.evidence));
+      root.appendChild(card);
+    });
+  }
+  setFilter(buttons.some(function (b) { return b.dataset.k === filter; }) ? filter : "all");
+
+  // Layers
+  var flow = byId("flow");
+  DATA.layers.forEach(function (L, i) {
+    if (i) flow.appendChild(el("div", "arrow", "↓"));
+    var row = el("div", "layer");
+    var head = el("div");
+    head.appendChild(el("div", "ll", L.name));
+    head.appendChild(el("div", "ls", L.sub));
+    row.appendChild(head);
+    var nodes = el("div", "nodes");
+    L.nodes.forEach(function (n) {
+      var d = el("div", "node st-" + n.status);
+      d.title = STATUS[n.status].label;
+      d.appendChild(el("span", "n-t", n.t));
+      d.appendChild(el("span", "n-s", n.s));
+      nodes.appendChild(d);
+    });
+    row.appendChild(nodes);
+    flow.appendChild(row);
+  });
+  flow.appendChild(el("div", "arrow", "↓"));
+  DATA.columns.forEach(function (c) {
+    var col = el("div", "col");
+    var h = el("h3");
+    h.appendChild(el("code", null, c.verb));
+    h.appendChild(chip(c.status));
+    col.appendChild(h);
+    [["Does", c.does], ["ROS backend", c.backend], ["In the simulation", c.graph], ["Tests and gym", c.fake]].forEach(function (s, i) {
+      if (i) col.appendChild(el("div", "down", "↓"));
+      var st = el("div", "step");
+      st.appendChild(el("b", null, s[0]));
+      st.appendChild(document.createTextNode(s[1]));
+      col.appendChild(st);
+    });
+    byId("columns").appendChild(col);
+  });
+
+  // Tool sets
+  var T = DATA.toolsets;
+  var tbl = byId("toolset-table");
+  var thead = el("thead");
+  var hr = el("tr");
+  hr.appendChild(el("th", null, "Tool"));
+  T.sets.forEach(function (s) { hr.appendChild(el("th", "set", s)); });
+  hr.appendChild(el("th", null, "Backend on ROS"));
+  hr.appendChild(el("th", null, "Status"));
+  thead.appendChild(hr);
+  tbl.appendChild(thead);
+  var tb = el("tbody");
+  T.atomics.forEach(function (a) {
+    var tr = el("tr");
+    var td = el("td");
+    td.appendChild(el("code", null, a.name));
+    tr.appendChild(td);
+    T.sets.forEach(function (s) {
+      var c = el("td", "set");
+      var inSet = a.sets.indexOf(s) >= 0;
+      var mark = el("span", inSet ? (a.arm ? "dot-arm" : "dot-in") : "dot-out", inSet ? (a.arm ? "●*" : "●") : "·");
+      mark.setAttribute("aria-label", inSet ? (a.arm ? "in the set with --arms" : "in the set") : "not in the set");
+      c.appendChild(mark);
+      tr.appendChild(c);
+    });
+    tr.appendChild(el("td", "small", a.backend));
+    var st = el("td");
+    st.appendChild(chip(a.status));
+    tr.appendChild(st);
+    tb.appendChild(tr);
+  });
+  var foot = el("tr");
+  var ftd = el("td", "small", "● in the set   ●* in the set with --arms   · not in the set");
+  ftd.colSpan = T.sets.length + 3;
+  foot.appendChild(ftd);
+  tb.appendChild(foot);
+  tbl.appendChild(tb);
+
+  // Gym
+  var G = DATA.gym;
+  byId("gym-sub").appendChild(rich("span", null, G.sub));
+  G.rungs.forEach(function (r) {
+    var d = el("div", "rung");
+    var t = el("div", "card-top");
+    t.appendChild(el("span", "rid", r.id));
+    t.appendChild(chip(r.status));
+    d.appendChild(t);
+    d.appendChild(el("h3", null, r.title));
+    d.appendChild(el("p", null, r.note));
+    byId("rungs").appendChild(d);
+  });
+  G.arms.forEach(function (a) {
+    byId("arms").appendChild(el("dt", null, a.id));
+    byId("arms").appendChild(el("dd", null, a.what));
+  });
+  var kinds = byId("kinds");
+  kinds.appendChild(el("span", "small", "Command kinds:"));
+  G.kinds.forEach(function (k) { kinds.appendChild(el("code", null, k)); });
+
+  byId("run-title").textContent = G.run.title;
+  byId("run-sub").textContent = G.run.sub;
+  byId("run-note").textContent = G.run.note;
+
+  var tip = byId("tooltip");
+  function showTip(ev, value, label) {
+    tip.textContent = "";
+    tip.appendChild(el("strong", null, value));
+    tip.appendChild(el("span", null, label));
+    var x, y;
+    if (ev.type === "focus") {
+      var r = ev.target.getBoundingClientRect();
+      x = r.right + 8; y = r.top - 6;
+    } else { x = ev.clientX + 12; y = ev.clientY - 36; }
+    var w = tip.offsetWidth || 140;
+    if (x + w > window.innerWidth - 8) x = window.innerWidth - w - 8;
+    tip.style.left = Math.max(8, x) + "px";
+    tip.style.top = Math.max(8, y) + "px";
+    tip.style.opacity = "1";
+  }
+  function hideTip() { tip.style.opacity = "0"; }
+
+  var METRICS = [
+    { key: "success", title: "Commands passed, of 30", max: 30, ticks: [0, 10, 20, 30], fmt: function (v) { return v + "/30"; } },
+    { key: "rounds", title: "Mean model rounds per command", max: 8, ticks: [0, 2, 4, 6, 8], fmt: function (v) { return v.toFixed(1); } },
+    { key: "tps", title: "Tokens per passed command", max: 24000, ticks: [0, 8000, 16000, 24000], tickFmt: function (v) { return v ? (v / 1000) + "K" : "0"; }, fmt: function (v) { return v.toLocaleString("en-US"); } }
+  ];
+  METRICS.forEach(function (M) {
+    var box = el("div", "mult");
+    box.appendChild(el("h4", null, M.title));
+    var bars = el("div", "bars");
+    G.run.rows.forEach(function (r) {
+      var row = el("div", "bar-row");
+      row.appendChild(el("span", "lab", r.arm));
+      var track = el("div", "track");
+      M.ticks.forEach(function (t) {
+        if (!t) return;
+        var g = el("span", "gridline");
+        g.style.left = (t / M.max * 100) + "%";
+        track.appendChild(g);
+      });
+      var pct = Math.min(100, r[M.key] / M.max * 100);
+      var bar = el("span", "hbar");
+      bar.style.width = pct + "%";
+      bar.tabIndex = 0;
+      var label = "Arm " + r.arm + " · " + M.title.toLowerCase();
+      bar.setAttribute("role", "img");
+      bar.setAttribute("aria-label", label + ": " + M.fmt(r[M.key]));
+      bar.addEventListener("pointermove", function (e) { showTip(e, M.fmt(r[M.key]), label); });
+      bar.addEventListener("pointerleave", hideTip);
+      bar.addEventListener("focus", function (e) { showTip(e, M.fmt(r[M.key]), label); });
+      bar.addEventListener("blur", hideTip);
+      track.appendChild(bar);
+      var val = el("span", "bar-val", M.fmt(r[M.key]));
+      val.style.left = pct + "%";
+      val.setAttribute("aria-hidden", "true");
+      track.appendChild(val);
+      row.appendChild(track);
+      bars.appendChild(row);
+    });
+    box.appendChild(bars);
+    var ticks = el("div", "ticks");
+    ticks.appendChild(el("span"));
+    var tk = el("div", "tk");
+    M.ticks.forEach(function (t) {
+      var s = el("span", null, M.tickFmt ? M.tickFmt(t) : t);
+      s.style.left = (t / M.max * 100) + "%";
+      tk.appendChild(s);
+    });
+    ticks.appendChild(tk);
+    box.appendChild(ticks);
+    byId("multiples").appendChild(box);
+  });
+
+  var rt = byId("run-table");
+  var rh = el("tr");
+  [["Arm", ""], ["Passed", "num"], ["Mean rounds", "num"], ["Longest", "num"], ["Tokens per pass", "num"], ["Shelf used", ""]].forEach(function (h) {
+    rh.appendChild(el("th", h[1], h[0]));
+  });
+  var rhead = el("thead"); rhead.appendChild(rh); rt.appendChild(rhead);
+  var rbody = el("tbody");
+  G.run.rows.forEach(function (r) {
+    var tr = el("tr");
+    tr.appendChild(el("td", null, r.arm));
+    tr.appendChild(el("td", "num", r.success + "/30"));
+    tr.appendChild(el("td", "num", r.rounds.toFixed(1)));
+    tr.appendChild(el("td", "num", r.longest));
+    tr.appendChild(el("td", "num", r.tps.toLocaleString("en-US")));
+    tr.appendChild(el("td", null, r.shelf));
+    rbody.appendChild(tr);
+  });
+  rt.appendChild(rbody);
+
+  // Roadmap
+  var prog = byId("progress");
+  var counts = {};
+  DATA.roadmap.forEach(function (r) { counts[r.status] = (counts[r.status] || 0) + 1; });
+  var summary = [];
+  ORDER.forEach(function (k) {
+    if (!counts[k]) return;
+    var s = el("span");
+    s.style.flex = String(counts[k]);
+    s.style.background = "var(--st-" + k + ")";
+    s.title = counts[k] + " " + STATUS[k].label.toLowerCase();
+    prog.appendChild(s);
+    summary.push(counts[k] + " " + STATUS[k].label.toLowerCase());
+  });
+  prog.setAttribute("aria-label", "Roadmap steps: " + summary.join(", "));
+  DATA.roadmap.forEach(function (r) {
+    var d = el("div", "road-item");
+    var top = el("div", "r-top");
+    top.appendChild(el("span", "rid", r.id));
+    top.appendChild(chip(r.status));
+    d.appendChild(top);
+    d.appendChild(el("span", "r-t", r.title));
+    d.appendChild(el("span", "r-a", "“" + r.ask + "”"));
+    d.appendChild(el("span", "r-n", r.note));
+    byId("road").appendChild(d);
+  });
+
+  // Gaps
+  DATA.gaps.forEach(function (g) {
+    var d = el("div", "gap");
+    var top = el("div", "card-top");
+    top.appendChild(el("span", "kind", g.kind));
+    top.appendChild(chip(g.status));
+    d.appendChild(top);
+    d.appendChild(el("h3", null, g.title));
+    d.appendChild(rich("p", null, g.note));
+    byId("gap-list").appendChild(d);
+  });
+
+  // Commands
+  DATA.commands.forEach(function (c) {
+    var d = el("div", "cmd");
+    var head = el("div", "cmd-head");
+    head.appendChild(el("h3", null, c.title));
+    var b = el("button", null, "Copy");
+    b.type = "button";
+    b.addEventListener("click", function () {
+      var done = function () { b.textContent = "Copied"; setTimeout(function () { b.textContent = "Copy"; }, 1200); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(c.cmd).then(done, function () { b.textContent = "Select and copy"; });
+      } else { b.textContent = "Select and copy"; }
+    });
+    head.appendChild(b);
+    d.appendChild(head);
+    d.appendChild(el("pre", null, c.cmd));
+    d.appendChild(rich("p", "note", c.note));
+    byId("cmds").appendChild(d);
+  });
+
+  // Footer
+  var f = byId("footer");
+  f.appendChild(rich("p", null, "Describes the code at `" + m.commit + "` on `" + m.branch + "`, as of " + m.asOf + ". The gym's last oracle gate pass was on digest `" + m.gate + "`."));
+  f.appendChild(rich("p", null, "To update this page, edit the JSON block `capability-data` in `docs/architecture/capability-map.html`, in the same commit as the docs of the step that changed. Decisions stay in `mahoraga-demo-decisions.md`."));
+
+  // Theme toggle: OS setting by default, the viewer's choice once made.
+  var root = document.documentElement;
+  try { var saved = localStorage.getItem("capmap-theme"); if (saved) root.dataset.theme = saved; } catch (e) { /* storage off */ }
+  function isDark() {
+    if (root.dataset.theme) return root.dataset.theme === "dark";
+    return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+  }
+  var themeBtn = byId("theme");
+  function labelTheme() { themeBtn.textContent = isDark() ? "Light mode" : "Dark mode"; }
+  themeBtn.addEventListener("click", function () {
+    root.dataset.theme = isDark() ? "light" : "dark";
+    try { localStorage.setItem("capmap-theme", root.dataset.theme); } catch (e) { /* storage off */ }
+    labelTheme();
+  });
+  // Relabel when the OS setting changes while the page is open.
+  if (window.matchMedia) {
+    var scheme = window.matchMedia("(prefers-color-scheme: dark)");
+    if (scheme.addEventListener) scheme.addEventListener("change", labelTheme);
+  }
+  labelTheme();
+})();
+</script>
+</body>
+</html>

@@ -372,7 +372,7 @@ The cloned source and the build output are in `.gitignore`.
 On the `feat/mahoraga-demo` prototype branch, the walkie-vision and
 walkie-database pins name commits that exist only on the local
 `feat/scene-graph-prep` branches of those repositories (walkie-vision
-`64811fe`, walkie-database `522ab92`). `vcs import` fetches from GitHub,
+`64811fe`, walkie-database `4c1bfdd`). `vcs import` fetches from GitHub,
 which does not have them. Put the commits into the clones first, then build
 as usual:
 
@@ -406,7 +406,7 @@ Check that each clone is at its pin:
 
 ```bash
 git -C ros2_ws/src/walkie-vision rev-parse HEAD    # 64811feb79ca...
-git -C ros2_ws/src/walkie-database rev-parse HEAD  # 522ab92f4b1a...
+git -C ros2_ws/src/walkie-database rev-parse HEAD  # 4c1bfdd1eda1...
 ```
 
 Once the two branches are pushed, `pixi run build-ros2` works without the

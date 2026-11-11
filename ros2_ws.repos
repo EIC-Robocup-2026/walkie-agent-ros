@@ -12,11 +12,16 @@ repositories:
   # repository is cloned; build-ros2 builds only the message package. Pin the
   # commit of the database node the robot runs: under rmw_zenoh_cpp, a client
   # built from another version of the interface finds the server, but its
-  # requests are never answered (ADR-0035).
+  # requests are never answered (ADR-0035). The commit is 4c1bfdd on
+  # feat/scene-graph-prep, 11 commits past 522ab92, the commit the pair gate
+  # passed at (P54). Those commits add the object memory to the node, and their
+  # only message change is ObjectSummary.place_anchor_id; the pair gate has not
+  # run at 4c1bfdd. It is not on GitHub yet, so vcs import finds it only in a
+  # clone that has fetched it (decision SG-25).
   ros2_ws/src/walkie-database:
     type: git
     url: https://github.com/EIC-Robocup-2026/walkie-database.git
-    version: 522ab92f4b1a06b4a82904414b004f2ad25ac2ba
+    version: 4c1bfdd1eda16fde72baf62d7aa869044999625e
   # walkie_vision_msgs, the messages of the vision node: people, objects and
   # the text-embedding service (ADR-0034). walkie-vision runs every model in
   # one process, its vision node. The whole repository is cloned; build-ros2

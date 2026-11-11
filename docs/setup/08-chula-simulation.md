@@ -319,9 +319,9 @@ when it started that node, and refuses one that an `up` from before this check
 started; stop that one with `down` first. `up` and `down` see only the parts
 `up` started, so stop a memory node you started yourself before you run
 `up --memory`.
-`ros2_ws.repos` pins walkie-database 4c1bfdd, on walkie-database's local
+`ros2_ws.repos` pins walkie-database 45228e6, on walkie-database's local
 branch `feat/scene-graph-prep` in `/var/tmp/wd-prep`, which is not on GitHub
-yet (SG-25). Until it is, fetch it into the clone before building, as
+yet (SG-25, SG-26). Until it is, fetch it into the clone before building, as
 [Local message pins](03-ros-and-rai.md#local-message-pins) describes:
 
 ```bash

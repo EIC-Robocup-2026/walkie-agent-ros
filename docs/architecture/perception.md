@@ -104,10 +104,10 @@ flowchart TB
 | `/walkie_vision/embed_text` (`EmbedText`) | walkie-vision | Served by the vision node in the pinned 64811fe | `search_detections` |
 | `/walkie_vision/detect_objects` (`DetectObjects`) | walkie-vision | Served by the vision node in the pinned 64811fe (its ADR-0009) | `detect_objects` |
 | `/walkie_database/find_objects` | walkie-database | Exists | `find_objects` |
-| People services (`StartSession`, `RememberPerson`, `MatchPeople`) | walkie-database | Built in the pinned 4c1bfdd | `recognize_person`, `remember_person` |
+| People services (`StartSession`, `RememberPerson`, `MatchPeople`) | walkie-database | Built in the pinned 45228e6 | `recognize_person`, `remember_person` |
 | Object vector search | walkie-database | Object writes answer `NOT_READY` until its milestone M1 ([questions 2 and 6](#open-questions)) | A later `find_objects` by description |
 
-The pins 64811fe and 4c1bfdd are commits on the local `feat/scene-graph-prep`
+The pins 64811fe and 45228e6 are commits on the local `feat/scene-graph-prep`
 branches of the two repositories, used by the `feat/mahoraga-demo`
 prototype. They are not on GitHub; see
 [Local message pins](../setup/03-ros-and-rai.md#local-message-pins).

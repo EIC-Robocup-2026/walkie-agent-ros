@@ -276,6 +276,32 @@ them. It also points the agent's `find_objects` at walkie-vision's
 oracle's scene has no cup to check (SG-23). An `--objects-topic` after `--`
 is kept instead.
 
+The agent's `walkie_database_msgs` must come from the same walkie-database
+commit as `WALKIE_DATABASE`. Under `rmw_zenoh_cpp` a client built from another
+version of a service finds it but is never answered
+([ADR-0035](../architecture/decisions/0035-memory-through-walkie-database.md)):
+each object tool call would time out after 7 s as if the memory were busy, and
+only a warning in the agent's log would hint at the stale build. So
+`up --object-tools` compares the type hashes of the four services the tools
+call and refuses to start when they differ. For a memory node that `up` started
+and that still runs, it compares against the copy of the services `up` recorded
+when it started that node, and refuses one that an `up` from before this check
+started; stop that one with `down` first. `up` and `down` see only the parts
+`up` started, so stop a memory node you started yourself before you run
+`up --memory`.
+`ros2_ws.repos` pins walkie-database 4c1bfdd, on walkie-database's local
+branch `feat/scene-graph-prep` in `/var/tmp/wd-prep`, which is not on GitHub
+yet (SG-25). Until it is, fetch it into the clone before building, as
+[Local message pins](03-ros-and-rai.md#local-message-pins) describes:
+
+```bash
+git -C ros2_ws/src/walkie-database fetch /var/tmp/wd-prep \
+  feat/scene-graph-prep:feat/scene-graph-prep
+pixi run --frozen build-ros2
+```
+
+Then start it:
+
 ```bash
 scripts/chula-sim.sh up --agent --vision --memory --object-tools --foxglove
 ```

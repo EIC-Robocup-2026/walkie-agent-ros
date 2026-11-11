@@ -10,6 +10,7 @@ stand-ins that record each call, so up runs through and starts nothing.
 
 import fcntl
 import importlib.util
+import json
 import os
 import shlex
 import shutil
@@ -340,6 +341,136 @@ def test_the_memory_map_is_the_one_bringup_loads(tmp_path, overlay, workspace):
     )
 
 
+# The services the object tools call, by name: their type hashes.
+OBJECT_SERVICES = {
+    name: f"RIHS01_{name.lower()}"
+    for name in ("SearchObjects", "GetRoomContents", "ListRooms", "GetObject")
+}
+
+
+def without(name: str) -> dict[str, str]:
+    return {other: digest for other, digest in OBJECT_SERVICES.items() if other != name}
+
+
+DATABASE_SRV = Path("ros2_ws/install/walkie_database_msgs/share/walkie_database_msgs/srv")
+
+
+def built_services(root: Path, hashes: dict[str, str]) -> Path:
+    """A checkout at `root` whose walkie_database_msgs give each service named the hash given.
+
+    Each file also lists the hash of a type the service uses, as the real ones do.
+    """
+    srv = root / DATABASE_SRV
+    srv.mkdir(parents=True)
+    for name, digest in hashes.items():
+        hashed = {
+            "type_description_msg": {},
+            "type_hashes": [
+                {"type_name": f"walkie_database_msgs/srv/{name}", "hash_string": digest},
+                {"type_name": "builtin_interfaces/msg/Time", "hash_string": f"RIHS01_time_{root.name}"},
+            ],
+        }
+        (srv / f"{name}.json").write_text(json.dumps(hashed))
+    return root
+
+
+def check_object_tools(tmp_path: Path, agent: dict[str, str], memory: dict[str, str]):
+    repo = built_services(tmp_path / "agent", agent)
+    memory_srv = built_services(tmp_path / "memory", memory) / DATABASE_SRV
+    return sourced(
+        f"REPO={shlex.quote(str(repo))}\ncheck_object_tools_prerequisites {shlex.quote(str(memory_srv))}",
+        tmp_path,
+    )
+
+
+def test_up_with_the_object_tools_compares_each_services_own_hash(tmp_path):
+    # The hashes of the types the services use differ, and are not compared.
+    result = check_object_tools(tmp_path, OBJECT_SERVICES, OBJECT_SERVICES)
+    assert (result.returncode, result.stdout, result.stderr) == (0, "", "")
+
+
+@pytest.mark.parametrize(
+    ("agent", "memory", "named"),
+    [
+        ({**OBJECT_SERVICES, "GetObject": "RIHS01_old"}, OBJECT_SERVICES, "GetObject differ"),
+        (
+            {**OBJECT_SERVICES, "SearchObjects": "RIHS01_old", "GetRoomContents": "RIHS01_old"},
+            OBJECT_SERVICES,
+            "SearchObjects, GetRoomContents differ",
+        ),
+        (without("ListRooms"), OBJECT_SERVICES, "ListRooms differ"),
+        (OBJECT_SERVICES, without("GetObject"), "GetObject differ"),
+    ],
+    ids=["one-differs", "two-differ", "agent-lacks-one", "memory-lacks-one"],
+)
+def test_up_with_the_object_tools_refuses_services_the_memory_node_would_not_answer(
+    tmp_path, agent, memory, named
+):
+    # Under rmw_zenoh_cpp the node would never answer these services' calls (ADR-0035).
+    result = check_object_tools(tmp_path, agent, memory)
+    assert result.returncode == 1
+    assert f"never reach the memory node: {named} between" in result.stderr
+    assert f"memory node's in {tmp_path}/memory/{DATABASE_SRV}," in result.stderr
+    assert "pixi run build-msgs in WALKIE_DATABASE and pixi run build-ros2 here" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        json.dumps({"type_hashes": [{"type_name": "builtin_interfaces/msg/Time", "hash_string": "x"}]}),
+        "{",
+        json.dumps({"type_description_msg": {}}),
+        json.dumps(["RIHS01_getobject"]),
+        json.dumps({"type_hashes": [{"type_name": "walkie_database_msgs/srv/GetObject"}]}),
+    ],
+    ids=["no-entry-for-it", "not-json", "no-hashes", "not-an-object", "entry-without-a-hash"],
+)
+def test_up_with_the_object_tools_counts_a_file_it_cannot_read_as_differing(tmp_path, content):
+    repo = built_services(tmp_path / "agent", OBJECT_SERVICES)
+    memory_srv = built_services(tmp_path / "memory", OBJECT_SERVICES) / DATABASE_SRV
+    (memory_srv / "GetObject.json").write_text(content)
+    result = sourced(
+        f"REPO={shlex.quote(str(repo))}\ncheck_object_tools_prerequisites {shlex.quote(str(memory_srv))}",
+        tmp_path,
+    )
+    assert result.returncode == 1
+    assert "never reach the memory node: GetObject differ between" in result.stderr
+
+
+def test_record_memory_services_replaces_the_last_record_with_the_build_the_node_loads(tmp_path):
+    database = built_services(tmp_path / "database", OBJECT_SERVICES)
+    stale = tmp_path / "memory-srv"
+    stale.mkdir()
+    (stale / "Old.json").write_text("{}")
+    result = sourced(
+        f"WALKIE_DATABASE={shlex.quote(str(database))}\nrecord_memory_services", tmp_path
+    )
+    assert (result.returncode, result.stderr) == (0, "")
+    assert sorted(path.name for path in stale.iterdir()) == sorted(
+        f"{name}.json" for name in OBJECT_SERVICES
+    )
+    assert (stale / "GetObject.json").read_text() == (database / DATABASE_SRV / "GetObject.json").read_text()
+
+
+def test_record_memory_services_copies_what_a_symlink_install_links_to(tmp_path):
+    # colcon build --symlink-install installs each file as a link into build/, which the
+    # next build rewrites; the record must keep what the node loaded.
+    database = built_services(tmp_path / "database", OBJECT_SERVICES)
+    srv = database / DATABASE_SRV
+    built = tmp_path / "database" / "build"
+    built.mkdir()
+    for name in OBJECT_SERVICES:
+        (srv / f"{name}.json").rename(built / f"{name}.json")
+        (srv / f"{name}.json").symlink_to(built / f"{name}.json")
+    loaded = (built / "GetObject.json").read_text()
+    result = sourced(f"WALKIE_DATABASE={shlex.quote(str(database))}\nrecord_memory_services", tmp_path)
+    assert (result.returncode, result.stderr) == (0, "")
+    (built / "GetObject.json").write_text(loaded.replace("RIHS01_getobject", "RIHS01_rebuilt"))
+    recorded = tmp_path / "memory-srv" / "GetObject.json"
+    assert not recorded.is_symlink()
+    assert recorded.read_text() == loaded
+
+
 def test_wait_for_log_stops_at_the_fail_text_of_a_part_that_keeps_running(tmp_path):
     # walkie-vision's launch respawns a node that cannot start, so the part never stops.
     (tmp_path / "logs").mkdir()
@@ -364,6 +495,8 @@ record() { local IFS=$'\x1f'; echo "$*" >> "$SIM_DIR/calls"; }
 check_prerequisites() { record check "$@"; }
 check_vision_prerequisites() { record check-vision "$@"; }
 check_memory_prerequisites() { record check-memory "$@"; }
+check_object_tools_prerequisites() { record check-object-tools "$@"; }
+record_memory_services() { record record-memory-services "$@"; }
 pgrep() { :; }
 running() { [[ -e $SIM_DIR/started-$1 ]]; }
 port_open() { running router; }
@@ -551,6 +684,7 @@ def test_up_with_memory_starts_it_after_vision_and_waits_for_it_after_vision(tmp
         ("check-memory",),
         *router_and_bringup(tmp_path),
         vision,
+        ("record-memory-services",),
         MEMORY_START,
         foxglove,
         *oracle_speech_and_agent(tmp_path),
@@ -607,13 +741,45 @@ def test_up_with_the_object_tools_gives_the_agent_object_memory_and_the_detector
         ("check", "false"),
         ("check-vision",),
         ("check-memory",),
+        ("check-object-tools", f"/walkie-database/{DATABASE_SRV}"),
         *router_and_bringup(tmp_path),
         vision,
+        ("record-memory-services",),
         MEMORY_START,
         *oracle_speech_and_agent(tmp_path, *args, *added),
         VISION_AND_FOXGLOVE_WAITS[0],
         MEMORY_WAIT,
     ]
+
+
+RUNNING_BUT_THE_AGENT = ("router", "bringup", "vision", "memory", "oracle", "speech")
+
+
+def test_up_with_the_object_tools_checks_a_running_memory_against_the_build_it_started_with(
+    tmp_path,
+):
+    (tmp_path / "memory-srv").mkdir(parents=True)
+    result, calls = up_with_stand_ins(
+        tmp_path, "--agent", "--vision", "--memory", "--object-tools", running=RUNNING_BUT_THE_AGENT
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls[:4] == [
+        ("check", "false"),
+        ("check-vision",),
+        ("check-memory",),
+        ("check-object-tools", f"{tmp_path}/memory-srv"),
+    ]
+    assert ("record-memory-services",) not in calls
+    assert MEMORY_START not in calls
+
+
+def test_up_with_the_object_tools_refuses_a_running_memory_whose_build_it_did_not_record(tmp_path):
+    result, calls = up_with_stand_ins(
+        tmp_path, "--agent", "--vision", "--memory", "--object-tools", running=RUNNING_BUT_THE_AGENT
+    )
+    assert result.returncode == 1
+    assert "the object memory runs from a build that up did not record" in result.stderr
+    assert calls == [("check", "false"), ("check-vision",), ("check-memory",)]
 
 
 @pytest.mark.parametrize(

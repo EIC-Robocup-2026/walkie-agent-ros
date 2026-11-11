@@ -76,6 +76,8 @@ SIM_DOMAIN_ID=${SIM_DOMAIN_ID:-77}
 SIM_SPAWN_POSE=${SIM_SPAWN_POSE:-1.7629 -1.483 0}
 SIM_CPUS=${SIM_CPUS:-}
 
+# Where a walkie-database message build keeps the services' type descriptions.
+DATABASE_SRV=ros2_ws/install/walkie_database_msgs/share/walkie_database_msgs/srv
 WORLD=chula_pat14_6
 # down stops them in reverse order: the commander and MoveIt before bringup, and the
 # object memory, which saves what it merged as it stops, before vision.
@@ -406,6 +408,51 @@ check_memory_prerequisites() {
     SIM_MEMORY_MAP_FOLDER=$(cd "$SIM_MEMORY_MAP_FOLDER" && pwd)
 }
 
+# check_object_tools_prerequisites MEMORY_SRV: that the services the object tools call
+# have the same type hashes in the agent's walkie_database_msgs as in MEMORY_SRV, the
+# memory node's build of them. Under rmw_zenoh_cpp a client built from another version
+# of a service finds it but is never answered: each call times out after 7 s as if the
+# memory were busy, and only a warning in the agent's log hints at a stale build
+# (ADR-0035, decision SG-25). A service's RIHS01 hash covers every type it uses, so only
+# each service's own hash is compared. Run under the lock, after check_memory_prerequisites.
+check_object_tools_prerequisites() {
+    local differ
+    differ=$(python3 -I -c '
+import json
+import sys
+
+def hash_of(folder, name):
+    try:
+        with open(f"{folder}/{name}.json") as file:
+            hashes = json.load(file)["type_hashes"]
+        return next(
+            entry["hash_string"] for entry in hashes
+            if entry["type_name"] == f"walkie_database_msgs/srv/{name}"
+        )
+    except (OSError, ValueError, KeyError, TypeError, StopIteration):
+        return None
+
+agent, memory, names = sys.argv[1], sys.argv[2], sys.argv[3:]
+print(", ".join(
+    name for name in names
+    if (found := hash_of(agent, name)) is None or found != hash_of(memory, name)
+))
+' "$REPO/$DATABASE_SRV" "$1" SearchObjects GetRoomContents ListRooms GetObject) ||
+        fail "could not compare the object services' type hashes"
+    [[ -z $differ ]] ||
+        fail "the object tools would never reach the memory node: $differ differ between the agent's walkie_database_msgs and the memory node's in $1, or are missing. Build both from the walkie-database commit ros2_ws.repos pins: pixi run build-msgs in WALKIE_DATABASE and pixi run build-ros2 here, and stop a memory node that runs from another build"
+}
+
+# record_memory_services: keep a copy of the services the memory node is about to load,
+# so that a later up --object-tools checks the agent against the build that runs. A
+# --symlink-install build installs each file as a link into its build folder, which the
+# next build rewrites, so the copy follows the links (-L).
+record_memory_services() {
+    rm -rf "$SIM_DIR/memory-srv"
+    cp -RL "$WALKIE_DATABASE/$DATABASE_SRV" "$SIM_DIR/memory-srv" ||
+        fail "could not record the memory node's services in $SIM_DIR/memory-srv"
+}
+
 up() {
     local with_agent=false with_arms=false with_vision=false with_memory=false with_foxglove=false
     local with_object_tools=false headless=true rviz=false agent_args=()
@@ -440,6 +487,16 @@ up() {
     fi
     lock
     mkdir -p "$SIM_DIR"/{logs,pids,worlds,ros/log}
+    # A memory node that is already running keeps the build it started with.
+    if $with_object_tools; then
+        if running memory; then
+            [[ -d $SIM_DIR/memory-srv ]] ||
+                fail "the object memory runs from a build that up did not record, so the object tools cannot be checked against it; stop it first"
+            check_object_tools_prerequisites "$SIM_DIR/memory-srv"
+        else
+            check_object_tools_prerequisites "$WALKIE_DATABASE/$DATABASE_SRV"
+        fi
+    fi
 
     if ! running bringup; then
         # A second MuJoCo simulation, on any graph, competes for the CPU with the first.
@@ -504,6 +561,7 @@ up() {
     # clock, and saves them once more as it stops. It runs in walkie-database's own
     # environment, whose activation sources its message overlay.
     if $with_memory && ! running memory; then
+        record_memory_services
         start memory "$WALKIE_DATABASE" "$PIXI" run --as-is --manifest-path "$WALKIE_DATABASE/pixi.toml" \
             db-memory -p "db_path:=$SIM_MEMORY_DB" -p "map_folder:=$SIM_MEMORY_MAP_FOLDER" \
             -p "map_id:=$SIM_MEMORY_MAP_ID" -p use_sim_time:=true -p "objects_topic:=$DETECTOR_OBJECTS"

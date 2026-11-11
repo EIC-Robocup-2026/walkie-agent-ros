@@ -21,10 +21,12 @@ What each verb asks:
 - get: GetObject without the cloud. The node follows a merge, so the object may come
   back with another id.
 
-An object's `on` comes from ObjectSummary.place, the key of the anchor or surface it
-stands on. The node keys a surface of a perceived anchor "object-<anchor id>-<side>";
-the anchor named by that id or by its own key gives "<label> <id>" when the same
-answer holds it. get()'s answer holds one object, so its `on` is always None.
+An object's `on` is "<label> <id>" of the anchor that ObjectSummary.place_anchor_id
+names, when the same answer holds that anchor, else None (decision SG-19). The id is 0
+when the memory holds no place for the object, as when no surface holds it.
+ObjectSummary.place, the surface or anchor key, is never read:
+the node sets the id whenever it sets the key. get()'s answer holds one object, so
+its `on` is always None.
 
 `seen_s_ago` is the node clock's now, sim time under --use-sim-time, less
 ObjectSummary.last_seen. It is None when last_seen is zero, the clock has not
@@ -101,8 +103,6 @@ RETRY_BUDGET_S = 2.0
 # A memory id: ObjectSummary.id is a positive int64.
 _ID = re.compile(r"[1-9][0-9]{0,18}")
 _MAX_ID = 2**63 - 1
-# The key the node gives a surface of a perceived anchor (decision SG-19).
-_SURFACE_KEY = re.compile(r"object-([1-9][0-9]{0,18})-")
 _POLL_S = 0.02
 _SERVICES = ("search_objects", "get_room_contents", "list_rooms", "get_object")
 _CODE_NAMES = {
@@ -242,8 +242,7 @@ class RosObjectMemory:
         """The records of `chosen`, whose `on` names an anchor of `batch`."""
         now = self._now_s()
         by_id = {summary.id: summary for summary in batch}
-        by_key = {summary.key: summary for summary in batch if summary.key}
-        return tuple(_record(summary, _on(summary.place, by_id, by_key), now) for summary in chosen)
+        return tuple(_record(summary, _on(summary, by_id), now) for summary in chosen)
 
     def _now_s(self) -> float | None:
         """The node clock's now in seconds, or None before it has started."""
@@ -372,15 +371,9 @@ def _is_called(wanted: str, summary: ObjectSummary) -> bool:
     return not wanted or any(matches(wanted, name) for name in names if name.strip())
 
 
-def _on(
-    place: str, by_id: dict[int, ObjectSummary], by_key: dict[str, ObjectSummary]
-) -> str | None:
-    """'<label> <id>' of the anchor that the key `place` names, if it is in the answer."""
-    if not place:
-        return None
-    anchor = by_key.get(place)
-    if anchor is None and (found := _SURFACE_KEY.match(place)) is not None:
-        anchor = by_id.get(int(found.group(1)))
+def _on(summary: ObjectSummary, by_id: dict[int, ObjectSummary]) -> str | None:
+    """'<label> <id>' of the anchor place_anchor_id names, if it is in the answer."""
+    anchor = by_id.get(summary.place_anchor_id) if summary.place_anchor_id else None
     return None if anchor is None else f"{anchor.label.strip()} {anchor.id}"
 
 

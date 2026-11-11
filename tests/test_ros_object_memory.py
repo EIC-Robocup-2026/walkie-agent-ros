@@ -50,6 +50,7 @@ def summary(
     *,
     room: str = "kitchen room",
     place: str = "",
+    place_anchor_id: int = 0,
     key: str = "",
     state: str = "present",
     labels: tuple[str, ...] = (),
@@ -71,6 +72,7 @@ def summary(
         state=state,
         room=room,
         place=place,
+        place_anchor_id=place_anchor_id,
         key=key,
         geometry_valid=geometry_valid,
     )
@@ -83,15 +85,23 @@ def summary(
 
 
 def store() -> list[ObjectSummary]:
-    """A store shaped like the Chula simulation's: anchors with no key, surfaces keyed by id."""
+    """A store shaped like the Chula simulation's: anchors with no key, surfaces keyed by id.
+
+    Each object with a place also names its anchor's id, as the node sets both together.
+    """
     return [
         summary(15, "table", x=3.0, y=1.0),
-        summary(18, "cup", place="object-15-top", x=3.1, y=1.1),
+        summary(18, "cup", place="object-15-top", place_anchor_id=15, x=3.1, y=1.1),
         summary(4, "apple", x=0.5, y=0.5),
         summary(14, "chair", room="living room", x=-2.0, y=4.0),
-        summary(13, "bottle", room="living room", place="object-14-top", x=-2.0, y=4.1),
+        summary(
+            13, "bottle", room="living room", place="object-14-top", place_anchor_id=14,
+            x=-2.0, y=4.1,
+        ),
         summary(16, "sofa", room="living room", key="sofa_a", x=-4.0, y=5.0),
-        summary(6, "cup", room="living room", place="sofa_a", x=-4.1, y=5.2),
+        summary(
+            6, "cup", room="living room", place="sofa_a", place_anchor_id=16, x=-4.1, y=5.2
+        ),
         summary(9, "cup", state="held", x=0.0, y=0.0),
     ]
 
@@ -329,7 +339,7 @@ def test_a_limit_out_of_range_is_refused_before_anything_is_sent(database, memor
 # -- What a record says -------------------------------------------------------------------
 
 
-def test_on_names_the_anchor_by_its_surface_key_or_its_own_key(memory):
+def test_on_names_the_anchor_the_anchor_id_names(memory):
     on = {recalled.id: recalled.on for recalled in memory.search("")}
 
     assert on["18"] == "table 15"
@@ -338,10 +348,51 @@ def test_on_names_the_anchor_by_its_surface_key_or_its_own_key(memory):
     assert on["4"] is None
 
 
+def test_without_an_anchor_id_on_is_none_whatever_the_key_names(database, memory):
+    # The node never sends a place without its anchor's id; the key alone is not read
+    # (decision SG-19).
+    database.objects = [
+        summary(15, "table"),
+        summary(16, "sofa", key="sofa_a"),
+        summary(18, "cup", place="object-15-top"),
+        summary(6, "cup", place="sofa_a"),
+    ]
+
+    assert [recalled.on for recalled in memory.search("cup")] == [None, None]
+
+
 def test_on_reads_the_whole_answer_and_is_none_without_the_anchor_in_it(database, memory):
     # Only the cups are kept, but `on` reads every object the node answered with.
     assert [recalled.on for recalled in memory.search("cup")] == ["table 15", "sofa 16"]
-    database.objects = [summary(18, "cup", place="object-15-top")]
+    database.objects = [summary(18, "cup", place="object-15-top", place_anchor_id=15)]
+
+    [cup] = memory.search("cup")
+
+    assert cup.on is None
+
+
+def test_the_anchor_id_names_the_anchor_whatever_the_key_says(database, memory):
+    database.objects = [
+        summary(30, "shelf"),
+        summary(31, "table", key="table_a"),
+        # A seeded surface key.
+        summary(32, "cup", place="shelf_2", place_anchor_id=30),
+        # A key naming another anchor of the answer.
+        summary(33, "cup", place="table_a", place_anchor_id=30),
+        # No key at all.
+        summary(34, "cup", place_anchor_id=31),
+    ]
+
+    on = {recalled.id: recalled.on for recalled in memory.search("cup")}
+
+    assert on == {"32": "shelf 30", "33": "shelf 30", "34": "table 31"}
+
+
+def test_an_anchor_id_outside_the_answer_gives_none_whatever_the_key_names(database, memory):
+    database.objects = [
+        summary(15, "table"),
+        summary(18, "cup", place="object-15-top", place_anchor_id=40),
+    ]
 
     [cup] = memory.search("cup")
 

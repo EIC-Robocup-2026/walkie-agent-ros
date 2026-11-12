@@ -124,8 +124,17 @@ pixi run --as-is db-seed-sim --map-folder $W/map --arena chula --date 2026-11-12
   --locations $A/config/locations.chula_pat14_6.toml \
   --room-names /var/tmp/scene-graph-demo/room-names.yaml \
   --scene $W/scene.xml --furniture tools/furniture/chula_pat14_6.yaml \
-  --output /var/tmp/scene-graph-demo/furniture/seed.db
+  --previous-seed /var/tmp/scene-graph-demo/furniture/seed.db \
+  --output /var/tmp/scene-graph-demo/furniture/seed.new.db
 ```
+
+The seed already exists, so run this only to change the furniture file or the
+rooms. walkie-database refuses to write a seed over a seed of the same map, even
+with `--replace`, and refuses an `--output` that is the previous seed itself.
+Then set `SIM_MEMORY_SEED=/var/tmp/scene-graph-demo/furniture/seed.new.db` for
+`reset-memory`, and keep the old seed for a rebuild with `--id-floor`. On
+2026-11-12, at walkie-database 41dae92, this command wrote a seed with 2 rooms
+and 9 anchors.
 
 **A model key, for `--agent`.** The agent reads `OPENAI_API_KEY` from the
 environment or from `.env` at the root of this repository. A Git worktree has no

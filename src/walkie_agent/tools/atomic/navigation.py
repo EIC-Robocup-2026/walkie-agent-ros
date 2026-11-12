@@ -7,6 +7,7 @@ from walkie_agent.capabilities import Ctx, Pose2D, RecalledObject
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location, nearest_place
 from walkie_agent.perception.geometry import wrap_deg
+from walkie_agent.perception.objects import matches
 
 logger = logging.getLogger(__name__)
 
@@ -128,7 +129,8 @@ def go_to_object(ctx: Ctx, object_id: str) -> str:
             ErrorCode.PRECONDITION_FAILED,
             f"{renamed}Walkie remembers {label} as {state}, so it is not where Walkie saw it.",
         )
-    room = f" Go to the {found.room} and call find_objects there." if found.room else ""
+    word = _camera_word(found)
+    room = f" Go to the {found.room} and call find_objects there.{word}" if found.room else ""
     if found.x is None or found.y is None:
         raise StepError(
             ErrorCode.PRECONDITION_FAILED, f"{renamed}Walkie does not know where {label} is.{room}"
@@ -146,8 +148,19 @@ def go_to_object(ctx: Ctx, object_id: str) -> str:
     return (
         f"{renamed}Arrived at {place.name}, the named place nearest {label}, {facing}."
         f"{state} Walkie has not looked for it yet: call find_objects to see whether it "
-        "is still there."
+        f"is still there.{word}"
     )
+
+
+def _camera_word(found: RecalledObject) -> str:
+    """The sentence naming the detector's word for `found`, or "" when its name is that word.
+
+    An official name, such as "stool", is not a word the detector looks for, so
+    find_objects would refuse it; the stored label, such as "chair", is (SG-27).
+    """
+    if not found.label or matches(found.name.strip().lower(), found.label):
+        return ""
+    return f' The camera calls it "{found.label}", so call find_objects("{found.label}").'
 
 
 def approach_place(ctx: Ctx, found: RecalledObject) -> Location | None:

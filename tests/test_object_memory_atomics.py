@@ -37,6 +37,7 @@ def recalled(
     object_id: str = "18",
     name: str = "cup",
     *,
+    label: str | None = None,
     room: str | None = "kitchen room",
     on: str | None = "table 15",
     state: str = "present",
@@ -47,6 +48,7 @@ def recalled(
     return RecalledObject(
         id=object_id,
         name=name,
+        label=name if label is None else label,
         category="dish",
         room=room,
         on=on,
@@ -219,6 +221,30 @@ def test_go_to_object_turns_to_face_the_object_once_there(y, words, turn):
     assert f"the named place nearest the cup 18, and {words} to face it." in reply
     assert turns(robot) == [pytest.approx(turn)]
     assert math.degrees(robot.pose().yaw) == pytest.approx(turn)
+
+
+@pytest.mark.parametrize(
+    ("name", "label", "word"),
+    [
+        # A seeded stool's official name is not a word the detector uses (SG-27).
+        ("stool", "chair", ' The camera calls it "chair", so call find_objects("chair").'),
+        ("Cup", "cup", ""),
+        ("cup", "", ""),
+    ],
+)
+def test_go_to_object_names_the_camera_s_word_when_the_name_is_not_one(name, label, word):
+    _, ctx = remembering(recalled("18", name, label=label, x=4.0, y=0.0))
+
+    assert go_to_object(ctx, "18").endswith(f"to see whether it is still there.{word}")
+
+
+def test_an_object_with_no_position_names_the_camera_s_word_with_its_room():
+    _, ctx = remembering(recalled("18", "stool", label="chair", x=None, y=None))
+
+    assert fails(go_to_object, ctx, "18").message == (
+        "Walkie does not know where the stool 18 is. Go to the kitchen room and call "
+        'find_objects there. The camera calls it "chair", so call find_objects("chair").'
+    )
 
 
 def test_go_to_object_says_when_the_memory_followed_a_merge():

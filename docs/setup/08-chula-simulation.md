@@ -67,12 +67,15 @@ vision launch checks the models itself, and names the command that fetches them.
 **For `--memory`, walkie-database and a seeded store.** Set `WALKIE_DATABASE`
 to a walkie-database checkout of `feat/scene-graph-prep` at 45228e6, the
 commit `ros2_ws.repos` pins, or later, with its pixi environment installed and
-`pixi run build-msgs` run there. Two of its commits matter here. From 583bcd8,
+`pixi run build-msgs` run there. Three of its commits matter here. From 583bcd8,
 the memory merges a furniture track that lies mostly inside a seeded piece of
 furniture's box into that piece, whatever label the detector gave it; cups and
 other movable objects are never merged, and stand `on` the furniture instead
 (walkie-database's ADR-0028). From 8546d28, `db-seed-sim` measures the
-furniture from the world's MuJoCo scene.
+furniture from the world's MuJoCo scene. From ca52814, the furniture file
+gives each piece an official name, such as `coffee table`, which the agent
+uses as the piece's name (decision SG-27). The node at 45228e6 already serves
+official names, so only the seed needs ca52814 or later.
 The memory keeps what it merges in a store seeded for this map,
 `SIM_MEMORY_DB`. `scripts/chula-sim.sh reset-memory` makes that store, or
 empties it again, from the seed `SIM_MEMORY_SEED` (decision SG-26):
@@ -100,9 +103,13 @@ the scene graph work goes on:
 | `SIM_MEMORY_MAP_FOLDER` | the `chula_pat14_6` map that `bringup` loads, from the overlay's `install/` |
 
 The seed holds the two rooms and the world's nine pieces of furniture,
-measured from its MuJoCo scene, with object IDs 1 to 9. It was built as
-walkie-database's `docs/setup/15-scene-graph-demo.md` describes, with this
-command in walkie-database's checkout. A rebuild cannot write over the seed it
+measured from its MuJoCo scene, with object IDs 1 to 9 and their official
+names. It was first built as walkie-database's
+`docs/setup/15-scene-graph-demo.md` describes, with this command in
+walkie-database's checkout, and then rebuilt from ca52814 with
+`--previous-seed` to add the names, keeping the IDs. Build it from ca52814 or
+later: the furniture file before it has no names, and the coffee table then
+reads `table 2`. A rebuild cannot write over the seed it
 starts from: write it to a new `--output`, add `--previous-seed` with the old
 seed so that each piece keeps its ID, and point `SIM_MEMORY_SEED` at the new
 file. If `reset-memory` then refuses it, `db-restore`'s message names the
@@ -344,15 +351,20 @@ round the rooms first. Then ask:
 
 - "Where did you see a cup?" The tool log shows `recall_object` returning up
   to 10 remembered cups, each with its memory id, its room, the anchor it
-  stands on (`on`, such as `table 2`, the coffee table), the named place nearest it
+  stands on (`on`, such as `coffee table 2`), the named place nearest it
   (`near_place`) and the seconds since vision last saw it. `complete` is false
   when there are more. An object the detector only once called a cup, such as
-  a bottle, comes after the cups, under its own label.
+  a bottle, comes after the cups, under its own name. An object's name, and
+  the anchor in `on`, are its official name when the memory has one, else its
+  label (SG-27). A seed built before walkie-database ca52814 has none, and the
+  coffee table reads `table 2`.
 - "What is in the living room?" `list_room_objects` lists what the memory
   holds there. A room name in any case works.
 - "Take me to the cup on the table." `go_to_object` drives to the named place
   nearest the cup, within 2 m, and turns to face it. The agent then calls
-  `find_objects` to check that the cup is still there.
+  `find_objects` to check that the cup is still there. When an object's name
+  is not a word the detector uses, such as a seeded `stool`, the reply names
+  the label to look for instead, `chair`.
 
 The ids these tools give are the memory's, numbers such as `18`; they are not
 the ids `find_objects` gives for objects in view. An object more than 2 m from
@@ -839,6 +851,44 @@ kitchen table, succeeded from the living room and from the shelf.
     a door. 9 of the 12 relations belong to present objects: 5 on the kitchen
     table, 2 on the shelf, and one each on the coffee table and the bar
     (`table 1`).
+- With official names (SG-27), on 2026-11-12, with walkie-vision at ad7c833
+  and walkie-database at 6229e70, whose memory node is the same as at the
+  pinned 45228e6. Two runs, each after `reset-memory` from the seed rebuilt
+  from ca52814 (sha256 `8ed5b209…`), then
+  `up --agent --vision --memory --object-tools`, on the real model with the
+  `default` tool set. The first ran the agent's name change only (`name` and
+  `on`); the second ran the whole SG-27 change that records these runs, with
+  `label` and the camera's word in `go_to_object`.
+    - The first toured the same seven places; Nav2 reached each in 7.7 to
+      136.0 s, within 0.10 m and 0.5° of the goal. "Where is the cup?"
+      `recall_object("cup")` gave cups 29 and 26 `on` `kitchen table 3`, cup
+      25 `on` `coffee table 2`, and bottle 28. The model said "Two of them
+      were on the kitchen table 3 in the kitchen room ... One was on the
+      coffee table 2 in the living room". "What's in the living room?"
+      `list_room_objects` gave the sofa, the tv desk, the coffee table,
+      cabinets 33 and 34 near the entrance, and cup 25 on `coffee table 2`.
+      The model listed them all, the two cabinets included. Cabinet 33, 0.63 m
+      by 0.03 m, matches the entrance door's leaf in size and place, as the
+      walkie-ros session found cabinet 20 of the run before does. Cabinet 34,
+      a 0.14 m strip near the living room's far edge, is unexplained. "Where
+      is the coffee table?" was answered from that list, without a call.
+    - The second started a new agent, with no tour. "Where is the coffee
+      table?" `recall_object("coffee table")` gave the coffee table 2 near
+      the sofa. "Take me to a stool, and check that it is still there."
+      `recall_object("stool")` gave stools 6, 7 and 8 in the kitchen room.
+      `go_to_object("6")` drove to `table` in 46.3 s, turned 50° right to
+      face the stool, and ended its reply with `The camera calls it "chair",
+      so call find_objects("chair").` The model called
+      `find_objects("chair")`, which saw two chairs, then `find_objects()`,
+      and said "I still see the stool, though my camera calls it a chair, so
+      it is still there."
+
+    After the second run, `down` stopped every part in about 17 s. As they
+    stopped, the oracle logged a traceback, an `RCLError` from
+    `rclpy.try_shutdown()` because the context was already shut down, likely
+    the race that SG-11 fixed in walkie-vision's nodes; speech logged the same
+    error without a traceback, and the agent an unretrieved `cannot use
+    Destroyable` exception. The first run's logs were not kept.
 
 ## Not in the recipe
 

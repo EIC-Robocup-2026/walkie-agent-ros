@@ -21,8 +21,14 @@ What each verb asks:
 - get: GetObject without the cloud. The node follows a merge, so the object may come
   back with another id.
 
-An object's `on` is "<label> <id>" of the anchor that ObjectSummary.place_anchor_id
-names, when the same answer holds that anchor, else None (decision SG-19). The id is 0
+A record's `name` is the object's official name, such as "coffee table", when the
+memory has one, else its label, such as "table" (decision SG-27). Its `label` is the
+stored label either way, the word the detector and find_objects use, and its category
+still comes from the label when the memory has none.
+
+An object's `on` is "<name> <id>" of the anchor that ObjectSummary.place_anchor_id
+names, when the same answer holds that anchor, else None (decisions SG-19 and SG-27),
+with the anchor's name chosen as a record's is. The id is 0
 when the memory holds no place for the object, as when no surface holds it.
 ObjectSummary.place, the surface or anchor key, is never read:
 the node sets the id whenever it sets the key. get()'s answer holds one object, so
@@ -371,10 +377,15 @@ def _is_called(wanted: str, summary: ObjectSummary) -> bool:
     return not wanted or any(matches(wanted, name) for name in names if name.strip())
 
 
+def _name(summary: ObjectSummary) -> str:
+    """The object's official name when the memory has one, else its label."""
+    return summary.official_name.strip() or summary.label.strip()
+
+
 def _on(summary: ObjectSummary, by_id: dict[int, ObjectSummary]) -> str | None:
-    """'<label> <id>' of the anchor place_anchor_id names, if it is in the answer."""
+    """'<name> <id>' of the anchor place_anchor_id names, if it is in the answer."""
     anchor = by_id.get(summary.place_anchor_id) if summary.place_anchor_id else None
-    return None if anchor is None else f"{anchor.label.strip()} {anchor.id}"
+    return None if anchor is None else f"{_name(anchor)} {anchor.id}"
 
 
 def _record(summary: ObjectSummary, on: str | None, now: float | None) -> RecalledObject:
@@ -396,7 +407,8 @@ def _record(summary: ObjectSummary, on: str | None, now: float | None) -> Recall
             x, y = float(position.x), float(position.y)
     return RecalledObject(
         id=str(summary.id),
-        name=label,
+        name=_name(summary),
+        label=label,
         category=summary.category.strip() or category_of(label),
         room=summary.room.strip() or None,
         on=on,

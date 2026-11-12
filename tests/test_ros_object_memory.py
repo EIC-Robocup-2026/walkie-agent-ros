@@ -388,6 +388,31 @@ def test_the_anchor_id_names_the_anchor_whatever_the_key_says(database, memory):
     assert on == {"32": "shelf 30", "33": "shelf 30", "34": "table 31"}
 
 
+def test_on_and_the_name_prefer_the_official_name_to_the_label(database, memory):
+    # The seeded furniture: four anchors share the label "table" (decision SG-27).
+    database.objects = [
+        summary(2, "table", official_name="coffee table"),
+        summary(3, "table", official_name="  "),
+        summary(5, "sofa"),
+        summary(10, "cup", place_anchor_id=2),
+        summary(14, "cup", place_anchor_id=3),
+        summary(12, "bottle", labels=("cup",), official_name=" Aqua ", place_anchor_id=5),
+    ]
+
+    recalled = {r.id: (r.name, r.label, r.category, r.on) for r in memory.search("")}
+
+    assert recalled == {
+        "2": ("coffee table", "table", "furniture", None),
+        "3": ("table", "table", "furniture", None),
+        "5": ("sofa", "sofa", "furniture", None),
+        "10": ("cup", "cup", "dish", "coffee table 2"),
+        "14": ("cup", "cup", "dish", "table 3"),
+        # The label and the category stay the detector's, not the official name's.
+        "12": ("Aqua", "bottle", "drink", "sofa 5"),
+    }
+    assert ids(memory.search("coffee table")) == ["2"]
+
+
 def test_an_anchor_id_outside_the_answer_gives_none_whatever_the_key_names(database, memory):
     database.objects = [
         summary(15, "table"),
@@ -410,6 +435,7 @@ def test_a_record_carries_the_memory_fields_and_the_map_position(database, memor
     assert cup == RecalledObject(
         id="18",
         name="cup",
+        label="cup",
         category="dish",
         room="kitchen room",
         on=None,

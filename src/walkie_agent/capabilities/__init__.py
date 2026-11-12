@@ -338,13 +338,17 @@ class ObjectMemory(Protocol):
 
     An object's id here is the memory's own, a decimal number such as "18", never a
     live id from find_objects. search gives the objects remembered as present whose
-    name matches `name` as find_objects matches a label (perception.objects.matches):
-    the label, its category or the category's plural, ignoring case and spaces at
-    either end; an empty name matches every object. They come in the memory's order,
-    at most `limit` of them. room gives the objects remembered as present in the room
-    named `room`, ignoring case, at most `limit`. get gives one object in any state,
-    following a merge: the object it returns may have another id than `object_id`.
-    No verb moves anything, so none waits for a stop to commit.
+    label, another label the detector gave them or official name matches `name` as
+    find_objects matches a label (perception.objects.matches): the label, its
+    category or the category's plural, ignoring case and spaces at either end; an
+    empty name matches every object. A match's own `name` may differ from the one
+    asked for: search("chair") gives a stool whose official name is "stool".
+    Objects whose own label or official name matches come first, then those that
+    only another label matches, each in the memory's order, at most `limit` of
+    them. room gives the objects remembered as present in the room named `room`,
+    ignoring case, at most `limit`. get gives one object in any state, following a
+    merge: the object it returns may have another id than `object_id`. No verb
+    moves anything, so none waits for a stop to commit.
 
     Every verb raises StepError REFUSED for an argument outside its range, such as
     an id that is not a memory id; NOT_FOUND for an object or a room the memory does

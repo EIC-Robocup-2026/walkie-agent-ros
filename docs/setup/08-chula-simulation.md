@@ -970,7 +970,8 @@ kitchen table, succeeded from the living room and from the shelf.
   `default` tool set. The store saved at `down` is kept as
   `/var/tmp/scene-graph-demo/sim/walkie.run-2026-11-12-1120.db`.
     - The same seven-place tour, twice, recorded as a bag of what the memory
-      reads, from 38 s after the memory node started: 2495 arrays in 922 s,
+      reads, from 38 s after the memory node started: 2495 arrays in 922 s
+      of wall-clock time, stamped from 37.5 to 556.5 s of simulation time,
       in `/var/tmp/scene-graph-demo/bags/live-fix-2026-11-12`. Nav2 reached
       every place except `sofa` on the second tour, where it timed out after
       180 s, 0.12 m from the goal.
@@ -996,10 +997,71 @@ kitchen table, succeeded from the living room and from the shelf.
       behind the kitchen's west wall, outside the room. Cabinet 68's lie
       inside the south window wall below its sill or up to 0.06 m behind its
       glass, 0.08 to 0.11 m behind the south-east wall's room face, and 0.10
-      to 0.25 m west of the shelf's west end, in open air. The
-      walkie-database session found that those west of the shelf come from
-      the track's first detections, from about 3 m away while the robot
-      moved; why they lie there is not established.
+      to 0.25 m west of the shelf's west end, in open air.
+    - Shelf 70's other points, and cabinet 68's west of the shelf, are most
+      likely points of the bar and the shelf themselves, placed too far west
+      by an error in the robot's estimate of its own pose in the map. The
+      bag holds no true pose, so the error is inferred from how the detected
+      points fit the scene's geometry. From about 186 s of simulation time,
+      points landed west of the surfaces they belong to. By 190 s they lay
+      about 0.1 m west, and the pose error was still mostly one of position
+      rather than heading. Between 197 and 199 s, partway through a
+      clockwise turn from 194.5 to 202.6 s, the shift at the shelf's range
+      of about 3 m grew to about 0.2 m. From 199 to 217 s,
+      points lay west by 0.10 to 0.14 m at 0.7 m range and by about 0.2 m
+      at 3 m. Fits to the detections from 203.6 to 214.3 s put the error at
+      roughly 1 to 3 degrees of heading and up to about 0.15 m of position;
+      the fits cannot separate the two well. All 56 of shelf 70's
+      detections and 44 of cabinet 68's 71 were made from 199 to 215 s.
+      Moved back by any of the fitted corrections, every point of shelf
+      70's detections falls inside the bar's grown box, and 99% of the
+      points of cabinet 68's detections from 199 to 215 s fall inside the
+      shelf's. In walkie-database's `memory-replay` of the bag at 41dae92
+      (below), the detections of cabinet 68's counterpart from 199 to 215 s
+      have a median of 28% of their points inside the shelf's grown box,
+      against 82% for those from 215 to 300 s and 96% for later ones.
+    - Two known weaknesses of this simulation's localization meet here.
+      MuJoCo's wheel odometry over-reports turns by about 2 to 3% against
+      the true pose (walkie-ros's `docs/guides/simulation-mujoco.md`). In
+      this bag AMCL's correction mostly turns back against the odometry's
+      turns, by about 2 to 6 degrees for every 100 degrees of heading change
+      the odometry reports, depending on the stretch of the run. AMCL
+      itself is 0.1 to 0.2 m off in this room, because its map has no
+      furniture and lidar hits on the furniture pull its estimate
+      (walkie-ros's `docs/guides/simulation-chula-pat14.md`, on its branch
+      `feat/chula-pat14-6-simulation`, not on main). AMCL dates each
+      transform about 1 s after the scan it comes from. Its 57 updates
+      stamped from 185.6 to 204.6 s, made from scans taken while the robot
+      set off, turned and slowed, did not remove the error. The run's
+      generated `nav2.yaml` lets AMCL update only after the robot has moved
+      0.05 m or turned 0.05 rad. The robot moved less than that from about
+      203.6 s and stood still from 207.0 to 214.4 s. So AMCL's correction
+      stayed the same from its update stamped 204.6 s to the next, stamped
+      215.8 s. Those two come from the scans at about 203.6 s and 214.8 s,
+      the second just after the robot drove on at 214.4 s. The error then
+      faded and was gone by about 233 s. Points also lay 0.1 to 0.2 m west
+      earlier in the run, at about 44 to 66 s and 97 to 100 s, and about
+      0.2 m to the north-west at 110 to 111 s.
+    - A time offset between the camera images and the robot's pose does not
+      explain the shift. From 207 to 214 s nothing moved: the base was
+      still, the camera fixed relative to it, and from 208 s successive
+      images gave nearly identical points, yet the points lay 0.1 to 0.2 m
+      west of where they belong. The images also stop and start changing
+      within one image (0.2 s) of when the robot's transforms do, and
+      points from successive images line up best with no time offset.
+    - Cabinet 68's other outside points are not explained. Those 0.08 to
+      0.11 m behind the south-east wall's room face come from three
+      detections at 248.1 to 248.5 s, none from 199 to 215 s. Those in the
+      south window wall come mostly from the chair that merged into cabinet
+      68, seen at 225.9 to 227.5 s. Why these points lie there is not
+      established.
+    - The bag cannot tell how much of the error came from the odometry and
+      how much from AMCL, since it holds no true pose and no laser scan. No
+      run is planned for this, but any bag recorded later should also record
+      `/mujoco_ground_truth/odom`, the true pose, which the simulation
+      already publishes. The demo leaves both copies as a known limitation
+      and changes neither the memory nor the simulation's localization for
+      them (decision SG-28).
     - walkie-database's `memory-replay` of that bag, from the same seed and
       with its truth file, at 6d44ec9, at 4d62bf3 and at 41dae92. At 6d44ec9
       the memory confirms two anchors that stand for no furniture: a chair in

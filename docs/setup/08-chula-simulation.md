@@ -934,11 +934,19 @@ kitchen table, succeeded from the living room and from the shelf.
       leaf, from 11. The other 17 confirmed tracks are the same in both
       replays. Both hold the 9 seeded pieces of furniture, the coffee table
       without a detection, find 8 of the 12 objects, and state 8 `on`
-      relations: the 7 the truth file expects, all right, and an apple on a
-      shelf board below the shelf's top, which the truth file does not score.
-      So the gate held back the door's 11 detections and 11 of the wall's 20,
-      but not the 9 that made the chair: the six in the corner and the three
-      on stool 6.
+      relations: 7 of the 9 the replay's score expects, all right (neither
+      red plate is found), and an apple on a shelf board below the shelf's
+      top, which the score does not count, since it expects `on` only on
+      furniture tops. So the gate held back the door's 11 detections and 11
+      of the wall's 20, but not the 9 that made the chair. The walkie-database
+      session traced those 9 detections. Three were thin faces of the
+      diagonal wall. Three were detections of the wall's south-west end that
+      also took in stool 6's seat, and two of those also the floor in front
+      of the wall. These three spanned 0.27 to 0.45 m across, so none was
+      thin. The other three, of the seat alone, matched stool 6 and the
+      chair's track equally well, and the memory gave each tie to the track
+      made later, the chair's. Only 3 of the 9 were thin, so the memory
+      stored the chair.
 
     `down` took 23 s. The oracle logged a traceback again, this time a
     `KeyboardInterrupt` raised inside its cleanup, in `oracle.destroy()`: a
@@ -946,6 +954,74 @@ kitchen table, succeeded from the living room and from the shelf.
     ad7c833 handles in its own nodes. The memory node logged 12 Zenoh
     "Received Data for unknown expr_id" errors as the parts stopped. Over the
     run, the memory could not place at least 52 arrays in `map` for want of a
+    transform at their stamps, and dropped them.
+- With walkie-database's fix for chair 58, on 2026-11-12, with walkie-vision
+  at ad7c833 and the memory node at walkie-database 41dae92, whose messages
+  are those of the pinned 45228e6. Two walkie-database commits since 6d44ec9
+  matter here. From 4d62bf3, the gate counts and measures each detection of
+  an anchor the memory makes only on the detection's points at least 0.05 m
+  above the floor. When one cluster of those points, a group lying close
+  together, holds at least 80% of them, the gate keeps only that cluster and
+  the clusters within 0.5 m of it. From 41dae92, a detection that matches two
+  tracks equally well goes to the seeded one if either is seeded, and
+  otherwise to the stored one if either is stored (walkie-database's
+  ADR-0029). One run after `reset-memory` from the same seed, then
+  `up --agent --vision --memory --object-tools`, on the real model with the
+  `default` tool set. The store saved at `down` is kept as
+  `/var/tmp/scene-graph-demo/sim/walkie.run-2026-11-12-1120.db`.
+    - The same seven-place tour, twice, recorded as a bag of what the memory
+      reads, from 38 s after the memory node started: 2495 arrays in 922 s,
+      in `/var/tmp/scene-graph-demo/bags/live-fix-2026-11-12`. Nav2 reached
+      every place except `sofa` on the second tour, where it timed out after
+      180 s, 0.12 m from the goal.
+    - "What is in the kitchen room?" `list_room_objects` gave the seeded
+      shelf, bar, kitchen table and stools 6, 7 and 8, nine objects on the
+      shelf, the bar and the kitchen table, and two anchors of the
+      detector's own, cabinet 68 and shelf 70. The spoken answer named a
+      cabinet. Both are second copies of seeded pieces: cabinet 68 lies over
+      the shelf, and shelf 70 over the west part of the bar's back panel. A shelf and a chair the memory also made there merged into
+      cabinet 68. "What is in the living room?" then gave the sofa, the tv
+      desk, the coffee table and cup 59 `on` `coffee table 2`, and nothing
+      else.
+    - The memory merges an anchor it made into a seeded piece when at least
+      80% of its points lie inside that piece's box grown by 0.10 m
+      (walkie-database's ADR-0028), or when the two share their main label,
+      at least half of its points lie inside that grown box and, where both
+      carry image vectors, the two look alike. Cabinet 68 and shelf 70 do
+      neither. Cabinet 68's main label, `cabinet`, is not the seeded shelf's
+      `shelf`, and shelf 70's, `shelf`, is not the bar's `table`. Only 74% of
+      cabinet 68's points lie inside the shelf's grown box, and 52% of shelf
+      70's inside the bar's. Their other points lie on no surface the camera
+      could see. Shelf 70's lie past the bar's west end, all but 14 of them
+      behind the kitchen's west wall, outside the room. Cabinet 68's lie
+      inside the south window wall below its sill or up to 0.06 m behind its
+      glass, 0.08 to 0.11 m behind the south-east wall's room face, and 0.10
+      to 0.25 m west of the shelf's west end, in open air. The
+      walkie-database session found that those west of the shelf come from
+      the track's first detections, from about 3 m away while the robot
+      moved; why they lie there is not established.
+    - walkie-database's `memory-replay` of that bag, from the same seed and
+      with its truth file, at 6d44ec9, at 4d62bf3 and at 41dae92. At 6d44ec9
+      the memory confirms two anchors that stand for no furniture: a chair in
+      the corner where the diagonal wall meets the kitchen's west wall, and a
+      `table` lying on the floor, each from 3 detections. All the floor
+      table's points lie below 0.02 m, so from 4d62bf3 none of its
+      detections is measured, and the memory never confirms it. At 4d62bf3
+      and 41dae92 the memory confirms neither, and its other 21 confirmed
+      tracks are the same at all three commits, the replay's counterparts of
+      cabinet 68 and shelf 70 among them. All three
+      replays find 10 of the 12 objects and the 9 seeded pieces, and state 10
+      `on` relations: 8 of the 9 the replay's score expects, all right, and a
+      can of Pringles and an apple on shelf boards below the shelf's top,
+      which the score does not count.
+    - The replay of the earlier bag, `live-slab-2026-11-12`, at 41dae92
+      confirms no chair at the corner. The three detections of stool 6's seat
+      join stool 6.
+
+    `down` took 18 s. The oracle logged the `RCLError` traceback of the second
+    official-names run again, from `rclpy.try_shutdown()`, and speech the
+    same error without a traceback. Over the run, the
+    memory could not place at least 30 arrays in `map` for want of a
     transform at their stamps, and dropped them.
 
 ## Not in the recipe

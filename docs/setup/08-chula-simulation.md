@@ -131,7 +131,8 @@ pixi run --as-is db-seed-sim --map-folder $W/map --arena chula --date 2026-11-12
 The seed already exists, so run this only to change the furniture file or the
 rooms. walkie-database refuses to write a seed over a seed of the same map, even
 with `--replace`, and refuses an `--output` that is the previous seed itself.
-Then set `SIM_MEMORY_SEED=/var/tmp/scene-graph-demo/furniture/seed.new.db` for
+To run the command again to the same `seed.new.db`, add `--replace`; with
+`--previous-seed` given, it is allowed. Then set `SIM_MEMORY_SEED=/var/tmp/scene-graph-demo/furniture/seed.new.db` for
 `reset-memory`, and keep the old seed for a rebuild with `--id-floor`. On
 2026-11-12, at walkie-database 41dae92, this command wrote a seed with 2 rooms
 and 9 anchors.

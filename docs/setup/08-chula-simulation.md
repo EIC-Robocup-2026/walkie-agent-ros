@@ -870,8 +870,13 @@ kitchen table, succeeded from the living room and from the shelf.
       The model listed them all, the two cabinets included. Cabinet 33, 0.63 m
       by 0.03 m, matches the entrance door's leaf in size and place, as the
       walkie-ros session found cabinet 20 of the run before does. Cabinet 34,
-      a 0.14 m strip near the living room's far edge, is unexplained. "Where
-      is the coffee table?" was answered from that list, without a call.
+      0.14 m by 0.03 m from 4 detections, lies on the living-room face of the
+      north-east return wall (`chula_north_east_return`), along its line.
+      "Where is the coffee table?" was answered from that list, without a
+      call. The detector also made chair 32 in the kitchen room, 1.79 m by
+      0.16 m by 0.79 m at 50°, whose centre is 0.05 m from that of the
+      diagonal wall (`chula_west_diagonal`, 1.84 m by 0.08 m by 0.80 m at
+      48.5°): the wall, at twice its thickness.
     - The second started a new agent, with no tour. "Where is the coffee
       table?" `recall_object("coffee table")` gave the coffee table 2 near
       the sofa. "Take me to a stool, and check that it is still there."
@@ -881,7 +886,9 @@ kitchen table, succeeded from the living room and from the shelf.
       so call find_objects("chair").` The model called
       `find_objects("chair")`, which saw two chairs, then `find_objects()`,
       and said "I still see the stool, though my camera calls it a chair, so
-      it is still there."
+      it is still there." The detector's one furniture anchor of its own was
+      chair 46, 0.83 m by 0.31 m at 52°, over the diagonal wall's south-west
+      half.
 
     After the second run, `down` stopped every part in about 17 s. As they
     stopped, the oracle logged a traceback, an `RCLError` from

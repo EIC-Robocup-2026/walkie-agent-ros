@@ -896,6 +896,57 @@ kitchen table, succeeded from the living room and from the shelf.
     the race that SG-11 fixed in walkie-vision's nodes; speech logged the same
     error without a traceback, and the agent an unretrieved `cannot use
     Destroyable` exception. The first run's logs were not kept.
+- With walkie-database's thin-slab gate, on 2026-11-12, with walkie-vision at
+  ad7c833 and the memory node at walkie-database 6d44ec9, whose messages are
+  those of the pinned 45228e6. 6d44ec9 stores an anchor the memory makes only
+  once at least three of its detections had 50 points or more after
+  downsampling to 0.025 m, and not while more than half of all such
+  detections span less than 0.05 m across (walkie-database's ADR-0029). One
+  run after `reset-memory` from the same seed, then
+  `up --agent --vision --memory --object-tools`, on the real model with the
+  `default` tool set. The store saved at `down` is kept as
+  `/var/tmp/scene-graph-demo/sim/walkie.run-2026-11-12-1020.db`.
+    - The same seven-place tour. Nav2 reached five places; `table` timed out
+      after 180 s, 1.05 m from its goal, and `sofa` aborted after 58 s, 0.13 m
+      from it, the controller logging "Failed to make progress". "What is in
+      the living room?" `list_room_objects` gave the tv desk, the sofa, the
+      coffee table and cup 48 `on` `coffee table 2`, and no cabinet. "What is
+      in the kitchen room?" gave the shelf, the bar, the kitchen table, stools
+      6, 7 and 8, and nine objects on the bar, the shelf and the kitchen
+      table, and no chair of the detector's own.
+    - The tour again, this time with every place reached, recorded as a bag
+      of what the memory reads: the detector's arrays, `/tf`, `/tf_static` and
+      `/clock`, 766 arrays in 302 s, in
+      `/var/tmp/scene-graph-demo/bags/live-slab-2026-11-12`. The saved store
+      holds one anchor of the detector's own: chair 58, 0.61 m by 0.39 m by
+      0.77 m at 60°, from 9 detections. Its centre is 0.15 m from the
+      diagonal wall's footprint and 0.34 m from the kitchen's west wall, near
+      the corner where the two meet; the next nearest things, the kitchen
+      table's top and stool 6's seat, are 0.84 m from it. Its detections came
+      in 5 arrays, from a camera near (1.6, -4.15). Six are centred in the
+      corner. The other three, each in the same array as one of those, are
+      centred on stool 6's seat, which the chair's box does not reach.
+    - walkie-database's `memory-replay` of that bag, from the same seed and
+      with its truth file, confirms the same chair, at the same centre and
+      from 9 detections in 5 arrays. With the gate off
+      (`--set slab_thickness=0`) it confirms instead a chair over the
+      diagonal wall, from 20 detections, and a cabinet on the entrance door's
+      leaf, from 11. The other 17 confirmed tracks are the same in both
+      replays. Both hold the 9 seeded pieces of furniture, the coffee table
+      without a detection, find 8 of the 12 objects, and state 8 `on`
+      relations: the 7 the truth file expects, all right, and an apple on a
+      shelf board below the shelf's top, which the truth file does not score.
+      So the gate held back the door's 11 detections and 11 of the wall's 20,
+      but not the 9 that made the chair: the six in the corner and the three
+      on stool 6.
+
+    `down` took 23 s. The oracle logged a traceback again, this time a
+    `KeyboardInterrupt` raised inside its cleanup, in `oracle.destroy()`: a
+    second interrupt arrived while it stopped, the case walkie-vision's
+    ad7c833 handles in its own nodes. The memory node logged 12 Zenoh
+    "Received Data for unknown expr_id" errors as the parts stopped. Over the
+    run, the memory could not place at least 52 arrays in `map` for want of a
+    transform at their stamps, and dropped them.
 
 ## Not in the recipe
 

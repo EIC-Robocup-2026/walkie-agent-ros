@@ -588,9 +588,9 @@ pass in the same two fields only.
 
 From 2026-11-11 two sessions build a simulation demo of the robot memory
 pipeline together: walkie-vision's detections, walkie-database's merged object
-map, and agent tools that use it. The walkie-ros session keeps its own log in
-walkie-database's worktree, `docs/architecture/scene-graph-demo-decisions.md`
-on its branch.
+map, and agent tools that use it. The walkie-ros session records its decisions
+in walkie-database on its branch `feat/scene-graph-prep`: ADR-0025 to ADR-0029,
+`docs/architecture/object-memory.md` and `docs/setup/15-scene-graph-demo.md`.
 
 | ID | Decision | Why | Alternative and consequence | Status |
 | --- | --- | --- | --- | --- |

@@ -26,7 +26,7 @@ IMPORT_EVERY_NEW_MODULE = """
 import importlib, json, pkgutil, sys
 import walkie_agent.tools.atomic, walkie_agent.capabilities, walkie_agent.perception, walkie_agent.runtime
 import walkie_agent.arm, walkie_agent.scripting, walkie_agent.people_memory
-names =["walkie_agent.errors", "walkie_agent.locations"]
+names = ["walkie_agent.errors", "walkie_agent.locations"]
 names += ["walkie_agent.config", "walkie_agent.chat_models", "walkie_agent.prompts"]
 names += ["walkie_agent.tools", "walkie_agent.tools.adapter", "walkie_agent.tools.sets"]
 names += ["walkie_agent.tools.bundled_preset"]

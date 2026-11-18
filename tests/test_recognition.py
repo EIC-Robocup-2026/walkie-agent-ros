@@ -1,4 +1,4 @@
-"""people_memory/recognition.py:without_outliers and name_people.
+"""people_memory/recognition.py: without_outliers and name_people.
 
 The naming cases are ported from the experiment's tests/test_people_atomics.py, where
 recognize_person ran them through its toolbox; here they run on the pure functions

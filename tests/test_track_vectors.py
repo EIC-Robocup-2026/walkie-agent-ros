@@ -1,4 +1,4 @@
-"""people_memory/track_vectors.py:the per-track sample buffer, model_vector and face_trusted.
+"""people_memory/track_vectors.py: the per-track sample buffer, model_vector and face_trusted.
 
 Ported from the experiment's tests/test_vision_feed.py, whose collection tests ran over
 a VisionFeed node: here the buffer is fed directly, with explicit stamps and monotonic

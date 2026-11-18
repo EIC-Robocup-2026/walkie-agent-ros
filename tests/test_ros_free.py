@@ -195,8 +195,13 @@ CODE_AND_BUILD = [
     ".github",
     "pixi.toml",
     "pyproject.toml",
+    # Their comments name the modules that read them.
+    "config",
+    "config.toml",
+    "mkdocs.yml",
 ]
-TEXT_SUFFIXES = {".py", ".toml", ".sh", ".yml", ".yaml", ".md", ".json", ".txt", ".cfg", ".launch"}
+# .html for docs/architecture/capability-map.html, which names modules.
+TEXT_SUFFIXES = {".py", ".toml", ".sh", ".yml", ".yaml", ".md", ".json", ".txt", ".cfg", ".launch", ".html"}
 # The shelf's default store writes model-written functions here, which git ignores.
 GENERATED = [SRC / "walkie_agent" / "tools" / "temporary", SRC / "walkie_agent" / "tools" / "bundled"]
 
@@ -993,6 +998,21 @@ def test_the_sweep_skips_the_functions_a_shelf_saved_in_the_package(tmp_path, mo
     monkeypatch.setattr(sys.modules[__name__], "GENERATED", [saved])
 
     assert _files_under("src") == [saved / "README.md"]
+
+
+def test_the_sweeps_read_html_pages_config_files_and_the_docs_build(tmp_path, monkeypatch):
+    page = tmp_path / "docs" / "architecture" / "capability-map.html"
+    page.parent.mkdir(parents=True)
+    page.write_text("<li><code>walkie_agent/adapter.py</code> hides ctx</li>\n")
+    scene = tmp_path / "config" / "scenes" / "room.toml"
+    scene.parent.mkdir(parents=True)
+    scene.write_text("# walkie_agent.mahoraga.oracle reads this scene\n")
+    (tmp_path / "config.toml").write_text("# The agent (walkie_agent.runtime.model): complex_model\n")
+    (tmp_path / "mkdocs.yml").write_text("# python -m walkie_agent.mahoraga gate\n")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+
+    assert len(_mentions(_files_under("docs"), REMOVED)) == 1
+    assert len(_mentions(_files_under(*CODE_AND_BUILD), REMOVED)) == 3
 
 
 def test_no_docs_page_names_a_removed_module():

@@ -6,17 +6,23 @@ its graph from the walkie_agent that the import system finds, which PYTHONPATH c
 point at another checkout, so the first test pins it to this tree.
 """
 
+import ast
 import importlib.util
 import pkgutil
+import re
 import tomllib
 from pathlib import Path
 
+import grimp
 from importlinter import api  # noqa: F401  Importing it configures import-linter's adapters.
 from importlinter.application import output, use_cases
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 PYPROJECT = ROOT / "pyproject.toml"
+# The LangChain, LangGraph and Langfuse packages, integrations such as langchain_openai included.
+LLM_PACKAGE = re.compile(r"(langchain|langgraph|langfuse)(_\w+)?")
+LLM_CONTRACTS = ("package-inits-stay-empty", "backends-dont-see-the-llm")
 
 
 def lint(config: Path) -> tuple[bool, str]:
@@ -24,6 +30,24 @@ def lint(config: Path) -> tuple[bool, str]:
     with output.console.capture() as captured:
         kept = use_cases.lint_imports(str(config), cache_dir=None, no_logo=True)
     return kept, captured.get()
+
+
+def contract(contract_id: str) -> dict:
+    """The contract with this id in pyproject.toml."""
+    contracts = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"]["importlinter"]["contracts"]
+    (found,) = [entry for entry in contracts if entry["id"] == contract_id]
+    return found
+
+
+def holds_at_most_a_docstring(source: str) -> bool:
+    """Whether a module's source is empty or holds nothing but its docstring."""
+    body = ast.parse(source).body
+    return not body or (
+        len(body) == 1
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    )
 
 
 def test_the_contracts_check_this_tree():
@@ -48,6 +72,32 @@ def test_the_backend_contract_names_every_ros_module_but_operator_topics():
     }
     named = {name for name in backends["source_modules"] if name.startswith("walkie_agent.ros.")}
     assert named == ros
+
+
+def test_the_llm_contracts_forbid_every_langchain_package_the_agent_imports():
+    # import-linter treats an external package as a leaf, so it never sees that
+    # langchain_openai imports langchain_core: a backend that imports langchain_openai
+    # keeps both contracts unless langchain_openai is itself forbidden.
+    graph = grimp.build_graph("walkie_agent", include_external_packages=True, cache_dir=None)
+    imported = {module for module in graph.modules if LLM_PACKAGE.fullmatch(module)}
+    assert {"langchain_core", "langchain_openai", "langchain_ollama"} <= imported
+    for contract_id in LLM_CONTRACTS:
+        assert imported <= set(contract(contract_id)["forbidden_modules"]), contract_id
+
+
+def test_the_inits_that_must_stay_empty_hold_at_most_a_docstring():
+    # package-inits-stay-empty forbids imports only; an init could still define code.
+    for package in contract("package-inits-stay-empty")["source_modules"]:
+        init = SRC.joinpath(*package.split("."), "__init__.py")
+        assert holds_at_most_a_docstring(init.read_text(encoding="utf-8")), init
+
+
+def test_the_init_check_would_catch_code_beside_the_docstring():
+    assert holds_at_most_a_docstring("")
+    assert holds_at_most_a_docstring('"""The ROS 2 backends."""\n')
+    assert not holds_at_most_a_docstring('"""The ROS 2 backends."""\nCOUNT = 1\n')
+    assert not holds_at_most_a_docstring('"""The ROS 2 backends."""\n\n\ndef helper():\n    return 1\n')
+    assert not holds_at_most_a_docstring("COUNT = 1\n")
 
 
 def test_a_broken_contract_fails_with_the_chain(tmp_path, monkeypatch):

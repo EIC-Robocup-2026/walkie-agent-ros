@@ -80,6 +80,8 @@ forbidden_modules = [
     "walkie_agent.**",
     "langchain",
     "langchain_core",
+    "langchain_ollama",
+    "langchain_openai",
     "langgraph",
     "langfuse",
 ]
@@ -91,7 +93,10 @@ type = "forbidden"
 # Every module and subpackage of walkie_agent.ros but operator_topics, which bridges the
 # operator's topics to the Runner, and but the package init, which package-inits-stay-empty keeps
 # free of the agent and LangChain. tests/test_import_contracts.py fails when a module or
-# subpackage of walkie_agent.ros is missing here.
+# subpackage of walkie_agent.ros is missing here, and when a LangChain, LangGraph or
+# Langfuse package that walkie_agent imports is missing from either forbidden list.
+# import-linter treats an external package as a leaf, so langchain_openai's own import of
+# langchain_core is invisible to it: each such package has to be named.
 source_modules = [
     "walkie_agent.ros.arms",
     "walkie_agent.ros.base",
@@ -110,6 +115,8 @@ forbidden_modules = [
     "walkie_agent.chat_models",
     "langchain",
     "langchain_core",
+    "langchain_ollama",
+    "langchain_openai",
     "langgraph",
     "langfuse",
 ]

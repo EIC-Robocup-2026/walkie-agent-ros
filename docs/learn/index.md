@@ -47,7 +47,7 @@ owns its thread. RAI remains underneath it as the ROS connector and the voice st
 | 7 | [Queue, Stop, Reset and Repair](queue-stop-reset.md) | What happens to speech mid-task, stops, resets and errors |
 | 8 | [Seeding a Task](seeding.md) | Giving the agent its steps from Python, ROS or a template |
 | 9 | [Watching Progress](watching-progress.md) | Listeners, console lines and `/walkie/todos` |
-| 10 | [Read the Code Next](read-the-code.md) | Which files to read, in what order, and exercises |
+| 10 | [Read the Code Next](read-the-code.md) | The package map, where to change what, which files to read, in what order, and exercises |
 
 ## Run the examples
 

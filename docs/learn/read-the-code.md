@@ -1,7 +1,100 @@
 # Read the Code Next
 
-You've seen how each part behaves. This page says which files to read, in what order, and
-gives you exercises that make you change something and watch it break.
+You've seen how each part behaves. This page maps the package, says which files to read,
+in what order, and gives you exercises that make you change something and watch it break.
+
+## The package map
+
+The package is laid out by concept, so a folder's name says what it holds
+([ADR-0071](../architecture/decisions/0071-package-layout.md)). One line per module or
+folder, under `src/walkie_agent/`:
+
+```text
+main.py               the agent process: flags, assemble(), signals, exit codes
+config.py             reads config.toml: load_config, agent_settings
+chat_models.py        the LLM vendors: build_model, build_fallback, build_callbacks
+prompts.py            the system prompts: a rule per tool, build_system_prompt, SYSTEM_PROMPT
+errors.py             ErrorCode and StepError
+locations.py          the places file, its name rules, nearest_place
+voice.py              python -m walkie_agent.voice asr|tts, on RAI
+half_duplex.py        stops listening while Walkie speaks, for voice.py
+capabilities/         what the robot can do: the Protocols on ctx, Ctx, Unavailable*
+  guards.py           the checks every verb calls, begin_lookup among them
+  records.py          the frozen records the verbs return
+  facts.py            SystemFacts behind ctx.facts
+  fake.py             FakeRobot, for tests, the gym and fake runs
+tools/                the LLM tools
+  atomic/             one module per tool family; its __init__ is the catalogue
+  sets.py             DEFAULT, GPSR, HRI, ARMS, TOOL_SETS, bound_tools
+  adapter.py          a ctx-first function to a LangChain StructuredTool
+  bundled_preset/     the gym's stand-in bundles
+  bundled/, temporary/  the shelf's saved functions, ignored by git
+runtime/              our layer on langchain.agents.create_agent
+  agent.py            build_agent, and the middleware order
+  middleware.py       one small middleware per failure, and SPEAKING_TOOLS
+  runner.py           the Runner: queue, stop, reset, shutdown
+  todos.py            the todo middleware, update_todos and wait_for_person
+  task_templates.py   task templates and /walkie/task messages
+scripting/            run_script: the sandbox, the driver, the evidence and the shelf
+perception/           rules that read walkie-vision's detections, and its topic names
+  geometry.py         bearings and distances from pixels
+  gestures.py         gesture and posture names from keypoints
+  people_words.py     the pose and gesture phrases find_people gives
+  object_words.py     the category of each label, for find_objects
+people_memory/        who is who
+  track_memory.py     TrackMemory, behind ctx.memory
+  store.py            the PeopleMemory store, and InMemoryPeopleMemory
+  identity.py         IdentityConfig, and comparing and cleaning vectors
+  recognition.py      naming the people in view
+  track_vectors.py    each track's face and appearance samples
+  model_limits.py     the match limit of each vector model
+arm/                  arm poses, arm states and their answers, with no ROS
+ros/                  one ROS 2 backend per capability
+  base.py             RosBase, behind ctx.base
+  speech.py           RosSpeech, behind ctx.speech
+  vision.py           RosVision, behind ctx.vision with --vision
+  arms.py             RosArms, behind ctx.arms
+  commander.py        CommanderClient, for bimanual_commander
+  people_memory.py    RosPeopleMemory, on walkie-database's people services
+  object_memory.py    RosObjectMemory, on walkie-database's object services
+  policy.py           the forbidden endpoints, and rclpy failures as StepError
+  operator_topics.py  RosBridge: the operator's topics to and from the Runner
+sim/                  stand-in ROS nodes, the oracle and the simulation's check
+evals/                offline evaluations, never imported by the agent
+  mahoraga/           the gym: python -m walkie_agent.evals.mahoraga
+    experiment_arms.py  the gym's prompt and its arms
+```
+
+## Where do I...
+
+**Switch the LLM?** In `config.toml`, `[vendor]`'s `complex_model` names the vendor, and
+that vendor's table, such as `[openai]`, names the model and its `base_url`. No code
+changes. A new vendor goes in `_chat_model` in `chat_models.py`. The gym ignores
+`config.toml` and takes `--model`.
+
+**Add a tool?** Write a ctx-first function in `tools/atomic/<family>.py`, and export it
+from the catalogue, `tools/atomic/__init__.py`. Add it to a list in `tools/sets.py`, and
+its usage rule to `_TOOL_RULES` in `prompts.py`. If a successful call reaches the
+person, add its name to `SPEAKING_TOOLS` in `runtime/middleware.py`.
+
+**Find the system prompt?** `prompts.py`. The gym's prompt is `PROMPT` in
+`evals/mahoraga/experiment_arms.py`.
+
+**Find the ROS code?** `ros/` has one backend per capability, `sim/` the stand-in nodes,
+`main.py` the node and the signals, and `voice.py` the voice processes. The core never
+loads any of it: contract C2 in `pyproject.toml` and `tests/test_ros_free.py` check that.
+
+**Switch the face or re-identification model?** That spans three repositories.
+walkie-vision's provider makes the vectors, walkie-database needs a migration that adds
+the model's vector table, and here `people_memory/model_limits.py` needs a row keyed by
+the vector model's name. A model without a row never names anyone.
+
+**Ignore the gym?** Yes, unless you're running it. `evals/mahoraga/` is the offline gym
+that measures script writing on `FakeRobot`. Contract C1 stops the agent from importing
+it.
+
+**Find the agent loop, the queue and stop?** In `runtime/`: `agent.py` builds the agent,
+`middleware.py` guards it, and `runner.py` queues tasks and stops them.
 
 ## The files
 

@@ -84,33 +84,40 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 
 ## Repository layout
 
-| Path                         | What it holds                                                     |
-| ---------------------------- | ----------------------------------------------------------------- |
-| `src/walkie_agent/main.py`   | The entry point, which assembles the agent                        |
+The package is laid out by concept, so the folder names say where things are
+([ADR-0071](docs/architecture/decisions/0071-package-layout.md)). "No ROS" means the
+module never imports ROS, which `tests/test_ros_free.py` checks.
+`tests/test_import_contracts.py` checks the package's import rules in `pyproject.toml`.
+
+| Path | What it holds |
+| --- | --- |
+| `src/walkie_agent/main.py` | The agent process: flags, assembly, signals and exit codes |
+| `src/walkie_agent/config.py` | Reads `config.toml`, and the agent's run limit and deadline from it. No ROS. |
+| `src/walkie_agent/chat_models.py` | The LLM vendors: builds the model, the optional fallback and the tracing callbacks. No ROS. |
 | `src/walkie_agent/prompts.py` | The system prompts: a rule for each bound tool, the places and `robot.md`. No ROS. |
-| `src/walkie_agent/capabilities/` | The verbs on `ctx`, their guards and `FakeRobot`. No ROS.     |
-| `src/walkie_agent/tools/atomic/` | The tools, as plain functions. No ROS. |
-| `src/walkie_agent/tools/sets.py` | The fixed tool sets, and which atomics each run binds. No ROS. |
-| `src/walkie_agent/tools/adapter.py` | Turns an atomic into a LangChain tool or a plain callable. No ROS. |
-| `src/walkie_agent/tools/`    | The tool tiers: `atomic/`, the gym's stand-in bundles in `bundled_preset/`, and the ignored `bundled/` and `temporary/` folders where the gym's shelf keeps saved functions; beside them `sets.py` and `adapter.py` |
+| `src/walkie_agent/errors.py` | `ErrorCode` and `StepError`, the failures every verb and tool reports. No ROS. |
+| `src/walkie_agent/locations.py` | The places file and its name rules. No ROS. |
+| `src/walkie_agent/voice.py` | The voice entry points, `python -m walkie_agent.voice asr` and `tts`, on RAI |
+| `src/walkie_agent/half_duplex.py` | Stops listening while Walkie speaks, for `voice.py` |
+| `src/walkie_agent/capabilities/` | What the robot can do: the verbs on `ctx`, their guards and records, the `Unavailable*` stand-ins and `FakeRobot`. No ROS. |
+| `src/walkie_agent/tools/` | The LLM tools: the atomics in `atomic/`, whose init is the catalogue, the fixed sets in `sets.py`, the LangChain adapter in `adapter.py`, the gym's stand-in bundles in `bundled_preset/`, and the ignored `bundled/` and `temporary/` folders where the shelf keeps saved functions. No ROS. |
+| `src/walkie_agent/runtime/` | Our layer on LangChain's `create_agent`: the middlewares, the todo list, the Runner and the task templates. No ROS. |
 | `src/walkie_agent/scripting/` | `run_script`'s runtime: the Monty sandbox, the driver, the shelf of saved functions and its evidence. No ROS. |
-| `src/walkie_agent/runtime/`  | `create_agent`, the middlewares, the todo list and the Runner. No ROS. |
-| `src/walkie_agent/ros/`      | The ROS-backed verbs and the operator's topics                    |
-| `src/walkie_agent/voice.py`  | The voice entry points, on RAI's `AgentRunner`                    |
 | `src/walkie_agent/perception/` | Rules that read walkie-vision's detections: geometry, gestures, topic names and the words for people and objects. No ROS. |
-| `src/walkie_agent/people_memory/` | Who is who: the track memory behind `ctx.memory`, the people store, identity matching and each vector model's match limit. No ROS. |
-| `src/walkie_agent/sim/`      | The fake robot node, the oracle that stands in for walkie-vision in a simulation, and the check of a simulation's graph |
-| `scripts/chula-sim.sh`       | Runs the `chula_pat14_6` simulation, the oracle and the agent on a private ROS graph |
-| `tests/`                     | Tests with a scripted LLM. Some use real rclpy with a fake robot. |
-| `src/walkie_agent/evals/mahoraga/` | The research gym, an offline evaluation in its own Pixi environment that the agent never imports. Fake world only. Its prompt and arms are in `experiment_arms.py`, and its tests in `tests/mahoraga/`. |
-| `config.toml`                | LLM vendor and models, the team and its timezone, voice, tracing  |
-| `config/locations.toml`      | The robot's real places. Ships empty until they are measured.     |
-| `config/locations.sim.toml`  | Test points for the blank simulation map                          |
-| `config/locations.chula_pat14_6.toml` | Places and rooms of the `chula_pat14_6` simulation world |
-| `config/scenes/`             | Fixed scenes of people and objects that the simulation's oracle draws |
-| `tests/fixtures/locations.toml` | Invented places for tests and the fake robot                   |
-| `config/task_templates.toml` | Fixed tasks by name. Ships with none.                             |
-| `robot.md`                   | What Walkie is and can do today, for the system prompt            |
-| `ros2_ws/`                   | Message packages built from source (`rai_interfaces`, `walkie_database_msgs`, `walkie_vision_msgs`) |
-| `docker/langfuse/`           | The local Langfuse server                                         |
-| `docs/`                      | The documentation site (MkDocs)                                   |
+| `src/walkie_agent/people_memory/` | Who is who: the track memory behind `ctx.memory`, the people store, identity matching, recognition and each vector model's match limit. No ROS. |
+| `src/walkie_agent/arm/` | The named arm poses, which pose each arm is in, and the answers every arm backend shares. No ROS. |
+| `src/walkie_agent/ros/` | One ROS 2 backend per capability, and the operator's topics in `operator_topics.py` |
+| `src/walkie_agent/sim/` | The fake robot node, the oracle that stands in for walkie-vision in a simulation, and the check of a simulation's graph |
+| `src/walkie_agent/evals/` | Offline evaluations, which the agent never imports. `evals/mahoraga/` is the research gym, in its own Pixi environment and in the fake world only. Its prompt and arms are in `experiment_arms.py`. |
+| `tests/` | Tests with a scripted LLM. Some use real rclpy with a fake robot. The gym's tests are in `tests/mahoraga/`, and invented places in `tests/fixtures/`. |
+| `docs/` | The documentation site (MkDocs). The decisions are in `docs/architecture/decisions/`. |
+| `scripts/` | Sets things up or starts them, such as `chula-sim.sh`, which runs the `chula_pat14_6` simulation, the oracle and the agent on a private ROS graph |
+| `config/` | The places (`locations.toml` ships empty until they are measured), the arm poses and robot model, the oracle's scenes, the task templates and a Foxglove layout |
+| `config.toml` | LLM vendor and models, the team and its timezone, voice, tracing |
+| `pyproject.toml` | The package, and the import rules that import-linter checks |
+| `robot.md` | What Walkie is and can do today, for the system prompt |
+| `ros2_ws/` | Message packages built from source (`rai_interfaces`, `walkie_database_msgs`, `walkie_vision_msgs`) |
+| `docker/langfuse/` | The local Langfuse server |
+
+`scripts/` sets things up or starts them. A scored run, an evaluation, lives in
+`src/walkie_agent/evals/`, beside the code it measures, and never in `scripts/`.

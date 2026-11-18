@@ -78,6 +78,7 @@ the capability Protocols, and `main.py` wires them in.
 | Layer | Module | ROS? |
 | --- | --- | --- |
 | Entry point: parse flags, signals, assembly | `walkie_agent/main.py` | Yes |
+| Settings, and the LLM vendors that build the model | `walkie_agent/config.py`, `walkie_agent/chat_models.py` | No |
 | Runtime: `create_agent`, middlewares, todo list, Runner | `walkie_agent/runtime/` | No |
 | System prompts: the rules for the bound tools, and the runtime's default | `walkie_agent/prompts.py` | No |
 | Adapter: from an atomic to a LangChain tool | `walkie_agent/tools/adapter.py` | No |
@@ -87,9 +88,12 @@ the capability Protocols, and `main.py` wires them in.
 | Reading walkie-vision's detections: geometry, gestures, topic names, word tables | `walkie_agent/perception/` | No |
 | People memory: who is who, behind `ctx.memory`, and each vector model's match limit | `walkie_agent/people_memory/` | No |
 | ROS-backed verbs and the operator's topics | `walkie_agent/ros/` | Yes |
+| Offline evaluations: the Mahoraga gym, which the agent never imports | `walkie_agent/evals/` | No |
 
 `tests/test_ros_free.py` checks in a fresh interpreter that the ROS-free layers never
-import rclpy, rai, rai_interfaces or a ROS message. `voice.py` is separate: the two
+import rclpy, rai, rai_interfaces or a ROS message. `tests/test_import_contracts.py`
+checks the package's import rules, contracts C1 to C4 in `pyproject.toml`
+([ADR-0071](decisions/0071-package-layout.md)). `voice.py` is separate: the two
 voice entry points still run on RAI's `AgentRunner`, and do not use this runtime.
 
 Threads matter here. The connector's executor runs ROS callbacks, which only validate
@@ -786,3 +790,7 @@ The arm manipulation decisions, ADR-0021 to ADR-0028, are on the
 ??? success "ADR-0069: Pick a task template only by its exact name on /walkie/task · Accepted"
 
     --8<-- "architecture/decisions/0069-task-templates-by-name.md:body"
+
+??? success "ADR-0071: Lay out the agent package by concept, with its import rules checked · Accepted"
+
+    --8<-- "architecture/decisions/0071-package-layout.md:body"

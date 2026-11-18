@@ -495,7 +495,7 @@ contracts:
 ### Presets that move the arms
 
 Presets are human-reviewed bundles in
-`src/walkie_agent/bundled_preset/` (proposed). All four would be in the tool set.
+`src/walkie_agent/tools/bundled_preset/` (proposed). All four would be in the tool set.
 
 | Preset                  | Arguments                       | Steps                                                                     |
 | ----------------------- | ------------------------------- | ------------------------------------------------------------------------- |

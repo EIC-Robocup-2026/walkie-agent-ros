@@ -242,6 +242,7 @@ def test_the_digest_covers_the_files_an_oracle_pass_depends_on():
         "src/walkie_agent/perception/__init__.py",
         "src/walkie_agent/perception/geometry.py",
         "src/walkie_agent/perception/gestures.py",
+        "src/walkie_agent/perception/objects.py",
         "pixi.lock",
     } <= paths
     assert not {"src/walkie_agent/mahoraga/report.py", "src/walkie_agent/mahoraga/__main__.py"} & paths

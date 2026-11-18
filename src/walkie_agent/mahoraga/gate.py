@@ -110,8 +110,12 @@ def _digested_files() -> list[Path]:
             # pass calls them: FakeRobot has no arm poses there.
             *(walkie / "arm").glob("*.py"),
             # FakeRobot and face_person import the angle wrap from geometry.py, which
-            # imports gestures.py. people.py serves only RosVision.
-            *(walkie / "perception" / name for name in ("__init__.py", "geometry.py", "gestures.py")),
+            # imports gestures.py, and go_to_object matches names with objects.py.
+            # people.py serves only RosVision.
+            *(
+                walkie / "perception" / name
+                for name in ("__init__.py", "geometry.py", "gestures.py", "objects.py")
+            ),
             _REPO / "pixi.lock",
         ]
     )

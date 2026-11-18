@@ -49,10 +49,16 @@ def test_the_script_runtime_and_the_tools_never_import_the_gym():
         for path in Path(walkie_agent.scripting.__file__).parent.glob("*.py")
         if path.stem != "__init__"
     )
+    tools = [
+        "walkie_agent.tools.adapter",
+        "walkie_agent.tools.atomic",
+        "walkie_agent.tools.bundled_preset",
+        "walkie_agent.tools.sets",
+    ]
     code = "\n".join(
         [
             "import importlib, json, sys",
-            f"for name in {[*scripting, 'walkie_agent.tools.atomic', 'walkie_agent.tools.bundled_preset']!r}:",
+            f"for name in {[*scripting, *tools]!r}:",
             "    importlib.import_module(name)",
             'print(json.dumps(sorted(name for name in sys.modules if name.startswith("walkie_agent"))))',
         ]

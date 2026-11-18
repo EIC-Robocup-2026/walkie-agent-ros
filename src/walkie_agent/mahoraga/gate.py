@@ -23,7 +23,6 @@ from inspect_ai.log import EvalLog, read_eval_log
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 from pydantic_monty import Monty
 
-import walkie_agent.tools.atomic as atomics
 from walkie_agent.mahoraga import home
 from walkie_agent.mahoraga.commands import DATA_DIR, TRAIN_COMMANDS, commands
 from walkie_agent.mahoraga.oracle import oracle_script
@@ -37,6 +36,7 @@ from walkie_agent.mahoraga.tasks import (
 from walkie_agent.mahoraga.worlds import build_world, world_seed
 from walkie_agent.scripting.driver import ScriptRunner, allow_list, script_record
 from walkie_agent.scripting.sandbox import open_pool
+from walkie_agent.tools.sets import GPSR
 
 # Fields that differ between any two runs of the same thing: clocks, random ids
 # and where the log landed. Nothing else is excluded. "id" is random on an event
@@ -98,11 +98,12 @@ def _digested_files() -> list[Path]:
         [
             *(path for path in package.glob("*.py") if path.name not in _NOT_DIGESTED),
             *(path.resolve() for path in DATA_DIR.rglob("*") if path.is_file()),
-            *(walkie / name for name in ("__init__.py", "errors.py", "adapter.py", "locations.py")),
+            *(walkie / name for name in ("__init__.py", "errors.py", "locations.py")),
             *(walkie / "scripting").glob("*.py"),
             *(walkie / "capabilities").glob("*.py"),
-            # The package docstring, the atomics with their tool sets, and arm D's stand-ins.
-            walkie / "tools" / "__init__.py",
+            # The package docstring, the adapter, the tool sets, the atomics and arm D's
+            # stand-ins.
+            *(walkie / "tools" / name for name in ("__init__.py", "adapter.py", "sets.py")),
             *(walkie / "tools" / "atomic").glob("*.py"),
             *(walkie / "tools" / "bundled_preset").glob("*.py"),
             # The arm records, states and answers that capabilities and the atomics
@@ -176,7 +177,7 @@ def _oracle_solver(runner: ScriptRunner) -> Solver:
             code = oracle_script(spec_of(state))
             with episode_robot(state) as robot:
                 # The driver blocks on its worker, so it leaves the event loop free.
-                result = await asyncio.to_thread(runner.run, code, allow_list(atomics.GPSR, robot.ctx))
+                result = await asyncio.to_thread(runner.run, code, allow_list(GPSR, robot.ctx))
             state.store.set("scripts", [script_record(code, result)])
             return state
 

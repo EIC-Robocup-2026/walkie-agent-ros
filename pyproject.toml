@@ -44,7 +44,6 @@ source_modules = [
     "walkie_agent.scripting",
     "walkie_agent.perception",
     "walkie_agent.arm",
-    "walkie_agent.adapter",
     "walkie_agent.errors",
     "walkie_agent.locations",
     "walkie_agent.tasks",
@@ -100,7 +99,6 @@ source_modules = [
 forbidden_modules = [
     "walkie_agent.runtime",
     "walkie_agent.tools",
-    "walkie_agent.adapter",
     "walkie_agent.chat_models",
     "langchain",
     "langchain_core",

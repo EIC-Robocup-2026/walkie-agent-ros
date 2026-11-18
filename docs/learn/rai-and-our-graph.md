@@ -12,7 +12,7 @@ Runner owns. This split is why most of the agent can be tested with no ROS insta
 | Voice | RAI's `rai_s2s` | Microphone, speech recognition, text to speech | Used by `src/walkie_agent/voice.py` and `half_duplex.py` |
 | Graph | LangChain | The model and tools loop, and the checkpoint | `create_agent`, called in `runtime/agent.py` |
 | Runtime | Walkie | The middlewares, the todo list and the Runner | `src/walkie_agent/runtime/` |
-| Tools | Walkie | Plain typed functions over `ctx`, and the fixed tool sets | `src/walkie_agent/tools/atomic/` |
+| Tools | Walkie | Plain typed functions over `ctx`, the fixed tool sets, and the adapter to LangChain tools | `src/walkie_agent/tools/` |
 | Verbs | Walkie | `ctx.base`, `ctx.speech` and the rest, with their guards, and `FakeRobot` | `src/walkie_agent/capabilities/` |
 | ROS wrappers | Walkie | The verbs over ROS, and the operator's topics | `src/walkie_agent/ros/` |
 
@@ -33,13 +33,16 @@ running it:
 ...             names.add(node.module.split(".")[0])
 ...     return sorted(names & ROS_NAMES)
 ...
->>> for layer in ["capabilities", "atomics", "runtime"]:
+>>> layers = ["capabilities", "tools/atomic", "runtime"]
+>>> all((root / layer).is_dir() for layer in layers)
+True
+>>> for layer in layers:
 ...     print(layer, [name for path in sorted((root / layer).glob("*.py")) for name in ros_imports(path)])
 ...
 capabilities []
-atomics []
+tools/atomic []
 runtime []
->>> ros_imports(root / "adapter.py"), ros_imports(root / "tasks.py")
+>>> ros_imports(root / "tools" / "adapter.py"), ros_imports(root / "tasks.py")
 ([], [])
 
 ```

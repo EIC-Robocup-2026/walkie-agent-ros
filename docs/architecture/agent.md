@@ -79,8 +79,9 @@ the capability Protocols, and `main.py` wires them in.
 | --- | --- | --- |
 | Entry point: parse flags, signals, assembly | `walkie_agent/main.py` | Yes |
 | Runtime: `create_agent`, middlewares, todo list, Runner | `walkie_agent/runtime/` | No |
-| Adapter: from an atomic to a LangChain tool | `walkie_agent/adapter.py` | No |
-| Atomics and tool sets | `walkie_agent/tools/atomic/` | No |
+| Adapter: from an atomic to a LangChain tool | `walkie_agent/tools/adapter.py` | No |
+| Atomics | `walkie_agent/tools/atomic/` | No |
+| Tool sets: which atomics each run binds | `walkie_agent/tools/sets.py` | No |
 | Capability verbs, guards, `Ctx`, `FakeRobot` | `walkie_agent/capabilities/` | No |
 | ROS-backed verbs and the operator's topics | `walkie_agent/ros/` | Yes |
 

@@ -99,7 +99,8 @@ Most new tools are a new atomic over the verbs that exist:
 
 1. Write a plain typed function in `src/walkie_agent/tools/atomic/`. It takes `ctx` first and
    raises `StepError`. Describe every parameter in its Google-style docstring.
-2. Add it to the set that should have it: `GPSR`, `HRI` or `DEFAULT`. The sets are plain
+2. Add it to the set that should have it in `src/walkie_agent/tools/sets.py`: `GPSR`, `HRI`
+   or `DEFAULT`. The sets are plain
    lists, and a duplicate name is refused at build
    ([ADR-0067](../architecture/decisions/0067-static-tool-sets.md)).
 3. Test it against `FakeRobot`, in `walkie_agent.capabilities.fake`.

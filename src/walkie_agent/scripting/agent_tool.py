@@ -20,7 +20,6 @@ from typing import Any, Protocol
 
 from langchain_core.tools import StructuredTool
 
-from walkie_agent.adapter import as_tool
 from walkie_agent.capabilities import Ctx
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.scripting.driver import (
@@ -35,6 +34,7 @@ from walkie_agent.scripting.driver import (
 )
 from walkie_agent.scripting.sandbox import SandboxUnavailable, open_pool
 from walkie_agent.scripting.shelf import Shelf
+from walkie_agent.tools.adapter import as_tool
 
 logger = logging.getLogger(__name__)
 

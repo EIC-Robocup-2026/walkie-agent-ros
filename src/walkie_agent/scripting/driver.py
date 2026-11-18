@@ -45,10 +45,10 @@ from pydantic_monty import (
     NameLookupSnapshot,
 )
 
-from walkie_agent.adapter import bind
 from walkie_agent.capabilities import CancelToken, Ctx
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.scripting.evidence import Watch
+from walkie_agent.tools.adapter import bind
 
 _logger = logging.getLogger(__name__)
 

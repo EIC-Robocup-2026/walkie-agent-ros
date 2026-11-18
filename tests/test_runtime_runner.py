@@ -33,7 +33,7 @@ from walkie_agent.runtime.runner import FAILURE_LINE
 from walkie_agent.runtime.todos import STOPPED_NOTE, TodoRejected
 from walkie_agent.scripting.agent_tool import AgentScripts
 from walkie_agent.scripting.shelf import Shelf
-from walkie_agent.tools.atomic import DEFAULT
+from walkie_agent.tools.sets import DEFAULT
 
 DONE = AIMessage("Done.")
 

@@ -18,7 +18,8 @@ from walkie_agent.scripting.driver import (
     stubs_for,
 )
 from walkie_agent.scripting.shelf import Shelf
-from walkie_agent.tools.atomic import GPSR, go_to
+from walkie_agent.tools.atomic import go_to
+from walkie_agent.tools.sets import GPSR
 
 
 def test_a_script_runs_atomics_on_the_robot_and_keeps_a_ledger(runner, fns, robot):

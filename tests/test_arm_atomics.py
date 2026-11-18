@@ -15,7 +15,6 @@ import pydantic
 import pytest
 
 from conftest import PROJECT_ROOT
-from walkie_agent.adapter import as_tool
 from walkie_agent.arm import answers
 from walkie_agent.arm.poses import load_arm_poses
 from walkie_agent.arm.results import GripperResult, Recovery
@@ -38,9 +37,8 @@ from walkie_agent.capabilities import (
 )
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
+from walkie_agent.tools.adapter import as_tool
 from walkie_agent.tools.atomic import (
-    ARMS,
-    ARM_TOOLS,
     get_arm_state,
     go_to,
     list_arm_poses,
@@ -48,6 +46,7 @@ from walkie_agent.tools.atomic import (
     set_gripper,
 )
 from walkie_agent.tools.atomic import arms as arm_atomics
+from walkie_agent.tools.sets import ARM_TOOLS, ARMS
 
 HOME = ArmState("home", True)
 HANDS_UP = ArmState("hands_up", False)

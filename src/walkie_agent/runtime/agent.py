@@ -16,7 +16,6 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph.state import CompiledStateGraph
 
-from walkie_agent.adapter import as_tools, tool_error_middleware
 from walkie_agent.capabilities import Ctx
 from walkie_agent.runtime.middleware import (
     AnswerEmptyReply,
@@ -28,7 +27,8 @@ from walkie_agent.runtime.middleware import (
     ToolLog,
 )
 from walkie_agent.runtime.todos import TODO_TOOL_COUNT, WalkieTodos
-from walkie_agent.tools.atomic import DEFAULT
+from walkie_agent.tools.adapter import as_tools, tool_error_middleware
+from walkie_agent.tools.sets import DEFAULT
 
 logger = logging.getLogger(__name__)
 

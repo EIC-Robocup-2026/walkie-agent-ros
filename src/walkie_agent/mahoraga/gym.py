@@ -23,7 +23,6 @@ from langchain_openai import ChatOpenAI
 from langgraph.errors import GraphRecursionError
 from pydantic_monty import Monty
 
-from walkie_agent.adapter import tool_error_middleware
 from walkie_agent.mahoraga import home
 from walkie_agent.mahoraga.arms import INDUCT, SCRIPT_ARMS, ArmSetup, require_arm
 from walkie_agent.mahoraga.commands import SPLITS
@@ -31,6 +30,7 @@ from walkie_agent.mahoraga.commands import commands as generated_commands
 from walkie_agent.mahoraga.gate import require_gate
 from walkie_agent.mahoraga.tasks import dataset, episode_robot, ground_truth
 from walkie_agent.scripting.sandbox import open_pool
+from walkie_agent.tools.adapter import tool_error_middleware
 
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash:nitro"
 OPENROUTER = "https://openrouter.ai/api/v1"

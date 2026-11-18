@@ -17,7 +17,7 @@ from walkie_agent.scripting import agent_tool
 from walkie_agent.scripting.agent_tool import AGENT_BUDGETS, NOT_CALLABLE, REJECTED, UNVERIFIED, AgentScripts
 from walkie_agent.scripting.sandbox import SandboxUnavailable
 from walkie_agent.scripting.shelf import Shelf
-from walkie_agent.tools.atomic import DEFAULT, GPSR
+from walkie_agent.tools.sets import DEFAULT, GPSR
 
 VISIT = (
     "def visit(place: str) -> str:\n"

@@ -34,8 +34,9 @@ ROS-backed verbs implement layer 2's Protocols, and only `main.py` connects them
 | 2. Capability verbs, guards, `Ctx` | `walkie_agent/capabilities/` | Built |
 | 2. FakeRobot, Mahoraga's FakeCtx | `walkie_agent/capabilities/fake.py` | Built, fake only |
 | 3. Error type | `walkie_agent/errors.py` | Built |
-| 3. Atomics and tool sets | `walkie_agent/tools/atomic/` | Built |
-| 4. Adapter to LangChain tools | `walkie_agent/adapter.py` | Built |
+| 3. Atomics | `walkie_agent/tools/atomic/` | Built |
+| 3. Tool sets | `walkie_agent/tools/sets.py` | Built |
+| 4. Adapter to LangChain tools | `walkie_agent/tools/adapter.py` | Built |
 | 5. `create_agent`, middlewares, Runner | `walkie_agent/runtime/` | [Built, and used by `main.py`](#runtime) |
 | 1 to 2. ROS-backed verbs, operator topics | `walkie_agent/ros/` | [Built, run on fake robots and in the MuJoCo simulation](#ros-wrappers) |
 | Entry point: flags, signals, assembly | `walkie_agent/main.py` | [Built, run on fake robots and in the MuJoCo simulation](#wiring-in-mainpy) |
@@ -43,7 +44,7 @@ ROS-backed verbs implement layer 2's Protocols, and only `main.py` connects them
 | 6. Arm D's stand-in bundles | `walkie_agent/tools/bundled_preset/` | Built, stand-ins only |
 | 6. Gym | `walkie_agent/mahoraga/`, with its own pixi environment | [Built](#mahoraga), fake world only |
 
-`errors`, `capabilities`, `tools`, `adapter`, `runtime` and `scripting` never
+`errors`, `capabilities`, `tools` (with its adapter), `runtime` and `scripting` never
 import rclpy, rai, rai_interfaces or any ROS message. `tests/test_ros_free.py`
 checks this in a fresh interpreter.
 
@@ -242,6 +243,7 @@ def place_on(ctx: Ctx, place: str) -> str
 def hand_over(ctx: Ctx, person_id: str) -> str
 def get_facts(ctx: Ctx) -> dict[str, Any]
 
+# walkie_agent.tools.sets
 GPSR: list[Callable[..., Any]]     # the nine the spike used, every atomic but list_places and face_person, then get_facts
 HRI: list[Callable[..., Any]]      # list_places, go_to, move_relative, say, find_people, face_person
 DEFAULT: list[Callable[..., Any]]  # every atomic that needs no arms, get_facts included
@@ -255,7 +257,7 @@ day in the clock's timezone, so it crosses a month or a year. HRI does not take 
 ## Adapter
 
 ```python
-# walkie_agent.adapter
+# walkie_agent.tools.adapter
 def bind(fn: Callable[Concatenate[Ctx, P], R], ctx: Ctx) -> Callable[P, R]
 def as_tool(fn: Callable[..., Any], ctx: Ctx) -> StructuredTool
 def as_tools(fns: Iterable[Callable[..., Any]], ctx: Ctx) -> list[StructuredTool]
@@ -287,7 +289,7 @@ environment and solve group. inspect-ai and the GPSR generator stay out of
 in `tests/mahoraga/`, which the default environment does not collect. The gym never
 imports ROS, and the agent never imports the gym. `tests/test_ros_free.py` and
 `tests/test_mahoraga_absent.py` check both. It reaches the foundation through
-`walkie_agent.tools`, `walkie_agent.scripting` and `adapter`, and it covers rungs R0
+`walkie_agent.tools`, with its adapter, and `walkie_agent.scripting`, and it covers rungs R0
 to R2 in the fake world. MuJoCo validation and promotion are not built.
 
 `run_script`'s runtime is the package `walkie_agent.scripting`. It imports no ROS
@@ -638,9 +640,9 @@ nothing is signed. `gpsr_task` and `run_episodes` both call it.
 The code digest covers each file's repository path and content, for the files
 `gate._digested_files()` lists: every `walkie_agent/mahoraga/*.py` except
 `report.py` and `__main__.py`, the gym's data files, `walkie_agent/__init__.py`,
-`errors.py`, `adapter.py`, `locations.py`, the `scripting`, `capabilities` and `arm`
-packages, `tools/__init__.py` with the `tools/atomic` and `tools/bundled_preset`
-packages, the perception modules the fake world uses, and `pixi.lock`. So an edit to
+`errors.py`, `locations.py`, the `scripting`, `capabilities` and `arm` packages,
+`tools/__init__.py`, `tools/adapter.py` and `tools/sets.py` with the `tools/atomic`
+and `tools/bundled_preset` packages, the perception modules the fake world uses, and `pixi.lock`. So an edit to
 any of them, related to the oracle or not, means running the gate again, which takes
 about a minute.
 

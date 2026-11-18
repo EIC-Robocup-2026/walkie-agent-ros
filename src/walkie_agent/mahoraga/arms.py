@@ -18,7 +18,6 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic_monty import Monty
 
-from walkie_agent.adapter import as_tool, as_tools
 from walkie_agent.capabilities import Ctx
 from walkie_agent.capabilities.fake import CHULA_PAT14_6_PLACES
 from walkie_agent.scripting.driver import (
@@ -30,8 +29,9 @@ from walkie_agent.scripting.driver import (
     script_summary,
 )
 from walkie_agent.scripting.shelf import Shelf
-from walkie_agent.tools.atomic import GPSR
+from walkie_agent.tools.adapter import as_tool, as_tools
 from walkie_agent.tools.bundled_preset import BUNDLES
+from walkie_agent.tools.sets import GPSR
 
 ARMS = ("A", "B", "C", "C2", "D")
 INDUCT = "induct"

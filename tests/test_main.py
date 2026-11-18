@@ -63,15 +63,14 @@ from walkie_agent.scripting.agent_tool import AgentScripts
 from walkie_agent.scripting.sandbox import SandboxUnavailable
 from walkie_agent.scripting.shelf import Shelf
 from walkie_agent.tasks import TaskTemplate
-from walkie_agent.tools.atomic import (
+from walkie_agent.tools.atomic import get_facts, list_places
+from walkie_agent.tools.sets import (
     ARM_TOOLS,
     ARMS,
     DEFAULT,
     GPSR,
     HRI,
     OBJECT_MEMORY_TOOLS,
-    get_facts,
-    list_places,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

@@ -124,12 +124,11 @@ from walkie_agent.scripting.agent_tool import AgentScripts
 from walkie_agent.scripting.sandbox import SandboxUnavailable
 from walkie_agent.scripting.shelf import Shelf
 from walkie_agent.tasks import TaskTemplate, check_required_tools, load_task_templates
-from walkie_agent.tools.atomic import ARM_TOOLS, ARMS, DEFAULT, GPSR, HRI, OBJECT_MEMORY_TOOLS
+from walkie_agent.tools.sets import TOOL_SETS, bound_tool_names, bound_tools
 
 logger = logging.getLogger(__name__)
 
 NODE_NAME = "walkie_agent"
-TOOL_SETS = {"default": DEFAULT, "gpsr": GPSR, "hri": HRI, "arms": ARMS}
 # The set made for the arms. Without --arms its arm atomics are dropped, as from every
 # set, and nothing it exists for is left, so a run without --arms refuses it.
 ARMS_TOOL_SET = "arms"
@@ -343,7 +342,7 @@ def build_system_prompt(
     the same for the object memory atomics and their rule. `scripts` adds the
     run_script rule after the tools' own.
     """
-    names = _atomic_names(tool_set, arms=arms, object_memory=object_memory)
+    names = bound_tool_names(tool_set, arms=arms, object_memory=object_memory)
     rules = dict(_TOOL_RULES)
     measures = "object_info" in names
     if not measures:
@@ -375,27 +374,6 @@ def _places_section(locations: Mapping[str, Location]) -> str:
     return "The named places you can go to with `go_to`:\n" + "\n".join(lines) + "\n"
 
 
-def bound_tools(
-    tool_set: str, *, arms: bool = False, object_memory: bool = False
-) -> list[Callable[..., Any]]:
-    """The atomics a run binds: the set's, in its order, less the atomics of a missing flag.
-
-    Without --arms ctx.arms has no commander, and without --object-memory there is no
-    object memory, so their atomics would only report UNAVAILABLE: the arm atomics are
-    dropped unless `arms`, and the object memory atomics unless `object_memory`.
-    Raises ValueError for an unknown set.
-    """
-    if tool_set not in TOOL_SETS:
-        known = ", ".join(TOOL_SETS)
-        raise ValueError(f"There is no tool set {tool_set!r}. Known tool sets: {known}.")
-    dropped = (set() if arms else ARM_TOOLS) | (set() if object_memory else OBJECT_MEMORY_TOOLS)
-    return [fn for fn in TOOL_SETS[tool_set] if fn.__name__ not in dropped]
-
-
-def _atomic_names(tool_set: str, *, arms: bool = False, object_memory: bool = False) -> set[str]:
-    return {fn.__name__ for fn in bound_tools(tool_set, arms=arms, object_memory=object_memory)}
-
-
 def check_templates(
     templates: Mapping[str, TaskTemplate],
     tool_set: str,
@@ -404,7 +382,7 @@ def check_templates(
     object_memory: bool = False,
 ) -> None:
     """Raise ValueError for a template step that this run's tools could never complete."""
-    names = _atomic_names(tool_set, arms=arms, object_memory=object_memory)
+    names = bound_tool_names(tool_set, arms=arms, object_memory=object_memory)
     check_required_tools(templates, names | {WAIT_TOOL})
 
 
@@ -414,10 +392,10 @@ def check_arms(tool_set: str, *, arms: bool) -> None:
     With `arms` the set must bind move_arm_to_pose (ARM_TOOL), and without them it must
     not be the arms set (ARMS_TOOL_SET). Raises ValueError for an unknown set as well.
     """
-    names = _atomic_names(tool_set, arms=True)
+    names = bound_tool_names(tool_set, arms=True)
     if arms and ARM_TOOL not in names:
         sets = " or ".join(
-            name for name in TOOL_SETS if ARM_TOOL in _atomic_names(name, arms=True)
+            name for name in TOOL_SETS if ARM_TOOL in bound_tool_names(name, arms=True)
         )
         raise ValueError(
             f"--arms needs a tool set with the arm tools, such as {sets}: the {tool_set} "
@@ -461,11 +439,11 @@ def check_object_memory(tool_set: str, *, object_memory: bool, vision: bool) -> 
     """
     if not object_memory:
         return
-    if OBJECT_MEMORY_TOOL not in _atomic_names(tool_set, object_memory=True):
+    if OBJECT_MEMORY_TOOL not in bound_tool_names(tool_set, object_memory=True):
         sets = " or ".join(
             name
             for name in TOOL_SETS
-            if OBJECT_MEMORY_TOOL in _atomic_names(name, object_memory=True)
+            if OBJECT_MEMORY_TOOL in bound_tool_names(name, object_memory=True)
         )
         raise ValueError(
             f"--object-memory needs a tool set with the object memory tools, such as "

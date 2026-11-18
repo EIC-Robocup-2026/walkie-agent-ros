@@ -25,9 +25,10 @@ IMPORT_EVERY_NEW_MODULE = """
 import importlib, json, pkgutil, sys
 import walkie_agent.tools.atomic, walkie_agent.capabilities, walkie_agent.perception, walkie_agent.runtime
 import walkie_agent.arm, walkie_agent.scripting
-names = ["walkie_agent.errors", "walkie_agent.adapter", "walkie_agent.tasks", "walkie_agent.locations"]
+names = ["walkie_agent.errors", "walkie_agent.tasks", "walkie_agent.locations"]
 names += ["walkie_agent.config", "walkie_agent.chat_models"]
-names += ["walkie_agent.tools", "walkie_agent.tools.bundled_preset"]
+names += ["walkie_agent.tools", "walkie_agent.tools.adapter", "walkie_agent.tools.sets"]
+names += ["walkie_agent.tools.bundled_preset"]
 # The simulation's scene, its file and its projection; the sim package's ROS nodes are left out.
 names += ["walkie_agent.sim." + name for name in ("scene", "scene_file", "projection", "fake_vectors")]
 for package in (
@@ -81,10 +82,13 @@ REMOVED = re.compile(
     r"|from walkie_agent\.ros\.vision import [^\n]*\b(UnavailableVision|_begin|_no_objects)\b"
     r"|walkie_agent[./]runtime[./]model\b"
     r"|from walkie_agent\.runtime import [^\n]*\bmodel\b"
+    r"|walkie_agent[./]adapter\b"
+    r"|from walkie_agent import [^\n]*\badapter\b"
 )
 # UnavailableVision moved to walkie_agent.capabilities, and the lookup guard _begin,
 # which _no_objects wrapped, to walkie_agent.capabilities.guards as begin_lookup.
 # The runtime's model module split into walkie_agent.config and walkie_agent.chat_models.
+# The adapter moved to walkie_agent.tools.adapter.
 ROS_VISION = "walkie_agent.ros.vision"
 LEFT_ROS_VISION = frozenset({"UnavailableVision", "_begin", "_no_objects"})
 RUNTIME = SRC / "walkie_agent" / "runtime"
@@ -101,6 +105,23 @@ LEFT_RUNTIME = frozenset(
         "DEFAULT_DEADLINE_S",
     }
 )
+# The tool sets left the atomics' catalogue and main.py for walkie_agent.tools.sets,
+# and main.py's _atomic_names became bound_tool_names there.
+ATOMIC_INIT = SRC / "walkie_agent" / "tools" / "atomic" / "__init__.py"
+LEFT_ATOMIC_INIT = frozenset(
+    {
+        "DEFAULT",
+        "GPSR",
+        "HRI",
+        "ARMS",
+        "ARM_TOOLS",
+        "OBJECT_MEMORY_TOOLS",
+        "_ARM_ATOMICS",
+        "_OBJECT_MEMORY_ATOMICS",
+    }
+)
+MAIN = SRC / "walkie_agent" / "main.py"
+LEFT_MAIN = frozenset({"TOOL_SETS", "bound_tools", "bound_tool_names", "_atomic_names"})
 REMOVED_NAMES = re.compile(r"\b(TodoList|WalkieToolRunner|WalkieAgent|build_walkie_graph)\b")
 CODE_AND_BUILD = [
     "src",
@@ -130,7 +151,6 @@ def test_importing_every_new_module_loads_no_ros():
     assert ros == []
     assert {
         "walkie_agent.errors",
-        "walkie_agent.adapter",
         "walkie_agent.tasks",
         "walkie_agent.locations",
         "walkie_agent.config",
@@ -141,6 +161,8 @@ def test_importing_every_new_module_loads_no_ros():
         "walkie_agent.capabilities.guards",
         "walkie_agent.capabilities.records",
         "walkie_agent.tools",
+        "walkie_agent.tools.adapter",
+        "walkie_agent.tools.sets",
         "walkie_agent.tools.atomic",
         "walkie_agent.tools.atomic.facts",
         "walkie_agent.tools.atomic.navigation",
@@ -266,8 +288,12 @@ def _reads_a_name_that_left_ros_vision(file: Path) -> list[str]:
     return sorted(found)
 
 
-def _module_level_names(tree: ast.Module) -> Iterator[tuple[str, int]]:
-    """Each name a module binds outside its functions and classes, with its line."""
+def _module_level_names(tree: ast.Module, *, imports: bool = True) -> Iterator[tuple[str, int]]:
+    """Each name a module binds outside its functions and classes, with its line.
+
+    Without `imports`, only the names it defines: an imported name is left out, unless
+    the import renames it (`import x as y`, `from m import x as y`), which binds the new name.
+    """
     stack: list[ast.AST] = list(tree.body)
     while stack:
         node = stack.pop()
@@ -278,20 +304,26 @@ def _module_level_names(tree: ast.Module) -> Iterator[tuple[str, int]]:
             continue
         if isinstance(node, ast.Import | ast.ImportFrom):
             for alias in node.names:
-                yield alias.asname or alias.name.partition(".")[0], node.lineno
+                # Without `imports`, an import under a new name still binds that name.
+                if imports or (alias.asname and alias.asname != alias.name):
+                    yield alias.asname or alias.name.partition(".")[0], node.lineno
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             yield node.id, node.lineno
         stack.extend(ast.iter_child_nodes(node))
 
 
-def _binds_one_of(file: Path, names: frozenset[str]) -> list[str]:
+def _binds_one_of(file: Path, names: frozenset[str], *, imports: bool = True) -> list[str]:
     """Where `file` binds one of `names` at module level, which in a module the names
     left would put them back at their old home: a re-export or a copy.
+
+    Without `imports`, an import of one of them under its own name does not count, for a
+    module that may use the names but must not define them again; an import that renames
+    something into one of them still counts.
     """
     tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
     return sorted(
         f"{file.name}:{line}: binds {name}"
-        for name, line in _module_level_names(tree)
+        for name, line in _module_level_names(tree, imports=imports)
         if name in names
     )
 
@@ -329,6 +361,58 @@ def test_the_tree_check_would_catch_a_model_builder_back_in_the_runtime(tmp_path
         "    return build_model(config)\n"
     )
     assert _binds_one_of(good, LEFT_RUNTIME) == []
+
+
+def test_the_tool_sets_did_not_come_back_to_the_atomics_or_main():
+    # They live in walkie_agent.tools.sets now, beside the adapter in walkie_agent.tools.adapter.
+    assert not (SRC / "walkie_agent" / "adapter.py").exists()
+    assert _binds_one_of(ATOMIC_INIT, LEFT_ATOMIC_INIT) == []
+    # main.py imports TOOL_SETS, bound_tools and bound_tool_names to use them, but defines none.
+    assert _binds_one_of(MAIN, LEFT_MAIN, imports=False) == []
+
+
+def test_the_tree_check_would_catch_a_tool_set_back_in_the_atomics_or_main(tmp_path):
+    shim = tmp_path / "__init__.py"
+    shim.write_text(
+        "from walkie_agent.tools.atomic.speech import say\n"
+        "from walkie_agent.tools.sets import (\n"
+        "    DEFAULT,\n"
+        "    GPSR,\n"
+        ")\n"
+        "from walkie_agent.tools.sets import ARMS as ARMS\n"
+        "HRI = [say]\n"
+        "ARM_TOOLS: frozenset[str] = frozenset()\n"
+        "OBJECT_MEMORY_TOOLS = frozenset()\n"
+    )
+    assert len(_binds_one_of(shim, LEFT_ATOMIC_INIT)) == 6
+    copy = tmp_path / "main.py"
+    copy.write_text(
+        "from walkie_agent.tools.sets import TOOL_SETS, bound_tool_names, bound_tools\n"
+        "from walkie_agent.tools.sets import bound_tool_names as _atomic_names\n"
+        'TOOL_SETS = {"gpsr": []}\n'
+        "def bound_tools(tool_set): ...\n"
+        "def _atomic_names(tool_set): ...\n"
+    )
+    assert len(_binds_one_of(copy, LEFT_MAIN, imports=False)) == 4
+    # The catalogue keeps every atomic and its docstring may name the sets; main.py may
+    # import the sets and bind its own names from them inside a function.
+    good_init = tmp_path / "atomic.py"
+    good_init.write_text(
+        '"""The atomics; DEFAULT, GPSR, HRI and ARMS are in walkie_agent.tools.sets."""\n'
+        "from walkie_agent.tools.atomic.speech import say\n"
+        '__all__ = ["say"]\n'
+    )
+    assert _binds_one_of(good_init, LEFT_ATOMIC_INIT) == []
+    good_main = tmp_path / "good_main.py"
+    good_main.write_text(
+        "from walkie_agent.tools.sets import TOOL_SETS, bound_tool_names, bound_tools\n"
+        "from walkie_agent.tools.sets import bound_tools as bound_tools\n"
+        "ARMS_TOOL_SET = 'arms'\n"
+        "def check(tool_set):\n"
+        "    TOOL_SETS = sorted(bound_tool_names(tool_set))\n"
+        "    return TOOL_SETS, bound_tools(tool_set)\n"
+    )
+    assert _binds_one_of(good_main, LEFT_MAIN, imports=False) == []
 
 
 def test_the_tree_check_would_catch_a_name_back_in_ros_vision(tmp_path):
@@ -399,10 +483,14 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         "from walkie_agent.runtime import model\n"
         'monkeypatch.setattr("walkie_agent.runtime.model._chat_model", fake)\n'
         "# src/walkie_agent/runtime/model.py reads config.toml\n"
+        "from walkie_agent.adapter import as_tool\n"
+        "# src/walkie_agent/adapter.py hides ctx\n"
+        "from walkie_agent import errors, adapter\n"
     )
-    assert len(_mentions([bad], REMOVED)) == 9
+    assert len(_mentions([bad], REMOVED)) == 12
     # The tools package that holds the atomics is not the removed one,
-    # walkie_agent.ros.vision still holds RosVision, and the runtime package stays.
+    # walkie_agent.ros.vision still holds RosVision, the runtime package stays,
+    # and the adapter's new home in the tools package is not the removed module.
     good = tmp_path / "good.py"
     good.write_text(
         "from walkie_agent import tools, errors\n"
@@ -412,6 +500,10 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         "from walkie_agent.capabilities import UnavailableVision\n"
         "from walkie_agent.runtime import Runner, build_agent\n"
         "from walkie_agent.chat_models import build_model\n"
+        "from walkie_agent.tools.adapter import as_tool\n"
+        "from walkie_agent.tools import adapter, sets\n"
+        "# src/walkie_agent/tools/adapter.py hides ctx\n"
+        'caplog.at_level(logging.ERROR, logger="walkie_agent.tools.adapter")\n'
     )
     assert _mentions([good], REMOVED) == []
 

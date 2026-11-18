@@ -12,19 +12,16 @@ from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, ToolMessage
 from scripted_llm import ScriptedChatModel, tool_call
 
-from walkie_agent.adapter import (
+from walkie_agent.capabilities.fake import FakeRobot
+from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.tools.adapter import (
     as_tool,
     as_tools,
     bind,
     format_tool_error,
     tool_error_middleware,
 )
-from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.tools.atomic import (
-    DEFAULT,
-    GPSR,
-    HRI,
     find_objects,
     go_to,
     list_places,
@@ -33,6 +30,7 @@ from walkie_agent.tools.atomic import (
     remember_person,
     say,
 )
+from walkie_agent.tools.sets import DEFAULT, GPSR, HRI
 
 
 @pytest.fixture
@@ -298,7 +296,7 @@ def test_a_bug_reaches_the_model_as_internal_with_no_detail_and_is_logged(robot,
         """
         raise KeyError("secret detail")
 
-    with caplog.at_level(logging.ERROR, logger="walkie_agent.adapter"):
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.tools.adapter"):
         message = run_agent(
             robot, as_tools([broken], robot.ctx), tool_call("broken", {}, "c1")
         )

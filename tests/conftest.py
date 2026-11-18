@@ -92,7 +92,7 @@ def robot():
 @pytest.fixture
 def fns(robot):
     from walkie_agent.scripting.driver import allow_list
-    from walkie_agent.tools.atomic import GPSR
+    from walkie_agent.tools.sets import GPSR
 
     return allow_list(GPSR, robot.ctx)
 

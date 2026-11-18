@@ -1,14 +1,11 @@
-"""Atomics: plain typed functions over ctx, and the tool set each test uses.
+"""Atomics: plain typed functions over ctx, the catalogue of every tool the LLM can get.
 
 An atomic takes ctx first, returns a JSON-able value, and raises StepError on a
 failure. Its Google-style docstring is what the LLM reads, so the return value
 is described in the summary: LangChain drops a Returns section from a tool's
 description. Tool messages and Monty scripts call the same functions, through
-walkie_agent.adapter.
+walkie_agent.tools.adapter. Which atomics each run binds is in walkie_agent.tools.sets.
 """
-
-from collections.abc import Callable
-from typing import Any
 
 from walkie_agent.tools.atomic.arms import get_arm_state, list_arm_poses, move_arm_to_pose, set_gripper
 from walkie_agent.tools.atomic.facts import get_facts
@@ -30,12 +27,6 @@ from walkie_agent.tools.atomic.perception import find_objects, find_people, obje
 from walkie_agent.tools.atomic.speech import say
 
 __all__ = [
-    "ARMS",
-    "ARM_TOOLS",
-    "DEFAULT",
-    "GPSR",
-    "HRI",
-    "OBJECT_MEMORY_TOOLS",
     "face_person",
     "find_objects",
     "find_people",
@@ -57,86 +48,4 @@ __all__ = [
     "remember_person",
     "say",
     "set_gripper",
-]
-
-# The atomics that move or read the arms through the commander. A set may hold them
-# whether or not the robot has arms connected: main.py drops them by these names
-# unless it runs with --arms.
-_ARM_ATOMICS: list[Callable[..., Any]] = [
-    list_arm_poses,
-    move_arm_to_pose,
-    set_gripper,
-    get_arm_state,
-]
-ARM_TOOLS: frozenset[str] = frozenset(fn.__name__ for fn in _ARM_ATOMICS)
-
-# The atomics that read the object memory, and the one that drives to what it
-# remembers. main.py drops them by these names unless it runs with --object-memory,
-# so a set without the flag keeps the tool text it had before them (decision SG-16).
-_OBJECT_MEMORY_ATOMICS: list[Callable[..., Any]] = [
-    recall_object,
-    list_room_objects,
-    go_to_object,
-]
-OBJECT_MEMORY_TOOLS: frozenset[str] = frozenset(fn.__name__ for fn in _OBJECT_MEMORY_ATOMICS)
-
-# The tool sets are plain lists in code (decision 3). Commands name their
-# places, so GPSR has no list_places, as in the spike it was measured with.
-# get_facts came after the spike, for the talk commands (decision M35).
-GPSR: list[Callable[..., Any]] = [
-    go_to,
-    move_relative,
-    say,
-    find_objects,
-    object_info,
-    find_people,
-    pick,
-    place_on,
-    hand_over,
-    get_facts,
-]
-# face_person is not in GPSR, whose tool text the Mahoraga runs measured (decision S2-6).
-# The two memory atomics are in HRI alone, so DEFAULT and GPSR stay as they were:
-# no effect covers a memory write yet (ADR-0070). The arm atomics come last, so HRI
-# without them is the set it was before them. find_objects lets HRI see the seats
-# (decision S4-5); object_info stays out, since nothing measures a live object. The
-# object memory atomics come before the arm atomics, and both are dropped without
-# their flags.
-HRI: list[Callable[..., Any]] = [
-    list_places,
-    go_to,
-    move_relative,
-    say,
-    find_people,
-    find_objects,
-    face_person,
-    remember_person,
-    recognize_person,
-    *_OBJECT_MEMORY_ATOMICS,
-    *_ARM_ATOMICS,
-]
-# The arms on their own: the base verbs the drive check guards, speech to say what the
-# arms will do, and the arm atomics. GPSR and DEFAULT have no arm atomics, so their
-# tool text stays the one the Mahoraga runs measured.
-ARMS: list[Callable[..., Any]] = [
-    list_places,
-    go_to,
-    move_relative,
-    say,
-    *_ARM_ATOMICS,
-]
-# Every atomic that needs no arms, which the robot runs without unless --arms connects
-# them, and writes no people memory, which no effect covers yet (ADR-0070). The object
-# memory atomics only read the memory, and are dropped without --object-memory.
-DEFAULT: list[Callable[..., Any]] = [
-    list_places,
-    go_to,
-    move_relative,
-    say,
-    find_objects,
-    object_info,
-    find_people,
-    face_person,
-    get_facts,
-    *_OBJECT_MEMORY_ATOMICS,
 ]

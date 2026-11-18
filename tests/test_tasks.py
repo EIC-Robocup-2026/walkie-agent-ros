@@ -14,7 +14,7 @@ from walkie_agent.tasks import (
     load_task_templates,
     parse_task_message,
 )
-from walkie_agent.tools.atomic import DEFAULT, GPSR, HRI
+from walkie_agent.tools.sets import DEFAULT, GPSR, HRI
 
 TEMPLATES_FILE = PROJECT_ROOT / "config" / "task_templates.toml"
 

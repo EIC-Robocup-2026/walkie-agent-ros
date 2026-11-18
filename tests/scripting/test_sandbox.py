@@ -10,7 +10,7 @@ import pytest
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.scripting.driver import ScriptRunner, allow_list
 from walkie_agent.scripting.sandbox import SandboxUnavailable, bwrap_command, open_pool
-from walkie_agent.tools.atomic import GPSR
+from walkie_agent.tools.sets import GPSR
 
 
 def sandboxed(program, *args):

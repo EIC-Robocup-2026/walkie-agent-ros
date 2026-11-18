@@ -6,12 +6,6 @@ import pytest
 
 from walkie_agent.tools import atomic
 from walkie_agent.tools.atomic import (
-    ARM_TOOLS,
-    ARMS,
-    DEFAULT,
-    GPSR,
-    HRI,
-    OBJECT_MEMORY_TOOLS,
     get_arm_state,
     go_to_object,
     hand_over,
@@ -24,6 +18,14 @@ from walkie_agent.tools.atomic import (
     recognize_person,
     remember_person,
     set_gripper,
+)
+from walkie_agent.tools.sets import (
+    ARM_TOOLS,
+    ARMS,
+    DEFAULT,
+    GPSR,
+    HRI,
+    OBJECT_MEMORY_TOOLS,
 )
 
 # The fake's object model: pick, place and hand over one held object.

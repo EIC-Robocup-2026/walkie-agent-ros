@@ -7,6 +7,6 @@ saves land on a shelf, in the git-ignored tier folders of walkie_agent.tools or 
 WALKIE_TOOLS_HOME, with a ledger of how they fared (shelf). The competition agent's
 run_script tool, behind --scripts, and the operator's verdict live in agent_tool.
 
-This package imports no ROS and nothing from walkie_agent.mahoraga, so the agent can
-use it in the default environment. The Mahoraga gym builds on it.
+This package imports no ROS and nothing from walkie_agent.evals.mahoraga, so the agent
+can use it in the default environment. The Mahoraga gym builds on it.
 """

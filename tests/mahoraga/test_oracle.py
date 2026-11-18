@@ -3,10 +3,10 @@
 import pytest
 
 from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.mahoraga.checkers import check
-from walkie_agent.mahoraga.commands import commands
-from walkie_agent.mahoraga.oracle import oracle_script
-from walkie_agent.mahoraga.worlds import build_world, world_seed
+from walkie_agent.evals.mahoraga.checkers import check
+from walkie_agent.evals.mahoraga.commands import commands
+from walkie_agent.evals.mahoraga.oracle import oracle_script
+from walkie_agent.evals.mahoraga.worlds import build_world, world_seed
 from walkie_agent.scripting.driver import allow_list
 from walkie_agent.tools.sets import GPSR
 

@@ -9,7 +9,7 @@ the static robot description that main reads from robot.md. SYSTEM_PROMPT is
 build_agent's default, for a caller that passes no prompt of its own.
 
 The Mahoraga gym's prompt is not here. It lives with the gym, in
-walkie_agent.mahoraga.arms, which the agent never imports.
+walkie_agent.evals.mahoraga.experiment_arms, which the agent never imports.
 """
 
 from collections.abc import Mapping

@@ -16,7 +16,7 @@ from walkie_agent.capabilities.fake import (
     ROOMS,
     SURFACES,
 )
-from walkie_agent.mahoraga.commands import (
+from walkie_agent.evals.mahoraga.commands import (
     CATEGORIES,
     SPLITS,
     TRAIN_COMMANDS,

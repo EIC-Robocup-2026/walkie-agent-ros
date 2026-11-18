@@ -7,6 +7,7 @@ editable install of walkie_agent can point at another checkout.
 """
 
 import ast
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -50,7 +51,7 @@ print(json.dumps({"files": files, "loaded": loaded}))
 # Every module of the gym but its command line, which only `python -m` runs.
 IMPORT_THE_GYM = """
 import importlib, json, pkgutil, sys
-import walkie_agent.mahoraga as gym
+import walkie_agent.evals.mahoraga as gym
 names = [gym.__name__]
 names += [
     found.name
@@ -101,6 +102,10 @@ REMOVED = re.compile(
     r"|people|objects)\b"
     r"|from walkie_agent\.perception import [^\n]*\b(memory|people_memory|identity|recognition"
     r"|track_vectors|people|objects)\b"
+    r"|walkie_agent[./]mahoraga\b"
+    r"|from walkie_agent import [^\n]*\bmahoraga\b"
+    r"|\bmahoraga[./]arms\b"
+    r"|from walkie_agent\.evals\.mahoraga import [^\n]*\barms\b"
 )
 # UnavailableVision moved to walkie_agent.capabilities, and the lookup guard _begin,
 # which _no_objects wrapped, to walkie_agent.capabilities.guards as begin_lookup.
@@ -110,11 +115,15 @@ REMOVED = re.compile(
 # walkie_agent.prompts; `main.` also catches a test's `import walkie_agent.main as main`.
 # The task templates moved to walkie_agent.runtime.task_templates, and RosBridge's
 # module walkie_agent.ros.io to walkie_agent.ros.operator_topics; the gym's own
-# walkie_agent.mahoraga.tasks stays.
+# walkie_agent.evals.mahoraga.tasks stays.
 # The people memory left walkie_agent.perception for walkie_agent.people_memory: memory
 # as track_memory, people_memory as store, and identity, recognition and track_vectors
 # under their names. Perception's word tables people and objects became people_words
 # and object_words, which the word boundary keeps apart from the old names.
+# The Mahoraga gym moved under walkie_agent.evals, and its arms module became
+# experiment_arms, which the word boundary keeps apart from the old name.
+GYM = SRC / "walkie_agent" / "evals" / "mahoraga"
+LEFT_GYM = frozenset({"arms"})
 ROS_VISION = "walkie_agent.ros.vision"
 LEFT_ROS_VISION = frozenset({"UnavailableVision", "_begin", "_no_objects"})
 RUNTIME = SRC / "walkie_agent" / "runtime"
@@ -271,8 +280,18 @@ def test_importing_the_gym_loads_no_ros():
     files, ros = ros_modules_loaded_by(IMPORT_THE_GYM)
     assert ros == []
     assert {
-        "walkie_agent.mahoraga." + name
-        for name in ("arms", "checkers", "commands", "gate", "gym", "oracle", "report", "tasks", "worlds")
+        "walkie_agent.evals.mahoraga." + name
+        for name in (
+            "checkers",
+            "commands",
+            "experiment_arms",
+            "gate",
+            "gym",
+            "oracle",
+            "report",
+            "tasks",
+            "worlds",
+        )
     } <= set(files)
     assert all(Path(file).is_relative_to(SRC) for file in files.values())
 
@@ -588,10 +607,29 @@ def test_the_tree_check_would_catch_a_system_prompt_back_in_main_or_the_runtime(
     assert reads(good_caller) == []
 
 
+def _holds_code(directory: Path) -> bool:
+    """Whether a directory holds a file Python could import, at any depth.
+
+    Files under __pycache__ do not count: the import system reads them only as the cache
+    of a source file next to them, so a directory that git leaves behind holding nothing
+    but an ignored __pycache__ imports as an empty namespace package and serves nothing.
+    """
+    suffixes = tuple(importlib.machinery.all_suffixes())
+    return any(
+        path.name.endswith(suffixes) and "__pycache__" not in path.relative_to(directory).parts
+        for path in directory.rglob("*")
+    )
+
+
 def _old_homes(root: Path, dotted: str) -> list[Path]:
     """Return what exists at a module path: a module, a package or a namespace directory."""
     base = root.joinpath(*dotted.split("."))
-    return [path for path in (base.with_suffix(".py"), base) if path.exists()]
+    found = []
+    if base.with_suffix(".py").exists():
+        found.append(base.with_suffix(".py"))
+    if base.is_dir() and _holds_code(base):
+        found.append(base)
+    return found
 
 
 def test_the_task_templates_and_operator_topics_did_not_come_back_to_their_old_homes():
@@ -621,7 +659,7 @@ def test_the_old_home_check_would_catch_a_module_or_a_package(tmp_path):
     assert _old_homes(tmp_path / "namespace", "walkie_agent.tasks") == [namespace.parent]
     # Neither the new homes nor the gym's own tasks module count as an old home.
     good = tmp_path / "good" / "walkie_agent"
-    for path in ("runtime/task_templates.py", "ros/operator_topics.py", "mahoraga/tasks.py"):
+    for path in ("runtime/task_templates.py", "ros/operator_topics.py", "evals/mahoraga/tasks.py"):
         (good / path).parent.mkdir(parents=True, exist_ok=True)
         (good / path).write_text(shim)
     assert _old_homes(good.parent, "walkie_agent.tasks") == []
@@ -714,6 +752,60 @@ def test_the_checks_would_catch_a_people_memory_module_or_a_limit_back_at_its_ol
         'monkeypatch.setattr(model_limits, "face_limits", dict)\n'
     )
     assert _reads_a_name_that_left(good_caller, IDENTITY_MODULE, LEFT_IDENTITY) == []
+
+
+def test_the_gym_and_its_arms_module_did_not_come_back_to_their_old_homes():
+    # The gym lives in walkie_agent.evals.mahoraga, and its arms module is experiment_arms.
+    # A module or a package at an old path could re-export them, and so could the gym's
+    # init by binding the old module name.
+    assert _old_homes(SRC, "walkie_agent.mahoraga") == []
+    assert _old_homes(SRC, "walkie_agent.evals.mahoraga.arms") == []
+    assert _binds_one_of(GYM / "__init__.py", LEFT_GYM) == []
+
+
+def test_the_checks_would_catch_the_gym_or_its_arms_module_back_at_an_old_home(tmp_path):
+    shim = "from walkie_agent.evals.mahoraga.experiment_arms import ARMS\n"
+    bad = tmp_path / "bad" / "walkie_agent"
+    for path in ("mahoraga/__init__.py", "evals/mahoraga/arms.py"):
+        (bad / path).parent.mkdir(parents=True, exist_ok=True)
+        (bad / path).write_text(shim)
+    assert _old_homes(bad.parent, "walkie_agent.mahoraga") == [bad / "mahoraga"]
+    assert _old_homes(bad.parent, "walkie_agent.evals.mahoraga.arms") == [bad / "evals" / "mahoraga" / "arms.py"]
+    # A legacy compiled module straight in the directory still imports.
+    compiled = tmp_path / "compiled" / "walkie_agent" / "mahoraga" / "gate.pyc"
+    compiled.parent.mkdir(parents=True)
+    compiled.write_bytes(b"")
+    assert _old_homes(tmp_path / "compiled", "walkie_agent.mahoraga") == [compiled.parent]
+    # The new homes are fine, and so is what a checkout leaves at the old path: git removes
+    # the tracked files but keeps the ignored __pycache__, which imports nothing.
+    good = tmp_path / "good" / "walkie_agent"
+    for path in (
+        "evals/__init__.py",
+        "evals/mahoraga/__init__.py",
+        "evals/mahoraga/experiment_arms.py",
+        "mahoraga/__pycache__/gate.cpython-312.pyc",
+        "mahoraga/__pycache__/arms.cpython-312.pyc",
+        "mahoraga/data/__pycache__/x.cpython-312.pyc",
+    ):
+        (good / path).parent.mkdir(parents=True, exist_ok=True)
+        (good / path).write_text(shim)
+    assert _old_homes(good.parent, "walkie_agent.mahoraga") == []
+    assert _old_homes(good.parent, "walkie_agent.evals.mahoraga.arms") == []
+
+    init = tmp_path / "__init__.py"
+    init.write_text(
+        "from walkie_agent.evals.mahoraga import experiment_arms as arms\n"
+        "from . import experiment_arms as arms\n"
+    )
+    assert len(_binds_one_of(init, LEFT_GYM)) == 2
+    good_init = tmp_path / "good_init.py"
+    good_init.write_text(
+        '"""The arms of the comparison are in experiment_arms."""\n'
+        "import os\n"
+        "from pathlib import Path\n"
+        "def home(path=None): ...\n"
+    )
+    assert _binds_one_of(good_init, LEFT_GYM) == []
 
 
 def test_the_tree_check_would_catch_a_name_back_in_ros_vision(tmp_path):
@@ -815,15 +907,25 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         "from walkie_agent.perception import memory as memory_module\n"
         "from walkie_agent.perception import gestures, people, objects\n"
         "from walkie_agent.perception import identity, recognition, track_vectors, people_memory\n"
+        "import walkie_agent.mahoraga.gate as gate\n"
+        "from walkie_agent.mahoraga import home\n"
+        'monkeypatch.setattr("walkie_agent.mahoraga.gym.MAX_ROUNDS", 3)\n'
+        "# pixi run --frozen -e mahoraga python -m walkie_agent.mahoraga gate\n"
+        "# src/walkie_agent/mahoraga/gate.py digests the gym's code\n"
+        "from walkie_agent import errors, mahoraga\n"
+        "from walkie_agent.evals.mahoraga.arms import ARMS, INDUCT\n"
+        "# src/walkie_agent/evals/mahoraga/arms.py holds the gym's prompt\n"
+        "from walkie_agent.evals.mahoraga import gym, arms\n"
     )
-    assert len(_mentions([bad], REMOVED)) == 40
+    assert len(_mentions([bad], REMOVED)) == 49
     # The tools package that holds the atomics is not the removed one,
     # walkie_agent.ros.vision still holds RosVision, the runtime package stays,
     # and the adapter's new home in the tools package is not the removed module.
     # Neither are the task templates' new home, the gym's own tasks module, the
     # operator topics' new home, or a ros module whose name only starts with io.
     # Nor the people memory's new package, the ros store of the same name, or
-    # perception's word tables, whose names only start with an old one.
+    # perception's word tables, whose names only start with an old one. Nor the gym
+    # under walkie_agent.evals, its experiment_arms module, or its tests' folder.
     good = tmp_path / "good.py"
     good.write_text(
         "from walkie_agent import tools, errors\n"
@@ -849,10 +951,18 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         "from walkie_agent.runtime.task_templates import TaskTemplate, parse_task_message\n"
         "from walkie_agent.runtime import task_templates, todos\n"
         "# src/walkie_agent/runtime/task_templates.py reads config/task_templates.toml\n"
-        "import walkie_agent.mahoraga.tasks as tasks\n"
-        "from walkie_agent.mahoraga import tasks\n"
-        "# src/walkie_agent/mahoraga/tasks.py builds the gym's samples\n"
+        "import walkie_agent.evals.mahoraga.tasks as tasks\n"
+        "from walkie_agent.evals.mahoraga import tasks\n"
+        "# src/walkie_agent/evals/mahoraga/tasks.py builds the gym's samples\n"
         "from walkie_agent.evals.mahoraga.tasks import gpsr_task\n"
+        "from walkie_agent.evals.mahoraga import home, experiment_arms\n"
+        "from walkie_agent.evals.mahoraga.experiment_arms import ARMS, INDUCT\n"
+        "# src/walkie_agent/evals/mahoraga/experiment_arms.py holds the gym's prompt\n"
+        'monkeypatch.setattr("walkie_agent.evals.mahoraga.gym.MAX_ROUNDS", 3)\n'
+        "# pixi run --frozen -e mahoraga python -m walkie_agent.evals.mahoraga gate\n"
+        "from walkie_agent.evals import mahoraga\n"
+        "from walkie_agent import evals, errors\n"
+        "# tests/mahoraga/test_experiment_arms.py runs each arm on the mock model\n"
         "from walkie_agent.ros.operator_topics import RosBridge\n"
         'caplog.at_level(logging.ERROR, logger="walkie_agent.ros.operator_topics")\n'
         "# src/walkie_agent/ros/operator_topics.py bridges the operator's topics\n"
@@ -886,10 +996,11 @@ def test_the_sweep_skips_the_functions_a_shelf_saved_in_the_package(tmp_path, mo
 
 
 def test_no_docs_page_names_a_removed_module():
-    # Decision records keep their history, so their bodies may name old modules.
+    # Decision records and decision logs keep their history, so they may name old modules.
     pages = [
         page
         for page in [*_files_under("docs"), ROOT / "README.md"]
         if not page.is_relative_to(ROOT / "docs" / "architecture" / "decisions")
+        and not (page.parent == ROOT / "docs" / "architecture" and page.name.endswith("-decisions.md"))
     ]
     assert _mentions(pages, REMOVED) == []

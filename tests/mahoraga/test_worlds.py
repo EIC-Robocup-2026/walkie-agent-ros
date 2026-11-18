@@ -6,8 +6,8 @@ from datetime import datetime
 import pytest
 
 from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.mahoraga.commands import commands
-from walkie_agent.mahoraga.worlds import OPERATOR, build_world, world_seed
+from walkie_agent.evals.mahoraga.commands import commands
+from walkie_agent.evals.mahoraga.worlds import OPERATOR, build_world, world_seed
 
 
 def _go(robot, place):

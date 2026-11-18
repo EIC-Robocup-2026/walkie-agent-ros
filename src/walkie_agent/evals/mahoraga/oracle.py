@@ -9,8 +9,8 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from walkie_agent.mahoraga.checkers import ABOUT_YOURSELF, MEASURES
-from walkie_agent.mahoraga.worlds import OPERATOR
+from walkie_agent.evals.mahoraga.checkers import ABOUT_YOURSELF, MEASURES
+from walkie_agent.evals.mahoraga.worlds import OPERATOR
 
 _INSTRUCTION_POINT = "instruction point"
 # Per talk topic, how the oracle's line starts and the get_facts key it ends with.

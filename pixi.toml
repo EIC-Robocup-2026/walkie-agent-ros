@@ -250,9 +250,9 @@ mkdocs = ">=1.6,<2"
 [feature.docs.activation.env]
 RMW_IMPLEMENTATION = "rmw_zenoh_cpp"
 
-# The Mahoraga research gym, package walkie_agent.mahoraga
+# The Mahoraga research gym, package walkie_agent.evals.mahoraga
 # (docs/architecture/mahoraga-demo.md). Run it with
-#   pixi run --frozen -e mahoraga python -m walkie_agent.mahoraga gate
+#   pixi run --frozen -e mahoraga python -m walkie_agent.evals.mahoraga gate
 # It has its own environment only to keep inspect-ai and the GPSR generator out of
 # the robot's. It leaves out the default feature, so it has no ROS, RAI or
 # activation script, and it has its own solve group because inspect-ai needs

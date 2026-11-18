@@ -21,7 +21,7 @@ from typing import Any
 from inspect_ai.event import ModelEvent
 from inspect_ai.log import EvalLog, EvalSample, read_eval_log
 
-from walkie_agent.mahoraga.tasks import SCORER
+from walkie_agent.evals.mahoraga.tasks import SCORER
 from walkie_agent.scripting.shelf import StoreRefused, read_counts, store_root
 
 _WARNING ="Incomplete, so these comparisons do not measure the whole evaluation. {}. They count as failures."

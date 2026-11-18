@@ -10,12 +10,12 @@ from inspect_ai.log import resolve_sample_attachments
 from inspect_ai.model import ModelOutput, ModelUsage, get_model
 
 from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.mahoraga.arms import ARMS, INDUCT, PROMPT, ArmSetup
-from walkie_agent.mahoraga.checkers import ABOUT_YOURSELF
-from walkie_agent.mahoraga.commands import commands
-from walkie_agent.mahoraga.gym import gpsr_task, run_episodes
-from walkie_agent.mahoraga.oracle import oracle_script
-from walkie_agent.mahoraga.report import arm_metrics
+from walkie_agent.evals.mahoraga.checkers import ABOUT_YOURSELF
+from walkie_agent.evals.mahoraga.commands import commands
+from walkie_agent.evals.mahoraga.experiment_arms import ARMS, INDUCT, PROMPT, ArmSetup
+from walkie_agent.evals.mahoraga.gym import gpsr_task, run_episodes
+from walkie_agent.evals.mahoraga.oracle import oracle_script
+from walkie_agent.evals.mahoraga.report import arm_metrics
 from walkie_agent.scripting import driver
 from walkie_agent.scripting.shelf import Shelf
 
@@ -228,7 +228,7 @@ def _talk_to(spec, then):
 @pytest.mark.parametrize("split", ["trial", "heldout"])
 def test_induction_is_refused_off_the_train_split(gated, monkeypatch, split):
     gated(commands(split, 1))
-    monkeypatch.setattr("walkie_agent.mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
+    monkeypatch.setattr("walkie_agent.evals.mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
 
     with pytest.raises(ValueError, match="only on the train split"):
         run_episodes([INDUCT], 1, split=split, model=MOCK)
@@ -237,7 +237,7 @@ def test_induction_is_refused_off_the_train_split(gated, monkeypatch, split):
 @pytest.mark.parametrize("arms", [[INDUCT, "C"], ["C", INDUCT], ["A", INDUCT]])
 def test_induction_is_refused_beside_another_arm(gated, monkeypatch, arms):
     gated(commands("train", 1))
-    monkeypatch.setattr("walkie_agent.mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
+    monkeypatch.setattr("walkie_agent.evals.mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
 
     with pytest.raises(ValueError, match="alone"):
         run_episodes(arms, 1, split="train", model=MOCK)
@@ -533,7 +533,7 @@ def test_an_episode_that_never_stops_is_ended_and_scored(gated, monkeypatch):
     record = commands("trial", 1)[0]
     gated([record])
     loop = lambda *_: ModelOutput.for_tool_call(MOCK, "move_relative", {"turn_deg": 1.0})  # noqa: E731
-    monkeypatch.setattr("walkie_agent.mahoraga.gym.MAX_ROUNDS", 3)
+    monkeypatch.setattr("walkie_agent.evals.mahoraga.gym.MAX_ROUNDS", 3)
 
     log = run_episodes(["A"], 1, model=get_model(MOCK, custom_outputs=loop, memoize=False), max_samples=1)[0]
 
@@ -607,7 +607,7 @@ def _sample_of(gated, record, model):
 
 def test_running_out_of_rounds_after_the_work_scores_zero(gated, monkeypatch):
     record = _first("move_object")
-    monkeypatch.setattr("walkie_agent.mahoraga.gym.MAX_ROUNDS", 3)
+    monkeypatch.setattr("walkie_agent.evals.mahoraga.gym.MAX_ROUNDS", 3)
 
     sample = _sample_of(
         gated,
@@ -639,7 +639,7 @@ def test_the_token_limit_after_the_work_scores_zero(gated):
 
 def test_the_time_limit_after_the_work_scores_zero(gated, monkeypatch):
     record = _first("move_object")
-    monkeypatch.setattr("walkie_agent.mahoraga.gym._TIME_LIMIT_S", 1)
+    monkeypatch.setattr("walkie_agent.evals.mahoraga.gym._TIME_LIMIT_S", 1)
 
     def too_slow():
         time.sleep(1.1)
@@ -758,7 +758,7 @@ def test_a_transient_provider_error_is_retried_inside_the_model_call(gated, monk
 
 def test_a_model_call_that_never_answers_is_abandoned_and_retried(gated, monkeypatch):
     """A stalled call must not spend the episode's whole time limit and fail it."""
-    monkeypatch.setattr("walkie_agent.mahoraga.gym._ATTEMPT_TIMEOUT_S", 1)
+    monkeypatch.setattr("walkie_agent.evals.mahoraga.gym._ATTEMPT_TIMEOUT_S", 1)
 
     log = _run_on_the_fake_provider(gated, monkeypatch, stalls=1)
 

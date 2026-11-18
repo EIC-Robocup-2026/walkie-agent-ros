@@ -38,7 +38,7 @@ def test_importing_the_agent_never_imports_the_gym():
     loaded = json.loads(done.stdout.splitlines()[-1])
 
     assert "walkie_agent.main" in loaded
-    assert [name for name in loaded if name.startswith("walkie_agent.mahoraga")] == []
+    assert [name for name in loaded if name.startswith("walkie_agent.evals")] == []
 
 
 def test_the_script_runtime_and_the_tools_never_import_the_gym():
@@ -68,4 +68,4 @@ def test_the_script_runtime_and_the_tools_never_import_the_gym():
     loaded = json.loads(done.stdout.splitlines()[-1])
 
     assert "walkie_agent.scripting.agent_tool" in loaded
-    assert [name for name in loaded if name.startswith("walkie_agent.mahoraga")] == []
+    assert [name for name in loaded if name.startswith("walkie_agent.evals")] == []

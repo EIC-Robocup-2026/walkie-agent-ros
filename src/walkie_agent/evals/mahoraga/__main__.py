@@ -1,4 +1,4 @@
-"""The command line: python -m walkie_agent.mahoraga gate | run | report."""
+"""The command line: python -m walkie_agent.evals.mahoraga gate | run | report."""
 
 import argparse
 import json
@@ -6,16 +6,16 @@ import os
 import sys
 from collections.abc import Sequence
 
-from walkie_agent.mahoraga.arms import ARMS, INDUCT
-from walkie_agent.mahoraga.commands import CATEGORIES, SPLITS
-from walkie_agent.mahoraga.gate import GateError, run_gate, run_standard_gate
-from walkie_agent.mahoraga.gym import DEFAULT_MODEL, OPENROUTER, run_episodes
-from walkie_agent.mahoraga.report import report
+from walkie_agent.evals.mahoraga.commands import CATEGORIES, SPLITS
+from walkie_agent.evals.mahoraga.experiment_arms import ARMS, INDUCT
+from walkie_agent.evals.mahoraga.gate import GateError, run_gate, run_standard_gate
+from walkie_agent.evals.mahoraga.gym import DEFAULT_MODEL, OPENROUTER, run_episodes
+from walkie_agent.evals.mahoraga.report import report
 from walkie_agent.scripting.shelf import StoreRefused
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="python -m walkie_agent.mahoraga")
+    parser = argparse.ArgumentParser(prog="python -m walkie_agent.evals.mahoraga")
     parser.add_argument(
         "--home",
         help="Where gate results and run logs live. Default: MAHORAGA_HOME, then ~/.local/share/mahoraga.",

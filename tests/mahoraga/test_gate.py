@@ -8,11 +8,11 @@ import pytest
 from inspect_ai.event import SampleLimitEvent
 from inspect_ai.log import EvalSampleLimit, read_eval_log
 
-import walkie_agent.mahoraga.gate as gate
-import walkie_agent.mahoraga.gym as gym
-import walkie_agent.mahoraga.tasks as tasks
-from walkie_agent.mahoraga.commands import commands
-from walkie_agent.mahoraga.gate import (
+import walkie_agent.evals.mahoraga.gate as gate
+import walkie_agent.evals.mahoraga.gym as gym
+import walkie_agent.evals.mahoraga.tasks as tasks
+from walkie_agent.evals.mahoraga.commands import commands
+from walkie_agent.evals.mahoraga.gate import (
     GateError,
     canonical,
     code_digest,
@@ -20,7 +20,7 @@ from walkie_agent.mahoraga.gate import (
     require_gate,
     run_gate,
 )
-from walkie_agent.mahoraga.gym import gpsr_task, run_episodes
+from walkie_agent.evals.mahoraga.gym import gpsr_task, run_episodes
 
 MOCK = "mockllm/model"
 
@@ -126,7 +126,7 @@ def test_first_difference_names_the_path():
 
 
 def test_require_gate_refuses_with_no_gate():
-    with pytest.raises(GateError, match="python -m walkie_agent.mahoraga gate"):
+    with pytest.raises(GateError, match="python -m walkie_agent.evals.mahoraga gate"):
         require_gate(commands("trial", 1), 1)
 
 
@@ -208,14 +208,15 @@ def test_the_digest_covers_the_files_an_oracle_pass_depends_on():
     paths = {path.relative_to(gate._REPO).as_posix() for path in gate._digested_files()}
 
     assert {
-        "src/walkie_agent/mahoraga/__init__.py",
-        "src/walkie_agent/mahoraga/arms.py",
-        "src/walkie_agent/mahoraga/checkers.py",
-        "src/walkie_agent/mahoraga/gym.py",
-        "src/walkie_agent/mahoraga/oracle.py",
-        "src/walkie_agent/mahoraga/worlds.py",
-        "src/walkie_agent/mahoraga/data/chula_pat14_6/objects/objects.md",
-        "src/walkie_agent/mahoraga/data/chula_pat14_6/names/names.md",
+        "src/walkie_agent/evals/__init__.py",
+        "src/walkie_agent/evals/mahoraga/__init__.py",
+        "src/walkie_agent/evals/mahoraga/experiment_arms.py",
+        "src/walkie_agent/evals/mahoraga/checkers.py",
+        "src/walkie_agent/evals/mahoraga/gym.py",
+        "src/walkie_agent/evals/mahoraga/oracle.py",
+        "src/walkie_agent/evals/mahoraga/worlds.py",
+        "src/walkie_agent/evals/mahoraga/data/chula_pat14_6/objects/objects.md",
+        "src/walkie_agent/evals/mahoraga/data/chula_pat14_6/names/names.md",
         "src/walkie_agent/scripting/__init__.py",
         "src/walkie_agent/scripting/driver.py",
         "src/walkie_agent/scripting/evidence.py",
@@ -246,7 +247,10 @@ def test_the_digest_covers_the_files_an_oracle_pass_depends_on():
         "src/walkie_agent/perception/object_words.py",
         "pixi.lock",
     } <= paths
-    assert not {"src/walkie_agent/mahoraga/report.py", "src/walkie_agent/mahoraga/__main__.py"} & paths
+    assert not {
+        "src/walkie_agent/evals/mahoraga/report.py",
+        "src/walkie_agent/evals/mahoraga/__main__.py",
+    } & paths
     assert len(code_digest()) == 16
 
 

@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-import walkie_agent.mahoraga.__main__ as cli
-from walkie_agent.mahoraga import home
-from walkie_agent.mahoraga.commands import commands
+import walkie_agent.evals.mahoraga.__main__ as cli
+from walkie_agent.evals.mahoraga import home
+from walkie_agent.evals.mahoraga.commands import commands
 from walkie_agent.scripting.shelf import StoreRefused
 
 
@@ -32,7 +32,7 @@ def test_a_required_argument_is_required(argv, monkeypatch):
 def test_run_is_refused_without_a_gate_and_says_what_to_run(capsys):
     assert cli.main(["run", "--arms", "A,B", "--commands", "2"]) == 2
 
-    assert "python -m walkie_agent.mahoraga gate" in capsys.readouterr().err
+    assert "python -m walkie_agent.evals.mahoraga gate" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
@@ -40,7 +40,7 @@ def test_run_is_refused_without_a_gate_and_says_what_to_run(capsys):
     [("A,Z", "1", "Unknown arm: Z"), ("A", "0", "at least 1")],
 )
 def test_bad_arguments_are_refused_before_an_arm_starts(gated, capsys, monkeypatch, arms, commands, message):
-    monkeypatch.setattr("walkie_agent.mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
+    monkeypatch.setattr("walkie_agent.evals.mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
 
     assert cli.main(["run", "--arms", arms, "--commands", commands]) == 2
 
@@ -58,7 +58,7 @@ def test_bad_arguments_are_refused_before_an_arm_starts(gated, capsys, monkeypat
 )
 def test_induction_off_the_train_split_or_beside_an_arm_is_refused(gated, capsys, monkeypatch, arms, split, message):
     gated(commands(split, 1))
-    monkeypatch.setattr("walkie_agent.mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
+    monkeypatch.setattr("walkie_agent.evals.mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
 
     assert cli.main(["run", "--arms", arms, "--commands", "1", "--split", split]) == 2
 
@@ -67,7 +67,7 @@ def test_induction_off_the_train_split_or_beside_an_arm_is_refused(gated, capsys
 
 def test_a_missing_key_is_refused_before_an_arm_starts(gated, capsys, monkeypatch):
     gated(commands("trial", 1))
-    monkeypatch.setattr("walkie_agent.mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
+    monkeypatch.setattr("walkie_agent.evals.mahoraga.gym.inspect_eval", lambda *a, **k: pytest.fail("It ran."))
 
     assert cli.main(["run", "--arms", "A", "--commands", "1"]) == 2
 

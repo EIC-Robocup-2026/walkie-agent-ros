@@ -11,8 +11,8 @@ from inspect_ai.scorer import Score, Scorer, Target, mean, scorer
 from inspect_ai.solver import TaskState
 
 from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.mahoraga.checkers import check
-from walkie_agent.mahoraga.worlds import build_world, world_seed
+from walkie_agent.evals.mahoraga.checkers import check
+from walkie_agent.evals.mahoraga.worlds import build_world, world_seed
 from walkie_agent.scripting.driver import proven
 from walkie_agent.scripting.shelf import Shelf
 

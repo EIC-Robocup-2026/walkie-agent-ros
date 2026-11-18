@@ -865,8 +865,8 @@ footer p + p { margin-top: 6px; }
     { "title": "Reset the conversation", "cmd": "pixi run ros2 topic pub -w 1 --once /walkie/reset std_msgs/msg/Empty \"{}\"", "note": "Run after the eval line above. It also forgets the people remembered in the task." },
     { "title": "Judge a script task", "cmd": "pixi run ros2 topic pub -w 1 --once /walkie/verdict std_msgs/msg/Bool \"{data: true}\"", "note": "`true` verifies the saved functions the task proved. `false` verifies nothing and records each of them as rejected in the store's `ledger.jsonl`, so the model then sees them marked as likely wrong. Needs an agent started with `--scripts`. A verdict sent while a task runs is ignored." },
     { "title": "Stop the simulation", "cmd": "scripts/chula-sim.sh down", "note": "Takes about 12 s, most of it waiting for Nav2's servers, which outlive SIGINT until ros2 launch kills them." },
-    { "title": "Run the gym's oracle gate", "cmd": "pixi run --frozen -e mahoraga python -m walkie_agent.mahoraga gate", "note": "Offline and free: 1080 episodes, twice, in about a minute." },
-    { "title": "A small real-model gym run", "cmd": "pixi run --frozen -e mahoraga python -m walkie_agent.mahoraga run --arms A,B --commands 5\npixi run --frozen -e mahoraga python -m walkie_agent.mahoraga report --log-dir <the run's directory>", "note": "Calls the real model, with the key in `OPENAI_API_KEY`. `report` prints the run's metrics as JSON, against arm A by default." }
+    { "title": "Run the gym's oracle gate", "cmd": "pixi run --frozen -e mahoraga python -m walkie_agent.evals.mahoraga gate", "note": "Offline and free: 1080 episodes, twice, in about a minute." },
+    { "title": "A small real-model gym run", "cmd": "pixi run --frozen -e mahoraga python -m walkie_agent.evals.mahoraga run --arms A,B --commands 5\npixi run --frozen -e mahoraga python -m walkie_agent.evals.mahoraga report --log-dir <the run's directory>", "note": "Calls the real model, with the key in `OPENAI_API_KEY`. `report` prints the run's metrics as JSON, against arm A by default." }
   ]
 }
 </script>

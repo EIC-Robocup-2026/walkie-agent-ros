@@ -135,8 +135,8 @@ def isolated_home(request):
 @pytest.fixture
 def gated():
     """Record a whole, passing gate for some data, for gym tests about what runs after the gate."""
-    from walkie_agent.mahoraga import home
-    from walkie_agent.mahoraga.gate import _file_hash, code_digest, pair_digests
+    from walkie_agent.evals.mahoraga import home
+    from walkie_agent.evals.mahoraga.gate import _file_hash, code_digest, pair_digests
 
     def record(records, epochs=1):
         root = home() / "gate"

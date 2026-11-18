@@ -43,7 +43,7 @@ ROS-backed verbs implement layer 2's Protocols, and only `main.py` connects them
 | Entry point: flags, signals, assembly | `walkie_agent/main.py` | [Built, run on fake robots and in the MuJoCo simulation](#wiring-in-mainpy) |
 | 6. `run_script` and its shelf | `walkie_agent/scripting/` | [Built](#run_script), used by the gym and, behind `--scripts`, by the agent; run on fakes only |
 | 6. Arm D's stand-in bundles | `walkie_agent/tools/bundled_preset/` | Built, stand-ins only |
-| 6. Gym | `walkie_agent/mahoraga/`, with its own pixi environment | [Built](#mahoraga), fake world only |
+| 6. Gym | `walkie_agent/evals/mahoraga/`, with its own pixi environment | [Built](#mahoraga), fake world only |
 
 `errors`, `capabilities`, `tools` (with its adapter), `runtime` and `scripting` never
 import rclpy, rai, rai_interfaces or any ROS message. `tests/test_ros_free.py`
@@ -284,8 +284,9 @@ logs its traceback and gives `"INTERNAL: <tool> failed with <ExceptionType>."`.
 
 ## Mahoraga
 
-The research gym, the package `walkie_agent.mahoraga`, in the `mahoraga` pixi
-environment and solve group. inspect-ai and the GPSR generator stay out of
+The research gym, the package `walkie_agent.evals.mahoraga`, in the `mahoraga` pixi
+environment and solve group. `walkie_agent.evals` holds the offline evaluations, which
+the agent never imports. inspect-ai and the GPSR generator stay out of
 `default`, which `tests/test_mahoraga_absent.py` checks, and so do the gym's tests
 in `tests/mahoraga/`, which the default environment does not collect. The gym never
 imports ROS, and the agent never imports the gym. `tests/test_ros_free.py` and
@@ -305,16 +306,16 @@ pydantic-monty, is in `default` too.
 | `scripting.evidence` | `Watch`: which functions a run entered, returned from or raised through, from counters in the worker |
 | `scripting.sandbox` | `open_pool`, the Monty pool with each worker inside bwrap. It fails closed. |
 | `tools.bundled_preset` | `BUNDLES`, stand-ins for arm D until the team's bundles exist |
-| `mahoraga` | `home()`, the gym's home for gate results and run logs |
-| `mahoraga.commands` | `RecordingGenerator`, `parse`, `commands(split, n, category)`, and the arena's names in `data/` |
-| `mahoraga.worlds` | `build_world(spec, seed)`, `world_seed(sample_id, epoch)` |
-| `mahoraga.checkers` | `check(spec, start, end)` over `FakeRobot.snapshot()` |
-| `mahoraga.oracle` | `oracle_script(spec)`, written from the slots with no LLM |
-| `mahoraga.arms` | `ARMS`, `INDUCT`, `ArmSetup(arm, pool=, shelf_root=).episode(ctx)` |
-| `mahoraga.tasks` | `dataset`, `episode_robot`, the `ground_truth` scorer |
-| `mahoraga.gate` | `run_gate`, `run_standard_gate`, `require_gate`, `GateError` |
-| `mahoraga.gym` | `gpsr_task`, `run_episodes`, `resolve_model` |
-| `mahoraga.report` | `report(log_dir, shelf_root=)`, `arm_metrics`, `compare`, `mcnemar_p`, `recorded_shelf_root` |
+| `evals.mahoraga` | `home()`, the gym's home for gate results and run logs |
+| `evals.mahoraga.commands` | `RecordingGenerator`, `parse`, `commands(split, n, category)`, and the arena's names in `data/` |
+| `evals.mahoraga.worlds` | `build_world(spec, seed)`, `world_seed(sample_id, epoch)` |
+| `evals.mahoraga.checkers` | `check(spec, start, end)` over `FakeRobot.snapshot()` |
+| `evals.mahoraga.oracle` | `oracle_script(spec)`, written from the slots with no LLM |
+| `evals.mahoraga.experiment_arms` | The gym's `PROMPT`, `ARMS`, `INDUCT`, `ArmSetup(arm, pool=, shelf_root=).episode(ctx)` |
+| `evals.mahoraga.tasks` | `dataset`, `episode_robot`, the `ground_truth` scorer |
+| `evals.mahoraga.gate` | `run_gate`, `run_standard_gate`, `require_gate`, `GateError` |
+| `evals.mahoraga.gym` | `gpsr_task`, `run_episodes`, `resolve_model` |
+| `evals.mahoraga.report` | `report(log_dir, shelf_root=)`, `arm_metrics`, `compare`, `mcnemar_p`, `recorded_shelf_root` |
 
 ### `run_script`
 
@@ -639,8 +640,9 @@ stale, partial or hand-edited result made by mistake. It is no security boundary
 nothing is signed. `gpsr_task` and `run_episodes` both call it.
 
 The code digest covers each file's repository path and content, for the files
-`gate._digested_files()` lists: every `walkie_agent/mahoraga/*.py` except
-`report.py` and `__main__.py`, the gym's data files, `walkie_agent/__init__.py`,
+`gate._digested_files()` lists: every `walkie_agent/evals/mahoraga/*.py` except
+`report.py` and `__main__.py`, the gym's data files, `walkie_agent/evals/__init__.py`,
+`walkie_agent/__init__.py`,
 `errors.py`, `locations.py`, the `scripting`, `capabilities` and `arm` packages,
 `tools/__init__.py`, `tools/adapter.py` and `tools/sets.py` with the `tools/atomic`
 and `tools/bundled_preset` packages, the perception modules the fake world uses, and `pixi.lock`. So an edit to
@@ -657,15 +659,15 @@ is offline and costs nothing. `run` calls a real model, so `--commands` has no d
 python -m pytest tests/mahoraga tests/scripting tests/test_ros_free.py
 
 # The gate on the plan's trial, training and held-out data: 1080 episodes, twice
-python -m walkie_agent.mahoraga gate
+python -m walkie_agent.evals.mahoraga gate
 # Or on other data
-python -m walkie_agent.mahoraga gate --split trial --commands 20 --epochs 1 --category people
+python -m walkie_agent.evals.mahoraga gate --split trial --commands 20 --epochs 1 --category people
 
 # A small real slice, with the key in the environment
-OPENAI_API_KEY=... python -m walkie_agent.mahoraga run --arms A,B --commands 5
+OPENAI_API_KEY=... python -m walkie_agent.evals.mahoraga run --arms A,B --commands 5
 
 # Metrics M1 to M10 and the paired comparison, as JSON
-python -m walkie_agent.mahoraga report --log-dir <the run's directory>
+python -m walkie_agent.evals.mahoraga report --log-dir <the run's directory>
 ```
 
 The defaults are `deepseek/deepseek-v4.1-flash:nitro`, through OpenRouter at
@@ -679,9 +681,9 @@ run from an empty shelf, point `--shelf` at a new folder outside the repository,
 give `report` the same `--shelf`, or let it read the store root the logs record:
 
 ```bash
-OPENAI_API_KEY=... python -m walkie_agent.mahoraga run --arms induct --split train \
+OPENAI_API_KEY=... python -m walkie_agent.evals.mahoraga run --arms induct --split train \
     --commands 5 --shelf /var/tmp/shelf-trial-1
-python -m walkie_agent.mahoraga report --log-dir <the run's directory>
+python -m walkie_agent.evals.mahoraga report --log-dir <the run's directory>
 ```
 
 Stores from before the tier folders, such as `~/.local/share/mahoraga/shelf` or a
@@ -974,7 +976,7 @@ The real `main()`, signalled by PID, exits 0 in about 0.8 s on one signal, and e
 | 4 | Memory id kind | Plain database ids |
 | 5 to 8 | Decided earlier | Own WalkieTodos; bare stop is a fixed line with no LLM; runtime fixes in the `create_agent` port; task templates by name only |
 | 22 | Models | deepseek-v4.1-flash for runs |
-| 23 | Where Mahoraga lives | The package `walkie_agent.mahoraga`, with its own pixi environment. It was a top-level `mahoraga/` until [decision T1](mahoraga-demo-decisions.md#tools-and-scripts). |
+| 23 | Where Mahoraga lives | The package `walkie_agent.evals.mahoraga`, with its own pixi environment. It was a top-level `mahoraga/` until [decision T1](mahoraga-demo-decisions.md#tools-and-scripts), and moved under `evals/` with [decision RL-1](mahoraga-demo-decisions.md#repository-layout). |
 | 26 | Arena data | A trash location and more objects in the fake arena |
 
 The cutover settled a few forks of its own, also provisionally:

@@ -23,17 +23,17 @@ from inspect_ai.log import EvalLog, read_eval_log
 from inspect_ai.solver import Generate, Solver, TaskState, solver
 from pydantic_monty import Monty
 
-from walkie_agent.mahoraga import home
-from walkie_agent.mahoraga.commands import DATA_DIR, TRAIN_COMMANDS, commands
-from walkie_agent.mahoraga.oracle import oracle_script
-from walkie_agent.mahoraga.tasks import (
+from walkie_agent.evals.mahoraga import home
+from walkie_agent.evals.mahoraga.commands import DATA_DIR, TRAIN_COMMANDS, commands
+from walkie_agent.evals.mahoraga.oracle import oracle_script
+from walkie_agent.evals.mahoraga.tasks import (
     SCORER,
     dataset,
     episode_robot,
     ground_truth,
     spec_of,
 )
-from walkie_agent.mahoraga.worlds import build_world, world_seed
+from walkie_agent.evals.mahoraga.worlds import build_world, world_seed
 from walkie_agent.scripting.driver import ScriptRunner, allow_list, script_record
 from walkie_agent.scripting.sandbox import open_pool
 from walkie_agent.tools.sets import GPSR
@@ -63,7 +63,7 @@ VOLATILE = frozenset(
 # (split, commands, epochs): the sizes of the plan's R1 trial, induction and held-out set.
 STANDARD_DATA = (("trial", 100, 3), ("train", TRAIN_COMMANDS, 1), ("heldout", 160, 3))
 _MODEL = "mockllm/model"
-_REPO = Path(__file__).resolve().parents[3]
+_REPO = Path(__file__).resolve().parents[4]
 # These run after every episode has ended, so an edit to them cannot change an oracle pass.
 _NOT_DIGESTED = frozenset({"report.py", "__main__.py"})
 
@@ -93,11 +93,14 @@ class GateResult:
 
 def _digested_files() -> list[Path]:
     package = Path(__file__).resolve().parent
-    walkie = package.parent
+    evals = package.parent
+    walkie = evals.parent
     return sorted(
         [
             *(path for path in package.glob("*.py") if path.name not in _NOT_DIGESTED),
             *(path.resolve() for path in DATA_DIR.rglob("*") if path.is_file()),
+            # Importing the gym runs the evals package's init first.
+            evals / "__init__.py",
             *(walkie / name for name in ("__init__.py", "errors.py", "locations.py")),
             *(walkie / "scripting").glob("*.py"),
             *(walkie / "capabilities").glob("*.py"),
@@ -341,5 +344,5 @@ def require_gate(records: Iterable[Mapping[str, Any]], epochs: int) -> None:
     if missing:
         raise GateError(
             f"The oracle gate has not passed {missing} of these (command, epoch) pairs for code "
-            f"{code}. Run: python -m walkie_agent.mahoraga gate --split SPLIT --commands N --epochs K"
+            f"{code}. Run: python -m walkie_agent.evals.mahoraga gate --split SPLIT --commands N --epochs K"
         )

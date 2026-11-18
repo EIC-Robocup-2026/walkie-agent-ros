@@ -7,10 +7,10 @@ import pytest
 from inspect_ai.log import write_eval_log
 from inspect_ai.model import ModelCall, ModelOutput, ModelUsage, get_model
 
-from walkie_agent.mahoraga.commands import commands
-from walkie_agent.mahoraga.gym import run_episodes
-from walkie_agent.mahoraga.oracle import oracle_script
-from walkie_agent.mahoraga.report import (
+from walkie_agent.evals.mahoraga.commands import commands
+from walkie_agent.evals.mahoraga.gym import run_episodes
+from walkie_agent.evals.mahoraga.oracle import oracle_script
+from walkie_agent.evals.mahoraga.report import (
     arm_metrics,
     by_command,
     compare,
@@ -20,7 +20,7 @@ from walkie_agent.mahoraga.report import (
     report,
     shelf_metrics,
 )
-from walkie_agent.mahoraga.tasks import SCORER
+from walkie_agent.evals.mahoraga.tasks import SCORER
 from walkie_agent.scripting.shelf import Shelf, StoreRefused
 
 MOCK = "mockllm/model"

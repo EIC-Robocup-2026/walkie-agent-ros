@@ -23,7 +23,7 @@ from functools import partial
 from typing import Any
 
 from walkie_agent.capabilities.fake import NAMES
-from walkie_agent.mahoraga.worlds import (
+from walkie_agent.evals.mahoraga.worlds import (
     OPERATOR,
     at_source,
     object_matches,

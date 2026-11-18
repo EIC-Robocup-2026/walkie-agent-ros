@@ -4,9 +4,9 @@ import pytest
 
 from walkie_agent.capabilities.fake import GESTURES, OBJECTS, POSES, TEAM, FakeRobot
 from walkie_agent.errors import StepError
-from walkie_agent.mahoraga.checkers import ABOUT_YOURSELF, MEASURES, check
-from walkie_agent.mahoraga.commands import generator
-from walkie_agent.mahoraga.worlds import OPERATOR, build_world
+from walkie_agent.evals.mahoraga.checkers import ABOUT_YOURSELF, MEASURES, check
+from walkie_agent.evals.mahoraga.commands import generator
+from walkie_agent.evals.mahoraga.worlds import OPERATOR, build_world
 
 
 def _people(**rooms):

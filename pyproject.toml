@@ -27,11 +27,11 @@ include_external_packages = true
 
 [[tool.importlinter.contracts]]
 id = "gym-stays-out"
-name = "The agent never imports the Mahoraga gym, which is an offline evaluation"
+name = "The agent never imports the offline evaluations, such as the Mahoraga gym"
 type = "forbidden"
-# Every top-level module; the gym itself overlaps its own name and is skipped.
+# Every top-level module; the evals package itself overlaps its own name and is skipped.
 source_modules = ["walkie_agent.*"]
-forbidden_modules = ["walkie_agent.mahoraga"]
+forbidden_modules = ["walkie_agent.evals"]
 
 [[tool.importlinter.contracts]]
 id = "core-is-ros-free"
@@ -56,7 +56,7 @@ forbidden_modules = [
     "walkie_agent.ros",
     "walkie_agent.voice",
     "walkie_agent.sim",
-    "walkie_agent.mahoraga",
+    "walkie_agent.evals",
 ]
 
 [[tool.importlinter.contracts]]
@@ -66,7 +66,13 @@ type = "forbidden"
 # Each init on its own, not the package it opens.
 as_packages = false
 allow_indirect_imports = true
-source_modules = ["walkie_agent", "walkie_agent.ros", "walkie_agent.tools", "walkie_agent.people_memory"]
+source_modules = [
+    "walkie_agent",
+    "walkie_agent.ros",
+    "walkie_agent.tools",
+    "walkie_agent.people_memory",
+    "walkie_agent.evals",
+]
 # The external packages also keep the ros init inside backends-dont-see-the-llm,
 # which cannot name the init without also naming operator_topics.
 forbidden_modules = [

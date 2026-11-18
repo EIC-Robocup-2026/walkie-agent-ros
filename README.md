@@ -102,7 +102,7 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | `src/walkie_agent/sim/`      | The fake robot node, the oracle that stands in for walkie-vision in a simulation, and the check of a simulation's graph |
 | `scripts/chula-sim.sh`       | Runs the `chula_pat14_6` simulation, the oracle and the agent on a private ROS graph |
 | `tests/`                     | Tests with a scripted LLM. Some use real rclpy with a fake robot. |
-| `src/walkie_agent/mahoraga/` | The research gym, in its own Pixi environment. Fake world only. Its tests are in `tests/mahoraga/`. |
+| `src/walkie_agent/evals/mahoraga/` | The research gym, an offline evaluation in its own Pixi environment that the agent never imports. Fake world only. Its prompt and arms are in `experiment_arms.py`, and its tests in `tests/mahoraga/`. |
 | `config.toml`                | LLM vendor and models, the team and its timezone, voice, tracing  |
 | `config/locations.toml`      | The robot's real places. Ships empty until they are measured.     |
 | `config/locations.sim.toml`  | Test points for the blank simulation map                          |

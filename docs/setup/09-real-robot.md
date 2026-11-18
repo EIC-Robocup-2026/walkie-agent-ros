@@ -1034,7 +1034,7 @@ The agent then loses only `recall_object`, `list_room_objects` and
 The whole-body MoveIt experiment is a separate test with its own guide. It uses
 no agent, vision or database. Its checkout is
 `~/Project/robocup_experiments/walkie-ros-fullbody` (`feat/moveit-full-body`,
-`df1da45`), and its guide is `docs/guides/whole-body-real-robot.md` there.
+`1da4535`), and its guide is `docs/guides/whole-body-real-robot.md` there.
 
 - **Never run it at the same time as this page's stack.** Stop every terminal
   from this page first ([step 8](#8-stop-and-reset)). Both drive the same CAN

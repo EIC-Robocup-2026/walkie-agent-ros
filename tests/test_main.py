@@ -43,6 +43,7 @@ from walkie_agent.capabilities import (
     UnavailableFacts,
     UnavailableMemory,
     UnavailableObjectMemory,
+    UnavailableVision,
 )
 from walkie_agent.capabilities.facts import SystemFacts
 from walkie_agent.errors import ErrorCode, StepError
@@ -54,7 +55,7 @@ from walkie_agent.ros.arms import RosArms
 from walkie_agent.ros.base import RosBase
 from walkie_agent.ros.commander import READ_TIMEOUT_S, CommanderClient
 from walkie_agent.ros.speech import RosSpeech
-from walkie_agent.ros.vision import RosVision, UnavailableVision
+from walkie_agent.ros.vision import RosVision
 from walkie_agent.runtime import Runner, ToolLog, build_model
 from walkie_agent.scripting import agent_tool
 from walkie_agent.scripting.agent_tool import AgentScripts

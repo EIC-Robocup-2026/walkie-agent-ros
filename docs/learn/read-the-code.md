@@ -10,7 +10,7 @@ The first group imports no ROS, and most of the tests for it need no ROS either.
 | File | What's in it | Tests |
 | ---- | ------------- | ----- |
 | `src/walkie_agent/errors.py` | `StepError` and its codes | `tests/test_errors.py` |
-| `src/walkie_agent/capabilities/` | The verb protocols on `ctx`, the guards, the cancel token, `SystemFacts`, `FakeRobot` | `tests/test_capabilities.py`, `tests/test_facts.py`, `tests/test_fake_robot.py` |
+| `src/walkie_agent/capabilities/` | The verb protocols on `ctx`, their `Unavailable*` stand-ins such as `UnavailableVision`, the guards, the cancel token, `SystemFacts`, `FakeRobot` | `tests/test_capabilities.py`, `tests/test_facts.py`, `tests/test_fake_robot.py`, `tests/test_ros_vision.py`, `tests/test_ros_base.py` |
 | `src/walkie_agent/tools/atomic/` | The tools, as plain functions, and the four tool sets | `tests/test_atomics.py`, `tests/test_arm_atomics.py`, `tests/test_facts.py`, `tests/test_tool_sets.py` |
 | `src/walkie_agent/arm/` | The named arm poses and the robot model they are checked against, what the arms are known to be in, and the wording and the drive check every arm backend shares | `tests/test_arm_poses.py`, `tests/test_arm_answers.py`, `tests/test_fake_arms.py` |
 | `src/walkie_agent/adapter.py` | Turns an atomic into a LangChain tool or a plain callable | `tests/test_adapter.py` |
@@ -33,7 +33,7 @@ connector, against a fake robot on a private domain. None of them is the robot's
 | `src/walkie_agent/ros/base.py` | `RosBase`: goals, TF, cancels and their limits | `tests/test_ros_base.py` |
 | `src/walkie_agent/ros/commander.py`, `arms.py` | `CommanderClient`, for `bimanual_commander`'s actions and services, and `RosArms`, the `ctx.arms` built on it | `tests/test_commander.py`, `tests/test_ros_arms.py` |
 | `src/walkie_agent/ros/speech.py` | `RosSpeech`, which publishes on `/to_human` | `tests/test_ros_speech.py` |
-| `src/walkie_agent/ros/vision.py` | `UnavailableVision`, which refuses, and `RosVision`, which reads `/walkie_vision/people` with `--vision` | `tests/test_ros_vision.py`, `tests/test_ros_base.py` |
+| `src/walkie_agent/ros/vision.py` | `RosVision`, which reads `/walkie_vision/people` with `--vision` | `tests/test_ros_vision.py` |
 | `src/walkie_agent/perception/people.py` | The pose and gesture phrases `find_people` gives, from the gesture rules' names | `tests/test_ros_vision.py` |
 | `src/walkie_agent/perception/geometry.py` | The map-frame yaw of a pixel's ray, the torso and ankle pixels a person's bearing comes from, and the person's distance where the ankles' rays meet the floor | `tests/test_perception_geometry.py`, `tests/test_ros_vision.py` |
 | `src/walkie_agent/ros/io.py` | `RosBridge`, for the operator's topics | `tests/test_ros_bridge.py` |

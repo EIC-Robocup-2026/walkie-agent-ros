@@ -95,6 +95,7 @@ from walkie_agent.capabilities import (
     UnavailableFacts,
     UnavailableMemory,
     UnavailableObjectMemory,
+    UnavailableVision,
 )
 from walkie_agent.capabilities.facts import facts_from_config
 from walkie_agent.locations import Location, load_locations
@@ -115,7 +116,7 @@ from walkie_agent.ros.io import (
 from walkie_agent.ros.object_memory import RosObjectMemory
 from walkie_agent.ros.people_memory import RosPeopleMemory
 from walkie_agent.ros.speech import RosSpeech
-from walkie_agent.ros.vision import RosVision, UnavailableVision
+from walkie_agent.ros.vision import RosVision
 from walkie_agent.runtime import Runner, ToolLog, build_agent
 from walkie_agent.runtime.model import (
     agent_settings,

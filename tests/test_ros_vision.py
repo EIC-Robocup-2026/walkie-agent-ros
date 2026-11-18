@@ -43,7 +43,7 @@ from walkie_vision_msgs.msg import (
     PersonDetectionArray,
 )
 
-from walkie_agent.capabilities import ObjectSeen, Pose2D
+from walkie_agent.capabilities import ObjectSeen, Pose2D, UnavailableVision
 from walkie_agent.capabilities.fake import GESTURES, POSES
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
@@ -66,7 +66,6 @@ from walkie_agent.ros.vision import (
     TF_WAIT_S,
     UNKNOWN_PLACE,
     RosVision,
-    UnavailableVision,
 )
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, FAKE_REID_MODEL, hash_vector
 from walkie_agent.sim.oracle_perception import ORACLE_QOS, OracleConfig, draw_detections

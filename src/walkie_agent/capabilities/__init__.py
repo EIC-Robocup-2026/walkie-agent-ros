@@ -19,7 +19,7 @@ from typing import NoReturn, Protocol
 
 from walkie_agent.arm.poses import ArmPose
 from walkie_agent.arm.state import ArmsState
-from walkie_agent.capabilities.guards import CancelToken
+from walkie_agent.capabilities.guards import CancelToken, begin_lookup
 from walkie_agent.capabilities.records import (
     Arm,
     ArmsMoved,
@@ -75,6 +75,7 @@ __all__ = [
     "UnavailableFacts",
     "UnavailableMemory",
     "UnavailableObjectMemory",
+    "UnavailableVision",
     "Vision",
 ]
 
@@ -144,6 +145,26 @@ class Vision(Protocol):
     def objects(self, query: str = "", *, timeout_s: float = 5.0) -> list[ObjectSeen]: ...
 
     def people(self, query: str = "", *, timeout_s: float = 5.0) -> list[PersonSeen]: ...
+
+
+class UnavailableVision:
+    """Checks a verb's arguments and the latch like a real backend, then raises UNAVAILABLE.
+
+    The ctx.vision of a robot run without --vision. An empty list would say that
+    nothing is in view, and a remembered database row is not a current view, so
+    neither stands in for a backend.
+    """
+
+    def __init__(self, cancel: CancelToken) -> None:
+        self._cancel = cancel
+
+    def objects(self, query: str = "", *, timeout_s: float = 5.0) -> list[ObjectSeen]:
+        begin_lookup(self._cancel, query, timeout_s, "looking for objects")
+        raise StepError(ErrorCode.UNAVAILABLE, "Live object perception is not connected.")
+
+    def people(self, query: str = "", *, timeout_s: float = 5.0) -> list[PersonSeen]:
+        begin_lookup(self._cancel, query, timeout_s, "looking for people")
+        raise StepError(ErrorCode.UNAVAILABLE, "Live people perception is not connected.")
 
 
 class Arms(Protocol):

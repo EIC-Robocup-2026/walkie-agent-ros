@@ -18,6 +18,7 @@ from walkie_agent.capabilities import (
 from walkie_agent.capabilities.guards import (
     MAX_MOVE_M,
     CancelToken,
+    begin_lookup,
     check_relative_move,
     is_finite_number,
     relative_goal,
@@ -69,6 +70,30 @@ def test_require_text_leaves_a_blank_string_to_the_verb():
 @pytest.mark.parametrize("bad", [0.0, -1.0, float("nan"), float("inf"), True])
 def test_require_timeout_refuses_a_wait_with_no_bound(bad):
     assert code_of(require_timeout, bad) is ErrorCode.REFUSED
+
+
+def test_begin_lookup_checks_the_bound_then_the_query_then_the_latch():
+    token = CancelToken()
+    begin_lookup(token, "", 1.0, "looking for people")
+    token.cancel()
+    with pytest.raises(StepError) as bound:
+        begin_lookup(token, 3, 0, "looking for people")
+    assert (bound.value.code, bound.value.message) == (
+        ErrorCode.REFUSED,
+        "Refused: timeout_s must be positive, not 0.",
+    )
+    with pytest.raises(StepError) as query:
+        begin_lookup(token, 3, 1.0, "looking for people")
+    assert (query.value.code, query.value.message) == (
+        ErrorCode.REFUSED,
+        "Refused: query must be text.",
+    )
+    with pytest.raises(StepError) as latch:
+        begin_lookup(token, "", 1.0, "looking for people")
+    assert (latch.value.code, latch.value.message) == (
+        ErrorCode.CANCELLED,
+        "Cancelled looking for people: a stop is in effect.",
+    )
 
 
 @pytest.mark.parametrize(

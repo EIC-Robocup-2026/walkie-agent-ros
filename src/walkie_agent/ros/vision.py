@@ -1,8 +1,7 @@
-"""ctx.vision on the robot: UnavailableVision, or RosVision over walkie-vision's arrays.
+"""ctx.vision on the robot with --vision: RosVision over walkie-vision's arrays.
 
-UnavailableVision raises UNAVAILABLE from both verbs. An empty list would say that nothing
-is in view, and a remembered database row is not a current view, so neither stands in
-for a backend. main uses it unless the agent is started with --vision.
+Without --vision, main uses capabilities.UnavailableVision, which raises UNAVAILABLE
+from both verbs.
 
 RosVision reads people from the newest PersonDetectionArray on /walkie_vision/people,
 and objects from the newest ObjectDetectionArray on /walkie_vision/objects, which
@@ -79,7 +78,7 @@ from tf2_ros import TransformException
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 
 from walkie_agent.capabilities import Base, ObjectSeen, PersonSeen, Pose2D
-from walkie_agent.capabilities.guards import CancelToken, require_text, require_timeout
+from walkie_agent.capabilities.guards import CancelToken, begin_lookup
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
 from walkie_agent.perception.geometry import (
@@ -159,20 +158,6 @@ class Namer(Protocol):
     def __call__(self, person_ids: Sequence[str], *, timeout_s: float) -> Mapping[str, str]: ...
 
 
-class UnavailableVision:
-    """Checks a verb's arguments and the latch like a real backend, then raises UNAVAILABLE."""
-
-    def __init__(self, cancel: CancelToken) -> None:
-        self._cancel = cancel
-
-    def objects(self, query: str = "", *, timeout_s: float = 5.0) -> list[ObjectSeen]:
-        return _no_objects(self._cancel, query, timeout_s)
-
-    def people(self, query: str = "", *, timeout_s: float = 5.0) -> list[PersonSeen]:
-        _begin(self._cancel, query, timeout_s, "looking for people")
-        raise StepError(ErrorCode.UNAVAILABLE, "Live people perception is not connected.")
-
-
 class RosVision:
     """people() and objects() from walkie-vision's newest people and object arrays.
 
@@ -248,7 +233,7 @@ class RosVision:
 
     def objects(self, query: str = "", *, timeout_s: float = 5.0) -> list[ObjectSeen]:
         what = "looking for objects"
-        _begin(self._cancel, query, timeout_s, what)
+        begin_lookup(self._cancel, query, timeout_s, what)
         deadline = time.monotonic() + timeout_s
         message = self._fresh_array(min(self._wait_s, timeout_s), what, objects=True)
         wanted = query.strip().lower()
@@ -271,7 +256,7 @@ class RosVision:
 
     def people(self, query: str = "", *, timeout_s: float = 5.0) -> list[PersonSeen]:
         what = "looking for people"
-        _begin(self._cancel, query, timeout_s, what)
+        begin_lookup(self._cancel, query, timeout_s, what)
         deadline = time.monotonic() + timeout_s
         message = self._fresh_array(min(self._wait_s, timeout_s), what)
         named = self._names(message, deadline)
@@ -614,12 +599,6 @@ def _is_name(wanted: str, name: str | None) -> bool:
     return name is not None and name.strip().lower() == wanted
 
 
-def _begin(cancel: CancelToken, query: str, timeout_s: float, what: str) -> None:
-    require_timeout(timeout_s)
-    require_text(query=query)
-    cancel.check(what)
-
-
 def _bearing_deg(
     pixels: list[tuple[float, float]],
     ankles: list[tuple[float, float]],
@@ -645,11 +624,6 @@ def _bearing_deg(
             yaw = centred
     # + 0.0 turns -0.0 into 0.0, so a person straight ahead never reads as "-0".
     return round(wrap_deg(math.degrees(yaw - pose.yaw)), 1) + 0.0
-
-
-def _no_objects(cancel: CancelToken, query: str, timeout_s: float) -> list[ObjectSeen]:
-    _begin(cancel, query, timeout_s, "looking for objects")
-    raise StepError(ErrorCode.UNAVAILABLE, "Live object perception is not connected.")
 
 
 def stale_message(topic: str, age_s: float | None, max_age_s: float, wait_s: float) -> str:

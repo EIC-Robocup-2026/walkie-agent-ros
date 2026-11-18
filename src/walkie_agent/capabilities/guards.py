@@ -134,6 +134,18 @@ def require_timeout(timeout_s: float) -> None:
         raise StepError(ErrorCode.REFUSED, f"Refused: timeout_s must be positive, not {timeout_s:g}.")
 
 
+def begin_lookup(cancel: CancelToken, query: str, timeout_s: float, what: str) -> None:
+    """The guards that open a vision lookup: the bound, the query, then the latch.
+
+    Raises StepError REFUSED for a `timeout_s` that does not bound a wait or a `query`
+    that is not text, and CANCELLED while `cancel` is set. `what` names the step in
+    the CANCELLED message.
+    """
+    require_timeout(timeout_s)
+    require_text(query=query)
+    cancel.check(what)
+
+
 def require_person_details(
     name: str, facts: Mapping[str, str] | None
 ) -> tuple[str, dict[str, str]]:

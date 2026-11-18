@@ -6,12 +6,14 @@ into this one. PYTHONPATH puts this tree's src first, because the environment's
 editable install of walkie_agent can point at another checkout.
 """
 
+import ast
 import importlib.util
 import json
 import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -66,13 +68,21 @@ FAKE_ROS_IMPORT = 'import sys, types\nsys.modules["rclpy"] = types.ModuleType("r
 ROS = re.compile(r"rclpy|rai|rai_.*|rosidl_.*|.*_msgs|.*_srvs|.*_interfaces")
 
 # The modules of the RAI-hosted agent, in any spelling of an import or a path. The
-# walkie_agent.tools package that holds the atomics now is not one of them.
+# walkie_agent.tools package that holds the atomics now is not one of them. Also the
+# names that left walkie_agent.ros.vision, on one line; the syntax-tree check below
+# catches them in every other shape.
 REMOVED = re.compile(
     r"walkie_agent[./](agent|graph|todo|whoami)\b"
     r"|walkie_agent[./]tools[./](memory|navigation|speech|todos|waiters)\b"
     r"|from walkie_agent import [^\n]*\b(agent|graph|todo|whoami)\b"
     r"|from walkie_agent\.tools import [^\n]*\b(memory|navigation|speech|todos|waiters)\b"
+    r"|walkie_agent[./]ros[./]vision[.:](UnavailableVision|_begin|_no_objects)\b"
+    r"|from walkie_agent\.ros\.vision import [^\n]*\b(UnavailableVision|_begin|_no_objects)\b"
 )
+# UnavailableVision moved to walkie_agent.capabilities, and the lookup guard _begin,
+# which _no_objects wrapped, to walkie_agent.capabilities.guards as begin_lookup.
+ROS_VISION = "walkie_agent.ros.vision"
+LEFT_ROS_VISION = frozenset({"UnavailableVision", "_begin", "_no_objects"})
 REMOVED_NAMES = re.compile(r"\b(TodoList|WalkieToolRunner|WalkieAgent|build_walkie_graph)\b")
 CODE_AND_BUILD = [
     "src",
@@ -196,6 +206,130 @@ def test_no_code_uses_a_removed_class():
     assert _mentions(_files_under("src", "scripts"), REMOVED_NAMES) == []
 
 
+def _imported_module(node: ast.ImportFrom, file: Path) -> str | None:
+    """The absolute module an import names, resolving a relative one by the file's package."""
+    if node.level == 0:
+        return node.module
+    if not file.is_relative_to(SRC):
+        return None
+    package = file.relative_to(SRC).with_suffix("").parts[: -node.level]
+    return ".".join([*package, node.module] if node.module else package)
+
+
+def _reads_a_name_that_left_ros_vision(file: Path) -> list[str]:
+    """Where `file` imports a name in LEFT_ROS_VISION from walkie_agent.ros.vision or reads it
+    as an attribute of that module, under any name the file gives the module.
+
+    It reads the syntax tree rather than lines, so an import in parentheses over several
+    lines counts, and a docstring that names the old home does not.
+    """
+    tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+    module_names = {ROS_VISION}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            module_names |= {a.asname for a in node.names if a.name == ROS_VISION and a.asname}
+        elif isinstance(node, ast.ImportFrom) and _imported_module(node, file) == "walkie_agent.ros":
+            module_names |= {a.asname or a.name for a in node.names if a.name == "vision"}
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and _imported_module(node, file) == ROS_VISION:
+            found += [
+                f"{file.name}:{node.lineno}: imports {a.name}"
+                for a in node.names
+                if a.name in LEFT_ROS_VISION
+            ]
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr in LEFT_ROS_VISION
+            and ast.unparse(node.value) in module_names
+        ):
+            found.append(f"{file.name}:{node.lineno}: reads {ast.unparse(node)}")
+    return sorted(found)
+
+
+def _module_level_names(tree: ast.Module) -> Iterator[tuple[str, int]]:
+    """Each name a module binds outside its functions and classes, with its line."""
+    stack: list[ast.AST] = list(tree.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            yield node.name, node.lineno
+            continue
+        if isinstance(node, ast.Lambda):
+            continue
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            for alias in node.names:
+                yield alias.asname or alias.name.partition(".")[0], node.lineno
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            yield node.id, node.lineno
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _binds_a_name_that_left_ros_vision(file: Path) -> list[str]:
+    """Where `file` binds a name in LEFT_ROS_VISION at module level, which in
+    walkie_agent/ros/vision.py would put it back at its old home: a re-export or a copy.
+    """
+    tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
+    return sorted(
+        f"{file.name}:{line}: binds {name}"
+        for name, line in _module_level_names(tree)
+        if name in LEFT_ROS_VISION
+    )
+
+
+def test_no_code_takes_a_name_from_its_old_home_in_ros_vision():
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    assert [found for file in code for found in _reads_a_name_that_left_ros_vision(file)] == []
+    assert _binds_a_name_that_left_ros_vision(SRC / "walkie_agent" / "ros" / "vision.py") == []
+
+
+def test_the_tree_check_would_catch_a_name_back_in_ros_vision(tmp_path):
+    caller = tmp_path / "caller.py"
+    caller.write_text(
+        "import walkie_agent.ros.vision\n"
+        "import walkie_agent.ros.vision as live\n"
+        "from walkie_agent.ros import vision as vision_module\n"
+        "from walkie_agent.ros.vision import (\n"
+        "    RosVision,\n"
+        "    UnavailableVision,\n"
+        ")\n"
+        "a = vision_module.UnavailableVision\n"
+        "b = live._begin\n"
+        "c = walkie_agent.ros.vision._no_objects\n"
+    )
+    assert len(_reads_a_name_that_left_ros_vision(caller)) == 4
+    shim = tmp_path / "vision.py"
+    shim.write_text(
+        "from walkie_agent.capabilities import (\n"
+        "    ObjectSeen,\n"
+        "    UnavailableVision,\n"
+        ")\n"
+        "def _begin(cancel, query, timeout_s, what): ...\n"
+        "_no_objects = None\n"
+    )
+    assert len(_binds_a_name_that_left_ros_vision(shim)) == 3
+    # RosVision stays in walkie_agent.ros.vision, a fake's own _begin is not the guard,
+    # and an import inside a function is not a re-export.
+    good = tmp_path / "good.py"
+    good.write_text(
+        '"""Without --vision, main uses capabilities.UnavailableVision."""\n'
+        "from walkie_agent.ros import vision as vision_module\n"
+        "from walkie_agent.ros.vision import RosVision\n"
+        "from walkie_agent.capabilities import UnavailableVision as Stand_in\n"
+        "from walkie_agent.capabilities.guards import begin_lookup\n"
+        "a = vision_module.RosVision\n"
+        "class Fake:\n"
+        "    def _begin(self): ...\n"
+        "    def objects(self):\n"
+        "        self._begin()\n"
+        "def stand_in(cancel):\n"
+        "    from walkie_agent.capabilities import UnavailableVision\n"
+        "    return UnavailableVision(cancel)\n"
+    )
+    assert _reads_a_name_that_left_ros_vision(good) == []
+    assert _binds_a_name_that_left_ros_vision(good) == []
+
+
 def test_tests_cannot_read_a_dotenv_file(tmp_path, monkeypatch):
     dotenv = pytest.importorskip("dotenv")
     secrets = tmp_path / ".env"
@@ -211,14 +345,19 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         "from walkie_agent.graph import x\n"
         "from walkie_agent.tools.todos import y\n"
         "from walkie_agent.tools import waiters, memory\n"
+        "from walkie_agent.ros.vision import RosVision, UnavailableVision\n"
+        'monkeypatch.setattr("walkie_agent.ros.vision._begin", fake)\n'
     )
-    assert len(_mentions([bad], REMOVED)) == 3
-    # The tools package that holds the atomics is not the removed one.
+    assert len(_mentions([bad], REMOVED)) == 5
+    # The tools package that holds the atomics is not the removed one, and
+    # walkie_agent.ros.vision still holds RosVision.
     good = tmp_path / "good.py"
     good.write_text(
         "from walkie_agent import tools, errors\n"
         "from walkie_agent.tools import atomic\n"
         "import walkie_agent.tools.atomic.memory\n"
+        "from walkie_agent.ros.vision import RosVision\n"
+        "from walkie_agent.capabilities import UnavailableVision\n"
     )
     assert _mentions([good], REMOVED) == []
 

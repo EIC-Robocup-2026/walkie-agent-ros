@@ -854,9 +854,6 @@ class RosSpeech:  # Speech over /to_human, with the speech id rotated on /voice_
     def close(self) -> None: ...
 
 # walkie_agent.ros.vision
-class UnavailableVision:  # Vision: checks its arguments and the latch, then UNAVAILABLE
-    def __init__(self, cancel): ...
-
 class RosVision:  # Vision with --vision: people from /walkie_vision/people (added in S1)
     def __init__(self, connector, base, cancel, *, topic=..., max_age_s=1.0, wait_s=1.0, ...): ...
     def close(self) -> None: ...
@@ -925,6 +922,9 @@ class Application:
     def close(self, timeout_s=5.0) -> bool: ...  # False leaves endpoints alive; call it again
     def unresolved(self) -> list[str]: ...
 ```
+
+Without `--vision`, `ctx.vision` is `walkie_agent.capabilities.UnavailableVision`,
+which imports no ROS: it checks its arguments and the latch, then raises `UNAVAILABLE`.
 
 `assemble` builds `RosBase`, `RosSpeech`, `UnavailableVision`, or `RosVision` when asked
 with `vision=True`, and `RosBridge`, then

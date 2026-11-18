@@ -36,7 +36,7 @@ from ros_fakes import (
 from walkie_agent.arm.answers import drive_verdict
 from walkie_agent.arm.results import NOT_FOUND, DriveCheck
 from walkie_agent.arm.state import ARMS_OUT, ArmsState, ArmState
-from walkie_agent.capabilities import Ctx, PersonSeen
+from walkie_agent.capabilities import Ctx, PersonSeen, UnavailableVision
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location
@@ -44,7 +44,6 @@ from walkie_agent.ros.base import RosBase
 from walkie_agent.ros.commander import STOP_TOPIC
 from walkie_agent.ros.policy import FORBIDDEN_NAMES
 from walkie_agent.ros.speech import RosSpeech
-from walkie_agent.ros.vision import UnavailableVision
 from walkie_agent.tools.atomic import face_person, move_relative
 
 PLACES = {

@@ -28,11 +28,17 @@ from runtime_harness import ScriptedModel, ai, call, drive, todo_call, update
 
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.main import Application, assemble
-from walkie_agent.ros.io import CONSOLE_TOPIC, INPUT_TOPIC, RESET_TOPIC, TASK_TOPIC, TODOS_TOPIC
+from walkie_agent.ros.operator_topics import (
+    CONSOLE_TOPIC,
+    INPUT_TOPIC,
+    RESET_TOPIC,
+    TASK_TOPIC,
+    TODOS_TOPIC,
+)
 from walkie_agent.ros.speech import SPEECH_TOPIC
 from walkie_agent.runtime import STOP_LINE
 from walkie_agent.runtime.middleware import AFTER_STOP
-from walkie_agent.tasks import TaskTemplate
+from walkie_agent.runtime.task_templates import TaskTemplate
 
 DONE = AIMessage("Done.")
 # A drive this long has ten steps of 0.2 s, so a cancel lands well before the arrival.

@@ -13,6 +13,7 @@ from runtime_harness import add, ai, call, drive, make_stack, remove, todo_call,
 
 from walkie_agent.capabilities import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.runtime.task_templates import parse_task_message
 from walkie_agent.runtime.todos import (
     TodoOp,
     TodoRejected,
@@ -23,7 +24,6 @@ from walkie_agent.runtime.todos import (
     public,
     render,
 )
-from walkie_agent.tasks import parse_task_message
 
 NEEDS_DRIVE = {"content": "Go to the sofa", "requires_tool": "go_to"}
 DONE = AIMessage("Done.")

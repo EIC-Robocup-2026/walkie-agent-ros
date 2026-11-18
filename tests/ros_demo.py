@@ -51,11 +51,11 @@ from tf2_ros import Buffer, TransformListener
 from walkie_agent.errors import ErrorCode
 from walkie_agent.locations import load_locations
 from walkie_agent.main import NODE_NAME, Application, assemble
-from walkie_agent.ros.io import CONSOLE_TOPIC, TODOS_TOPIC
+from walkie_agent.ros.operator_topics import CONSOLE_TOPIC, TODOS_TOPIC
 from walkie_agent.ros.speech import SPEECH_TOPIC
 from walkie_agent.runtime import STOP_LINE, ToolLog
 from walkie_agent.runtime.middleware import AFTER_STOP
-from walkie_agent.tasks import TaskTemplate
+from walkie_agent.runtime.task_templates import TaskTemplate
 
 ROUTER_HOST, ROUTER_PORT = "127.0.0.1", 7499
 FAST_DRIVE_S = 0.2
@@ -378,7 +378,7 @@ def run_fake(args: argparse.Namespace, report: Report) -> None:
     robot = ObservedWalkie(drive_time_sec=FAST_DRIVE_S)
     operator = Operator()
     warnings = _Warnings()
-    logging.getLogger("walkie_agent.ros.io").addHandler(warnings)
+    logging.getLogger("walkie_agent.ros.operator_topics").addHandler(warnings)
     model = ScriptedModel(script=fake_script())
     app: Application | None = None
     connector: ROS2Connector | None = None

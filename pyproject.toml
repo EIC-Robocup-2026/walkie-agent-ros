@@ -46,7 +46,6 @@ source_modules = [
     "walkie_agent.arm",
     "walkie_agent.errors",
     "walkie_agent.locations",
-    "walkie_agent.tasks",
     "walkie_agent.config",
     "walkie_agent.chat_models",
     "walkie_agent.prompts",
@@ -68,7 +67,7 @@ as_packages = false
 allow_indirect_imports = true
 source_modules = ["walkie_agent", "walkie_agent.ros", "walkie_agent.tools"]
 # The external packages also keep the ros init inside backends-dont-see-the-llm,
-# which cannot name the init without also naming io.
+# which cannot name the init without also naming operator_topics.
 forbidden_modules = [
     "walkie_agent",
     "walkie_agent.**",
@@ -82,8 +81,8 @@ forbidden_modules = [
 id = "backends-dont-see-the-llm"
 name = "The ROS backends and the simulation never import the LLM runtime, the tools, the prompts or LangChain"
 type = "forbidden"
-# Every module and subpackage of walkie_agent.ros but io, which bridges the operator's
-# topics to the Runner, and but the package init, which package-inits-stay-empty keeps
+# Every module and subpackage of walkie_agent.ros but operator_topics, which bridges the
+# operator's topics to the Runner, and but the package init, which package-inits-stay-empty keeps
 # free of the agent and LangChain. tests/test_import_contracts.py fails when a module or
 # subpackage of walkie_agent.ros is missing here.
 source_modules = [

@@ -22,7 +22,7 @@ from rclpy.node import Node
 from std_msgs.msg import Empty, String
 
 from walkie_agent.errors import StepError
-from walkie_agent.ros.io import (
+from walkie_agent.ros.operator_topics import (
     CONSOLE_TOPIC,
     INPUT_TOPIC,
     LATCHED_QOS,

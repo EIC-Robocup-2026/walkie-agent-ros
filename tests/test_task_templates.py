@@ -1,4 +1,4 @@
-"""Task templates and /walkie/task messages (walkie_agent.tasks, ADR-0041). No ROS."""
+"""Task templates and /walkie/task messages (walkie_agent.runtime.task_templates, ADR-0041). No ROS."""
 
 import json
 import re
@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 
 from conftest import PROJECT_ROOT
-from walkie_agent.runtime.todos import parse_seed
-from walkie_agent.tasks import (
+from walkie_agent.runtime.task_templates import (
     TaskTemplate,
     check_required_tools,
     load_task_templates,
     parse_task_message,
 )
+from walkie_agent.runtime.todos import parse_seed
 from walkie_agent.tools.sets import DEFAULT, GPSR, HRI
 
 TEMPLATES_FILE = PROJECT_ROOT / "config" / "task_templates.toml"

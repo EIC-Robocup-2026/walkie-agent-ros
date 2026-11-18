@@ -59,11 +59,11 @@ from walkie_agent.ros.commander import READ_TIMEOUT_S, CommanderClient
 from walkie_agent.ros.speech import RosSpeech
 from walkie_agent.ros.vision import RosVision
 from walkie_agent.runtime import Runner, ToolLog
+from walkie_agent.runtime.task_templates import TaskTemplate
 from walkie_agent.scripting import agent_tool
 from walkie_agent.scripting.agent_tool import AgentScripts
 from walkie_agent.scripting.sandbox import SandboxUnavailable
 from walkie_agent.scripting.shelf import Shelf
-from walkie_agent.tasks import TaskTemplate
 from walkie_agent.tools.atomic import get_facts, list_places
 from walkie_agent.tools.sets import (
     ARM_TOOLS,

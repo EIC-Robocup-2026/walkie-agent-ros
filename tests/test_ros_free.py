@@ -25,7 +25,7 @@ IMPORT_EVERY_NEW_MODULE = """
 import importlib, json, pkgutil, sys
 import walkie_agent.tools.atomic, walkie_agent.capabilities, walkie_agent.perception, walkie_agent.runtime
 import walkie_agent.arm, walkie_agent.scripting
-names = ["walkie_agent.errors", "walkie_agent.tasks", "walkie_agent.locations"]
+names = ["walkie_agent.errors", "walkie_agent.locations"]
 names += ["walkie_agent.config", "walkie_agent.chat_models", "walkie_agent.prompts"]
 names += ["walkie_agent.tools", "walkie_agent.tools.adapter", "walkie_agent.tools.sets"]
 names += ["walkie_agent.tools.bundled_preset"]
@@ -92,6 +92,10 @@ REMOVED = re.compile(
     r"|_LIVE_OBJECT_INFO_LINE|_LIVE_MEMORY_RULE|_SCRIPTS_RULE|_RULES_END)\b"
     r"|\bruntime([./]agent)?[.:]SYSTEM_PROMPT\b"
     r"|from walkie_agent\.runtime(\.agent)? import [^\n]*\bSYSTEM_PROMPT\b"
+    r"|walkie_agent[./]tasks\b"
+    r"|from walkie_agent import [^\n]*\btasks\b"
+    r"|walkie_agent[./]ros[./]io\b"
+    r"|from walkie_agent\.ros import [^\n]*\bio\b"
 )
 # UnavailableVision moved to walkie_agent.capabilities, and the lookup guard _begin,
 # which _no_objects wrapped, to walkie_agent.capabilities.guards as begin_lookup.
@@ -99,6 +103,9 @@ REMOVED = re.compile(
 # The adapter moved to walkie_agent.tools.adapter. The system prompts, their rules and
 # build_system_prompt left main.py, and SYSTEM_PROMPT walkie_agent.runtime, for
 # walkie_agent.prompts; `main.` also catches a test's `import walkie_agent.main as main`.
+# The task templates moved to walkie_agent.runtime.task_templates, and RosBridge's
+# module walkie_agent.ros.io to walkie_agent.ros.operator_topics; the gym's own
+# walkie_agent.mahoraga.tasks stays.
 ROS_VISION = "walkie_agent.ros.vision"
 LEFT_ROS_VISION = frozenset({"UnavailableVision", "_begin", "_no_objects"})
 RUNTIME = SRC / "walkie_agent" / "runtime"
@@ -181,7 +188,6 @@ def test_importing_every_new_module_loads_no_ros():
     assert ros == []
     assert {
         "walkie_agent.errors",
-        "walkie_agent.tasks",
         "walkie_agent.locations",
         "walkie_agent.config",
         "walkie_agent.chat_models",
@@ -210,6 +216,7 @@ def test_importing_every_new_module_loads_no_ros():
         "walkie_agent.runtime.agent",
         "walkie_agent.runtime.middleware",
         "walkie_agent.runtime.runner",
+        "walkie_agent.runtime.task_templates",
         "walkie_agent.runtime.todos",
         "walkie_agent.perception",
         "walkie_agent.perception.gestures",
@@ -554,6 +561,46 @@ def test_the_tree_check_would_catch_a_system_prompt_back_in_main_or_the_runtime(
     assert reads(good_caller) == []
 
 
+def _old_homes(root: Path, dotted: str) -> list[Path]:
+    """Return what exists at a module path: a module, a package or a namespace directory."""
+    base = root.joinpath(*dotted.split("."))
+    return [path for path in (base.with_suffix(".py"), base) if path.exists()]
+
+
+def test_the_task_templates_and_operator_topics_did_not_come_back_to_their_old_homes():
+    # They live in walkie_agent.runtime.task_templates and walkie_agent.ros.operator_topics
+    # now. The package inits cannot re-export them (package-inits-stay-empty in
+    # pyproject.toml), but a module or a package at the old path could re-export them
+    # without naming the old path anywhere the REMOVED sweep looks.
+    assert _old_homes(SRC, "walkie_agent.tasks") == []
+    assert _old_homes(SRC, "walkie_agent.ros.io") == []
+
+
+def test_the_old_home_check_would_catch_a_module_or_a_package(tmp_path):
+    shim = "from walkie_agent.runtime.task_templates import TaskTemplate\n"
+    bad = tmp_path / "bad"
+    module = bad / "walkie_agent" / "tasks.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(shim)
+    package = bad / "walkie_agent" / "ros" / "io" / "__init__.py"
+    package.parent.mkdir(parents=True)
+    package.write_text(shim)
+    assert _old_homes(bad, "walkie_agent.tasks") == [module]
+    assert _old_homes(bad, "walkie_agent.ros.io") == [package.parent]
+    # A directory without an init still imports, as a namespace package.
+    namespace = tmp_path / "namespace" / "walkie_agent" / "tasks" / "templates.py"
+    namespace.parent.mkdir(parents=True)
+    namespace.write_text(shim)
+    assert _old_homes(tmp_path / "namespace", "walkie_agent.tasks") == [namespace.parent]
+    # Neither the new homes nor the gym's own tasks module count as an old home.
+    good = tmp_path / "good" / "walkie_agent"
+    for path in ("runtime/task_templates.py", "ros/operator_topics.py", "mahoraga/tasks.py"):
+        (good / path).parent.mkdir(parents=True, exist_ok=True)
+        (good / path).write_text(shim)
+    assert _old_homes(good.parent, "walkie_agent.tasks") == []
+    assert _old_homes(good.parent, "walkie_agent.ros.io") == []
+
+
 def test_the_tree_check_would_catch_a_name_back_in_ros_vision(tmp_path):
     caller = tmp_path / "caller.py"
     caller.write_text(
@@ -635,11 +682,20 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         "from walkie_agent.runtime.agent import SYSTEM_PROMPT\n"
         "assert received == SystemMessage(runtime.SYSTEM_PROMPT)\n"
         'monkeypatch.setattr("walkie_agent.runtime.agent.SYSTEM_PROMPT", prompt)\n'
+        "from walkie_agent.tasks import TaskTemplate, parse_task_message\n"
+        "# src/walkie_agent/tasks.py reads config/task_templates.toml\n"
+        "from walkie_agent import errors, tasks\n"
+        "from walkie_agent.ros.io import RosBridge\n"
+        'caplog.at_level(logging.ERROR, logger="walkie_agent.ros.io")\n'
+        "# src/walkie_agent/ros/io.py bridges the operator's topics\n"
+        "from walkie_agent.ros import speech, io\n"
     )
-    assert len(_mentions([bad], REMOVED)) == 22
+    assert len(_mentions([bad], REMOVED)) == 29
     # The tools package that holds the atomics is not the removed one,
     # walkie_agent.ros.vision still holds RosVision, the runtime package stays,
     # and the adapter's new home in the tools package is not the removed module.
+    # Neither are the task templates' new home, the gym's own tasks module, the
+    # operator topics' new home, or a ros module whose name only starts with io.
     good = tmp_path / "good.py"
     good.write_text(
         "from walkie_agent import tools, errors\n"
@@ -662,6 +718,19 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         "assert domain.build_system_prompt is not None\n"
         "def build_agent(model, ctx, *, system_prompt: str = SYSTEM_PROMPT): ...\n"
         'caplog.at_level(logging.WARNING, logger="walkie_agent.runtime.agent")\n'
+        "from walkie_agent.runtime.task_templates import TaskTemplate, parse_task_message\n"
+        "from walkie_agent.runtime import task_templates, todos\n"
+        "# src/walkie_agent/runtime/task_templates.py reads config/task_templates.toml\n"
+        "import walkie_agent.mahoraga.tasks as tasks\n"
+        "from walkie_agent.mahoraga import tasks\n"
+        "# src/walkie_agent/mahoraga/tasks.py builds the gym's samples\n"
+        "from walkie_agent.evals.mahoraga.tasks import gpsr_task\n"
+        "from walkie_agent.ros.operator_topics import RosBridge\n"
+        'caplog.at_level(logging.ERROR, logger="walkie_agent.ros.operator_topics")\n'
+        "# src/walkie_agent/ros/operator_topics.py bridges the operator's topics\n"
+        "from walkie_agent.ros.object_memory import RosObjectMemory\n"
+        "from walkie_agent.ros import object_memory, operator_topics, io_stats\n"
+        "import walkie_agent.ros.io_stats, walkie_agent.ros.iox\n"
     )
     assert _mentions([good], REMOVED) == []
 

@@ -108,7 +108,8 @@ from walkie_agent.prompts import build_system_prompt
 from walkie_agent.ros.arms import RosArms
 from walkie_agent.ros.base import RosBase
 from walkie_agent.ros.commander import CommanderClient
-from walkie_agent.ros.io import (
+from walkie_agent.ros.object_memory import RosObjectMemory
+from walkie_agent.ros.operator_topics import (
     CONSOLE_TOPIC,
     INPUT_TOPIC,
     RESET_TOPIC,
@@ -116,15 +117,18 @@ from walkie_agent.ros.io import (
     TODOS_TOPIC,
     RosBridge,
 )
-from walkie_agent.ros.object_memory import RosObjectMemory
 from walkie_agent.ros.people_memory import RosPeopleMemory
 from walkie_agent.ros.speech import RosSpeech
 from walkie_agent.ros.vision import RosVision
 from walkie_agent.runtime import Runner, ToolLog, build_agent
+from walkie_agent.runtime.task_templates import (
+    TaskTemplate,
+    check_required_tools,
+    load_task_templates,
+)
 from walkie_agent.scripting.agent_tool import AgentScripts
 from walkie_agent.scripting.sandbox import SandboxUnavailable
 from walkie_agent.scripting.shelf import Shelf
-from walkie_agent.tasks import TaskTemplate, check_required_tools, load_task_templates
 from walkie_agent.tools.sets import TOOL_SETS, bound_tool_names, bound_tools
 
 logger = logging.getLogger(__name__)

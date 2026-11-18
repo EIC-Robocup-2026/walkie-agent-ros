@@ -37,14 +37,14 @@ def test_the_import_contracts_hold():
     assert kept, report
 
 
-def test_the_backend_contract_names_every_ros_module_but_io():
+def test_the_backend_contract_names_every_ros_module_but_operator_topics():
     contracts = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["tool"]["importlinter"]["contracts"]
     (backends,) = [contract for contract in contracts if contract["id"] == "backends-dont-see-the-llm"]
     # Direct children, subpackages included; a named subpackage covers its descendants.
     ros = {
         f"walkie_agent.ros.{child.name}"
         for child in pkgutil.iter_modules([str(SRC / "walkie_agent" / "ros")])
-        if child.name != "io"
+        if child.name != "operator_topics"
     }
     named = {name for name in backends["source_modules"] if name.startswith("walkie_agent.ros.")}
     assert named == ros

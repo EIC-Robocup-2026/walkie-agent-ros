@@ -11,7 +11,7 @@ Runner owns. This split is why most of the agent can be tested with no ROS insta
 | Connector | RAI | Owns the ROS node and its executor, topics and actions | Used by `src/walkie_agent/ros/` and `main.py` |
 | Voice | RAI's `rai_s2s` | Microphone, speech recognition, text to speech | Used by `src/walkie_agent/voice.py` and `half_duplex.py` |
 | Graph | LangChain | The model and tools loop, and the checkpoint | `create_agent`, called in `runtime/agent.py` |
-| Runtime | Walkie | The middlewares, the todo list and the Runner | `src/walkie_agent/runtime/` |
+| Runtime | Walkie | The middlewares, the todo list, the task templates and the Runner | `src/walkie_agent/runtime/` |
 | Tools | Walkie | Plain typed functions over `ctx`, the fixed tool sets, and the adapter to LangChain tools | `src/walkie_agent/tools/` |
 | Verbs | Walkie | `ctx.base`, `ctx.speech` and the rest, with their guards, and `FakeRobot` | `src/walkie_agent/capabilities/` |
 | ROS wrappers | Walkie | The verbs over ROS, and the operator's topics | `src/walkie_agent/ros/` |
@@ -42,7 +42,7 @@ True
 capabilities []
 tools/atomic []
 runtime []
->>> ros_imports(root / "tools" / "adapter.py"), ros_imports(root / "tasks.py")
+>>> ros_imports(root / "tools" / "adapter.py"), ros_imports(root / "runtime" / "task_templates.py")
 ([], [])
 
 ```

@@ -31,9 +31,9 @@ from std_msgs.msg import Bool, Empty, String
 from walkie_agent.capabilities import Ctx, UnavailableVision
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.ros.io import RosBridge
+from walkie_agent.ros.operator_topics import RosBridge
 from walkie_agent.runtime import STOP_LINE, Runner, build_agent
-from walkie_agent.tasks import TaskTemplate
+from walkie_agent.runtime.task_templates import TaskTemplate
 from walkie_agent.tools.adapter import as_tools
 from walkie_agent.tools.atomic import find_objects, find_people
 from walkie_agent.tools.sets import DEFAULT, GPSR, HRI
@@ -145,7 +145,7 @@ def test_a_bare_stop_on_the_input_topic_stops_at_once(serve):
 def test_input_with_an_image_or_audio_is_refused_and_logged(serve, caplog, payload):
     app = serve(then=DONE)
     callback = subscription(app.connector, "/from_human").callback
-    with caplog.at_level(logging.WARNING, logger="walkie_agent.ros.io"):
+    with caplog.at_level(logging.WARNING, logger="walkie_agent.ros.operator_topics"):
         callback(HRIMessage(text="What is this?", **payload))
     idle(app)
 
@@ -172,7 +172,7 @@ def test_a_bare_stop_with_a_payload_still_stops(serve):
 @pytest.mark.parametrize("text", ["", "  \n"])
 def test_input_with_no_text_is_ignored(serve, caplog, text):
     app = serve(then=DONE)
-    with caplog.at_level(logging.WARNING, logger="walkie_agent.ros.io"):
+    with caplog.at_level(logging.WARNING, logger="walkie_agent.ros.operator_topics"):
         subscription(app.connector, "/from_human").callback(HRIMessage(text=text))
     idle(app)
     assert app.stack.model.received == []
@@ -234,7 +234,7 @@ def test_plain_utterance_never_selects_template(serve):
 def test_invalid_task_is_logged_and_ignored(serve, caplog, data):
     app = serve(then=DONE, templates={"tour": TOUR})
     callback = subscription(app.connector, "/walkie/task").callback
-    with caplog.at_level(logging.WARNING, logger="walkie_agent.ros.io"):
+    with caplog.at_level(logging.WARNING, logger="walkie_agent.ros.operator_topics"):
         assert bounded(callback, String(data=data)) is None
     idle(app)
 
@@ -313,7 +313,7 @@ def test_a_verdict_callback_that_raises_is_logged_and_publishes_nothing(caplog):
 
     bridge, connector = bridge_only(on_verdict=broken)
     bridge.open(SimpleNamespace())
-    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.io"):
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.operator_topics"):
         assert bounded(subscription(connector, "/walkie/verdict").callback, Bool(data=True)) is None
     assert "Could not take a message on /walkie/verdict" in caplog.text
     assert texts(connector) == []
@@ -433,7 +433,7 @@ def test_publish_error_does_not_kill_runner(serve, caplog):
 
     console.on_publish = todos.on_publish = broken
     callback = subscription(app.connector, "/from_human").callback
-    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.io"):
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.operator_topics"):
         callback(HRIMessage(text="Plan it."))
         idle(app)
 
@@ -455,7 +455,7 @@ def test_a_broken_clock_loses_the_line_and_nothing_else(caplog):
         raise RuntimeError("the context is gone")
 
     connector.node.clock.on_now = broken
-    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.io"):
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.operator_topics"):
         bridge.on_reply("Lost.")
     assert publisher(connector, "/walkie/console").published == []
     assert "Could not publish a console line" in caplog.text
@@ -503,7 +503,7 @@ def test_a_callback_after_the_runner_closed_logs_and_returns(serve, caplog):
     app = serve(then=DONE)
     assert app.stack.runner.shutdown(WATCHDOG_S)
     callback = subscription(app.connector, "/walkie/reset").callback
-    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.io"):
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.operator_topics"):
         assert bounded(callback, Empty()) is None
     assert "Could not take a message on /walkie/reset" in caplog.text
 
@@ -512,7 +512,7 @@ def test_a_destroy_failure_does_not_stop_the_rest(caplog):
     bridge, connector = bridge_only()
     bridge.open(SimpleNamespace())
     connector.node.destroy_error = RuntimeError("already gone")
-    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.io"):
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.operator_topics"):
         bridge.close()
     assert len(connector.node.destroyed) == 5
     assert "Could not destroy a bridge endpoint" in caplog.text

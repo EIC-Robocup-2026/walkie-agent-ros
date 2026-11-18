@@ -869,7 +869,7 @@ class RosVision:  # Vision with --vision: people from /walkie_vision/people (add
     def __init__(self, connector, base, cancel, *, topic=..., max_age_s=1.0, wait_s=1.0, ...): ...
     def close(self) -> None: ...
 
-# walkie_agent.ros.io
+# walkie_agent.ros.operator_topics
 class RosBridge:  # the operator's topics; see the topic table on The Agent
     def __init__(self, connector, templates, *, input_topic=..., output_topic=..., ...): ...
     def open(self, runner) -> None: ...
@@ -1028,8 +1028,8 @@ Out of scope: CI and ruff jobs, the voice environment split, leaving RAI
   verdict stands in for the scorer.
 - The plan's target for what replaces `agent.py`, `graph.py`, `todo.py`, `tasks.py`
   and `tools/todos.py` is about 575 own lines, against 1,111 before. It measures 1,609:
-  1,447 in `runtime/` and 162 in `tasks.py`. The decided fixes, the Runner's lifecycle and
-  the op-based todo list, 625 lines against the plan's 175, cost more than the estimate.
+  1,447 in `runtime/` and 162 in `tasks.py`, since moved to `runtime/task_templates.py`.
+  The decided fixes, the Runner's lifecycle and the op-based todo list, 625 lines against the plan's 175, cost more than the estimate.
   The ROS wrappers add 1,063 lines, 638 of them in `ros/base.py` because a goal can outlive
   its verb. `main.py` adds 499.
 - The stop's list update is a graph pass with a `stopping` input key rather than

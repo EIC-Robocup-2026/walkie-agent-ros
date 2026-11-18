@@ -117,7 +117,7 @@ ROS. `RosBridge` hands the result to `Runner.submit` with `source="operator"`. A
 is logged and refused. It never queues half a task:
 
 ```pycon
->>> from walkie_agent.tasks import parse_task_message
+>>> from walkie_agent.runtime.task_templates import parse_task_message
 >>> parse_task_message('{"task": "Fetch the mug.", "todos": ["Go to the table", "Pick it up"]}', {})
 ('Fetch the mug.', ['Go to the table', 'Pick it up'])
 >>> parse_task_message('{"task": "Just do it.", "todos": []}', {})
@@ -145,7 +145,7 @@ speech can't start the wrong plan ([ADR-0069](../architecture/decisions/0069-tas
 
 ```pycon
 >>> import pathlib, tempfile
->>> from walkie_agent.tasks import check_required_tools, load_task_templates
+>>> from walkie_agent.runtime.task_templates import check_required_tools, load_task_templates
 >>> folder = tempfile.TemporaryDirectory()
 >>> path = pathlib.Path(folder.name) / "templates.toml"
 >>> _ = path.write_text('''

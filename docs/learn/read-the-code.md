@@ -19,10 +19,10 @@ The first group imports no ROS, and most of the tests for it need no ROS either.
 | `src/walkie_agent/runtime/middleware.py` | The smaller middlewares | `tests/test_runtime.py` |
 | `src/walkie_agent/runtime/agent.py` | `build_agent`, and the middleware order | `tests/test_runtime.py` |
 | `src/walkie_agent/runtime/runner.py` | The queue, stop, reset and shutdown | `tests/test_runtime_runner.py` |
+| `src/walkie_agent/runtime/task_templates.py` | Templates and `/walkie/task` messages | `tests/test_task_templates.py` |
 | `src/walkie_agent/config.py` | Reads `config.toml`, and the agent's run limit and deadline from it | `tests/test_config.py` |
 | `src/walkie_agent/chat_models.py` | Builds the model and the optional fallback from `config.toml` | `tests/test_chat_models.py` |
 | `src/walkie_agent/prompts.py` | The system prompts: a rule for each bound tool, the places and `robot.md`, and `build_agent`'s default | `tests/test_prompts.py`, `tests/test_main.py`, `tests/test_runtime.py` |
-| `src/walkie_agent/tasks.py` | Templates and `/walkie/task` messages | `tests/test_tasks.py` |
 | `src/walkie_agent/locations.py` | The places file, with its name rules | `tests/test_locations.py` |
 | `src/walkie_agent/perception/gestures.py` | Gesture and posture names from COCO keypoints | `tests/test_perception_gestures.py` |
 | `src/walkie_agent/sim/scene.py`, `scene_file.py`, `projection.py` | The simulation's people and objects, their TOML file, and how the head camera sees them | `tests/test_projection.py`, `tests/test_scene_file.py` |
@@ -39,7 +39,7 @@ connector, against a fake robot on a private domain. None of them is the robot's
 | `src/walkie_agent/ros/vision.py` | `RosVision`, which reads `/walkie_vision/people` with `--vision` | `tests/test_ros_vision.py` |
 | `src/walkie_agent/perception/people.py` | The pose and gesture phrases `find_people` gives, from the gesture rules' names | `tests/test_ros_vision.py` |
 | `src/walkie_agent/perception/geometry.py` | The map-frame yaw of a pixel's ray, the torso and ankle pixels a person's bearing comes from, and the person's distance where the ankles' rays meet the floor | `tests/test_perception_geometry.py`, `tests/test_ros_vision.py` |
-| `src/walkie_agent/ros/io.py` | `RosBridge`, for the operator's topics | `tests/test_ros_bridge.py` |
+| `src/walkie_agent/ros/operator_topics.py` | `RosBridge`, for the operator's topics | `tests/test_ros_bridge.py` |
 | `src/walkie_agent/ros/policy.py` | `FORBIDDEN_NAMES`, and the check on every endpoint | `tests/test_ros_base.py`, `tests/test_commander.py` |
 | `src/walkie_agent/main.py` | Assembly, flags, signals, exit codes | `tests/test_main.py` |
 | `src/walkie_agent/voice.py`, `half_duplex.py` | The voice processes, on RAI | `tests/test_voice.py`, `tests/test_half_duplex.py` |
@@ -82,7 +82,7 @@ To upgrade, change the pin, run `pixi install`, then walk this table and run `pi
 | ----------- | ---------------------- | -------------- |
 | `main.py` | `ROS2Connector(node_name, use_sim_time)`, `.node` and `.shutdown()` | The connector still owns and spins the node |
 | `ros/base.py` | `connector.get_transform` | The signature, and what it raises on a stale or missing transform |
-| `ros/io.py`, `ros/speech.py` | `rai_interfaces/msg/HRIMessage` | The fields `text`, `images`, `audios`, `communication_id` and `seq_end` |
+| `ros/operator_topics.py`, `ros/speech.py` | `rai_interfaces/msg/HRIMessage` | The fields `text`, `images`, `audios`, `communication_id` and `seq_end` |
 | `voice.py` | `AgentRunner`, `BaseAgent`, `ROS2Context` | These are the only uses of RAI's agent host |
 | `half_duplex.py` | Private methods of `TextToSpeechAgent` and `SpeechRecognitionAgent` | `_setup_ros2_connector`, `_on_command_message`, `_speaker_callback`, `_on_new_sample` |
 

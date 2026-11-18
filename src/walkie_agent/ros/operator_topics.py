@@ -29,8 +29,8 @@ from std_msgs.msg import Bool, Empty, String
 
 from walkie_agent.ros.speech import SPEECH_TOPIC
 from walkie_agent.runtime.runner import is_stop_utterance
+from walkie_agent.runtime.task_templates import TaskTemplate, parse_task_message
 from walkie_agent.runtime.todos import console_line, public
-from walkie_agent.tasks import TaskTemplate, parse_task_message
 
 if TYPE_CHECKING:
     from rai.communication.ros2 import ROS2Connector

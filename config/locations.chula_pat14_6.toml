@@ -11,7 +11,7 @@
 # and [doors] entrance_door, which this file calls "entrance". The world spells
 # its rooms living_room and kitchen_room; these names use a space, as the GPSR
 # command data and FakeRobot do, and as walkie-database's sim seed requires
-# for a room's stand pose (seed_sim --locations). "trash" and
+# for a room's stand pose (seeds.sim --locations). "trash" and
 # "instruction point" are invented: the arena data has neither, and generated
 # commands assume both (decision 26). They sit in the most open floor of their
 # rooms, because Nav2 could not finish a goal at their first poses (decision

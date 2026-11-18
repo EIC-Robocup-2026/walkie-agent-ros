@@ -504,7 +504,7 @@ Each of these is a request, not a change made here
 | World assets: scenes, map, keepout mask, `world.toml` | walkie-ros, `robot_simulation` package | `simulation/gazebo/worlds/chula_pat14_6/`, on a branch, moving (see [The world file](#the-world-file)) |
 | World manifest and world loader | walkie-ros | `bringup/config/mujoco/worlds/chula_pat14_6.toml`, `bringup/robot_bringup/world_loader.py`, on a branch |
 | Sim launch and ground-truth odometry | walkie-ros | `nav_mujoco_omnibot.launch.py`, MuJoCo hardware plugin (no change requested here) |
-| Sim memory seed builder | walkie-database | `pixi run db-seed-sim`, `walkie_database.seed_sim` (new) |
+| Sim memory seed builder | walkie-database | `pixi run db-seed-sim`, `walkie_database.seeds.sim` (new) |
 | GPSR generator | RoboCupAtHome/CommandGenerator | a pinned commit, harvest environment only |
 
 ## Open questions

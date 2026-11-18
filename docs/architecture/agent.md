@@ -79,7 +79,7 @@ the capability Protocols, and `main.py` wires them in.
 | --- | --- | --- |
 | Entry point: parse flags, signals, assembly | `walkie_agent/main.py` | Yes |
 | Settings, and the LLM vendors that build the model | `walkie_agent/config.py`, `walkie_agent/chat_models.py` | No |
-| Runtime: `create_agent`, middlewares, todo list, Runner | `walkie_agent/runtime/` | No |
+| Runtime: `create_agent`, middlewares, todo list, task templates, Runner | `walkie_agent/runtime/` | No |
 | System prompts: the rules for the bound tools, and the runtime's default | `walkie_agent/prompts.py` | No |
 | Adapter: from an atomic to a LangChain tool | `walkie_agent/tools/adapter.py` | No |
 | Atomics | `walkie_agent/tools/atomic/` | No |

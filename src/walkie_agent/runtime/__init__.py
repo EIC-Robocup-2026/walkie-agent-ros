@@ -1,4 +1,4 @@
-"""The ROS-free agent runtime: create_agent plus our middlewares, todo list and Runner."""
+"""The ROS-free agent runtime: create_agent, middlewares, todo list, task templates and Runner."""
 
 from walkie_agent.runtime.agent import build_agent, build_middleware
 from walkie_agent.runtime.middleware import ToolLog

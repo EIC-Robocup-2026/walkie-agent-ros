@@ -165,9 +165,17 @@ can2 <state> gs_usb
     which the adapters appear decides the names.
 
     **Unverified fix:** with nothing running on the buses, unplug both CAN
-    adapters. Plug in the PCAN-USB Pro FD (USB port 3-2.4) and wait until
-    `ls /sys/class/net` shows `can0` and `can1`. Then plug in the candleLight,
-    and run the driver check again. Do not reboot to fix this: the boot of
+    adapters. Plug the PCAN-USB Pro FD back into **the same USB port it came
+    out of**: `70-can0.link` matches that port's path, so another port gives
+    other names. Wait until `ls /sys/class/net` shows `can0` and `can1`. Then
+    plug in the candleLight, and run the driver check again. Also check that
+    the PCAN sits on the port the link file expects:
+
+    ```bash
+    readlink -f /sys/class/net/can0/device
+    ```
+
+    The path must end in `3-2.4:1.0`. Do not reboot to fix this: the boot of
     2026-10-31 produced exactly this swap. If the names are still wrong, ask
     the team before going on.
 

@@ -46,6 +46,7 @@ from walkie_agent.capabilities import (
     UnavailableVision,
 )
 from walkie_agent.capabilities.facts import SystemFacts
+from walkie_agent.chat_models import build_model
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location, load_locations
 from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
@@ -56,7 +57,7 @@ from walkie_agent.ros.base import RosBase
 from walkie_agent.ros.commander import READ_TIMEOUT_S, CommanderClient
 from walkie_agent.ros.speech import RosSpeech
 from walkie_agent.ros.vision import RosVision
-from walkie_agent.runtime import Runner, ToolLog, build_model
+from walkie_agent.runtime import Runner, ToolLog
 from walkie_agent.scripting import agent_tool
 from walkie_agent.scripting.agent_tool import AgentScripts
 from walkie_agent.scripting.sandbox import SandboxUnavailable
@@ -697,8 +698,8 @@ def test_injected_model_never_builds_network_clients(build, monkeypatch):
 
     for name in ("build_model", "build_fallback", "build_callbacks"):
         monkeypatch.setattr(main, name, never)
-        monkeypatch.setattr(f"walkie_agent.runtime.model.{name}", never)
-    monkeypatch.setattr("walkie_agent.runtime.model._chat_model", never)
+        monkeypatch.setattr(f"walkie_agent.chat_models.{name}", never)
+    monkeypatch.setattr("walkie_agent.chat_models._chat_model", never)
     monkeypatch.setattr("langchain_openai.ChatOpenAI", never)
     monkeypatch.setattr("langchain_ollama.ChatOllama", never)
     monkeypatch.setattr("langfuse.Langfuse", never)

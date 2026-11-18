@@ -1,8 +1,9 @@
 # Walkie's settings, read from the working directory.
 #
 # Who reads what:
-# - The agent (walkie_agent.runtime.model): complex_model and base_url of the
-#   vendor that [vendor] names, [agent] if present, and [tracing.langfuse].
+# - The agent (walkie_agent.config and walkie_agent.chat_models): complex_model
+#   and base_url of the vendor that [vendor] names, [agent] if present, and
+#   [tracing.langfuse].
 # - The agent's get_facts tool (walkie_agent.capabilities.facts): [team]. The
 #   agent does not start without it.
 # - The voice entry points (walkie_agent.voice), through rai_s2s: [asr] and [tts].

@@ -98,6 +98,8 @@ from walkie_agent.capabilities import (
     UnavailableVision,
 )
 from walkie_agent.capabilities.facts import facts_from_config
+from walkie_agent.chat_models import build_callbacks, build_fallback, build_model
+from walkie_agent.config import agent_settings, load_config
 from walkie_agent.locations import Location, load_locations
 from walkie_agent.perception import OBJECTS_TOPIC
 from walkie_agent.perception.memory import TrackMemory
@@ -118,13 +120,6 @@ from walkie_agent.ros.people_memory import RosPeopleMemory
 from walkie_agent.ros.speech import RosSpeech
 from walkie_agent.ros.vision import RosVision
 from walkie_agent.runtime import Runner, ToolLog, build_agent
-from walkie_agent.runtime.model import (
-    agent_settings,
-    build_callbacks,
-    build_fallback,
-    build_model,
-    load_config,
-)
 from walkie_agent.scripting.agent_tool import AgentScripts
 from walkie_agent.scripting.sandbox import SandboxUnavailable
 from walkie_agent.scripting.shelf import Shelf

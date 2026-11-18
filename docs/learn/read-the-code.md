@@ -18,7 +18,8 @@ The first group imports no ROS, and most of the tests for it need no ROS either.
 | `src/walkie_agent/runtime/middleware.py` | The smaller middlewares | `tests/test_runtime.py` |
 | `src/walkie_agent/runtime/agent.py` | `build_agent`, and the middleware order | `tests/test_runtime.py` |
 | `src/walkie_agent/runtime/runner.py` | The queue, stop, reset and shutdown | `tests/test_runtime_runner.py` |
-| `src/walkie_agent/runtime/model.py` | Loads the model and the optional fallback from `config.toml` | `tests/test_runtime_model.py` |
+| `src/walkie_agent/config.py` | Reads `config.toml`, and the agent's run limit and deadline from it | `tests/test_config.py` |
+| `src/walkie_agent/chat_models.py` | Builds the model and the optional fallback from `config.toml` | `tests/test_chat_models.py` |
 | `src/walkie_agent/tasks.py` | Templates and `/walkie/task` messages | `tests/test_tasks.py` |
 | `src/walkie_agent/locations.py` | The places file, with its name rules | `tests/test_locations.py` |
 | `src/walkie_agent/perception/gestures.py` | Gesture and posture names from COCO keypoints | `tests/test_perception_gestures.py` |

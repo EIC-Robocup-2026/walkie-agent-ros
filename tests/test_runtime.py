@@ -2,7 +2,7 @@
 
 Claim map. It accounts for the 35 runtime spike claims, the 3 spike_00 regressions and
 the 39 todo checks. Each is ported, changed on purpose, or obsolete with the reason.
-File keys: R = this file, N = test_runtime_runner.py, M = test_runtime_model.py,
+File keys: R = this file, N = test_runtime_runner.py, M = test_chat_models.py,
 T = test_runtime_todos.py. Spikes: /var/tmp/wa-plan-scratch/runtime/ and
 /var/tmp/wa-todo-seed/spike-own/spike_own.py.
 

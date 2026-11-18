@@ -48,6 +48,8 @@ source_modules = [
     "walkie_agent.errors",
     "walkie_agent.locations",
     "walkie_agent.tasks",
+    "walkie_agent.config",
+    "walkie_agent.chat_models",
 ]
 forbidden_modules = [
     "walkie_agent.main",
@@ -99,6 +101,7 @@ forbidden_modules = [
     "walkie_agent.runtime",
     "walkie_agent.tools",
     "walkie_agent.adapter",
+    "walkie_agent.chat_models",
     "langchain",
     "langchain_core",
     "langgraph",

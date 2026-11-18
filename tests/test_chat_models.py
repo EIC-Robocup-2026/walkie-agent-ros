@@ -20,15 +20,9 @@ from langchain_core.messages import AIMessage, HumanMessage
 from runtime_harness import ScriptedModel
 
 from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.runtime import (
-    agent_settings,
-    build_agent,
-    build_callbacks,
-    build_fallback,
-    build_model,
-    load_config,
-)
-from walkie_agent.runtime.model import DEFAULT_DEADLINE_S, DEFAULT_RUN_LIMIT
+from walkie_agent.chat_models import build_callbacks, build_fallback, build_model
+from walkie_agent.config import DEFAULT_DEADLINE_S, DEFAULT_RUN_LIMIT, agent_settings, load_config
+from walkie_agent.runtime import build_agent
 
 REPO_CONFIG = Path(__file__).resolve().parents[1] / "config.toml"
 
@@ -68,21 +62,6 @@ def test_the_repo_config_builds_its_model_with_no_agent_section(api_key):
     assert build_model(config).model_name == config["openai"]["complex_model"]
     assert build_fallback(config) is None
     assert build_callbacks(config) == []
-
-
-def test_load_config_reads_the_named_file(tmp_path):
-    path = tmp_path / "other.toml"
-    path.write_text('[agent]\nrun_limit = 7\ndeadline_s = 1.5\n')
-    assert agent_settings(load_config(path)) == {"run_limit": 7, "deadline_s": 1.5}
-
-
-def test_a_config_that_is_not_toml_is_refused_with_its_path(tmp_path):
-    # main() prints this one line alone, so the line has to say which file is broken.
-    path = tmp_path / "config.toml"
-    path.write_text("not toml = [")
-    with pytest.raises(ValueError, match=r"line 1, column 5") as caught:
-        load_config(path)
-    assert str(caught.value).startswith(f"{path}: ")
 
 
 # -- Provider options -------------------------------------------------------------

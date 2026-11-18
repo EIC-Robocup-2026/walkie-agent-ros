@@ -26,6 +26,7 @@ import importlib, json, pkgutil, sys
 import walkie_agent.tools.atomic, walkie_agent.capabilities, walkie_agent.perception, walkie_agent.runtime
 import walkie_agent.arm, walkie_agent.scripting
 names = ["walkie_agent.errors", "walkie_agent.adapter", "walkie_agent.tasks", "walkie_agent.locations"]
+names += ["walkie_agent.config", "walkie_agent.chat_models"]
 names += ["walkie_agent.tools", "walkie_agent.tools.bundled_preset"]
 # The simulation's scene, its file and its projection; the sim package's ROS nodes are left out.
 names += ["walkie_agent.sim." + name for name in ("scene", "scene_file", "projection", "fake_vectors")]
@@ -78,11 +79,28 @@ REMOVED = re.compile(
     r"|from walkie_agent\.tools import [^\n]*\b(memory|navigation|speech|todos|waiters)\b"
     r"|walkie_agent[./]ros[./]vision[.:](UnavailableVision|_begin|_no_objects)\b"
     r"|from walkie_agent\.ros\.vision import [^\n]*\b(UnavailableVision|_begin|_no_objects)\b"
+    r"|walkie_agent[./]runtime[./]model\b"
+    r"|from walkie_agent\.runtime import [^\n]*\bmodel\b"
 )
 # UnavailableVision moved to walkie_agent.capabilities, and the lookup guard _begin,
 # which _no_objects wrapped, to walkie_agent.capabilities.guards as begin_lookup.
+# The runtime's model module split into walkie_agent.config and walkie_agent.chat_models.
 ROS_VISION = "walkie_agent.ros.vision"
 LEFT_ROS_VISION = frozenset({"UnavailableVision", "_begin", "_no_objects"})
+RUNTIME = SRC / "walkie_agent" / "runtime"
+LEFT_RUNTIME = frozenset(
+    {
+        "agent_settings",
+        "build_callbacks",
+        "build_fallback",
+        "build_model",
+        "load_config",
+        "_chat_model",
+        "_check_base_url",
+        "DEFAULT_RUN_LIMIT",
+        "DEFAULT_DEADLINE_S",
+    }
+)
 REMOVED_NAMES = re.compile(r"\b(TodoList|WalkieToolRunner|WalkieAgent|build_walkie_graph)\b")
 CODE_AND_BUILD = [
     "src",
@@ -115,6 +133,8 @@ def test_importing_every_new_module_loads_no_ros():
         "walkie_agent.adapter",
         "walkie_agent.tasks",
         "walkie_agent.locations",
+        "walkie_agent.config",
+        "walkie_agent.chat_models",
         "walkie_agent.capabilities",
         "walkie_agent.capabilities.facts",
         "walkie_agent.capabilities.fake",
@@ -136,7 +156,6 @@ def test_importing_every_new_module_loads_no_ros():
         "walkie_agent.runtime",
         "walkie_agent.runtime.agent",
         "walkie_agent.runtime.middleware",
-        "walkie_agent.runtime.model",
         "walkie_agent.runtime.runner",
         "walkie_agent.runtime.todos",
         "walkie_agent.perception",
@@ -265,22 +284,51 @@ def _module_level_names(tree: ast.Module) -> Iterator[tuple[str, int]]:
         stack.extend(ast.iter_child_nodes(node))
 
 
-def _binds_a_name_that_left_ros_vision(file: Path) -> list[str]:
-    """Where `file` binds a name in LEFT_ROS_VISION at module level, which in
-    walkie_agent/ros/vision.py would put it back at its old home: a re-export or a copy.
+def _binds_one_of(file: Path, names: frozenset[str]) -> list[str]:
+    """Where `file` binds one of `names` at module level, which in a module the names
+    left would put them back at their old home: a re-export or a copy.
     """
     tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
     return sorted(
         f"{file.name}:{line}: binds {name}"
         for name, line in _module_level_names(tree)
-        if name in LEFT_ROS_VISION
+        if name in names
     )
 
 
 def test_no_code_takes_a_name_from_its_old_home_in_ros_vision():
     code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
     assert [found for file in code for found in _reads_a_name_that_left_ros_vision(file)] == []
-    assert _binds_a_name_that_left_ros_vision(SRC / "walkie_agent" / "ros" / "vision.py") == []
+    assert _binds_one_of(SRC / "walkie_agent" / "ros" / "vision.py", LEFT_ROS_VISION) == []
+
+
+def test_the_model_builders_did_not_come_back_to_the_runtime():
+    # They live in walkie_agent.config and walkie_agent.chat_models now.
+    assert not (RUNTIME / "model.py").exists()
+    assert _binds_one_of(RUNTIME / "__init__.py", LEFT_RUNTIME) == []
+
+
+def test_the_tree_check_would_catch_a_model_builder_back_in_the_runtime(tmp_path):
+    shim = tmp_path / "__init__.py"
+    shim.write_text(
+        "from walkie_agent.chat_models import (\n"
+        "    build_callbacks,\n"
+        "    build_fallback,\n"
+        "    build_model,\n"
+        ")\n"
+        "from walkie_agent.config import agent_settings as agent_settings\n"
+        "def load_config(path): ...\n"
+    )
+    assert len(_binds_one_of(shim, LEFT_RUNTIME)) == 5
+    good = tmp_path / "good.py"
+    good.write_text(
+        '"""main.py builds the model with walkie_agent.chat_models.build_model."""\n'
+        "from walkie_agent.runtime.runner import Runner\n"
+        "def build(config):\n"
+        "    from walkie_agent.chat_models import build_model\n"
+        "    return build_model(config)\n"
+    )
+    assert _binds_one_of(good, LEFT_RUNTIME) == []
 
 
 def test_the_tree_check_would_catch_a_name_back_in_ros_vision(tmp_path):
@@ -307,7 +355,7 @@ def test_the_tree_check_would_catch_a_name_back_in_ros_vision(tmp_path):
         "def _begin(cancel, query, timeout_s, what): ...\n"
         "_no_objects = None\n"
     )
-    assert len(_binds_a_name_that_left_ros_vision(shim)) == 3
+    assert len(_binds_one_of(shim, LEFT_ROS_VISION)) == 3
     # RosVision stays in walkie_agent.ros.vision, a fake's own _begin is not the guard,
     # and an import inside a function is not a re-export.
     good = tmp_path / "good.py"
@@ -327,7 +375,7 @@ def test_the_tree_check_would_catch_a_name_back_in_ros_vision(tmp_path):
         "    return UnavailableVision(cancel)\n"
     )
     assert _reads_a_name_that_left_ros_vision(good) == []
-    assert _binds_a_name_that_left_ros_vision(good) == []
+    assert _binds_one_of(good, LEFT_ROS_VISION) == []
 
 
 def test_tests_cannot_read_a_dotenv_file(tmp_path, monkeypatch):
@@ -347,10 +395,14 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         "from walkie_agent.tools import waiters, memory\n"
         "from walkie_agent.ros.vision import RosVision, UnavailableVision\n"
         'monkeypatch.setattr("walkie_agent.ros.vision._begin", fake)\n'
+        "from walkie_agent.runtime.model import build_model\n"
+        "from walkie_agent.runtime import model\n"
+        'monkeypatch.setattr("walkie_agent.runtime.model._chat_model", fake)\n'
+        "# src/walkie_agent/runtime/model.py reads config.toml\n"
     )
-    assert len(_mentions([bad], REMOVED)) == 5
-    # The tools package that holds the atomics is not the removed one, and
-    # walkie_agent.ros.vision still holds RosVision.
+    assert len(_mentions([bad], REMOVED)) == 9
+    # The tools package that holds the atomics is not the removed one,
+    # walkie_agent.ros.vision still holds RosVision, and the runtime package stays.
     good = tmp_path / "good.py"
     good.write_text(
         "from walkie_agent import tools, errors\n"
@@ -358,6 +410,8 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         "import walkie_agent.tools.atomic.memory\n"
         "from walkie_agent.ros.vision import RosVision\n"
         "from walkie_agent.capabilities import UnavailableVision\n"
+        "from walkie_agent.runtime import Runner, build_agent\n"
+        "from walkie_agent.chat_models import build_model\n"
     )
     assert _mentions([good], REMOVED) == []
 

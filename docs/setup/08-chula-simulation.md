@@ -693,7 +693,7 @@ kitchen table, succeeded from the living room and from the shelf.
       the traceback and `calls: go_to: ok, say: ok, go_to: TIMEOUT`. The ledger
       gained a `fail` event. The model's next call then failed with `[Errno -3]
       Temporary failure in name resolution`, and the model client makes no
-      retry (`max_retries=0` in `runtime/model.py`), so the task ended there.
+      retry (`max_retries=0` in `chat_models.py`), so the task ended there.
     - "Use one script: go to the kitchen room, then the shelf, then the tv,
       announcing each place with your saved function." The model's first
       `update_todos` tried to close task 3's steps, which belong to that task

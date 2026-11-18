@@ -728,13 +728,16 @@ todo list and a Runner. Tools come from `as_tools` over a `Ctx`, errors go throu
 it through `assemble`, and the [wiring](#wiring-in-mainpy) is below.
 
 ```python
-# walkie_agent.runtime
+# walkie_agent.config
 def load_config(path="config.toml") -> dict: ...
 def agent_settings(config) -> dict: ...  # run_limit and deadline_s, from the optional [agent]
+
+# walkie_agent.chat_models
 def build_model(config, role="complex_model") -> BaseChatModel: ...
 def build_fallback(config) -> BaseChatModel | None: ...  # needs fallback_vendor and fallback_model
 def build_callbacks(config) -> list[BaseCallbackHandler]: ...  # Langfuse, when enabled
 
+# walkie_agent.runtime
 def build_agent(model, ctx, *, tools=DEFAULT, run_limit=25, deadline_s=60.0, on_todos=None,
                 fallback=None, tool_log=None, checkpointer=None,
                 system_prompt=SYSTEM_PROMPT) -> CompiledStateGraph: ...
@@ -831,7 +834,7 @@ tool whose name collides with these two is refused at build.
 provisional until real runs measure them. Its `[team]` table is required, and is
 read by `walkie_agent.capabilities.facts`, not by the runtime.
 
-All of these promises are tested with a scripted model. `tests/test_runtime_model.py`
+All of these promises are tested with a scripted model. `tests/test_chat_models.py`
 checks the provider settings against a local fake provider. No real provider has been
 called.
 

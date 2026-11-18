@@ -560,7 +560,7 @@ its `whoami-build` task are gone.
 | Unit tests with fake ROS objects | `RosBase`, `RosSpeech` and `RosBridge`, including goal races | Real rclpy timing |
 | Integration tests (`tests/test_ros_integration.py`) | The assembled agent on real rclpy and RAI's real connector, against a `FakeWalkie` node, on Fast DDS random domains | Real Nav2, real TF, rmw_zenoh |
 | Silent demo (`tests/ros_demo.py`) | The same agent as separate processes on rmw_zenoh and a private router, with a scripted model and no audio | Real Nav2, real model, real speech |
-| Provider test (`tests/test_runtime_model.py`) | Timeout and retry settings, against a local fake provider | Any real provider |
+| Provider test (`tests/test_chat_models.py`) | Timeout and retry settings, against a local fake provider | Any real provider |
 | Chula simulation ([Run the Chula Simulation](../setup/08-chula-simulation.md)), 2026-11-06 | The agent on rmw_zenoh and a private router, against MuJoCo, Nav2 and AMCL in the `chula_pat14_6` world, with a real model: one `go_to` and one `say`. Nav2 alone reached every Chula place | Long tasks, stops and cancels on real Nav2, the robot's graph, arms, memory, voice |
 
 These have **not** run with this runtime:

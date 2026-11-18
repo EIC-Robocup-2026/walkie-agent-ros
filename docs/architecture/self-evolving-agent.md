@@ -459,7 +459,7 @@ activates nothing ([Turn taint](competition.md#turn-taint-and-the-history-scrub)
 ## Roles and models
 
 The agent has one model today, and an optional fallback that nobody has selected.
-`runtime/model.py` loads them, and every attempt has a deadline
+`chat_models.py` builds them, and every attempt has a deadline
 ([ADR-0062](decisions/0062-bounded-model-calls.md), proposed, with provisional numbers).
 The rest of this section is the proposal.
 
@@ -477,7 +477,7 @@ Each role gets a model, fallbacks, a timeout and an API key in a
 
 Every OpenAI-compatible model is built with `max_retries=0` and an explicit
 timeout, because the OpenAI SDK defaults, 600 s and 2 retries, would freeze
-the robot. Ollama models get the timeout through `client_kwargs`. `runtime/model.py`
+the robot. Ollama models get the timeout through `client_kwargs`. `chat_models.py`
 already does both for the one agent model.
 Today's `[ollama] complex_model`, `llama3.1:70b`, needs about 40 GB at q4
 and does not fit on the 32 GB GPU beside walkie-vision, so the fallback
@@ -708,7 +708,7 @@ T12 on [Access Levels](access-levels.md#safety-model).
 | Piece | Repository | Location |
 | ----- | ---------- | -------- |
 | Host graph, session state, todo list | walkie-agent-ros | `src/walkie_agent/runtime/` (built) |
-| One agent model and a fallback | walkie-agent-ros | `src/walkie_agent/runtime/model.py` (built) |
+| One agent model and a fallback | walkie-agent-ros | `src/walkie_agent/chat_models.py` (built) |
 | Per-role models | walkie-agent-ros | `src/walkie_agent/models.py` (new), `[walkie.*]` tables in `config.toml` |
 | Linker, runner, registry, index, sandbox | walkie-agent-ros | `src/walkie_agent/toolbox/` (new) |
 | Tool creator, coder and harvest | walkie-agent-ros | `src/walkie_agent/toolsmith/` (new) |
@@ -756,7 +756,7 @@ and 5, so reviewing them settles those.
 8. **Trivial requests such as "say Meow!".** Open on
    [Competition Mode](competition.md#open-questions), question 7.
 9. **The local fallback model.** 7 to 14B, chosen by a phase 1 eval.
-   Not chosen. `runtime/model.py` can load a fallback, and no fallback is selected.
+   Not chosen. `chat_models.py` can load a fallback, and no fallback is selected.
 10. **Ollama on the robot PC.** Whether a build with RTX 5090 (sm_120)
     support runs there is unverified. Blocks a local fallback model.
 11. **Hybrid against BM25-only.** Not measured until the phase 3 eval.

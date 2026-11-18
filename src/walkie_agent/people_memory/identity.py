@@ -1,6 +1,6 @@
 """Face and appearance vectors: comparing, cleaning and naming, ported from walkie-agent-v2.
 
-TrackMemory (memory.py) uses these rules for ctx.memory (ADR-0070). remember_person
+TrackMemory (track_memory.py) uses these rules for ctx.memory (ADR-0070). remember_person
 stores the samples collected for a person's track without the outliers that
 reject_outliers finds, and recognize matches the samples against the stored people,
 each model by its own distance limit. assign_names names the tracked people in view
@@ -16,40 +16,13 @@ only within one model name: vectors of different weights live in different space
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from types import MappingProxyType
 from typing import Protocol
 
 import numpy as np
 
+from walkie_agent.people_memory.model_limits import appearance_limits, face_limits
+
 Vector = Sequence[float]
-
-
-def _face_limits() -> Mapping[str, float]:
-    return MappingProxyType(
-        {
-            # walkie-agent-v2's FACE_MATCH_THRESHOLD for the same ArcFace
-            # weights, tuned on the robot.
-            "arcface_w600k_r50": 0.4,
-            # walkie-vision's fake face model (src/walkie_vision/fakes.py),
-            # which oracle_perception and the tests publish. Hash vectors of
-            # different inputs are nearly orthogonal, a distance near 1, so
-            # 0.2 separates them.
-            "fake_face": 0.2,
-        }
-    )
-
-
-def _appearance_limits() -> Mapping[str, float]:
-    return MappingProxyType(
-        {
-            # From walkie-agent-v2's APPEARANCE_MATCH_THRESHOLD, which gated a
-            # score fused from face and appearance rather than appearance
-            # alone, so this value is still to be tuned on the robot.
-            "osnet_x1_0_msmt17": 0.5,
-            # walkie-vision's fake re-identification model, as for fake_face.
-            "fake_reid": 0.2,
-        }
-    )
 
 
 @dataclass(frozen=True)
@@ -76,9 +49,9 @@ class IdentityConfig:
     # face_model. A model without a limit is never matched, so an unknown
     # model cannot produce a confident wrong name. To be tuned again on the
     # robot with team members (perception.md, question 2).
-    face_distance_limits: Mapping[str, float] = field(default_factory=_face_limits)
+    face_distance_limits: Mapping[str, float] = field(default_factory=face_limits)
     # The same for appearance vectors, by appearance_model.
-    appearance_distance_limits: Mapping[str, float] = field(default_factory=_appearance_limits)
+    appearance_distance_limits: Mapping[str, float] = field(default_factory=appearance_limits)
 
     def __post_init__(self) -> None:
         # A cosine distance lies from 0 to 2, and a limit of 2 would name

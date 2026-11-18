@@ -1,4 +1,4 @@
-"""perception/identity.py: the cosine helpers, outlier rejection, the limits and naming.
+"""people_memory/identity.py: the cosine helpers, outlier rejection, the limits and naming.
 
 Ported from the experiment's tests/test_perception.py, whose identity cases came from
 walkie-agent-v2's tests/test_hri_identity.py and tests/test_people_store.py.
@@ -10,7 +10,7 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
-from walkie_agent.perception.identity import (
+from walkie_agent.people_memory.identity import (
     DEFAULT_IDENTITY_CONFIG,
     IdentityConfig,
     assign_names,

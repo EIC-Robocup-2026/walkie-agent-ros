@@ -48,17 +48,17 @@ from walkie_agent.capabilities.fake import GESTURES, POSES
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location, load_locations
+from walkie_agent.people_memory.track_vectors import Collected, TrackVectorsConfig
 from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
 from walkie_agent.perception.geometry import torso_pixels, wrap_deg
 from walkie_agent.perception.gestures import COCO_KEYPOINTS, DEFAULT_GESTURE_CONFIG
-from walkie_agent.perception.people import (
+from walkie_agent.perception.people_words import (
     GESTURE_PHRASES,
     POSE_PHRASES,
     gesture_phrase,
     phrases,
     pose_phrase,
 )
-from walkie_agent.perception.track_vectors import Collected, TrackVectorsConfig
 from walkie_agent.ros import vision as vision_module
 from walkie_agent.ros.vision import (
     NAME_WAIT_S,

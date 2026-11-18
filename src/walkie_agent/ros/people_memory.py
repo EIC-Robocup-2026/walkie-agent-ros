@@ -1,6 +1,6 @@
 """RosPeopleMemory: the people store on walkie-database's people services.
 
-It is the store of TrackMemory (perception/memory.py) on the robot, chosen with
+It is the store of TrackMemory (people_memory/track_memory.py) on the robot, chosen with
 `--people-memory ros`: a PeopleMemory over the node's /walkie_database/start_session,
 remember_person, match_faces and match_appearances (walkie-database database.md, "The
 node's interface"). main creates it once from the connector. Its clients are made
@@ -91,8 +91,8 @@ from walkie_database_msgs.srv import MatchPeople, RememberPerson, StartSession
 
 from walkie_agent.capabilities.guards import CancelToken, require_finite
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.perception.memory import MAY_HAVE_STORED
-from walkie_agent.perception.people_memory import Match, ModelVector, Stored
+from walkie_agent.people_memory.store import Match, ModelVector, Stored
+from walkie_agent.people_memory.track_memory import MAY_HAVE_STORED
 from walkie_agent.ros.policy import FORBIDDEN_NAMES, check_endpoint, ros_failure
 
 if TYPE_CHECKING:

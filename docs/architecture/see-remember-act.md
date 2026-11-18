@@ -184,7 +184,7 @@ decision, and it can run beside the vision chain.
   walkie-vision output. On the robot, `head_tilt_near_goal` points the camera
   down near goals. The oracle has no occlusion, so sim is optimistic.
 - **Built** as S1-1 to S1-9. `RosVision` keeps only the newest array, and the
-  phrases live in `perception/people.py`, which imports no ROS. The plan
+  phrases live in `perception/people_words.py`, which imports no ROS. The plan
   changed in one place: the robot-only notes, including that an ID can
   expire, are in the `--vision` prompt rule, not in the docstring. So the
   docstring and the gate's digest are unchanged, and the gate did not rerun
@@ -238,9 +238,11 @@ decision, and it can run beside the vision chain.
   `--people-memory mock` flag. The `remember_person` and `recognize_person`
   atomics go in the HRI set only. Retries follow P25's prefix. ADR-0070
   records the capability.
-- **Ported from `experiment/hri-agent`.** `perception/people_memory.py`,
-  `perception/ros_people_memory.py`, `perception/identity.py`, the two
-  atomics' descriptions and `tests/test_ros_people_memory`.
+- **Ported from `experiment/hri-agent`.** Its people store, the store's
+  walkie-database client and its identity rules, here
+  `people_memory/store.py`, `ros/people_memory.py` and
+  `people_memory/identity.py`, the two atomics' descriptions and
+  `tests/test_ros_people_memory`.
 - **Test.** A remember and recognize round trip, and an unknown person, in
   the fake world. In sim, oracle guests with the in-memory store: the guest
   says their name, the robot turns away, and `find_people` then returns the
@@ -260,8 +262,8 @@ decision, and it can run beside the vision chain.
   (S3-2). find_people names the people in view, so `find_people("Sam")`
   works, and `recognize` names everyone in view at once (S3-4). People are
   forgotten at each reset on `/walkie/reset`, which this runtime treats as
-  the end of a task (S3-6). The buffer is `perception/track_vectors.py`, the
-  matching `perception/recognition.py` and `perception/memory.py`, and the
+  the end of a task (S3-6). The buffer is `people_memory/track_vectors.py`, the
+  matching `people_memory/recognition.py` and `people_memory/track_memory.py`, and the
   database client `ros/people_memory.py`. A Fast DDS test sends oracle-style
   people arrays through `RosVision` into the in-memory store and finds the
   name again. The laptop run of the database path has not been done. The
@@ -296,7 +298,7 @@ decision, and it can run beside the vision chain.
   unverified.
 - **Built** as S4-1 to S4-6. The ids are the tracker's (`mug_13`), not the
   per-label counter the test above names, so they hold while an object stays
-  in view. The category table lives in `perception/objects.py`, which imports
+  in view. The category table lives in `perception/object_words.py`, which imports
   no ROS. A query no class of the array could match answers `UNAVAILABLE`
   with the classes, so "apple" against a seats-only detector is not reported
   absent. HRI gains `find_objects` but not `object_info`, so the gate reran;

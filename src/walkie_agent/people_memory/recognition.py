@@ -1,6 +1,6 @@
 """Naming the people in view from their samples, and cleaning the samples to store.
 
-TrackMemory (memory.py) calls these for ctx.memory (ADR-0070). They are the rules of
+TrackMemory (track_memory.py) calls these for ctx.memory (ADR-0070). They are the rules of
 the experiment's remember_person and recognize_person atomics (experiment/hri-agent's
 tools/atomic), taken out of its toolbox. No ROS.
 
@@ -33,15 +33,15 @@ from typing import Literal, NamedTuple
 import numpy as np
 
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.perception.identity import (
+from walkie_agent.people_memory.identity import (
     DEFAULT_IDENTITY_CONFIG,
     IdentityConfig,
     assign_names,
     average_unit,
     reject_outliers,
 )
-from walkie_agent.perception.people_memory import Match, ModelVector, PeopleMemory
-from walkie_agent.perception.track_vectors import Collected
+from walkie_agent.people_memory.store import Match, ModelVector, PeopleMemory
+from walkie_agent.people_memory.track_vectors import Collected
 
 MatchedBy = Literal["face", "appearance"]
 

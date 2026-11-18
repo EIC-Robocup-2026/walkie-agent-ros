@@ -43,6 +43,7 @@ source_modules = [
     "walkie_agent.runtime",
     "walkie_agent.scripting",
     "walkie_agent.perception",
+    "walkie_agent.people_memory",
     "walkie_agent.arm",
     "walkie_agent.errors",
     "walkie_agent.locations",
@@ -65,7 +66,7 @@ type = "forbidden"
 # Each init on its own, not the package it opens.
 as_packages = false
 allow_indirect_imports = true
-source_modules = ["walkie_agent", "walkie_agent.ros", "walkie_agent.tools"]
+source_modules = ["walkie_agent", "walkie_agent.ros", "walkie_agent.tools", "walkie_agent.people_memory"]
 # The external packages also keep the ros init inside backends-dont-see-the-llm,
 # which cannot name the init without also naming operator_topics.
 forbidden_modules = [

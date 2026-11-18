@@ -1,4 +1,4 @@
-"""perception/recognition.py: without_outliers and name_people.
+"""people_memory/recognition.py:without_outliers and name_people.
 
 The naming cases are ported from the experiment's tests/test_people_atomics.py, where
 recognize_person ran them through its toolbox; here they run on the pure functions
@@ -12,11 +12,11 @@ import numpy as np
 import pytest
 
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.perception import recognition
-from walkie_agent.perception.identity import DEFAULT_IDENTITY_CONFIG, average_unit
-from walkie_agent.perception.people_memory import InMemoryPeopleMemory, Match, ModelVector
-from walkie_agent.perception.recognition import Naming, name_people, without_outliers
-from walkie_agent.perception.track_vectors import Collected
+from walkie_agent.people_memory import recognition
+from walkie_agent.people_memory.identity import DEFAULT_IDENTITY_CONFIG, average_unit
+from walkie_agent.people_memory.recognition import Naming, name_people, without_outliers
+from walkie_agent.people_memory.store import InMemoryPeopleMemory, Match, ModelVector
+from walkie_agent.people_memory.track_vectors import Collected
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, FAKE_REID_MODEL, hash_vector
 
 DIM = 64

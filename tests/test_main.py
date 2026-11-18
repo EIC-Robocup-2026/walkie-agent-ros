@@ -50,9 +50,9 @@ from walkie_agent.capabilities.facts import SystemFacts
 from walkie_agent.chat_models import build_model
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location, load_locations
+from walkie_agent.people_memory.store import InMemoryPeopleMemory
+from walkie_agent.people_memory.track_memory import TrackMemory
 from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
-from walkie_agent.perception.memory import TrackMemory
-from walkie_agent.perception.people_memory import InMemoryPeopleMemory
 from walkie_agent.ros.arms import RosArms
 from walkie_agent.ros.base import RosBase
 from walkie_agent.ros.commander import READ_TIMEOUT_S, CommanderClient

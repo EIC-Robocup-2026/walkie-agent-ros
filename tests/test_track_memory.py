@@ -1,4 +1,4 @@
-"""perception/memory.py: TrackMemory, ctx.memory over a track buffer and a people store.
+"""people_memory/track_memory.py: TrackMemory, ctx.memory over a track buffer and a people store.
 
 The source is a small stand-in for RosVision: a TrackVectors fed with hash_vector
 vectors under walkie-vision's fake model names, where person_<n> is track n, as on the
@@ -19,16 +19,16 @@ import pytest
 from walkie_agent.capabilities import Memory, Recognized, Remembered
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.perception import memory as memory_module
-from walkie_agent.perception.memory import MAY_HAVE_STORED, TrackMemory, VectorSource
-from walkie_agent.perception import people_memory as people_memory_module
-from walkie_agent.perception.people_memory import (
+from walkie_agent.people_memory import store as store_module
+from walkie_agent.people_memory import track_memory as memory_module
+from walkie_agent.people_memory.store import (
     NOTHING_STORED,
     InMemoryPeopleMemory,
     ModelVector,
     Stored,
 )
-from walkie_agent.perception.track_vectors import Collected, Sighting, TrackVectors
+from walkie_agent.people_memory.track_memory import MAY_HAVE_STORED, TrackMemory, VectorSource
+from walkie_agent.people_memory.track_vectors import Collected, Sighting, TrackVectors
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, FAKE_REID_MODEL, hash_vector
 
 DIM = 64
@@ -381,13 +381,13 @@ def test_a_stop_while_the_mock_store_writes_stores_nobody(vision, cancel, monkey
     store = InMemoryPeopleMemory(cancel)
     memory = TrackMemory(vision, store, cancel)
     vision.show(seen(1, "sam"))
-    add_samples = people_memory_module._add_samples
+    add_samples = store_module._add_samples
 
     def stop_then_add(*args):
         cancel.cancel()
         add_samples(*args)
 
-    monkeypatch.setattr(people_memory_module, "_add_samples", stop_then_add)
+    monkeypatch.setattr(store_module, "_add_samples", stop_then_add)
 
     error = fails(memory.remember_person, "person_1", "Sam")
 

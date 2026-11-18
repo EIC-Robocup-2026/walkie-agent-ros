@@ -1,7 +1,7 @@
 """The face and appearance samples of each track in view, for remembering and recognizing.
 
 RosVision (ros/vision.py) feeds a TrackVectors from its one people subscription, and
-TrackMemory (memory.py) reads a track's samples back when the model remembers or
+TrackMemory (track_memory.py) reads a track's samples back when the model remembers or
 recognizes the person on it (ADR-0070). So a guest is stored from many images rather
 than one: every face they showed while the robot talked to them. No ROS.
 
@@ -40,7 +40,7 @@ from typing import NamedTuple
 
 import numpy as np
 
-from walkie_agent.perception.people_memory import ModelVector
+from walkie_agent.people_memory.store import ModelVector
 
 
 @dataclass(frozen=True)

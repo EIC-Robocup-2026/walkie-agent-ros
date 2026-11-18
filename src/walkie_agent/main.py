@@ -101,9 +101,9 @@ from walkie_agent.capabilities.facts import facts_from_config
 from walkie_agent.chat_models import build_callbacks, build_fallback, build_model
 from walkie_agent.config import agent_settings, load_config
 from walkie_agent.locations import Location, load_locations
+from walkie_agent.people_memory.store import InMemoryPeopleMemory, PeopleMemory
+from walkie_agent.people_memory.track_memory import TrackMemory
 from walkie_agent.perception import OBJECTS_TOPIC
-from walkie_agent.perception.memory import TrackMemory
-from walkie_agent.perception.people_memory import InMemoryPeopleMemory, PeopleMemory
 from walkie_agent.prompts import build_system_prompt
 from walkie_agent.ros.arms import RosArms
 from walkie_agent.ros.base import RosBase

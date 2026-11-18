@@ -1,6 +1,6 @@
 """The people store: who the robot has met, with their facts, faces and appearances.
 
-PeopleMemory is the store that TrackMemory (memory.py) calls for ctx.memory
+PeopleMemory is the store that TrackMemory (track_memory.py) calls for ctx.memory
 (ADR-0070). It follows walkie-database's people services (its database.md, "The
 node's interface"). On the robot, RosPeopleMemory (ros/people_memory.py) calls them.
 InMemoryPeopleMemory stands in for them in simulation and in the tests, chosen with
@@ -22,7 +22,7 @@ import numpy as np
 
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import StepError
-from walkie_agent.perception.identity import cosine_distance
+from walkie_agent.people_memory.identity import cosine_distance
 
 # Ends a remember's TIMEOUT or CANCELLED that came before anything could be stored.
 NOTHING_STORED = "Nothing was stored."

@@ -4,7 +4,7 @@ import pytest
 
 from walkie_agent.capabilities.fake import OBJECTS
 from walkie_agent.capabilities.fake import PLURALS as FAKE_PLURALS
-from walkie_agent.perception.objects import (
+from walkie_agent.perception.object_words import (
     CATEGORIES,
     OTHER,
     PLURALS,

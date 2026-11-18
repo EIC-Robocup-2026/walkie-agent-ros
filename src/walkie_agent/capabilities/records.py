@@ -107,7 +107,7 @@ class RecalledObject:
     memory stored. `label` is that stored label, such as "table", the word the
     detector uses for it, so the one to pass find_objects. `category` is its
     category, from the memory or, when the memory has none, from the label
-    (perception.objects.category_of). `room` is the memory's
+    (perception.object_words.category_of). `room` is the memory's
     room for it, or None. `on` names the object it stands on, by that object's name
     and id, as "chair 2", when the memory relates it to one that the same answer
     holds, else None. `state`

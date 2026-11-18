@@ -84,6 +84,8 @@ the capability Protocols, and `main.py` wires them in.
 | Atomics | `walkie_agent/tools/atomic/` | No |
 | Tool sets: which atomics each run binds | `walkie_agent/tools/sets.py` | No |
 | Capability verbs, guards, `Ctx`, `FakeRobot` | `walkie_agent/capabilities/` | No |
+| Reading walkie-vision's detections: geometry, gestures, topic names, word tables | `walkie_agent/perception/` | No |
+| People memory: who is who, behind `ctx.memory`, and each vector model's match limit | `walkie_agent/people_memory/` | No |
 | ROS-backed verbs and the operator's topics | `walkie_agent/ros/` | Yes |
 
 `tests/test_ros_free.py` checks in a fresh interpreter that the ROS-free layers never

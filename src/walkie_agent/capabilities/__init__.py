@@ -360,7 +360,7 @@ class ObjectMemory(Protocol):
     An object's id here is the memory's own, a decimal number such as "18", never a
     live id from find_objects. search gives the objects remembered as present whose
     label, another label the detector gave them or official name matches `name` as
-    find_objects matches a label (perception.objects.matches): the label, its
+    find_objects matches a label (perception.object_words.matches): the label, its
     category or the category's plural, ignoring case and spaces at either end; an
     empty name matches every object. A match's own `name` may differ from the one
     asked for: search("chair") gives a stool whose official name is "stool".

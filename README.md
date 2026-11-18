@@ -97,7 +97,8 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | `src/walkie_agent/runtime/`  | `create_agent`, the middlewares, the todo list and the Runner. No ROS. |
 | `src/walkie_agent/ros/`      | The ROS-backed verbs and the operator's topics                    |
 | `src/walkie_agent/voice.py`  | The voice entry points, on RAI's `AgentRunner`                    |
-| `src/walkie_agent/perception/` | Rules that read walkie-vision's detections, such as gestures. No ROS. |
+| `src/walkie_agent/perception/` | Rules that read walkie-vision's detections: geometry, gestures, topic names and the words for people and objects. No ROS. |
+| `src/walkie_agent/people_memory/` | Who is who: the track memory behind `ctx.memory`, the people store, identity matching and each vector model's match limit. No ROS. |
 | `src/walkie_agent/sim/`      | The fake robot node, the oracle that stands in for walkie-vision in a simulation, and the check of a simulation's graph |
 | `scripts/chula-sim.sh`       | Runs the `chula_pat14_6` simulation, the oracle and the agent on a private ROS graph |
 | `tests/`                     | Tests with a scripted LLM. Some use real rclpy with a fake robot. |

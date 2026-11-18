@@ -7,7 +7,7 @@ from walkie_agent.capabilities import Ctx, Pose2D, RecalledObject
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location, nearest_place
 from walkie_agent.perception.geometry import wrap_deg
-from walkie_agent.perception.objects import matches
+from walkie_agent.perception.object_words import matches
 
 logger = logging.getLogger(__name__)
 

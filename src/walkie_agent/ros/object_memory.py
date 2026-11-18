@@ -81,7 +81,7 @@ from walkie_database_msgs.srv import GetObject, GetRoomContents, ListRooms, Sear
 from walkie_agent.capabilities import RecalledObject, RoomObjects
 from walkie_agent.capabilities.guards import CancelToken, require_text, require_timeout
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.perception.objects import category_of, matches
+from walkie_agent.perception.object_words import category_of, matches
 from walkie_agent.ros.base import MAP_FRAME
 from walkie_agent.ros.people_memory import (
     CALL_TIMEOUT_S,

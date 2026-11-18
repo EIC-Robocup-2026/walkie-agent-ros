@@ -1,4 +1,4 @@
-"""perception/people_memory.py: InMemoryPeopleMemory, the store of `--people-memory mock`.
+"""people_memory/store.py: InMemoryPeopleMemory, the store of `--people-memory mock`.
 
 Ported from the experiment's tests/test_vision_feed.py, with hash_vector vectors under
 walkie-vision's fake model names, as oracle_perception publishes them.
@@ -11,7 +11,7 @@ import pytest
 
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.perception.people_memory import (
+from walkie_agent.people_memory.store import (
     NOTHING_STORED,
     InMemoryPeopleMemory,
     Match,

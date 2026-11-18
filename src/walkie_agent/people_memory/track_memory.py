@@ -31,10 +31,10 @@ from walkie_agent.capabilities.guards import (
 )
 from walkie_agent.capabilities.records import Recognized, Remembered
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.perception.identity import DEFAULT_IDENTITY_CONFIG, IdentityConfig
-from walkie_agent.perception.people_memory import NOTHING_STORED, PeopleMemory
-from walkie_agent.perception.recognition import name_people, without_outliers
-from walkie_agent.perception.track_vectors import Collected
+from walkie_agent.people_memory.identity import DEFAULT_IDENTITY_CONFIG, IdentityConfig
+from walkie_agent.people_memory.recognition import name_people, without_outliers
+from walkie_agent.people_memory.store import NOTHING_STORED, PeopleMemory
+from walkie_agent.people_memory.track_vectors import Collected
 
 logger = logging.getLogger(__name__)
 

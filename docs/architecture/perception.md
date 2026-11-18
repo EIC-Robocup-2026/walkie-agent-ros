@@ -225,7 +225,7 @@ S2 added each person's bearing, below.
   which lasts while walkie-vision's tracker keeps the track. An untracked person
   is `person_untracked_<n>`, numbered in that one image. The name is always
   null, because nothing identifies people yet.
-- **Words.** The gesture rules give a set of names, which `perception/people.py`
+- **Words.** The gesture rules give a set of names, which `perception/people_words.py`
   turns into FakeRobot's phrases: one pose, the most specific of lying, sitting
   and standing, and one gesture, pointing before a raised arm before waving. A
   query matches any of the person's phrases, ignoring case, so someone raising
@@ -258,7 +258,11 @@ S2 added each person's bearing, below.
 - **Why walkie-database matches faces.** It owns the face and appearance
   tables, and walkie-database ADR-0006 has callers send vectors. The
   database always returns a nearest face, so the agent applies a distance
-  limit per `face_model`, tuned on the robot.
+  limit per `face_model`, tuned on the robot. The limits are in
+  `people_memory/model_limits.py`, keyed by the model name walkie-vision
+  publishes, so a new face or re-identification model changes three
+  repositories together: walkie-vision's provider, a walkie-database
+  migration that adds its vector table, and a row there.
 - **Re-finding.** The streaming tracker keeps a track id while it can see
   the person. Driving up to someone can break the track, so
   `refind_person` falls back to OSNet appearance, compared in the agent
@@ -278,7 +282,7 @@ to S4-6). The agent uses it only when started with `--vision`, and the HRI set h
 - **Objects.** Left to right by the box's centre. The id is `<label>_<track_id>`,
   with spaces as underscores, so the oracle's mug is `mug_13`; an untracked object
   is `<label>_untracked_<n>`. An id lasts only while the object stays in view.
-- **Words.** `perception/objects.py` gives each label FakeRobot's category, or
+- **Words.** `perception/object_words.py` gives each label FakeRobot's category, or
   `other`. A query matches the label, the category or its plural, ignoring case.
 - **Place.** The configured place within 1 m of the robot, read only when an object
   matches, or `unknown`. Without depth, the place is where Walkie stands, so an

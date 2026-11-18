@@ -25,6 +25,8 @@ The first group imports no ROS, and most of the tests for it need no ROS either.
 | `src/walkie_agent/prompts.py` | The system prompts: a rule for each bound tool, the places and `robot.md`, and `build_agent`'s default | `tests/test_prompts.py`, `tests/test_main.py`, `tests/test_runtime.py` |
 | `src/walkie_agent/locations.py` | The places file, with its name rules | `tests/test_locations.py` |
 | `src/walkie_agent/perception/gestures.py` | Gesture and posture names from COCO keypoints | `tests/test_perception_gestures.py` |
+| `src/walkie_agent/perception/object_words.py` | The category of each object label, and how a `find_objects` query matches one | `tests/test_object_words.py` |
+| `src/walkie_agent/people_memory/` | Who is who: `TrackMemory` behind `ctx.memory`, the people store, identity matching, recognition, each track's vectors and each vector model's match limit | `tests/test_track_memory.py`, `tests/test_people_memory_store.py`, `tests/test_identity.py`, `tests/test_recognition.py`, `tests/test_track_vectors.py` |
 | `src/walkie_agent/sim/scene.py`, `scene_file.py`, `projection.py` | The simulation's people and objects, their TOML file, and how the head camera sees them | `tests/test_projection.py`, `tests/test_scene_file.py` |
 
 The second group is where ROS comes in. Most of these tests use fake ROS objects.
@@ -37,7 +39,7 @@ connector, against a fake robot on a private domain. None of them is the robot's
 | `src/walkie_agent/ros/commander.py`, `arms.py` | `CommanderClient`, for `bimanual_commander`'s actions and services, and `RosArms`, the `ctx.arms` built on it | `tests/test_commander.py`, `tests/test_ros_arms.py` |
 | `src/walkie_agent/ros/speech.py` | `RosSpeech`, which publishes on `/to_human` | `tests/test_ros_speech.py` |
 | `src/walkie_agent/ros/vision.py` | `RosVision`, which reads `/walkie_vision/people` with `--vision` | `tests/test_ros_vision.py` |
-| `src/walkie_agent/perception/people.py` | The pose and gesture phrases `find_people` gives, from the gesture rules' names | `tests/test_ros_vision.py` |
+| `src/walkie_agent/perception/people_words.py` | The pose and gesture phrases `find_people` gives, from the gesture rules' names | `tests/test_ros_vision.py` |
 | `src/walkie_agent/perception/geometry.py` | The map-frame yaw of a pixel's ray, the torso and ankle pixels a person's bearing comes from, and the person's distance where the ankles' rays meet the floor | `tests/test_perception_geometry.py`, `tests/test_ros_vision.py` |
 | `src/walkie_agent/ros/operator_topics.py` | `RosBridge`, for the operator's topics | `tests/test_ros_bridge.py` |
 | `src/walkie_agent/ros/policy.py` | `FORBIDDEN_NAMES`, and the check on every endpoint | `tests/test_ros_base.py`, `tests/test_commander.py` |

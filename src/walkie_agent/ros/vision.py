@@ -16,7 +16,7 @@ detector on the simulation's images can stand in for the oracle's objects.
 - Two subscriptions, made in the constructor and destroyed by close(). Their callbacks
   run on the connector's executor and only keep the newest array of each topic by
   stamp. The reader converts it, on the agent's worker.
-- An object's name is its label, and its category comes from perception/objects.py.
+- An object's name is its label, and its category comes from perception/object_words.py.
   Its id is <label>_<track_id>, with spaces in the label as underscores, as FakeRobot
   spells its ids; one the tracker has not taken up is <label>_untracked_<n>, numbered
   left to right in that one array. An id names the object only while it stays in view.
@@ -30,10 +30,10 @@ detector on the simulation's images can stand in for the oracle's objects.
   the track lasts. A person the tracker has not taken up has track_id 0 and gets
   person_untracked_<n>, numbered left to right in that one array.
 - The callback also collects each tracked person's face and appearance vectors into a
-  TrackVectors (perception/track_vectors.py), from every array, the late ones too. A
+  TrackVectors (people_memory/track_vectors.py), from every array, the late ones too. A
   face counts only when face_trusted passes it with the array's camera_info. The
   buffer is cleared when the clock jumps back and by close(). As a VectorSource,
-  collected() and tracked_in_view() give TrackMemory (perception/memory.py) the
+  collected() and tracked_in_view() give TrackMemory (people_memory/track_memory.py) the
   samples to remember and recognize people by (ADR-0070).
 - With a namer, set by set_namer(), people() names the tracked people of the array
   before it applies the query, waiting at most NAME_WAIT_S and never past the call's
@@ -80,6 +80,15 @@ from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 from walkie_agent.capabilities import Base, ObjectSeen, PersonSeen, Pose2D
 from walkie_agent.capabilities.guards import CancelToken, begin_lookup
 from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.people_memory.track_vectors import (
+    DEFAULT_TRACK_VECTORS_CONFIG,
+    Collected,
+    Sighting,
+    TrackVectors,
+    TrackVectorsConfig,
+    face_trusted,
+    model_vector,
+)
 from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
 from walkie_agent.perception.geometry import (
     ankle_pixels,
@@ -90,17 +99,8 @@ from walkie_agent.perception.geometry import (
     yaw_from,
 )
 from walkie_agent.perception.gestures import DEFAULT_GESTURE_CONFIG, GestureConfig, classify_gestures
-from walkie_agent.perception.objects import category_of, looks_for, matches
-from walkie_agent.perception.people import gesture_phrase, phrases, pose_phrase
-from walkie_agent.perception.track_vectors import (
-    DEFAULT_TRACK_VECTORS_CONFIG,
-    Collected,
-    Sighting,
-    TrackVectors,
-    TrackVectorsConfig,
-    face_trusted,
-    model_vector,
-)
+from walkie_agent.perception.object_words import category_of, looks_for, matches
+from walkie_agent.perception.people_words import gesture_phrase, phrases, pose_phrase
 from walkie_agent.ros.base import MAP_FRAME
 from walkie_agent.ros.policy import FORBIDDEN_NAMES, check_endpoint, ros_failure
 

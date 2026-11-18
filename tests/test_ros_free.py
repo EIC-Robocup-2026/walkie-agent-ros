@@ -24,8 +24,8 @@ SRC = ROOT / "src"
 IMPORT_EVERY_NEW_MODULE = """
 import importlib, json, pkgutil, sys
 import walkie_agent.tools.atomic, walkie_agent.capabilities, walkie_agent.perception, walkie_agent.runtime
-import walkie_agent.arm, walkie_agent.scripting
-names = ["walkie_agent.errors", "walkie_agent.locations"]
+import walkie_agent.arm, walkie_agent.scripting, walkie_agent.people_memory
+names =["walkie_agent.errors", "walkie_agent.locations"]
 names += ["walkie_agent.config", "walkie_agent.chat_models", "walkie_agent.prompts"]
 names += ["walkie_agent.tools", "walkie_agent.tools.adapter", "walkie_agent.tools.sets"]
 names += ["walkie_agent.tools.bundled_preset"]
@@ -35,6 +35,7 @@ for package in (
     walkie_agent.capabilities,
     walkie_agent.tools.atomic,
     walkie_agent.perception,
+    walkie_agent.people_memory,
     walkie_agent.runtime,
     walkie_agent.arm,
     walkie_agent.scripting,
@@ -96,6 +97,10 @@ REMOVED = re.compile(
     r"|from walkie_agent import [^\n]*\btasks\b"
     r"|walkie_agent[./]ros[./]io\b"
     r"|from walkie_agent\.ros import [^\n]*\bio\b"
+    r"|walkie_agent[./]perception[./](memory|people_memory|identity|recognition|track_vectors"
+    r"|people|objects)\b"
+    r"|from walkie_agent\.perception import [^\n]*\b(memory|people_memory|identity|recognition"
+    r"|track_vectors|people|objects)\b"
 )
 # UnavailableVision moved to walkie_agent.capabilities, and the lookup guard _begin,
 # which _no_objects wrapped, to walkie_agent.capabilities.guards as begin_lookup.
@@ -106,6 +111,10 @@ REMOVED = re.compile(
 # The task templates moved to walkie_agent.runtime.task_templates, and RosBridge's
 # module walkie_agent.ros.io to walkie_agent.ros.operator_topics; the gym's own
 # walkie_agent.mahoraga.tasks stays.
+# The people memory left walkie_agent.perception for walkie_agent.people_memory: memory
+# as track_memory, people_memory as store, and identity, recognition and track_vectors
+# under their names. Perception's word tables people and objects became people_words
+# and object_words, which the word boundary keeps apart from the old names.
 ROS_VISION = "walkie_agent.ros.vision"
 LEFT_ROS_VISION = frozenset({"UnavailableVision", "_begin", "_no_objects"})
 RUNTIME = SRC / "walkie_agent" / "runtime"
@@ -159,6 +168,15 @@ LEFT_FOR_PROMPTS = frozenset(
 # main.py still imports build_system_prompt and runtime/agent.py SYSTEM_PROMPT, so an
 # import from these modules would still work; the syntax-tree check rejects it.
 PROMPTS_OLD_HOMES = ("walkie_agent.main", "walkie_agent.runtime", "walkie_agent.runtime.agent")
+# The modules that left walkie_agent.perception, for walkie_agent.people_memory or a
+# word-table name.
+LEFT_PERCEPTION = ("memory", "people_memory", "identity", "recognition", "track_vectors", "people", "objects")
+# The match limits per vector model left identity.py for people_memory/model_limits.py,
+# where they lost their underscore. identity.py still imports them, so an import from
+# identity.py would still work; the syntax-tree check rejects it.
+IDENTITY = SRC / "walkie_agent" / "people_memory" / "identity.py"
+IDENTITY_MODULE = "walkie_agent.people_memory.identity"
+LEFT_IDENTITY = frozenset({"_face_limits", "_appearance_limits", "face_limits", "appearance_limits"})
 REMOVED_NAMES = re.compile(r"\b(TodoList|WalkieToolRunner|WalkieAgent|build_walkie_graph)\b")
 CODE_AND_BUILD = [
     "src",
@@ -220,6 +238,15 @@ def test_importing_every_new_module_loads_no_ros():
         "walkie_agent.runtime.todos",
         "walkie_agent.perception",
         "walkie_agent.perception.gestures",
+        "walkie_agent.perception.object_words",
+        "walkie_agent.perception.people_words",
+        "walkie_agent.people_memory",
+        "walkie_agent.people_memory.identity",
+        "walkie_agent.people_memory.model_limits",
+        "walkie_agent.people_memory.recognition",
+        "walkie_agent.people_memory.store",
+        "walkie_agent.people_memory.track_memory",
+        "walkie_agent.people_memory.track_vectors",
         "walkie_agent.sim.scene",
         "walkie_agent.sim.scene_file",
         "walkie_agent.sim.projection",
@@ -601,6 +628,94 @@ def test_the_old_home_check_would_catch_a_module_or_a_package(tmp_path):
     assert _old_homes(good.parent, "walkie_agent.ros.io") == []
 
 
+def test_the_people_memory_and_the_word_tables_did_not_come_back_to_their_old_homes():
+    # They live in walkie_agent.people_memory and as perception's people_words and
+    # object_words now; a module or a package at an old path could re-export them.
+    for name in LEFT_PERCEPTION:
+        assert _old_homes(SRC, f"walkie_agent.perception.{name}") == []
+    # identity.py imports face_limits and appearance_limits to use them, but defines
+    # neither, nor the private names they had there.
+    assert _binds_one_of(IDENTITY, LEFT_IDENTITY, imports=False) == []
+    # No caller takes one from identity.py, where its own import would still hand it over.
+    code = [file for file in _files_under(*CODE_AND_BUILD) if file.suffix == ".py"]
+    found = [hit for file in code for hit in _reads_a_name_that_left(file, IDENTITY_MODULE, LEFT_IDENTITY)]
+    assert found == []
+
+
+def test_the_checks_would_catch_a_people_memory_module_or_a_limit_back_at_its_old_home(tmp_path):
+    shim = "from walkie_agent.people_memory.track_memory import TrackMemory\n"
+    bad = tmp_path / "bad" / "walkie_agent" / "perception"
+    bad.mkdir(parents=True)
+    for name in ("memory.py", "people.py", "objects.py"):
+        (bad / name).write_text(shim)
+    (bad / "identity").mkdir()
+    (bad / "identity" / "__init__.py").write_text(shim)
+    found = [
+        path for name in LEFT_PERCEPTION for path in _old_homes(bad.parents[1], f"walkie_agent.perception.{name}")
+    ]
+    assert found == [bad / "memory.py", bad / "identity", bad / "people.py", bad / "objects.py"]
+    # The new homes and the word tables, whose names only start with an old one, are fine.
+    good = tmp_path / "good" / "walkie_agent"
+    for path in (
+        "perception/people_words.py",
+        "perception/object_words.py",
+        "people_memory/track_memory.py",
+        "people_memory/store.py",
+        "people_memory/identity.py",
+        "ros/people_memory.py",
+    ):
+        (good / path).parent.mkdir(parents=True, exist_ok=True)
+        (good / path).write_text(shim)
+    assert [p for name in LEFT_PERCEPTION for p in _old_homes(good.parent, f"walkie_agent.perception.{name}")] == []
+
+    copy = tmp_path / "identity.py"
+    copy.write_text(
+        "from walkie_agent.people_memory.model_limits import appearance_limits as _appearance_limits\n"
+        "from walkie_agent.people_memory.model_limits import face_limits\n"
+        "def _face_limits(): ...\n"
+        "def appearance_limits(): ...\n"
+    )
+    assert len(_binds_one_of(copy, LEFT_IDENTITY, imports=False)) == 3
+    # IdentityConfig may take its defaults from model_limits.py by their own names.
+    good_identity = tmp_path / "good_identity.py"
+    good_identity.write_text(
+        '"""The limits are face_limits and appearance_limits in model_limits.py."""\n'
+        "from dataclasses import dataclass, field\n"
+        "from walkie_agent.people_memory.model_limits import appearance_limits, face_limits\n"
+        "@dataclass(frozen=True)\n"
+        "class IdentityConfig:\n"
+        "    face_distance_limits: dict = field(default_factory=face_limits)\n"
+        "    appearance_distance_limits: dict = field(default_factory=appearance_limits)\n"
+    )
+    assert _binds_one_of(good_identity, LEFT_IDENTITY, imports=False) == []
+
+    caller = tmp_path / "caller.py"
+    caller.write_text(
+        "from walkie_agent.people_memory import identity\n"
+        "from walkie_agent.people_memory.identity import (\n"
+        "    IdentityConfig,\n"
+        "    face_limits,\n"
+        ")\n"
+        "from walkie_agent.people_memory.identity import face_limits as _face_limits\n"
+        "a = identity.appearance_limits()\n"
+        'monkeypatch.setattr(identity, "_appearance_limits", dict)\n'
+    )
+    assert len(_reads_a_name_that_left(caller, IDENTITY_MODULE, LEFT_IDENTITY)) == 4
+    # The limits from model_limits.py, and identity.py's own names, are fine.
+    good_caller = tmp_path / "good_caller.py"
+    good_caller.write_text(
+        '"""identity.face_limits moved to walkie_agent.people_memory.model_limits."""\n'
+        "from walkie_agent.people_memory import identity, model_limits\n"
+        "from walkie_agent.people_memory.identity import IdentityConfig\n"
+        "from walkie_agent.people_memory.model_limits import appearance_limits, face_limits\n"
+        "from walkie_agent.people_memory.model_limits import face_limits as _face_limits\n"
+        "a = model_limits.face_limits()\n"
+        "b = identity.IdentityConfig\n"
+        'monkeypatch.setattr(model_limits, "face_limits", dict)\n'
+    )
+    assert _reads_a_name_that_left(good_caller, IDENTITY_MODULE, LEFT_IDENTITY) == []
+
+
 def test_the_tree_check_would_catch_a_name_back_in_ros_vision(tmp_path):
     caller = tmp_path / "caller.py"
     caller.write_text(
@@ -689,13 +804,26 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         'caplog.at_level(logging.ERROR, logger="walkie_agent.ros.io")\n'
         "# src/walkie_agent/ros/io.py bridges the operator's topics\n"
         "from walkie_agent.ros import speech, io\n"
+        "from walkie_agent.perception.memory import TrackMemory\n"
+        "from walkie_agent.perception.people_memory import InMemoryPeopleMemory\n"
+        "from walkie_agent.perception.identity import cosine_distance\n"
+        "from walkie_agent.perception.recognition import name_people\n"
+        'monkeypatch.setattr("walkie_agent.perception.track_vectors.TrackVectors", fake)\n'
+        "# src/walkie_agent/perception/people.py gives the pose and gesture phrases\n"
+        "# src/walkie_agent/perception/objects.py gives each label its category\n"
+        'caplog.at_level(logging.WARNING, logger="walkie_agent.perception.memory")\n'
+        "from walkie_agent.perception import memory as memory_module\n"
+        "from walkie_agent.perception import gestures, people, objects\n"
+        "from walkie_agent.perception import identity, recognition, track_vectors, people_memory\n"
     )
-    assert len(_mentions([bad], REMOVED)) == 29
+    assert len(_mentions([bad], REMOVED)) == 40
     # The tools package that holds the atomics is not the removed one,
     # walkie_agent.ros.vision still holds RosVision, the runtime package stays,
     # and the adapter's new home in the tools package is not the removed module.
     # Neither are the task templates' new home, the gym's own tasks module, the
     # operator topics' new home, or a ros module whose name only starts with io.
+    # Nor the people memory's new package, the ros store of the same name, or
+    # perception's word tables, whose names only start with an old one.
     good = tmp_path / "good.py"
     good.write_text(
         "from walkie_agent import tools, errors\n"
@@ -731,6 +859,17 @@ def test_the_sweep_would_catch_a_removed_module(tmp_path):
         "from walkie_agent.ros.object_memory import RosObjectMemory\n"
         "from walkie_agent.ros import object_memory, operator_topics, io_stats\n"
         "import walkie_agent.ros.io_stats, walkie_agent.ros.iox\n"
+        "from walkie_agent.people_memory.track_memory import TrackMemory\n"
+        "from walkie_agent.people_memory.store import InMemoryPeopleMemory\n"
+        "from walkie_agent.people_memory import identity, recognition, track_vectors, model_limits\n"
+        'caplog.at_level(logging.WARNING, logger="walkie_agent.people_memory.track_memory")\n'
+        "# src/walkie_agent/people_memory/identity.py compares vectors\n"
+        "from walkie_agent.ros.people_memory import RosPeopleMemory\n"
+        "from walkie_agent.perception.people_words import pose_phrase\n"
+        "from walkie_agent.perception.object_words import category_of\n"
+        "# src/walkie_agent/perception/people_words.py and perception/object_words.py\n"
+        "from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC, people_words, object_words\n"
+        "import walkie_agent.perception.gestures, walkie_agent.perception.geometry\n"
     )
     assert _mentions([good], REMOVED) == []
 

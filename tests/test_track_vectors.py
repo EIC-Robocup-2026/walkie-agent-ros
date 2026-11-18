@@ -1,4 +1,4 @@
-"""perception/track_vectors.py: the per-track sample buffer, model_vector and face_trusted.
+"""people_memory/track_vectors.py:the per-track sample buffer, model_vector and face_trusted.
 
 Ported from the experiment's tests/test_vision_feed.py, whose collection tests ran over
 a VisionFeed node: here the buffer is fed directly, with explicit stamps and monotonic
@@ -14,8 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import pytest
 
-from walkie_agent.perception.people_memory import ModelVector
-from walkie_agent.perception.track_vectors import (
+from walkie_agent.people_memory.store import ModelVector
+from walkie_agent.people_memory.track_vectors import (
     DEFAULT_TRACK_VECTORS_CONFIG,
     Collected,
     Sighting,

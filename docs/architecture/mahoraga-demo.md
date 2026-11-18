@@ -38,6 +38,7 @@ ROS-backed verbs implement layer 2's Protocols, and only `main.py` connects them
 | 3. Tool sets | `walkie_agent/tools/sets.py` | Built |
 | 4. Adapter to LangChain tools | `walkie_agent/tools/adapter.py` | Built |
 | 5. `create_agent`, middlewares, Runner | `walkie_agent/runtime/` | [Built, and used by `main.py`](#runtime) |
+| 5. System prompts | `walkie_agent/prompts.py` | [Built](#runtime) |
 | 1 to 2. ROS-backed verbs, operator topics | `walkie_agent/ros/` | [Built, run on fake robots and in the MuJoCo simulation](#ros-wrappers) |
 | Entry point: flags, signals, assembly | `walkie_agent/main.py` | [Built, run on fake robots and in the MuJoCo simulation](#wiring-in-mainpy) |
 | 6. `run_script` and its shelf | `walkie_agent/scripting/` | [Built](#run_script), used by the gym and, behind `--scripts`, by the agent; run on fakes only |
@@ -738,6 +739,11 @@ def agent_settings(config) -> dict: ...  # run_limit and deadline_s, from the op
 def build_model(config, role="complex_model") -> BaseChatModel: ...
 def build_fallback(config) -> BaseChatModel | None: ...  # needs fallback_vendor and fallback_model
 def build_callbacks(config) -> list[BaseCallbackHandler]: ...  # Langfuse, when enabled
+
+# walkie_agent.prompts
+def build_system_prompt(tool_set, locations, robot_description, *, vision=False, memory=False,
+                        arms=False, object_memory=False, scripts=False) -> str: ...
+SYSTEM_PROMPT: str  # build_agent's default
 
 # walkie_agent.runtime
 def build_agent(model, ctx, *, tools=DEFAULT, run_limit=25, deadline_s=60.0, on_todos=None,

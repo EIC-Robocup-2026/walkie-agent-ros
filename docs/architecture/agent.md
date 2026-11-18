@@ -79,6 +79,7 @@ the capability Protocols, and `main.py` wires them in.
 | --- | --- | --- |
 | Entry point: parse flags, signals, assembly | `walkie_agent/main.py` | Yes |
 | Runtime: `create_agent`, middlewares, todo list, Runner | `walkie_agent/runtime/` | No |
+| System prompts: the rules for the bound tools, and the runtime's default | `walkie_agent/prompts.py` | No |
 | Adapter: from an atomic to a LangChain tool | `walkie_agent/tools/adapter.py` | No |
 | Atomics | `walkie_agent/tools/atomic/` | No |
 | Tool sets: which atomics each run binds | `walkie_agent/tools/sets.py` | No |
@@ -450,7 +451,7 @@ The arguments are checked strictly. A model that sends a JSON `true` or a numeri
 for a number gets a validation error back and can retry. Otherwise pydantic would turn
 `true` into `1.0` and drive the base a meter.
 
-The system prompt is built for the chosen set, by `build_system_prompt` in `main.py`, so
+The system prompt is built for the chosen set, by `build_system_prompt` in `prompts.py`, so
 it names only tools that are bound. Each set that binds an unavailable tool also tells
 the LLM to say that it cannot do this, not to guess. GPSR has no `list_places`, so its
 prompt lists the configured places as data. `--scripts` adds the `run_script` rule
@@ -538,8 +539,9 @@ limits matter on a real robot, and none has been measured:
 ## What Walkie knows about itself
 
 `robot.md` at the repository root describes the robot: what it is, its hardware, what the
-agent can do today and how it behaves. `main.py` reads it once at startup and appends it
-to the system prompt ([ADR-0068](decisions/0068-static-robot-description.md)).
+agent can do today and how it behaves. `main.py` reads it once at startup, and
+`build_system_prompt` in `prompts.py` appends it to the system prompt
+([ADR-0068](decisions/0068-static-robot-description.md)).
 
 - To change it, edit `robot.md` and restart the agent. Nothing has to be built.
 - `--robot-description` points at another file.

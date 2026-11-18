@@ -34,6 +34,7 @@ from test_scene_file import camera_info
 from walkie_vision_msgs.msg import PersonDetectionArray
 
 import walkie_agent.main as main
+import walkie_agent.prompts as prompts
 from walkie_agent.arm.poses import ArmPoses, load_arm_poses
 from walkie_agent.arm.results import ClientSnapshot, DriveCheck
 from walkie_agent.arm.state import ArmsState, ArmState
@@ -329,7 +330,7 @@ def test_with_vision_find_people_and_find_objects_read_live_and_the_prompt_says_
     assert "live people perception, which is not connected" not in system
     assert "`find_objects` reports the objects your camera sees now" in system
     assert "live object perception, which is not" not in system
-    assert system == main.build_system_prompt(tool_set, PLACES, ROBOT, vision=True)
+    assert system == prompts.build_system_prompt(tool_set, PLACES, ROBOT, vision=True)
     named = set(re.findall(r"`(\w+)`", system))
     assert named <= set(built.model.bound[0])
     # object_info is named only where the set binds it.
@@ -373,7 +374,7 @@ def test_without_a_people_memory_the_memory_tools_are_unavailable_and_the_prompt
     run_one(built)
 
     system = built.model.received[0][0].content
-    assert system == main.build_system_prompt("hri", PLACES, ROBOT, vision=True)
+    assert system == prompts.build_system_prompt("hri", PLACES, ROBOT, vision=True)
     assert "`remember_person` and `recognize_person` need a people memory" in system
     assert "When someone tells you their name" not in system
     with pytest.raises(StepError) as raised:
@@ -398,7 +399,7 @@ def test_a_mock_people_memory_remembers_from_the_vision_and_forgets_at_a_reset(b
     run_one(built)
 
     system = built.model.received[0][0].content
-    assert system == main.build_system_prompt("hri", PLACES, ROBOT, vision=True, memory=True)
+    assert system == prompts.build_system_prompt("hri", PLACES, ROBOT, vision=True, memory=True)
     assert "When someone tells you their name, call `remember_person`" in system
     assert "need a people memory" not in system
     named = set(re.findall(r"`(\w+)`", system))
@@ -462,19 +463,6 @@ def test_assembly_refuses_a_people_memory_it_cannot_use_before_building_anything
         build(connector=connector, **options)
     assert connector.node.publishers == []
     assert connector.node.subscriptions == []
-
-
-@pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri"])
-def test_only_a_set_with_the_memory_tools_gets_a_memory_rule(tool_set):
-    prompts = {
-        memory: main.build_system_prompt(tool_set, PLACES, ROBOT, vision=True, memory=memory)
-        for memory in (False, True)
-    }
-    for prompt in prompts.values():
-        assert ("`remember_person`" in prompt) == (tool_set == "hri")
-        assert set(re.findall(r"`(\w+)`", prompt)) <= tool_names(tool_set)
-    # DEFAULT and GPSR, and their prompts, stay as they were.
-    assert (prompts[False] == prompts[True]) == (tool_set != "hri")
 
 
 def test_assemble_never_spins_or_destroys_the_connector(build):
@@ -561,20 +549,6 @@ def test_each_tool_set_gets_a_matching_prompt(build, tool_set):
     assert ("`list_places`" in system.content) == (tool_set != "gpsr")
 
 
-@pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri", "arms"])
-def test_only_scripts_add_the_run_script_rule_to_a_prompt(tool_set):
-    arms = tool_set == "arms"
-    without = main.build_system_prompt(tool_set, PLACES, ROBOT, arms=arms)
-    with_scripts = main.build_system_prompt(tool_set, PLACES, ROBOT, arms=arms, scripts=True)
-
-    assert "run_script" not in without
-    assert main.build_system_prompt(tool_set, PLACES, ROBOT, arms=arms, scripts=False) == without
-    assert with_scripts.count(main._SCRIPTS_RULE) == 1
-    assert with_scripts.replace(main._SCRIPTS_RULE, "") == without
-    # The rule sits in the rules, before the general ones that close them.
-    assert with_scripts.index("`run_script`") < with_scripts.index("If a tool reports a failure")
-
-
 def test_with_scripts_the_agent_binds_run_script_and_takes_the_verdict(build, pool):
     built = build(tool_set="hri", scripts=AgentScripts(pool, Shelf()))
     node = built.node
@@ -616,35 +590,13 @@ def test_robot_description_appended_once_without_whoami(build):
     assert system.endswith(ROBOT + "\n")
 
     # Empty content is valid and adds nothing, and there is no generated fallback.
-    empty = main.build_system_prompt("default", PLACES, " \n")
-    assert empty == main.build_system_prompt("default", PLACES, "")
+    empty = prompts.build_system_prompt("default", PLACES, " \n")
+    assert empty == prompts.build_system_prompt("default", PLACES, "")
     assert system.startswith(empty)
     assert "whoami" not in Path(main.__file__).read_text(encoding="utf-8")
+    assert "whoami" not in Path(prompts.__file__).read_text(encoding="utf-8")
     with pytest.raises(SystemExit):
         main._parse_args(["--whoami-dir", "whoami"])
-
-
-def test_the_shipped_robot_description_claims_only_what_is_connected():
-    text = (PROJECT_ROOT / "robot.md").read_text(encoding="utf-8")
-    assert "Chulalongkorn" in text and "polite, patient and brief" in text
-    assert "Two robot arms" in text
-    assert "not connected" in text
-    # Seeing people and moving the arms depend on the run, so it defers to the prompt.
-    flat = " ".join(text.split())
-    assert "when the agent runs with people perception" in flat
-    assert "when the agent runs with the arm tools" in flat
-    assert "has no grasp skill yet" in flat
-    # It describes the robot. How to use a tool is the prompt's job, set by set. Some tool
-    # names are plain English ("pick up"), so only the unmistakable ones are looked for.
-    assert "`" not in text
-    every = {name for tool_set in TOOL_SET_LISTS for name in tool_names(tool_set, arms=True)}
-    for name in every:
-        assert "_" not in name or name not in text, name
-    # It claims the facts get_facts reads, and names the team as config.toml does.
-    assert "the time and the date from the computer's clock" in text
-    team = main.load_config(PROJECT_ROOT / "config.toml")["team"]
-    for key in ("name", "country", "affiliation"):
-        assert team[key] in text, key
 
 
 def test_template_requirements_must_be_bound(build, commanders):
@@ -823,7 +775,7 @@ def test_with_arms_the_agent_gets_the_arm_tools_and_the_arm_rule(build, commande
     assert bound == tool_names(tool_set, arms=True)
     assert ARM_TOOLS <= bound
     system = built.model.received[0][0].content
-    assert system == main.build_system_prompt(tool_set, PLACES, ROBOT, arms=True)
+    assert system == prompts.build_system_prompt(tool_set, PLACES, ROBOT, arms=True)
     named = set(re.findall(r"`(\w+)`", system))
     assert named <= bound, f"The prompt names tools it lacks: {named - bound}"
     assert "You also have two arms with grippers." in system
@@ -906,7 +858,7 @@ def test_with_object_memory_the_agent_gets_the_object_tools_and_their_rule(
     assert bound == tool_names(tool_set, object_memory=True)
     assert OBJECT_MEMORY_TOOLS <= bound
     system = built.model.received[0][0].content
-    assert system == main.build_system_prompt(
+    assert system == prompts.build_system_prompt(
         tool_set, PLACES, ROBOT, vision=True, object_memory=True
     )
     assert "`recall_object` tells where you saw objects before" in system

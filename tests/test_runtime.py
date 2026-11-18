@@ -142,7 +142,8 @@ from runtime_harness import (
 
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.runtime import SYSTEM_PROMPT, ToolLog, build_agent, build_middleware
+from walkie_agent.prompts import SYSTEM_PROMPT
+from walkie_agent.runtime import ToolLog, build_agent, build_middleware
 from walkie_agent.runtime.middleware import (
     EMPTY_REPLY,
     INTERRUPTED,

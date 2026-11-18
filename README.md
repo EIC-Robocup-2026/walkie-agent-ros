@@ -87,6 +87,7 @@ explains each step, lists the topics and shows a silent recipe with no real mode
 | Path                         | What it holds                                                     |
 | ---------------------------- | ----------------------------------------------------------------- |
 | `src/walkie_agent/main.py`   | The entry point, which assembles the agent                        |
+| `src/walkie_agent/prompts.py` | The system prompts: a rule for each bound tool, the places and `robot.md`. No ROS. |
 | `src/walkie_agent/capabilities/` | The verbs on `ctx`, their guards and `FakeRobot`. No ROS.     |
 | `src/walkie_agent/tools/atomic/` | The tools, as plain functions. No ROS. |
 | `src/walkie_agent/tools/sets.py` | The fixed tool sets, and which atomics each run binds. No ROS. |

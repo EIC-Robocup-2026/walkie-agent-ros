@@ -49,6 +49,7 @@ source_modules = [
     "walkie_agent.tasks",
     "walkie_agent.config",
     "walkie_agent.chat_models",
+    "walkie_agent.prompts",
 ]
 forbidden_modules = [
     "walkie_agent.main",
@@ -79,7 +80,7 @@ forbidden_modules = [
 
 [[tool.importlinter.contracts]]
 id = "backends-dont-see-the-llm"
-name = "The ROS backends and the simulation never import the LLM runtime, the tools or LangChain"
+name = "The ROS backends and the simulation never import the LLM runtime, the tools, the prompts or LangChain"
 type = "forbidden"
 # Every module and subpackage of walkie_agent.ros but io, which bridges the operator's
 # topics to the Runner, and but the package init, which package-inits-stay-empty keeps
@@ -99,6 +100,7 @@ source_modules = [
 forbidden_modules = [
     "walkie_agent.runtime",
     "walkie_agent.tools",
+    "walkie_agent.prompts",
     "walkie_agent.chat_models",
     "langchain",
     "langchain_core",

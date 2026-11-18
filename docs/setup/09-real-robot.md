@@ -26,7 +26,8 @@ read from that working tree. If someone changes it, check the command again.
 
 The first run is the **basic run**: map, Nav2, vision, the people database, the
 agent and voice. The arms and the object memory are optional steps after it.
-Do the basic run first.
+Do the basic run first. The whole-body MoveIt experiment is a separate test
+([Optional C](#optional-c-the-whole-body-moveit-test)).
 
 ## 1. What runs where
 
@@ -65,6 +66,7 @@ In **T1 to T6** (the team's walkie-ros):
 ```bash
 export PATH=$HOME/.pixi/bin:$PATH
 export ROS_DOMAIN_ID=23
+unset ZENOH_CONFIG_OVERRIDE ZENOH_SESSION_CONFIG_URI ZENOH_ROUTER_CONFIG_URI
 export MAP_NAME=31_19112026_lab
 export MAP=$HOME/Project/robocup_ros_ws/walkie-ros/navigation/walkie-navigation/map/$MAP_NAME
 cd ~/Project/robocup_ros_ws/walkie-ros
@@ -75,6 +77,7 @@ In **T7 to T12**, the same lines, and then the checkout of that terminal:
 ```bash
 export PATH=$HOME/.pixi/bin:$PATH
 export ROS_DOMAIN_ID=23
+unset ZENOH_CONFIG_OVERRIDE ZENOH_SESSION_CONFIG_URI ZENOH_ROUTER_CONFIG_URI
 export MAP_NAME=31_19112026_lab
 export MAP=$HOME/Project/robocup_ros_ws/walkie-ros/navigation/walkie-navigation/map/$MAP_NAME
 cd ~/Project/robocup_experiments/walkie-agent-ros    # T7: walkie-vision, T8: walkie-database
@@ -87,6 +90,11 @@ cd ~/Project/robocup_experiments/walkie-agent-ros    # T7: walkie-vision, T8: wa
   `~/.bashrc` on the robot sets it. Under Zenoh the domain is part of every
   topic's key, so a terminal without it sees nothing, and nothing reports an
   error.
+- **The `unset` line matters after the whole-body test** ([Optional C](#optional-c-the-whole-body-moveit-test)).
+  That test's terminals export `ZENOH_CONFIG_OVERRIDE`, which sends every
+  process started there to its private router on port 7499. A process there
+  is cut off from this page's graph, and `ROS_DOMAIN_ID` still reads `23`.
+  New terminals are safer than reused ones.
 - In the team's walkie-ros, always use **`pixi run --as-is`**. Its `pixi.toml`
   and `pixi.lock` have uncommitted edits, and a plain `pixi run` could re-solve
   or reinstall the team's environment. `--as-is` runs the environment as it is
@@ -107,13 +115,16 @@ ps -eo pid,args | grep -E '[r]eal_omnibot|[l]ift_homing|[m]apping_Nav2|[l]ocaliz
 
 The team's walkie-commander web UI (`walkie-commander/.venv/bin/python main.py`)
 runs on the robot. It is a launcher for saved commands. Make sure no teammate
-starts the bringup through it while you test. On 2026-11-19, another session
-was also building `~/Project/robocup_experiments/walkie-ros-fullbody`, which
-loads the CPU. Check that it has finished:
+starts the bringup through it while you test. The whole-body MoveIt test
+([Optional C](#optional-c-the-whole-body-moveit-test)) drives the same CAN
+buses from `~/Project/robocup_experiments/walkie-ros-fullbody`. Check that none
+of its nodes run:
 
 ```bash
-ps -eo pid,args | grep -E '[w]alkie-ros-fullbody|[c]olcon'
+ps -eo pid,args | grep -E '[w]alkie-ros-fullbody'
 ```
+
+It should print nothing, or only that test's own `rmw_zenohd`.
 
 **The Zenoh router runs.** One router on port 7447 serves every process on the
 robot. It has run from the team's walkie-ros since early November. Do not start
@@ -124,8 +135,10 @@ ps -eo pid,args | grep [r]mw_zenohd
 ```
 
 It should show `.../walkie-ros/.pixi/envs/default/lib/rmw_zenoh_cpp/rmw_zenohd`.
-A router under `walkie-ros-fullbody` belongs to another session's test, not to
-the team's graph. Leave it, and wait for that test to finish as above.
+A router under `walkie-ros-fullbody` belongs to the whole-body test, not to
+the team's graph. Leave it, and wait for that test to finish as above. If you
+ran the whole-body test, close all of its terminals first. Each one exports
+`ZENOH_CONFIG_OVERRIDE`.
 Only if nothing is printed (for example after a reboot), start it in a terminal
 of its own, set up like T1:
 
@@ -136,22 +149,28 @@ pixi run --as-is ros2 run rmw_zenoh_cpp rmw_zenohd
 **The CAN adapters have the right names.** The base and the lift use `can2`,
 which must be the candleLight adapter (driver `gs_usb`) at classic 1 Mbit/s.
 The arms use `can0` (right) and `can1` (left), the two channels of the PCAN-USB
-Pro FD (driver `peak_usb`) with CAN FD. Check the driver behind each name:
+Pro FD (driver `peak_usb`) with CAN FD. Check the driver, the channel
+(`dev_id`) and the state behind each name:
 
 ```bash
-for n in can0 can1 can2; do echo "$n $(cat /sys/class/net/$n/operstate) $(ls -l /sys/class/net/$n/device/driver | sed 's/.*\///')"; done
+for n in can0 can1 can2; do echo "$n $(basename $(readlink -f /sys/class/net/$n/device/driver)) $(cat /sys/class/net/$n/dev_id) $(cat /sys/class/net/$n/operstate)"; done
 ```
 
-The output must be:
+It must print exactly:
 
 ```text
-can0 <state> peak_usb
-can1 <state> peak_usb
-can2 <state> gs_usb
+can0 peak_usb 0x0 up
+can1 peak_usb 0x1 up
+can2 gs_usb 0x0 up
 ```
 
+The `dev_id` column tells the two PCAN channels, and so the two arms, apart.
+The driver alone cannot. The whole-body guide runs the same check
+([Optional C](#optional-c-the-whole-body-moveit-test)).
+
 !!! danger "On 2026-11-19 the names were swapped"
-    The robot showed `can0 gs_usb`, `can1 peak_usb` and `can2 peak_usb`. With
+    At 06:04 the robot printed `can0 gs_usb 0x0 down`, `can1 peak_usb 0x0
+    down` and `can2 peak_usb 0x1 up`. With
     that, the base and the lift would talk to an arm bus, and the arms' FD bus
     would land on the candleLight. **Do not start the lift or the bringup while
     the drivers do not match.** The names come from
@@ -162,24 +181,37 @@ can2 <state> gs_usb
     candleLight came up first as `can0`. Both PCAN channels then asked for
     `can0` (`70-can0.link` matches the PCAN's USB port, so it matches both
     channels), could not have it, and kept `can1` and `can2`. The order in
-    which the adapters appear decides the names.
+    which the adapters appear decides the names. Replugging only the PCAN
+    gives the same names, since the candleLight keeps `can0`.
 
-    **Unverified fix:** with nothing running on the buses, unplug both CAN
-    adapters. Plug the PCAN-USB Pro FD back into **the same USB port it came
-    out of**: `70-can0.link` matches that port's path, so another port gives
-    other names. Wait until `ls /sys/class/net` shows `can0` and `can1`. Then
-    plug in the candleLight, and run the driver check again. Also check that
-    the PCAN sits on the port the link file expects:
+    The swap also explains the bus states. `can0-up.service` asks `can0` for
+    CAN FD, which the candleLight refuses, so the service fails and `can0` and
+    `can1` stay down. `can2-up.service` brings up a PCAN channel as `can2`. A
+    `can2` that is `up` therefore proves nothing; only the driver check does.
 
-    ```bash
-    readlink -f /sys/class/net/can0/device
-    ```
+    **Unverified fix,** with nothing running on the buses:
 
-    The path must end in `3-2.4:1.0`. Do not reboot to fix this: the boot of
-    2026-10-31 produced exactly this swap. If the names are still wrong, ask
-    the team before going on.
+    1. Make sure the arms rest or hang where they cannot hit anything. Switch
+       off the motor power for the arms, the wheels and the lift. Keep the
+       computer on.
+    2. Unplug both CAN adapters, the PCAN-USB Pro FD and the candleLight.
+    3. Plug the PCAN back into **the same USB port it came out of**:
+       `70-can0.link` matches that port's path, so another port gives other
+       names. Wait until `ls /sys/class/net` shows `can0` and `can1`.
+    4. Plug in the candleLight.
+    5. Run the check above again, and check that the PCAN sits on the port the
+       link file expects. This path must end in `3-2.4:1.0`:
 
-If the buses are not up after a replug (`operstate` shows `down`), the systemd
+        ```bash
+        readlink -f /sys/class/net/can0/device
+        ```
+
+    6. Switch the motor power back on.
+
+    Do not reboot to fix this: the boot of 2026-10-31 produced exactly this
+    swap. If the names are still wrong, ask the team before going on.
+
+If the buses are not up after a replug (the last column shows `down`), the systemd
 units `can0-up.service` and `can2-up.service` normally bring them up. By hand:
 
 ```bash
@@ -603,6 +635,30 @@ echo $ROS_DOMAIN_ID
 It must print `23`. Check it in every terminal you opened.
 
 ```bash
+grep -lz '^ZENOH_CONFIG_OVERRIDE=' /proc/[0-9]*/environ 2>/dev/null | cut -d/ -f3 | xargs -r ps -o pid,args -p
+```
+
+This lists every process that started with the whole-body test's router
+setting. It must print nothing, apart from that test's own `rmw_zenohd` while
+its router is up.
+
+- A `bash` line is a terminal opened for the whole-body test. `/proc` keeps
+  the environment a process started with, so the shell still shows after the
+  `unset` line. Processes started after that line are fine.
+- Any other line is a process connected to the wrong router. Stop it, and
+  start it again from a new terminal set up as in
+  [step 1](#start-every-terminal-the-same-way).
+
+Then stop the `ros2` command-line daemon. It caches the graph, and one started
+from a whole-body terminal keeps showing that test's router:
+
+```bash
+pixi run --frozen ros2 daemon stop
+```
+
+The next `ros2` command starts a fresh one from T12.
+
+```bash
 pixi run --frozen ros2 action list
 ```
 
@@ -741,7 +797,8 @@ Nav2. The lift (T1) keeps running.
 
 1. Stop the agent (Ctrl+C in T11), then Nav2 (T4), then the bringup (T2).
 2. Start the bringup in T2 without the arm arguments. **The arms move at
-   start.** Clear the space around them.
+   start:** the arm driver commands every joint to 0 rad at once. Clear the
+   space around them, and keep hands away from the grippers.
 
     ```bash
     pixi run --as-is ros2 launch robot_bringup real_omnibot.launch.py
@@ -771,6 +828,13 @@ Nav2. The lift (T1) keeps running.
 Without `--use-sim-time`, the agent offers no pose marked
 `tried_on_robot = false` in `config/arm_poses.toml`. With an arm out, `go_to` and
 `move_relative` refuse to drive.
+
+**When the bringup stops, the arms fall.** The arm driver turns the arm motors
+off, and nothing holds the arms up. How far they drop has not been measured.
+The agent does not lower the arms when it exits, and `hands_up` or `standby`
+leave the elbows raised. So before stopping T11, ask the agent to put both
+arms at `home`, and wait until they are still. Before stopping T2, clear the
+space below the arms.
 
 ## Optional B: the object memory
 
@@ -965,6 +1029,25 @@ If `db-memory` refuses or misbehaves:
 The agent then loses only `recall_object`, `list_room_objects` and
 `go_to_object`. The people memory and the live `find_objects` keep working.
 
+## Optional C: the whole-body MoveIt test
+
+The whole-body MoveIt experiment is a separate test with its own guide. It uses
+no agent, vision or database. Its checkout is
+`~/Project/robocup_experiments/walkie-ros-fullbody` (`feat/moveit-full-body`,
+`df1da45`), and its guide is `docs/guides/whole-body-real-robot.md` there.
+
+- **Never run it at the same time as this page's stack.** Stop every terminal
+  from this page first ([step 8](#8-stop-and-reset)). Both drive the same CAN
+  buses, and a separate router or ROS domain does not separate CAN.
+- It runs on its own Zenoh router, port 7499, with `ROS_DOMAIN_ID=77`. Open new
+  terminals and set them up as that guide says, not as T1.
+- Its stage 1 is a MuJoCo rehearsal with RViz and needs no hardware. Before its
+  stage 2, which powers the arms, do the CAN driver check in
+  [step 2](#2-before-you-start).
+- Its stage 3, whole-body goals that move the lift on the real robot, is held
+  back, because the lift node does not follow a plan's timing. That guide
+  explains why.
+
 ## 8. Stop and reset
 
 **Stop the task.** A bare `stop`, `never mind` or `nevermind`, typed or spoken,
@@ -997,8 +1080,15 @@ over again 0.5 s after you let go, unless its goal was cancelled. A cancelled
 goal does not prove that the wheels stopped. The agent's stop
 latency on the real robot was never measured.
 
-**Shut down.** Press Ctrl+C once in each terminal, in this order, and wait for
-each to exit:
+**Shut down.** With the arms running ([Optional A](#optional-a-the-arms)), first
+ask the agent to put both arms at `home`, and wait until they are still:
+
+```bash
+pixi run --frozen ros2 topic pub -w 1 --once /from_human rai_interfaces/msg/HRIMessage "{text: 'put both arms at home'}"
+```
+
+Then press Ctrl+C once in each terminal, in this order, and wait for each to
+exit:
 
 1. T11 agent. It cancels a running Nav2 goal. A second Ctrl+C forces an exit
    with code 3, and the goal's state is then unknown.
@@ -1007,7 +1097,8 @@ each to exit:
 4. T6 commander, T5 MoveIt (if running).
 5. T4 Nav2 or SLAM.
 6. T3 joystick.
-7. T2 bringup.
+7. T2 bringup. With the arms, they fall when it stops
+   ([Optional A](#optional-a-the-arms)).
 8. T1 lift homing, **last**. It takes `can2` down when it exits.
 
 Leave the Zenoh router running.

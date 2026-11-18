@@ -88,6 +88,9 @@ pydantic = "==2.14.0"
 pydantic-monty = "==1.4.0"
 rai-core = "==2.12.1"
 python-dotenv = ">=1.0"
+# Checks the package's import rules, [tool.importlinter] in pyproject.toml, from
+# tests/test_import_contracts.py (ADR-0071).
+import-linter = "==2.16"
 walkie-agent = { path = ".", editable = true }
 # rai_s2s is not published on PyPI for this RAI release, so it comes from the
 # RAI repository. Tag 2.12.2 has the same rai_s2s sources as 2.12.1 (our

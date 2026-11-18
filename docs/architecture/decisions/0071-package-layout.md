@@ -111,6 +111,11 @@ one holds anything but its docstring.
   episodes), and each split's two passes gave the same canonical log. Those digests
   differ from the run before the move, because a canonical log keeps the git commit it
   ran at.
+- The moved agent ran in the Chula sim on 2026-11-19, at 6abe298.
+  `scripts/chula-sim.sh check --agent` passed. A `/walkie/task` message,
+  `{"task": "Go to the kitchen room, then say that you arrived.", "todos": []}`, made
+  the agent drive to the kitchen room in 38 s and say it had arrived, with no warnings in
+  its log.
 - An environment built before import-linter was added fails to collect
   `tests/test_import_contracts.py`. Run `pixi install --frozen` in that checkout, the
   `/var/tmp/wa-demo` worktree included.

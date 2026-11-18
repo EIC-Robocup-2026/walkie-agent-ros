@@ -59,9 +59,15 @@ from walkie_agent.perception.people import (
     pose_phrase,
 )
 from walkie_agent.perception.track_vectors import Collected, TrackVectorsConfig
-from walkie_agent.ros import RosVision, UnavailableVision
 from walkie_agent.ros import vision as vision_module
-from walkie_agent.ros.vision import NAME_WAIT_S, PLACE_TOLERANCE_M, TF_WAIT_S, UNKNOWN_PLACE
+from walkie_agent.ros.vision import (
+    NAME_WAIT_S,
+    PLACE_TOLERANCE_M,
+    TF_WAIT_S,
+    UNKNOWN_PLACE,
+    RosVision,
+    UnavailableVision,
+)
 from walkie_agent.sim.fake_vectors import FAKE_FACE_MODEL, FAKE_REID_MODEL, hash_vector
 from walkie_agent.sim.oracle_perception import ORACLE_QOS, OracleConfig, draw_detections
 from walkie_agent.sim.projection import camera_position

@@ -17,3 +17,90 @@ where = ["src"]
 testpaths = ["tests"]
 # ROS 2 ships pytest plugins (launch_testing, etc.) that are not needed here.
 addopts = "-p no:launch_testing -p no:launch_ros -p no:ament_copyright -p no:ament_flake8 -p no:ament_pep257 -p no:ament_xmllint -p no:ament_lint"
+
+# The package's import rules. tests/test_import_contracts.py checks them in-process,
+# so the default test suite fails when one breaks.
+[tool.importlinter]
+root_package = "walkie_agent"
+# Lets a contract name LangChain and the other external packages.
+include_external_packages = true
+
+[[tool.importlinter.contracts]]
+id = "gym-stays-out"
+name = "The agent never imports the Mahoraga gym, which is an offline evaluation"
+type = "forbidden"
+# Every top-level module; the gym itself overlaps its own name and is skipped.
+source_modules = ["walkie_agent.*"]
+forbidden_modules = ["walkie_agent.mahoraga"]
+
+[[tool.importlinter.contracts]]
+id = "core-is-ros-free"
+name = "The agent's core never imports the ROS entry point, backends, voice, simulation or gym"
+type = "forbidden"
+source_modules = [
+    "walkie_agent.capabilities",
+    "walkie_agent.tools",
+    "walkie_agent.runtime",
+    "walkie_agent.scripting",
+    "walkie_agent.perception",
+    "walkie_agent.arm",
+    "walkie_agent.adapter",
+    "walkie_agent.errors",
+    "walkie_agent.locations",
+    "walkie_agent.tasks",
+]
+forbidden_modules = [
+    "walkie_agent.main",
+    "walkie_agent.ros",
+    "walkie_agent.voice",
+    "walkie_agent.sim",
+    "walkie_agent.mahoraga",
+]
+
+[[tool.importlinter.contracts]]
+id = "package-inits-stay-empty"
+name = "Package inits import nothing from the agent or LangChain, so importing a package loads only its docstring"
+type = "forbidden"
+# Each init on its own, not the package it opens.
+as_packages = false
+allow_indirect_imports = true
+source_modules = ["walkie_agent", "walkie_agent.ros", "walkie_agent.tools"]
+# The external packages also keep the ros init inside backends-dont-see-the-llm,
+# which cannot name the init without also naming io.
+forbidden_modules = [
+    "walkie_agent",
+    "walkie_agent.**",
+    "langchain",
+    "langchain_core",
+    "langgraph",
+    "langfuse",
+]
+
+[[tool.importlinter.contracts]]
+id = "backends-dont-see-the-llm"
+name = "The ROS backends and the simulation never import the LLM runtime, the tools or LangChain"
+type = "forbidden"
+# Every module and subpackage of walkie_agent.ros but io, which bridges the operator's
+# topics to the Runner, and but the package init, which package-inits-stay-empty keeps
+# free of the agent and LangChain. tests/test_import_contracts.py fails when a module or
+# subpackage of walkie_agent.ros is missing here.
+source_modules = [
+    "walkie_agent.ros.arms",
+    "walkie_agent.ros.base",
+    "walkie_agent.ros.commander",
+    "walkie_agent.ros.object_memory",
+    "walkie_agent.ros.people_memory",
+    "walkie_agent.ros.policy",
+    "walkie_agent.ros.speech",
+    "walkie_agent.ros.vision",
+    "walkie_agent.sim",
+]
+forbidden_modules = [
+    "walkie_agent.runtime",
+    "walkie_agent.tools",
+    "walkie_agent.adapter",
+    "langchain",
+    "langchain_core",
+    "langgraph",
+    "langfuse",
+]

@@ -101,24 +101,21 @@ from walkie_agent.locations import Location, load_locations
 from walkie_agent.perception import OBJECTS_TOPIC
 from walkie_agent.perception.memory import TrackMemory
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory, PeopleMemory
-from walkie_agent.ros import (
-    CommanderClient,
-    RosArms,
-    RosBase,
-    RosBridge,
-    RosObjectMemory,
-    RosPeopleMemory,
-    RosSpeech,
-    RosVision,
-    UnavailableVision,
-)
+from walkie_agent.ros.arms import RosArms
+from walkie_agent.ros.base import RosBase
+from walkie_agent.ros.commander import CommanderClient
 from walkie_agent.ros.io import (
     CONSOLE_TOPIC,
     INPUT_TOPIC,
     RESET_TOPIC,
     TASK_TOPIC,
     TODOS_TOPIC,
+    RosBridge,
 )
+from walkie_agent.ros.object_memory import RosObjectMemory
+from walkie_agent.ros.people_memory import RosPeopleMemory
+from walkie_agent.ros.speech import RosSpeech
+from walkie_agent.ros.vision import RosVision, UnavailableVision
 from walkie_agent.runtime import Runner, ToolLog, build_agent
 from walkie_agent.runtime.model import (
     agent_settings,

@@ -24,7 +24,7 @@ from walkie_agent.locations import load_locations
 from walkie_agent.perception import PEOPLE_TOPIC
 from walkie_agent.perception.memory import TrackMemory
 from walkie_agent.perception.people_memory import InMemoryPeopleMemory
-from walkie_agent.ros import RosVision
+from walkie_agent.ros.vision import RosVision
 from walkie_agent.sim.oracle_perception import ORACLE_QOS, draw_detections
 from walkie_agent.sim.scene_file import load_scene
 from walkie_agent.tools.atomic import find_people, recognize_person, remember_person

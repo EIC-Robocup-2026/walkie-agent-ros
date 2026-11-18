@@ -13,7 +13,7 @@ from walkie_agent.capabilities import Ctx
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.ros import RosSpeech
+from walkie_agent.ros.speech import RosSpeech
 
 
 def speech(**kwargs) -> tuple[RosSpeech, FakeConnector]:

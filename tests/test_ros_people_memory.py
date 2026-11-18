@@ -26,8 +26,8 @@ from walkie_database_msgs.srv import MatchPeople, RememberPerson, StartSession
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.perception.people_memory import Match, ModelVector, Stored
-from walkie_agent.ros import RosPeopleMemory
 from walkie_agent.ros import people_memory as people_memory_module
+from walkie_agent.ros.people_memory import RosPeopleMemory
 
 LOGGER = "walkie_agent.ros.people_memory"
 FACE = "arcface_w600k_r50"

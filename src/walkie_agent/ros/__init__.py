@@ -1,28 +1,6 @@
-"""The ROS-backed capability verbs. Importing this loads rclpy.
+"""The ROS-backed capability verbs and the operator's topics, one module each.
 
-The foundation (capabilities, atomics, adapter, runtime) never imports this package.
+The modules load rclpy; this package init imports nothing, so callers import each class
+from its own module. The foundation (capabilities, atomics, adapter, runtime) never
+imports this package.
 """
-
-from walkie_agent.ros.arms import RosArms
-from walkie_agent.ros.base import RosBase
-from walkie_agent.ros.commander import CommanderClient
-from walkie_agent.ros.io import RosBridge
-from walkie_agent.ros.object_memory import RosObjectMemory
-from walkie_agent.ros.people_memory import RosPeopleMemory
-from walkie_agent.ros.policy import FORBIDDEN_NAMES, check_endpoint
-from walkie_agent.ros.speech import RosSpeech
-from walkie_agent.ros.vision import RosVision, UnavailableVision
-
-__all__ = [
-    "FORBIDDEN_NAMES",
-    "CommanderClient",
-    "RosArms",
-    "RosBase",
-    "RosBridge",
-    "RosObjectMemory",
-    "RosPeopleMemory",
-    "RosSpeech",
-    "RosVision",
-    "UnavailableVision",
-    "check_endpoint",
-]

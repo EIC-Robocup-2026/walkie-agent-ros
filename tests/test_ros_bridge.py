@@ -32,7 +32,8 @@ from walkie_agent.adapter import as_tools
 from walkie_agent.capabilities import Ctx
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, StepError
-from walkie_agent.ros import RosBridge, UnavailableVision
+from walkie_agent.ros.io import RosBridge
+from walkie_agent.ros.vision import UnavailableVision
 from walkie_agent.runtime import STOP_LINE, Runner, build_agent
 from walkie_agent.tasks import TaskTemplate
 from walkie_agent.tools.atomic import DEFAULT, GPSR, HRI, find_objects, find_people

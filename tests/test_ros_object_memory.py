@@ -26,9 +26,8 @@ from walkie_database_msgs.srv import GetObject, GetRoomContents, ListRooms, Sear
 from walkie_agent.capabilities import RecalledObject, RoomObjects
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode
-from walkie_agent.ros import RosObjectMemory
 from walkie_agent.ros import object_memory as object_memory_module
-from walkie_agent.ros.object_memory import memory_id
+from walkie_agent.ros.object_memory import RosObjectMemory, memory_id
 
 LOGGER = "walkie_agent.ros.object_memory"
 SERVICES = {

@@ -837,20 +837,23 @@ called.
 
 ## ROS wrappers
 
-`walkie_agent.ros` holds the capability backends and the operator's topics. Importing it
-loads rclpy, so the foundation never imports it.
+`walkie_agent.ros` holds the capability backends and the operator's topics, one module
+each. The modules load rclpy, so the foundation never imports them. The package init
+imports nothing, so each class is imported from its own module.
 
 ```python
-# walkie_agent.ros
+# walkie_agent.ros.base
 class RosBase:  # Base over Nav2's /navigate_to_pose and TF map <- base_footprint
     def __init__(self, connector, locations, cancel, *, ...): ...
     def close(self, timeout_s=5.0) -> bool: ...  # False while a goal lives; the client stays
     def unresolved(self) -> list[str]: ...       # what kept the last close from finishing
 
+# walkie_agent.ros.speech
 class RosSpeech:  # Speech over /to_human, with the speech id rotated on /voice_commands
     def __init__(self, connector, *, ...): ...
     def close(self) -> None: ...
 
+# walkie_agent.ros.vision
 class UnavailableVision:  # Vision: checks its arguments and the latch, then UNAVAILABLE
     def __init__(self, cancel): ...
 
@@ -858,6 +861,7 @@ class RosVision:  # Vision with --vision: people from /walkie_vision/people (add
     def __init__(self, connector, base, cancel, *, topic=..., max_age_s=1.0, wait_s=1.0, ...): ...
     def close(self) -> None: ...
 
+# walkie_agent.ros.io
 class RosBridge:  # the operator's topics; see the topic table on The Agent
     def __init__(self, connector, templates, *, input_topic=..., output_topic=..., ...): ...
     def open(self, runner) -> None: ...
@@ -866,6 +870,7 @@ class RosBridge:  # the operator's topics; see the topic table on The Agent
     def close_ingress(self) -> None: ...             # ignores input, keeps subscriptions
     def close(self) -> None: ...
 
+# walkie_agent.ros.policy
 FORBIDDEN_NAMES = ("/cmd_vel", ..., "/walkie/reset", "/walkie/task", "/walkie/todos", "/walkie/verdict")
 def check_endpoint(node, name, forbidden=FORBIDDEN_NAMES) -> str: ...  # StepError REFUSED
 ```

@@ -40,8 +40,11 @@ from walkie_agent.capabilities import Ctx, PersonSeen
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location
-from walkie_agent.ros import FORBIDDEN_NAMES, RosBase, RosSpeech, UnavailableVision
+from walkie_agent.ros.base import RosBase
 from walkie_agent.ros.commander import STOP_TOPIC
+from walkie_agent.ros.policy import FORBIDDEN_NAMES
+from walkie_agent.ros.speech import RosSpeech
+from walkie_agent.ros.vision import UnavailableVision
 from walkie_agent.tools.atomic import face_person, move_relative
 
 PLACES = {

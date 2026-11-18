@@ -89,6 +89,7 @@ nav:
       - 5. Limit What Tools Can Touch: setup/05-tool-access.md
       - 6. Talk to Walkie by Voice: setup/07-voice.md
       - 7. Run the Chula Simulation: setup/08-chula-simulation.md
+      - 8. Run the Agent on the Real Robot: setup/09-real-robot.md
   - Learn the Agent:
       - learn/index.md
       - 1. RAI's Connector, Our Runtime: learn/rai-and-our-graph.md

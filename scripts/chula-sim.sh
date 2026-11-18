@@ -401,7 +401,9 @@ check_database_prerequisites() {
     [[ -n $WALKIE_DATABASE ]] || die "$1 needs WALKIE_DATABASE, a walkie-database checkout"
     [[ -f $WALKIE_DATABASE/pixi.toml && -d $WALKIE_DATABASE/.pixi/envs/default ]] ||
         die "WALKIE_DATABASE=$WALKIE_DATABASE has no pixi.toml or no installed environment: run pixi install there"
-    [[ -f $WALKIE_DATABASE/src/walkie_database/object_memory.py ]] ||
+    # A checkout with the object memory logs MEMORY_READY; looking for that line, not for
+    # a module, keeps the check true when walkie-database moves its files.
+    grep -rqF --include='*.py' -- "$MEMORY_READY" "$WALKIE_DATABASE/src/walkie_database" 2>/dev/null ||
         die "WALKIE_DATABASE=$WALKIE_DATABASE has no object memory; $1 needs feat/scene-graph-prep or later"
     [[ -d $WALKIE_DATABASE/ros2_ws/install/walkie_database_msgs ]] ||
         die "walkie_database_msgs is not built in WALKIE_DATABASE=$WALKIE_DATABASE: run pixi run build-msgs there"

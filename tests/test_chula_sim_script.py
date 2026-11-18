@@ -269,7 +269,7 @@ def walkie_database_checkout(path: Path) -> Path:
     (path / ".pixi" / "envs" / "default").mkdir(parents=True)
     (path / "pixi.toml").touch()
     (path / "src" / "walkie_database").mkdir(parents=True)
-    (path / "src" / "walkie_database" / "object_memory.py").touch()
+    (path / "src" / "walkie_database" / "node.py").write_text('log("The object memory starts with 0 objects.")\n')
     (path / "ros2_ws" / "install" / "walkie_database_msgs").mkdir(parents=True)
     return path
 
@@ -297,7 +297,7 @@ def test_up_with_memory_needs_walkie_database(tmp_path):
     ("remove", "message"),
     [
         ("walkie-database/.pixi/envs/default", "no installed environment"),
-        ("walkie-database/src/walkie_database/object_memory.py", "needs feat/scene-graph-prep or later"),
+        ("walkie-database/src/walkie_database/node.py", "needs feat/scene-graph-prep or later"),
         ("walkie-database/ros2_ws/install/walkie_database_msgs", "walkie_database_msgs is not built"),
         ("store/walkie.db", "/store/walkie.db does not exist; scripts/chula-sim.sh reset-memory restores it"),
         ("map", "/map is not a folder"),
@@ -313,6 +313,16 @@ def test_up_with_memory_refuses_a_missing_checkout_part_store_or_map(tmp_path, r
     result = sourced(f"{inputs}\ncheck_memory_prerequisites", tmp_path)
     assert result.returncode == 1
     assert message in result.stderr
+
+
+def test_up_with_memory_finds_the_object_memory_wherever_its_module_lives(tmp_path):
+    inputs = memory_inputs(tmp_path)
+    package = tmp_path / "walkie-database" / "src" / "walkie_database"
+    (package / "node.py").unlink()
+    (package / "ros").mkdir()
+    (package / "ros" / "memory_node.py").write_text('log("The object memory starts with 3 objects.")\n')
+    result = sourced(f"{inputs}\ncheck_memory_prerequisites", tmp_path)
+    assert (result.returncode, result.stderr) == (0, "")
 
 
 def test_up_with_memory_makes_its_relative_paths_absolute(tmp_path):
@@ -403,7 +413,7 @@ def test_reset_memory_makes_its_relative_paths_absolute(tmp_path):
     ("remove", "message"),
     [
         ("WALKIE_DATABASE", "reset-memory needs WALKIE_DATABASE"),
-        ("walkie-database/src/walkie_database/object_memory.py", "reset-memory needs feat/scene-graph-prep"),
+        ("walkie-database/src/walkie_database/node.py", "reset-memory needs feat/scene-graph-prep"),
         ("map", "/map is not a folder"),
         ("seed.db", "/seed.db does not exist; docs/setup/08-chula-simulation.md says how to build it"),
     ],

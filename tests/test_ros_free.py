@@ -390,6 +390,8 @@ def _module_level_names(tree: ast.Module, *, imports: bool = True) -> Iterator[t
 
     Without `imports`, only the names it defines: an imported name is left out, unless
     the import renames it (`import x as y`, `from m import x as y`), which binds the new name.
+    A wildcard import (`from m import *`) is always yielded, as the name `*`: it can bind
+    any name `m` exports, and which ones is not known without importing `m`.
     """
     stack: list[ast.AST] = list(tree.body)
     while stack:
@@ -401,8 +403,9 @@ def _module_level_names(tree: ast.Module, *, imports: bool = True) -> Iterator[t
             continue
         if isinstance(node, ast.Import | ast.ImportFrom):
             for alias in node.names:
-                # Without `imports`, an import under a new name still binds that name.
-                if imports or (alias.asname and alias.asname != alias.name):
+                # Without `imports`, an import under a new name still binds that name,
+                # and a wildcard import may bind any name.
+                if imports or alias.name == "*" or (alias.asname and alias.asname != alias.name):
                     yield alias.asname or alias.name.partition(".")[0], node.lineno
         elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
             yield node.id, node.lineno
@@ -415,13 +418,14 @@ def _binds_one_of(file: Path, names: frozenset[str], *, imports: bool = True) ->
 
     Without `imports`, an import of one of them under its own name does not count, for a
     module that may use the names but must not define them again; an import that renames
-    something into one of them still counts.
+    something into one of them still counts. A wildcard import always counts, since it
+    can bind any of them.
     """
     tree = ast.parse(file.read_text(encoding="utf-8"), filename=str(file))
     return sorted(
         f"{file.name}:{line}: binds {name}"
         for name, line in _module_level_names(tree, imports=imports)
-        if name in names
+        if name in names or name == "*"
     )
 
 
@@ -434,7 +438,7 @@ def test_no_code_takes_a_name_from_its_old_home_in_ros_vision():
 
 def test_the_model_builders_did_not_come_back_to_the_runtime():
     # They live in walkie_agent.config and walkie_agent.chat_models now.
-    assert not (RUNTIME / "model.py").exists()
+    assert _old_homes(SRC, "walkie_agent.runtime.model") == []
     assert _binds_one_of(RUNTIME / "__init__.py", LEFT_RUNTIME) == []
 
 
@@ -450,6 +454,13 @@ def test_the_tree_check_would_catch_a_model_builder_back_in_the_runtime(tmp_path
         "def load_config(path): ...\n"
     )
     assert len(_binds_one_of(shim, LEFT_RUNTIME)) == 5
+    package = tmp_path / "bad" / "walkie_agent" / "runtime" / "model" / "__init__.py"
+    package.parent.mkdir(parents=True)
+    package.write_text("from walkie_agent.chat_models import build_model\n")
+    assert _old_homes(tmp_path / "bad", "walkie_agent.runtime.model") == [package.parent]
+    wildcard = tmp_path / "wildcard.py"
+    wildcard.write_text("from walkie_agent.chat_models import *\n")
+    assert _binds_one_of(wildcard, LEFT_RUNTIME) == ["wildcard.py:1: binds *"]
     good = tmp_path / "good.py"
     good.write_text(
         '"""main.py builds the model with walkie_agent.chat_models.build_model."""\n'
@@ -463,7 +474,7 @@ def test_the_tree_check_would_catch_a_model_builder_back_in_the_runtime(tmp_path
 
 def test_the_tool_sets_did_not_come_back_to_the_atomics_or_main():
     # They live in walkie_agent.tools.sets now, beside the adapter in walkie_agent.tools.adapter.
-    assert not (SRC / "walkie_agent" / "adapter.py").exists()
+    assert _old_homes(SRC, "walkie_agent.adapter") == []
     assert _binds_one_of(ATOMIC_INIT, LEFT_ATOMIC_INIT) == []
     # main.py imports TOOL_SETS, bound_tools and bound_tool_names to use them, but defines none.
     assert _binds_one_of(MAIN, LEFT_MAIN, imports=False) == []
@@ -492,6 +503,14 @@ def test_the_tree_check_would_catch_a_tool_set_back_in_the_atomics_or_main(tmp_p
         "def _atomic_names(tool_set): ...\n"
     )
     assert len(_binds_one_of(copy, LEFT_MAIN, imports=False)) == 4
+    wildcard = tmp_path / "wildcard.py"
+    wildcard.write_text("from walkie_agent.tools.sets import *\n")
+    assert _binds_one_of(wildcard, LEFT_ATOMIC_INIT) == ["wildcard.py:1: binds *"]
+    assert _binds_one_of(wildcard, LEFT_MAIN, imports=False) == ["wildcard.py:1: binds *"]
+    package = tmp_path / "bad" / "walkie_agent" / "adapter" / "__init__.py"
+    package.parent.mkdir(parents=True)
+    package.write_text("from walkie_agent.tools.adapter import to_langchain_tool\n")
+    assert _old_homes(tmp_path / "bad", "walkie_agent.adapter") == [package.parent]
     # The catalogue keeps every atomic and its docstring may name the sets; main.py may
     # import the sets and bind its own names from them inside a function.
     good_init = tmp_path / "atomic.py"

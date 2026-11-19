@@ -12,6 +12,12 @@ It refuses to replace existing files unless --replace is given, and then keeps
 each old file as <name>.bak. The ids come from the names, so a command keeps its
 id, and the commander its output history, across runs. Every command starts
 disabled, so "Run Enabled" starts nothing by accident.
+
+A group's "Run group" button starts every member at once, enabled or not. So a
+button that moves the robot by itself, such as a lift command or a task that
+drives, sits alone in its group, and no group mixes such a button with checks.
+"Stop All Running", loading a profile and stopping the commander service stop
+every command at once; the runbook's shutdown stops them card by card instead.
 """
 
 from __future__ import annotations
@@ -55,7 +61,8 @@ def common_setup(map_name: str) -> str:
     """The runbook's "Start every terminal the same way" block, for bash -lc.
 
     The commander runs as a systemd user service, so PATH has no pixi. Output
-    goes through pipes, so Python must not buffer it.
+    goes through pipes, so Python must not buffer it, and ROS logs must not
+    carry colour codes.
     """
     return "\n".join(
         [
@@ -67,6 +74,7 @@ def common_setup(map_name: str) -> str:
             '/navigation/walkie-navigation/map/$MAP_NAME"',
             "export DISPLAY=:0",
             "export PYTHONUNBUFFERED=1",
+            "export RCUTILS_COLORIZED_OUTPUT=0",
         ]
     )
 
@@ -110,10 +118,27 @@ SAVE_MAP = (
     'ls -l "$MAP"'
 )
 
+# config/locations.lab.toml is not in git. The engineer writes it on the robot in
+# the runbook's step 4, and until then every agent button stops with exit code 2.
 AGENT_HRI = (
     "pixi run --frozen agent --locations config/locations.lab.toml --tool-set hri --vision"
     " --people-memory ros{arms} --tool-log logs/agent-tools.jsonl"
 )
+
+
+def say_to_agent(text: str) -> str:
+    """A text task on /from_human, as the runbook's step 7 sends it.
+
+    -w 1 waits for the agent's subscriber. --max-wait-time-secs ends the wait
+    after 10 s with nothing sent, so a click while no agent runs cannot fire
+    minutes later, when one starts.
+    """
+    if "'" in text or '"' in text:
+        raise ValueError(f"{text!r}: no quotes in a text task")
+    return (
+        "pixi run --frozen ros2 topic pub -w 1 --once --max-wait-time-secs 10 /from_human"
+        f" rai_interfaces/msg/HRIMessage \"{{text: '{text}'}}\""
+    )
 
 
 def runbook_commands(day: str) -> list[Command]:
@@ -141,7 +166,9 @@ def runbook_commands(day: str) -> list[Command]:
             "Foxglove bridge",
             BASE,
             team,
-            "pixi run --as-is ros2 launch foxglove_bridge foxglove_bridge_launch.xml send_buffer_limit:=50000000",
+            # Without clientPublish and services, a client on the LAN can only watch.
+            "pixi run --as-is ros2 launch foxglove_bridge foxglove_bridge_launch.xml send_buffer_limit:=50000000"
+            " 'capabilities:=[connectionGraph,assets]'",
         ),
         Command("T4 SLAM", MAP, team, "pixi run --as-is ros2 launch robot_navigation mapping_Nav2_real.launch.py"),
         Command("Save map", MAP, team, SAVE_MAP),
@@ -177,13 +204,7 @@ def runbook_commands(day: str) -> list[Command]:
         Command("T10 speech in", AGENT, agent, "pixi run --frozen voice-asr"),
         Command("T11 agent", AGENT, agent, AGENT_HRI.format(arms=" --arms")),
         Command("T11 agent, no arms", AGENT, agent, AGENT_HRI.format(arms="")),
-        Command(
-            "Say hello (test task)",
-            AGENT,
-            agent,
-            "pixi run --frozen ros2 topic pub -w 1 --once /from_human rai_interfaces/msg/HRIMessage"
-            " \"{text: 'Please say hello to everyone.'}\"",
-        ),
+        Command("Say hello (test task)", AGENT, agent, say_to_agent("Please say hello to everyone.")),
     ]
 
 

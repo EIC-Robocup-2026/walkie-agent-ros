@@ -74,10 +74,34 @@ terminal above, plus Save map, the Foxglove bridge and a test task. Open
 - **Save map** refuses to overwrite a map. For a new map, write the buttons
   again with a new name (below), then restart the commander.
 - **T1 lift homing** has no terminal for `sudo`, so the lift node's own
-  `ip link` calls fail and `can2` stays as it is. Bring `can2` up first
-  ([step 2](#2-before-you-start)).
-- Stopping the commander stops every command it started. So does loading a
-  profile under **Profiles**: it asks first, then stops them all.
+  `ip link` calls fail and `can2` stays as it is, at start and at exit. Bring
+  `can2` up first ([step 2](#2-before-you-start)).
+- The agent buttons read `config/locations.lab.toml`, which is not in git. Until
+  you write it in [step 4](#4-mark-the-places), they stop at once with exit
+  code 2.
+- The text-task buttons wait at most 10 s for the agent. If no agent listens,
+  they send nothing and show as failed. Start the agent first, then click
+  again.
+- **Foxglove bridge** only lets clients watch. It leaves out publishing,
+  parameters and service calls, so a laptop on the LAN cannot drive the robot
+  through it.
+
+!!! danger "Run group, Stop All and profile load act on every button at once"
+    **Run group**, in each group's header, starts every button of the group at
+    the same moment, enabled or not, with no order and no ready line in
+    between. Never use it on a group that starts hardware: it would start the
+    lift homing and the bringup together. Click the buttons one by one. Each
+    button that moves the robot by itself, such as a lift command or a task
+    that drives, sits alone in its group, so its Run group starts only that
+    button.
+
+    **Stop All Running**, loading a profile under **Profiles** (it asks first)
+    and stopping or restarting the commander service stop every running
+    command at once, in no safe order. To shut down, press **Stop** on one card
+    at a time, in the order of [step 8](#8-stop-and-reset), and wait for each
+    card to end. **Stop** sends Ctrl+C to the command, then waits up to 60 s
+    before it sends SIGTERM. For the agent that SIGTERM counts as a second
+    Ctrl+C, which forces exit code 3 with the Nav2 goal's state unknown.
 
 It runs as a user service, which ends at a reboot or a logout. To start it
 again, or to write the buttons again:
@@ -361,8 +385,9 @@ pixi run --as-is ros2 launch robot_bringup lift_homing.launch.py
 - `sudo -v` caches your password. The lift node runs
   `sudo /sbin/ip link set can2 down` and `up` itself, so without it the node
   may stop at a password prompt.
-- **Keep it running for the whole test.** When it exits, it takes `can2` down,
-  and the base on the same bus stops working. It also publishes `lift_joint`:
+- **Keep it running for the whole test.** When it exits, it takes `can2` down
+  (unless its `sudo` failed, as under our commander), and the base on the same
+  bus stops working. It also publishes `lift_joint`:
   the bringup relays `lift/joint_states` to `/joint_states`, and without it
   there is no TF from the base to the camera.
 
@@ -1197,16 +1222,22 @@ exit:
 6. T3 joystick.
 7. T2 bringup. With the arms, they fall when it stops
    ([Optional A](#optional-a-the-arms)).
-8. T1 lift homing, **last**. It takes `can2` down when it exits.
+8. T1 lift homing, **last**. Started from a terminal where `sudo -v` ran, it
+   takes `can2` down when it exits. Started from our commander, its `sudo`
+   fails without a terminal, and `can2` stays up.
 
 Leave the Zenoh router running.
+
+In our commander, press **Stop** on each card in this order, and wait until
+the card shows that it ended before the next. Never use **Stop All Running**
+(see [Or use our commander](#or-use-our-commander)).
 
 ## 9. When something goes wrong
 
 | Symptom | Likely cause | Check |
 | --- | --- | --- |
 | The lift or the base does not move, or CAN errors | CAN names swapped | The driver check in [step 2](#2-before-you-start) |
-| The base stops working mid-test | The lift node exited and took `can2` down | T1 is still running. Restart the bringup after the lift, never the lift alone |
+| The base stops working mid-test | The lift node exited and took `can2` down (only when it started from a terminal with `sudo`) | T1 is still running, and the CAN check in [step 2](#2-before-you-start). Restart the bringup after the lift, never the lift alone |
 | The joystick does nothing | No gamepad, or the wrong device | The name check in [step 2](#2-before-you-start), then `dev:=` the gamepad's device in T3 |
 | The robot moves when you move the remote mouse | T3 runs on RustDesk's `mouce-library-fake-mouse` | Stop T3 at once, and start it again with the gamepad's device |
 | `tf2_echo` says `frame map does not exist`, or T4 never logs `Managed nodes are active` | Nav2 or AMCL is not up, or has no initial pose yet | T4's log for a failed lifecycle node, then set the initial pose ([step 5](#nav2-on-the-saved-map-t4)) |

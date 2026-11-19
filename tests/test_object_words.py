@@ -53,6 +53,27 @@ def test_a_query_matches_the_name_the_category_or_its_plural(wanted, label, expe
     assert matches(wanted, label) is expected
 
 
+@pytest.mark.parametrize(
+    ("wanted", "label", "expected"),
+    [
+        ("water bottle", "bottle", True),
+        ("water bottle", " Bottle ", True),
+        ("red plate", "plate", True),
+        ("coffee table", "table", False),
+        ("waterbottle", "bottle", False),
+        ("bottle", "water bottle", False),
+        ("bottle opener", "bottle", False),
+        ("water bottle", "", False),
+    ],
+)
+def test_a_query_that_names_a_kind_of_the_label_matches_it(wanted, label, expected):
+    assert matches(wanted, label) is expected
+
+
+def test_a_detector_that_looks_for_bottles_could_find_a_water_bottle():
+    assert looks_for("water bottle", ("bottle", "cup"))
+
+
 def test_looks_for_asks_whether_any_class_could_match():
     seats = ("chair", "sofa", "armchair", "stool")
     assert looks_for("furniture", seats)

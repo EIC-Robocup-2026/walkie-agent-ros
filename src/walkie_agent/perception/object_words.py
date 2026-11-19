@@ -7,7 +7,9 @@ the same as FakeRobot's, and "furniture" for the places people sit and things st
 on. A label the table lacks has the category OTHER.
 
 A query matches an object's name, its category or the category's plural, ignoring
-case and spaces at either end, as the Vision protocol says. A detector looks only
+case and spaces at either end, as the Vision protocol says. An object of the table
+whose name ends with the label as a word, such as "water bottle" for "bottle", names a
+kind of it and matches too. A detector looks only
 for its own classes, so `looks_for` tells a query it could never match from one
 that matched nothing in view.
 """
@@ -81,9 +83,18 @@ def words_for(label: str) -> frozenset[str]:
 def matches(wanted: str, label: str) -> bool:
     """True when the query `wanted`, already stripped and in lower case, matches `label`.
 
-    An empty query matches every label.
+    An empty query matches every label. An object of the table (CATEGORIES) whose
+    name ends with the label as a word also matches it: "water bottle" matches the
+    label "bottle", since a detector given the prompt "bottle" names a water bottle so.
+    Any other query matches only as words_for() says, so "coffee table" does not match
+    a plain "table".
     """
-    return not wanted or wanted in words_for(label)
+    if not wanted:
+        return True
+    name = label.strip().lower()
+    if wanted in words_for(name):
+        return True
+    return bool(name) and wanted in CATEGORIES and wanted.endswith(f" {name}")
 
 
 def looks_for(wanted: str, classes: Iterable[str]) -> bool:

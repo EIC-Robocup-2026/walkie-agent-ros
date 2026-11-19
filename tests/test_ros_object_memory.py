@@ -414,6 +414,13 @@ def test_on_and_the_name_prefer_the_official_name_to_the_label(database, memory)
     assert ids(memory.search("coffee table")) == ["2"]
 
 
+def test_an_arena_name_finds_what_the_detector_labelled_with_its_last_word(database, memory):
+    # The detector's prompt is "bottle"; the arena and the people say "water bottle".
+    database.objects = [summary(4, "cup"), summary(7, "bottle"), summary(9, "water bottle")]
+
+    assert ids(memory.search("water bottle")) == ["7", "9"]
+
+
 def test_an_anchor_id_outside_the_answer_gives_none_whatever_the_key_names(database, memory):
     database.objects = [
         summary(15, "table"),

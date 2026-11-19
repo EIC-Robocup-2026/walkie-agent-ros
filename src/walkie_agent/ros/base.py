@@ -129,6 +129,9 @@ class RosBase:
     verb, and the check must end within it and on a stop. Its error ends the verb
     unchanged, so a refused drive reads no TF and sends nothing. Without it, the base
     drives with no arm check.
+
+    A drive waits for the longer of its timeout_s and `min_drive_timeout_s`, so a
+    simulation that runs slower than real time can raise the bound of every drive.
     """
 
     def __init__(
@@ -144,7 +147,17 @@ class RosBase:
         tf_s: float = TF_S,
         client_factory: Callable[..., Any] = ActionClient,
         arms_check: Callable[[str, float], None] | None = None,
+        min_drive_timeout_s: float = 0.0,
     ) -> None:
+        number = isinstance(min_drive_timeout_s, int | float) and not isinstance(
+            min_drive_timeout_s, bool
+        )
+        if not (number and math.isfinite(min_drive_timeout_s) and min_drive_timeout_s >= 0):
+            raise ValueError(
+                "min_drive_timeout_s must be zero or a positive number of seconds, not "
+                f"{min_drive_timeout_s!r}."
+            )
+        self._min_drive_timeout_s = min_drive_timeout_s
         self._connector = connector
         self._node = connector.node
         self._cancel = cancel
@@ -280,7 +293,7 @@ class RosBase:
     # -- One drive -------------------------------------------------------------
 
     def _drive(self, what: str, timeout_s: float, target: Callable[[float], Pose2D]) -> Pose2D:
-        deadline = time.monotonic() + timeout_s
+        deadline = time.monotonic() + max(timeout_s, self._min_drive_timeout_s)
         with self._lock:
             self._require_free()
         if self._arms_check is not None:

@@ -1140,6 +1140,25 @@ def test_result_timeout_cancels_owned_goal():
     rig.assert_gate_free()
 
 
+def test_a_drive_waits_for_at_least_the_floor():
+    elapsed = {}
+    for floor in (0.0, 0.6):
+        rig = Rig(min_drive_timeout_s=floor)
+        rig.client.on_send = rig.client.accept
+        start = time.monotonic()
+        error = Background(rig.base.go_to, "kitchen", timeout_s=0.05).step_error()
+        elapsed[floor] = time.monotonic() - start
+        assert error.code is ErrorCode.TIMEOUT
+
+    assert elapsed[0.0] < 0.6 <= elapsed[0.6]
+
+
+@pytest.mark.parametrize("floor", [-1.0, math.nan, math.inf, True, "60"])
+def test_a_floor_on_the_drive_timeout_that_is_not_a_number_of_seconds_is_a_bug(floor):
+    with pytest.raises(ValueError, match="min_drive_timeout_s"):
+        Rig(min_drive_timeout_s=floor)
+
+
 @pytest.mark.parametrize(
     "scenario",
     [

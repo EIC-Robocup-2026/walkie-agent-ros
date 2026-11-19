@@ -171,6 +171,11 @@ SIM_ARM_BOUNDS: Mapping[str, float] = MappingProxyType(
         "min_move_timeout_s": 60.0,
     }
 )
+# The RosBase's floor on every drive's timeout under --use-sim-time, in seconds of
+# wall-clock time. A drive's own bounds (120 s for go_to, 60 s for move_relative) are
+# robot bounds. On 2026-11-20 the Chula simulation ran at a real-time factor of 0.38
+# beside other work, and a 2.5 m move around the kitchen table outran 60 s.
+SIM_MIN_DRIVE_TIMEOUT_S = 300.0
 # --people-memory's choices: none, a store in this process, or walkie-database.
 PEOPLE_MEMORIES = ("unavailable", "mock", "ros")
 # With --object-memory, the set must bind this one, so the flag never connects a
@@ -486,7 +491,13 @@ def assemble(
                 commander, cancel, sim=use_sim_time, min_move_timeout_s=min_move_timeout_s
             )
             ctx_arms, arms_check = ros_arms, ros_arms.check_for_driving
-        base = RosBase(connector, locations, cancel, arms_check=arms_check)
+        base = RosBase(
+            connector,
+            locations,
+            cancel,
+            arms_check=arms_check,
+            min_drive_timeout_s=SIM_MIN_DRIVE_TIMEOUT_S if use_sim_time else 0.0,
+        )
         built.append(base.close)
         speech = RosSpeech(connector)
         built.append(speech.close)

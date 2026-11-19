@@ -747,6 +747,7 @@ def test_with_arms_the_commander_shares_the_token_and_the_base_checks_the_arms(
     assert arms._cancel is app.ctx.cancel
     assert (arms._sim, arms._min_move_timeout_s) == (False, 0.0)
     assert app.ctx.base._arms_check == arms.check_for_driving
+    assert app.ctx.base._min_drive_timeout_s == 0.0, "off the simulation drives keep their bounds"
     assert list(arms.poses()) == list(POSES.offered_poses(sim=False))
     # A runtime stop or reset also publishes the commander's stop.
     assert app.runner._on_stop == commander.stop
@@ -772,6 +773,8 @@ def test_under_sim_time_the_commander_gets_the_sim_bounds(build, commanders):
     # The simulation offers the poses not yet tried on the robot.
     assert list(arms.poses()) == list(POSES.offered_poses(sim=True))
     assert len(arms.poses()) > len(POSES.offered_poses(sim=False))
+    # Every drive waits for at least the simulation's floor.
+    assert built.app.ctx.base._min_drive_timeout_s == main.SIM_MIN_DRIVE_TIMEOUT_S > 0
 
 
 @pytest.mark.parametrize("tool_set", SETS_WITH_ARMS)

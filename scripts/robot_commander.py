@@ -78,8 +78,17 @@ PRESETS = [
     Preset("walkie-database", f"{EXPERIMENTS}/walkie-database"),
 ]
 
-BASE, MAP, AGENT, ARMS = "1 base", "2 map", "3 agent", "4 arms"
-GROUPS = [BASE, MAP, AGENT, ARMS]
+BASE, MAP, ARMS, AGENT = "1 base", "2 map", "3 arms", "4 agent"
+GROUPS = [BASE, MAP, ARMS, AGENT]
+
+# The team's bringup with the arms: the arm driver moves every joint to 0 rad and
+# then to a home pose when it starts, and turns the motors off when it stops.
+BRINGUP_WITH_ARMS = (
+    'echo "The arms swing to 0 rad when the bringup starts, and drop when it stops."\n'
+    'echo "Clear the space around them. Starting in 5 s. Press Stop to cancel."\n'
+    "sleep 5\n"
+    "pixi run --as-is ros2 launch robot_bringup real_omnibot.launch.py"
+)
 
 # The gamepad's js number changes between connections, and the DualSense also
 # shows up as a second "Motion Sensors" joystick, so find it by its name.
@@ -114,8 +123,9 @@ def runbook_commands(day: str) -> list[Command]:
     return [
         Command("Zenoh router", BASE, team, "pixi run --as-is ros2 run rmw_zenoh_cpp rmw_zenohd"),
         Command("T1 lift homing", BASE, team, "pixi run --as-is ros2 launch robot_bringup lift_homing.launch.py"),
+        Command("T2 bringup", BASE, team, BRINGUP_WITH_ARMS),
         Command(
-            "T2 bringup",
+            "T2 bringup, no arms",
             BASE,
             team,
             "pixi run --as-is ros2 launch robot_bringup real_omnibot.launch.py"
@@ -143,24 +153,6 @@ def runbook_commands(day: str) -> list[Command]:
             " use_keepout_zones:=false",
         ),
         Command("Robot pose on the map", MAP, agent, "pixi run --frozen ros2 run tf2_ros tf2_echo map base_footprint"),
-        Command("T7 vision", AGENT, "walkie-vision", "pixi run --frozen vision respawn_max_retries:=3"),
-        Command(
-            "T8 database",
-            AGENT,
-            "walkie-database",
-            f'mkdir -p "{data}"\npixi run --frozen db-node --ros-args -p db_path:="{data}/people.db"',
-        ),
-        Command("T9 speech out", AGENT, agent, "pixi run --frozen voice-tts"),
-        Command("T10 speech in", AGENT, agent, "pixi run --frozen voice-asr"),
-        Command("T11 agent", AGENT, agent, AGENT_HRI.format(arms="")),
-        Command(
-            "Say hello (test task)",
-            AGENT,
-            agent,
-            "pixi run --frozen ros2 topic pub -w 1 --once /from_human rai_interfaces/msg/HRIMessage"
-            " \"{text: 'Please say hello to everyone.'}\"",
-        ),
-        Command("T2 bringup with arms", ARMS, team, "pixi run --as-is ros2 launch robot_bringup real_omnibot.launch.py"),
         Command(
             "T5 MoveIt",
             ARMS,
@@ -174,7 +166,24 @@ def runbook_commands(day: str) -> list[Command]:
             team,
             "pixi run --as-is ros2 launch openarm_bimanual_commander_cpp commander.launch.py",
         ),
-        Command("T11 agent with arms", ARMS, agent, AGENT_HRI.format(arms=" --arms")),
+        Command("T7 vision", AGENT, "walkie-vision", "pixi run --frozen vision respawn_max_retries:=3"),
+        Command(
+            "T8 database",
+            AGENT,
+            "walkie-database",
+            f'mkdir -p "{data}"\npixi run --frozen db-node --ros-args -p db_path:="{data}/people.db"',
+        ),
+        Command("T9 speech out", AGENT, agent, "pixi run --frozen voice-tts"),
+        Command("T10 speech in", AGENT, agent, "pixi run --frozen voice-asr"),
+        Command("T11 agent", AGENT, agent, AGENT_HRI.format(arms=" --arms")),
+        Command("T11 agent, no arms", AGENT, agent, AGENT_HRI.format(arms="")),
+        Command(
+            "Say hello (test task)",
+            AGENT,
+            agent,
+            "pixi run --frozen ros2 topic pub -w 1 --once /from_human rai_interfaces/msg/HRIMessage"
+            " \"{text: 'Please say hello to everyone.'}\"",
+        ),
     ]
 
 

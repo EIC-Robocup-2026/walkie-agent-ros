@@ -63,6 +63,12 @@ terminal above, plus Save map, the Foxglove bridge and a test task. Open
 
 - Every button starts disabled, so **Run Enabled** starts nothing. Click the
   buttons in group order, and wait for each step's ready line in its log.
+- Its buttons run the arms, as in [Optional A](#optional-a-the-arms).
+  **T2 bringup** is the team's bringup with the arms. It prints a warning and
+  waits 5 s, so you can still press Stop before the arms move. Group
+  **3 arms** starts MoveIt and then the arm commander, and **T11 agent** runs
+  with `--arms`. For the basic run, use **T2 bringup, no arms** and
+  **T11 agent, no arms** instead, and skip group 3.
 - Each button exports the same variables as the terminals below. `$MAP` names
   `31_19112026_ChulaPat14_7`.
 - **Save map** refuses to overwrite a map. For a new map, write the buttons
@@ -70,7 +76,8 @@ terminal above, plus Save map, the Foxglove bridge and a test task. Open
 - **T1 lift homing** has no terminal for `sudo`, so the lift node's own
   `ip link` calls fail and `can2` stays as it is. Bring `can2` up first
   ([step 2](#2-before-you-start)).
-- Stopping the commander stops every command it started.
+- Stopping the commander stops every command it started. So does loading a
+  profile under **Profiles**: it asks first, then stops them all.
 
 It runs as a user service, which ends at a reboot or a logout. To start it
 again, or to write the buttons again:
@@ -363,8 +370,9 @@ pixi run --as-is ros2 launch robot_bringup lift_homing.launch.py
 The basic run leaves the arms out. Its agent runs without `--arms`, so nothing
 in it uses them, and with them the bringup swings every arm joint to 0 rad when
 it starts and drops the arms when it stops. Without them the arm motors stay
-off and the arms hang where they are. The team's commander button starts the
-bringup with the arms; [Optional A](#optional-a-the-arms) does the same.
+off and the arms hang where they are. The team's commander button and our
+commander's **T2 bringup** start the bringup with the arms, as
+[Optional A](#optional-a-the-arms) does.
 
 ```bash
 pixi run --as-is ros2 launch robot_bringup real_omnibot.launch.py use_arm:=false use_fake_arm_hardware:=true

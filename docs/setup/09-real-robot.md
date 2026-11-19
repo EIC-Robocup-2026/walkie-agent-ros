@@ -306,7 +306,8 @@ grep -c '^OPENAI_API_KEY=.' .env
 It prints `1`. If it prints `0` or `.env` is missing, write the file with
 `nano .env` and never paste the key into a chat. The other names in
 `.env.example` (`GOOGLE_API_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`)
-stay unset. The agent reads `.env` at startup. Without a key it stops at once
+stay unset. `TAVILY_API_KEY` is needed only for `--web-search`
+([Optional D](#optional-d-web-search)). The agent reads `.env` at startup. Without a key it stops at once
 with one `walkie-agent:` line and exit code 2.
 
 **The robot has internet.** The agent's model is
@@ -1117,6 +1118,33 @@ no agent, vision or database. Its checkout is
 - Its stage 3, whole-body goals that move the lift on the real robot, is held
   back, because the lift node does not follow a plan's timing. That guide
   explains why.
+
+## Optional D: web search
+
+`--web-search` adds `search_web`, which looks up current facts such as news, the
+weather or a recipe with Tavily. It needs a Tavily key in the agent's `.env`.
+
+1. Sign up at [tavily.com](https://tavily.com) and copy the API key. The free
+   plan gives 1,000 credits a month, and one search uses one credit.
+2. In the agent checkout, open `.env` with `nano .env` and add one line,
+   `TAVILY_API_KEY=` followed by the key. Never paste the key into a chat.
+3. Check that it is set without printing it:
+
+    ```bash
+    grep -c '^TAVILY_API_KEY=.' .env
+    ```
+
+    It prints `1`.
+
+4. Add `--web-search` to the agent's command in T11, for example:
+
+    ```bash
+    pixi run --frozen agent --locations config/locations.lab.toml --tool-set hri --vision --people-memory ros --web-search --tool-log logs/agent-tools.jsonl
+    ```
+
+Without the key, the agent stops at once with one `walkie-agent:` line that
+names `TAVILY_API_KEY`. The web search has only been tested on recorded
+answers, not against Tavily or on the robot (decision PK-7).
 
 ## 8. Stop and reset
 

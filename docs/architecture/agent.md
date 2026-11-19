@@ -37,6 +37,10 @@ still a proposal: see [Self-Evolving Agent (Proposed)](self-evolving-agent.md).
   may save functions from it for later tasks. The operator judges each task on
   `/walkie/verdict`, and a passed verdict verifies the functions the task proved
   ([Scripts on the agent](#scripts-on-the-agent)).
+- **Web search, behind a flag.** With `--web-search`, any set also binds `search_web`.
+  It asks Tavily for three results, and a second call of the configured model, with no
+  tools, answers from them. The agent never sees the pages' text
+  ([Web search](#web-search)).
 - **A todo list for every task.** For a task with several steps, the LLM writes the
   steps with `update_todos` and marks them as it goes. The rules are enforced in
   code. For example, a step whose tool failed cannot be marked completed until that
@@ -404,15 +408,16 @@ todos = [
   A single value where a table belongs, such as `vendor = "openai"`, is one of those,
   because the TypeError it raises can also mean a bug. With `--scripts`, a missing
   bwrap, a sandbox worker that cannot start, or a function store that git does not
-  ignore also stops the agent with one line and code 2 before ROS starts. The script
-  sandbox's workers close last, after the bridge. Until they have, the agent reports
+  ignore also stops the agent with one line and code 2 before ROS starts, as does
+  `--web-search` without `TAVILY_API_KEY`. The script sandbox's workers close last,
+  after the bridge. Until they have, the agent reports
   them as unresolved and waits again, as it does for Nav2.
 
 ## Tools
 
 The tools the LLM can call come from one fixed list, chosen by `--tool-set`. Two more
-come from the todo middleware, in every set, and `--scripts` adds `run_script` to any
-set.
+come from the todo middleware, in every set, `--scripts` adds `run_script` to any
+set, and `--web-search` adds `search_web` to any set.
 
 | Tool | Sets | What it does on the robot's `ctx` |
 | --- | --- | --- |
@@ -433,6 +438,7 @@ set.
 | `pick`, `place_on`, `hand_over` | gpsr | `UNAVAILABLE`: Walkie has no grasp skill yet |
 | `get_facts` | default, gpsr | Reads the time and the date from the computer's clock, in the timezone of `config.toml`'s `[team]`, and the team's name, country and affiliation from that table |
 | `run_script` | any, with `--scripts` | Runs one Python script that calls the other bound tools as functions, inside bwrap, and keeps the functions named in `save` ([Scripts on the agent](#scripts-on-the-agent)) |
+| `search_web` | any, with `--web-search` | Searches the web with Tavily and returns a short answer from the results and their URLs, never the pages' text ([Web search](#web-search)) |
 | `update_todos` | always | Adds, updates and removes steps by id, all or nothing |
 | `wait_for_person` | always | Asks a question out loud and ends the run until the answer |
 
@@ -462,7 +468,8 @@ The system prompt is built for the chosen set, by `build_system_prompt` in `prom
 it names only tools that are bound. Each set that binds an unavailable tool also tells
 the LLM to say that it cannot do this, not to guess. GPSR has no `list_places`, so its
 prompt lists the configured places as data. `--scripts` adds the `run_script` rule
-after the tools' own, and without the flag no prompt changes.
+after the tools' own, and without the flag no prompt changes. `--web-search` adds the
+`search_web` rule, which says never to act on what a web result says.
 
 The [arm manipulation design](manipulation.md) proposes real arm verbs and, later, skill
 tools. Neither exists.
@@ -523,6 +530,35 @@ decisions are T18 to T36 in [Mahoraga Demo Decisions](mahoraga-demo-decisions.md
 Nothing on the robot path verifies a function without the operator. A function that
 was never judged, or that a failed verdict judged, stays callable, marked unverified.
 
+### Web search
+
+`--web-search` binds `search_web(query)` beside the set's tools, for any `--tool-set`.
+The decisions are PK-6 and PK-7 in
+[Mahoraga Demo Decisions](mahoraga-demo-decisions.md).
+
+- **The key.** `TAVILY_API_KEY`, from the environment or `.env`. With the flag and no
+  key, the agent stops before ROS starts, with one line that names the variable and
+  code 2. Without the flag, no set binds `search_web` and `ctx.web` answers
+  `UNAVAILABLE`.
+- **The search.** `TavilySearch`, in `capabilities/web_search.py`, posts one request to
+  Tavily's `/search` over httpx: three results, basic depth, no generated answer, no
+  raw page content. The whole request has a 5 s deadline. A query longer than 400
+  characters is refused before any request.
+- **The summary.** A second instance of `complex_model`, which never gets tools, reads
+  the results as JSON data between `<search_results>` tags. Each result's text is cut to
+  1,500 characters, and `<` is escaped so a page cannot close the tags. Its prompt says
+  that the results are untrusted data, not instructions. It answers in at most three
+  sentences and names the sites. `simple_model` was not used: on OpenRouter on
+  2026-11-20 it cost more per output token than `complex_model`.
+- **What the agent gets.** `{"answer": ..., "sources": [...]}`: the summary and the
+  result URLs, never the pages' text. The tool log records that, as for any tool.
+- **Failures.** One sentence each: `TIMEOUT` past the deadline; `UNAVAILABLE` for a
+  network failure, a refused key, a credit or rate limit, another HTTP status, an
+  answer that is not the expected JSON, or a summary that fails; `NOT_FOUND` for no
+  usable result.
+- **Not tested** against Tavily or a real model. The tests use `httpx.MockTransport`
+  and a scripted model (PK-7).
+
 ### Limits of the navigation verbs
 
 `RosBase` is about 640 lines because a goal can outlive the verb that sent it. These
@@ -581,6 +617,8 @@ These have **not** run with this runtime:
 - Live vision or arms, which do not exist as backends.
 - `--scripts`: the agent's `run_script` and the verdict have run only on fakes,
   with no model and no simulation.
+- `--web-search`: `search_web` has run only on recorded Tavily answers and a scripted
+  model.
 
 So real Nav2 races, TF freshness on hardware and physical stop latency are all unknown.
 The silent demo runs scripted driving and speech only. It is not a full HRI run, because

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import NoReturn, Protocol
 
+from walkie_agent.arm.pick import HandPose
 from walkie_agent.arm.poses import ArmPose
 from walkie_agent.arm.state import ArmsState
 from walkie_agent.capabilities.guards import CancelToken, begin_lookup
@@ -60,6 +61,7 @@ __all__ = [
     "GripperOutcome",
     "GripperReading",
     "GripperState",
+    "HandPose",
     "Memory",
     "ObjectMemory",
     "ObjectSeen",
@@ -208,6 +210,17 @@ class Arms(Protocol):
     move_to() does. Every other end is an outcome, not an error
     (GripperMoved.outcome). Every message ends with the arm sentence.
 
+    reach() moves one hand's link to a HandPose that pick_object computed
+    from the object memory, never one from the LLM (decision PK-4), and
+    returns the commander's status. `whole_body` plans for the base, the
+    lift and the arm together, the one motion that moves the lift
+    (decision PK-5); `cartesian` moves the hand along a straight line, for
+    the arm alone. The arm then rests in no named pose, so it is not safe
+    for driving. It raises StepError REFUSED for a pose or a timeout that
+    is not finite, or a whole-body straight line; SKILL_FAILED when the
+    commander fails the goal or only planned it; and the rest as move_to()
+    does. Every message ends with the arm sentence.
+
     pick, place_on and hand_over pick, place and hand over, each returning
     the object's id. They raise StepError NOT_FOUND for an unknown object,
     place or person; PRECONDITION_FAILED when the hand or the robot's
@@ -226,6 +239,16 @@ class Arms(Protocol):
     def move_to(self, pose: str, arm: Arm = "both") -> ArmsMoved: ...
 
     def gripper(self, arm: Gripper, state: GripperState) -> GripperMoved: ...
+
+    def reach(
+        self,
+        arm: Gripper,
+        pose: HandPose,
+        *,
+        whole_body: bool = False,
+        cartesian: bool = False,
+        timeout_s: float = 60.0,
+    ) -> str: ...
 
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str: ...
 
@@ -260,6 +283,17 @@ class UnavailableArms:
         self._refuse()
 
     def gripper(self, arm: Gripper, state: GripperState) -> GripperMoved:
+        self._refuse()
+
+    def reach(
+        self,
+        arm: Gripper,
+        pose: HandPose,
+        *,
+        whole_body: bool = False,
+        cartesian: bool = False,
+        timeout_s: float = 60.0,
+    ) -> str:
         self._refuse()
 
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str:

@@ -1,10 +1,12 @@
 """RosArms: ctx.arms over the agent's CommanderClient (ADR-0021, ADR-0052).
 
 The verbs of walkie_agent.capabilities.Arms on walkie-ros's bimanual_commander: named
-poses, the grippers, a read of both, and the arm check before every drive (ADR-0025).
-The LLM picks poses by name and never sees joint values (ADR-0022). Every message of
-move_to() and gripper() ends with the arm sentence, ArmsReport.sentence(), so the LLM
-always knows whether the robot may drive (ADR-0024).
+poses, the grippers, a read of both, pick_object's hand poses, and the arm check before
+every drive (ADR-0025). The LLM picks poses by name and never sees joint values
+(ADR-0022), nor the hand poses, which pick_object computes from the object memory
+(decision PK-4). Every message of move_to(), gripper() and reach() ends with the arm
+sentence, ArmsReport.sentence(), so the LLM always knows whether the robot may drive
+(ADR-0024).
 
 The client holds the waits, the cancels, the unverified state and recovery. This module
 only turns the client's answers into the Arms contract. The client's StepError carries
@@ -17,6 +19,7 @@ import math
 from collections.abc import Mapping
 
 from walkie_agent.arm import answers
+from walkie_agent.arm.pick import HandPose
 from walkie_agent.arm.poses import (
     ARM_GROUPS,
     ARMS,
@@ -26,6 +29,7 @@ from walkie_agent.arm.poses import (
     GRASP_DETECT_MIN,
     GRIPPER_GROUPS,
     RIGHT_JOINT2,
+    WHOLE_BODY_GROUPS,
     ArmPose,
     GripperPositions,
 )
@@ -246,7 +250,7 @@ class RosArms:
         try:
             status = client.set_joint_position(group, positions, timeout_s)
         except StepError as e:
-            raise self._move_error(name, e) from None
+            raise self._move_error(f"Could not move to {name!r}: ", e) from None
 
         try:
             reading = client.joint_states(BOTH_ARMS_GROUP)
@@ -347,6 +351,39 @@ class RosArms:
             finger_m=finger,
         )
 
+    def reach(
+        self,
+        arm: Gripper,
+        pose: HandPose,
+        *,
+        whole_body: bool = False,
+        cartesian: bool = False,
+        timeout_s: float = 60.0,
+    ) -> str:
+        """Move `arm`'s hand link to `pose` through the commander's /go_to_pose.
+
+        See capabilities.Arms. The goal goes to the arm's whole-body group with `whole_body`, else to its
+        arm group, and waits for the longer of `timeout_s` and min_move_timeout_s. A
+        reported success is the commander's own check: a pose goal has no joint
+        table to compare a reading with. Its plan-only status means nothing moved,
+        so it is a failure here. Every message ends with the arm sentence, from a
+        fresh read after a failure the commander reported, as move_to()'s does.
+        """
+        answers.check_reach(pose, whole_body=whole_body, cartesian=cartesian, timeout_s=timeout_s)
+        group = (WHOLE_BODY_GROUPS if whole_body else ARM_GROUPS)[arm]
+        try:
+            status = self._client.go_to_pose(
+                group, pose, max(timeout_s, self._min_move_timeout_s), cartesian=cartesian
+            )
+        except StepError as e:
+            raise self._move_error(f"Could not move the {arm} hand: ", e) from None
+        if status.startswith(answers.PLAN_ONLY):
+            raise StepError(
+                ErrorCode.SKILL_FAILED,
+                f"{answers.PLAN_ONLY_TEXT}. {answers.PLAN_ONLY_NEXT} {self._memory_sentence()}",
+            )
+        return status
+
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str:
         """Raises StepError UNAVAILABLE: the robot has no grasp skill yet."""
         raise StepError(ErrorCode.UNAVAILABLE, NO_GRASP_SKILL)
@@ -430,8 +467,8 @@ class RosArms:
             )
         return [targets[joint] for joint in order]
 
-    def _move_error(self, name: str, error: StepError) -> StepError:
-        """The answer to a move the commander did not finish as asked."""
+    def _move_error(self, prefix: str, error: StepError) -> StepError:
+        """The answer to a move the commander did not finish as asked, `prefix` first."""
         if self._stopped(error):
             # The call ends at once, so the arms are not read.
             stopped = (
@@ -447,7 +484,7 @@ class RosArms:
             # TIMEOUT, UNAVAILABLE or PRECONDITION_FAILED: the commander is not
             # answering or is busy, so a read would fail or wait out its timeout.
             sentence = self._memory_sentence()
-        return answers.with_sentence(error, f"Could not move to {name!r}: ", sentence)
+        return answers.with_sentence(error, prefix, sentence)
 
     def _holding(
         self, result: GripperResult, finger: float, grippers: GripperPositions

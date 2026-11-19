@@ -7,8 +7,10 @@ alike. Plain logic: nothing here imports ROS.
 """
 
 import logging
+import math
 from collections.abc import Callable, Mapping
 
+from walkie_agent.arm.pick import HandPose
 from walkie_agent.arm.poses import (
     ARMS,
     BOTH,
@@ -117,6 +119,43 @@ def unchecked(status: str, problem: str, sentence: str) -> StepError:
     else:
         text = f"The commander reported success, but {problem} Treat this as a failure."
     return StepError(ErrorCode.SKILL_FAILED, f"{text} {sentence}")
+
+
+def check_reach(pose: HandPose, *, whole_body: bool, cartesian: bool, timeout_s: float) -> None:
+    """Raise StepError REFUSED for a reach that no backend sends, before anything moves.
+
+    The pose's numbers and `timeout_s` must be finite, the timeout above zero, and
+    the pose must name a frame. A whole-body goal cannot be a straight line: the
+    commander plans Cartesian paths for an arm group alone.
+    """
+    numbers = {
+        "x": pose.x,
+        "y": pose.y,
+        "z": pose.z,
+        "roll": pose.roll,
+        "pitch": pose.pitch,
+        "yaw": pose.yaw,
+        "timeout_s": timeout_s,
+    }
+    bad = [
+        name
+        for name, value in numbers.items()
+        if isinstance(value, bool) or not isinstance(value, int | float) or not math.isfinite(value)
+    ]
+    if bad:
+        raise StepError(ErrorCode.REFUSED, f"Refused: {', '.join(bad)} must be a finite number.")
+    if timeout_s <= 0:
+        raise StepError(
+            ErrorCode.REFUSED, f"Refused: timeout_s must be positive, not {timeout_s:g}."
+        )
+    if not (isinstance(pose.frame_id, str) and pose.frame_id.strip()):
+        raise StepError(ErrorCode.REFUSED, "Refused: a hand pose needs a frame.")
+    if whole_body and cartesian:
+        raise StepError(
+            ErrorCode.REFUSED,
+            "Refused: a whole-body reach cannot follow a straight line; the commander "
+            "plans one for an arm alone.",
+        )
 
 
 def reads_as(positions: GripperPositions, finger_m: float) -> GripperState:

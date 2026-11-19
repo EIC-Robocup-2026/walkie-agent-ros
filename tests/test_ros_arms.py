@@ -28,6 +28,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.parameter import Parameter
 from rclpy.task import Future
 
+from walkie_agent.arm.pick import HandPose
 from walkie_agent.arm.poses import (
     GRIPPER_GROUPS,
     RIGHT_JOINT2,
@@ -78,6 +79,8 @@ STOPPED_CHECKING_LEFT = (
 )
 ABANDONED = "the move of left_arm from an earlier call was given up on before its end was known"
 DRIVE = "the drive to kitchen"
+# A hand target as pick_object computes it, in the map.
+HAND = HandPose(0.6, -0.2, 0.8, 0.0, math.pi / 2, 0.3, "map")
 
 
 # -- Test helpers (copies of tests/test_commander.py's) -----------------------------
@@ -315,7 +318,17 @@ def cancel_when(fake: FakeCommander, token: CancelToken, group: str) -> None:
 
 
 def test_ros_arms_has_every_verb_of_the_arms_protocol_with_its_parameters():
-    for name in ("poses", "state", "read", "move_to", "gripper", "pick", "place_on", "hand_over"):
+    for name in (
+        "poses",
+        "state",
+        "read",
+        "move_to",
+        "gripper",
+        "reach",
+        "pick",
+        "place_on",
+        "hand_over",
+    ):
         ours = inspect.signature(getattr(RosArms, name)).parameters
         theirs = inspect.signature(getattr(Arms, name)).parameters
         assert [(p.name, p.kind, p.default) for p in ours.values()] == [
@@ -1430,3 +1443,114 @@ def test_the_drive_check_raises_a_stop_as_it_came(arms, token):
         ErrorCode.CANCELLED,
         f"Cannot check the arms for driving: {STOP_IN_EFFECT}.",
     )
+
+
+# -- reach: pick_object's hand poses ----------------------------------------------------
+
+
+def test_a_whole_body_reach_goes_to_the_arms_whole_body_group(arms, fake_commander):
+    fake_commander.pose_joints = {"openarm_right_joint1": 0.4}
+
+    status = arms.reach("right", HAND, whole_body=True, timeout_s=5.0)
+
+    assert status == "Success (base fixed)"
+    [goal] = fake_commander.pose_goals
+    assert (goal.group_name, goal.cartesian_path, goal.frame_id) == (
+        "whole_body_right",
+        False,
+        "map",
+    )
+    assert (goal.x, goal.y, goal.z, goal.yaw) == pytest.approx((0.6, -0.2, 0.8, 0.3))
+    # The arm rests in no named pose afterwards, so the robot may not drive.
+    assert arms.state().sentence() == NOT_SAFE_SENTENCE
+
+
+def test_a_straight_reach_goes_to_the_arm_group(arms, fake_commander):
+    assert arms.reach("left", HAND, cartesian=True, timeout_s=5.0) == "Success"
+
+    [goal] = fake_commander.pose_goals
+    assert (goal.group_name, goal.cartesian_path) == ("left_arm", True)
+
+
+@pytest.mark.parametrize(
+    ("pose", "kwargs", "message"),
+    [
+        (replace(HAND, x=math.nan), {}, "Refused: x must be a finite number."),
+        (HAND, {"timeout_s": 0.0}, "Refused: timeout_s must be positive, not 0."),
+        (replace(HAND, frame_id=" "), {}, "Refused: a hand pose needs a frame."),
+        (
+            HAND,
+            {"whole_body": True, "cartesian": True},
+            "Refused: a whole-body reach cannot follow a straight line; the commander plans "
+            "one for an arm alone.",
+        ),
+    ],
+    ids=["nan", "timeout", "frame", "whole-body-line"],
+)
+def test_a_reach_no_backend_sends_is_refused_before_anything_moves(
+    arms, fake_commander, pose, kwargs, message
+):
+    error = error_of(lambda: arms.reach("right", pose, **kwargs))
+
+    assert (error.code, error.message) == (ErrorCode.REFUSED, message)
+    assert fake_commander.pose_goals == []
+
+
+def test_a_reach_the_commander_fails_reads_the_arms_for_the_sentence(arms, fake_commander):
+    fake_commander.plan_failure = True
+
+    error = error_of(lambda: arms.reach("right", HAND, whole_body=True, timeout_s=5.0))
+
+    assert isinstance(error, GoalFailed)
+    assert error.message == (
+        "Could not move the right hand: MoveIt found no path for whole_body_right "
+        f"(Planning Failed). The arms did not move. {SAFE_SENTENCE}"
+    )
+
+
+def test_a_plan_only_reach_is_a_failure(arms, fake_commander):
+    fake_commander.plan_only = True
+    arms.state()
+
+    error = error_of(lambda: arms.reach("right", HAND, whole_body=True, timeout_s=5.0))
+
+    assert error.code == ErrorCode.SKILL_FAILED
+    assert error.message == (
+        "The commander runs in plan-only mode, so it moved nothing. No arm can move until "
+        "the commander restarts without plan_only, so tell the person instead of trying "
+        f"again. {UNKNOWN_SENTENCE}"
+    )
+
+
+def test_a_stop_mid_reach_says_to_check_the_arms(
+    arms, client, fake_commander, token, monkeypatch
+):
+    monkeypatch.setattr(client, "_cancel_answer_s", 10.0)
+    fake_commander.move_time_s = 5.0
+    fake_commander.pose_joints = {"openarm_right_joint1": 0.4}
+
+    reaching = Call(error_of, lambda: arms.reach("right", HAND, whole_body=True, timeout_s=10.0))
+    assert wait_until(lambda: accepted_handle(client) is not None)
+    token.cancel()
+    error = reaching.result()
+
+    assert error.code == ErrorCode.CANCELLED
+    assert error.message == (
+        "A stop or a reset interrupted the reach of whole_body_right; the arms were told to "
+        f"stop. {ARMS_TOLD_TO_STOP} {UNKNOWN_SENTENCE}"
+    )
+
+
+def test_a_reach_waits_for_at_least_the_floor(client, token, fake_commander, monkeypatch):
+    sent = []
+
+    def go_to_pose(group, pose, timeout_s, *, cartesian):
+        sent.append(timeout_s)
+        return "Success"
+
+    monkeypatch.setattr(client, "go_to_pose", go_to_pose)
+
+    RosArms(client, token, sim=True, min_move_timeout_s=60.0).reach("right", HAND, timeout_s=5.0)
+    RosArms(client, token, sim=True).reach("right", HAND, timeout_s=5.0)
+
+    assert sent == [60.0, 5.0]

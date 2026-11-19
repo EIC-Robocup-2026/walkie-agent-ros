@@ -10,6 +10,7 @@ from walkie_agent.arm.state import ArmsState
 from walkie_agent.capabilities import (
     NO_ARMS,
     Ctx,
+    HandPose,
     ObjectSeen,
     Pose2D,
     UnavailableArms,
@@ -240,6 +241,7 @@ def test_a_cancel_from_another_thread_ends_the_wait_quickly():
         lambda arms: arms.read(),
         lambda arms: arms.move_to("home"),
         lambda arms: arms.gripper("left", "open"),
+        lambda arms: arms.reach("right", HandPose(0.6, -0.2, 0.8, 0.0, 1.57, 0.0, "map")),
         lambda arms: arms.pick("apple_1"),
         lambda arms: arms.place_on("table"),
         lambda arms: arms.hand_over("operator"),

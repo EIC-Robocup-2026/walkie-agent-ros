@@ -3,12 +3,14 @@
 import dataclasses
 import inspect
 import json
+import math
 import time
 
 import pytest
 
 from conftest import PROJECT_ROOT
 from walkie_agent.arm import answers
+from walkie_agent.arm.pick import HandPose
 from walkie_agent.arm.poses import load_arm_poses
 from walkie_agent.arm.results import GripperResult
 from walkie_agent.arm.state import (
@@ -33,7 +35,9 @@ from walkie_agent.errors import ErrorCode, StepError
 HOME = ArmState("home", True)
 HANDS_UP = ArmState("hands_up", False)
 AT_HOME = ArmsReport(ArmsState(left=HOME, right=HOME))
-ARM_VERBS = ("poses", "state", "read", "move_to", "gripper")
+ARM_VERBS = ("poses", "state", "read", "move_to", "gripper", "reach")
+# A hand target as pick_object computes it, in the map.
+HAND = HandPose(0.6, -0.2, 0.8, 0.0, math.pi / 2, 0.3, "map")
 
 
 def world() -> dict:
@@ -96,7 +100,13 @@ def refusal(what: str, problem: str) -> str:
 
 @pytest.mark.parametrize(
     ("verb", "args"),
-    [("poses", ()), ("read", ()), ("move_to", ("home",)), ("gripper", ("left", "open"))],
+    [
+        ("poses", ()),
+        ("read", ()),
+        ("move_to", ("home",)),
+        ("gripper", ("left", "open")),
+        ("reach", ("right", HAND)),
+    ],
 )
 def test_without_arm_poses_every_arm_verb_but_state_is_unavailable(armless, verb, args):
     error = raised(getattr(armless, verb), *args)
@@ -252,6 +262,58 @@ def test_a_close_closes_empty_at_the_closed_position(robot, arm_poses):
         finger_m=closed_m,
     )
     assert moved.holding is False
+
+
+def test_a_close_of_a_grasping_gripper_holds_inside_the_grasp_band(robot):
+    robot.grasping.add("right")
+
+    moved = robot.gripper("right", "close")
+
+    assert (moved.outcome, moved.holding) == ("holding", True)
+    assert answers.reads_as(robot._require_arms().grippers, moved.finger_m) == "close"
+    assert 0.005 <= moved.finger_m <= 0.044
+    # The other gripper still closes empty, and an open of the grasping one opens.
+    assert robot.gripper("left", "close").outcome == "empty"
+    assert robot.gripper("right", "open").outcome == "moved"
+
+
+# Reaches
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "status"),
+    [({"whole_body": True}, "Success (base fixed)"), ({"cartesian": True}, "Success")],
+)
+def test_a_reach_leaves_its_arm_in_no_named_pose(robot, kwargs, status):
+    assert robot.reach("right", HAND, **kwargs) == status
+
+    assert robot.state() == ArmsReport(ArmsState(left=HOME, right=ArmState(None, False)))
+    assert robot.state().sentence() == NOT_SAFE_SENTENCE
+    with pytest.raises(StepError) as refused:
+        robot.go_to("desk")
+    assert refused.value.code is ErrorCode.PRECONDITION_FAILED
+    assert ARMS_OUT in refused.value.message
+
+
+def test_a_reach_no_backend_sends_is_refused_in_the_robots_words(robot):
+    error = raised(robot.reach, "right", HAND, whole_body=True, cartesian=True)
+
+    assert error.code is ErrorCode.REFUSED
+    assert "whole-body reach cannot follow a straight line" in error.message
+    assert raised(robot.reach, "right", dataclasses.replace(HAND, z=math.inf)).message == (
+        "Refused: z must be a finite number."
+    )
+    assert robot.state() == AT_HOME
+
+
+def test_a_stop_refuses_a_reach_with_the_sentence(robot):
+    robot.cancel.cancel()
+
+    error = raised(robot.reach, "right", HAND)
+
+    assert error.code is ErrorCode.CANCELLED
+    assert error.message.endswith(SAFE_SENTENCE)
+    assert robot.state() == AT_HOME
 
 
 def test_each_gripper_counts_its_own_commands(robot):

@@ -38,6 +38,7 @@ from walkie_agent.capabilities import (
     GripperMoved,
     GripperReading,
     GripperState,
+    HandPose,
     ObjectSeen,
     PersonSeen,
     Pose2D,
@@ -130,6 +131,11 @@ LOOKUPS = frozenset({"vision.objects", "vision.people"})
 ARMS_START_POSE = answers.SAFE_EXAMPLE
 # The commander's status for every arm and gripper goal, all of which succeed in the fake.
 ARM_GOAL_STATUS = "Success"
+# Its status for a whole-body reach, which holds the base still.
+WHOLE_BODY_STATUS = "Success (base fixed)"
+# The finger travel, in metres, where a close of a gripper in FakeRobot.grasping stops:
+# on an object, inside the commander's default grasp band.
+HELD_FINGER_M = 0.02
 
 
 def fake_facts(seed: int = 0) -> dict[str, Any]:
@@ -313,7 +319,9 @@ class FakeRobot:
     nothing checks the arms before a drive. With them, the poses offered are the
     simulation's, both arms start in ARMS_START_POSE and both grippers open, a
     move or a gripper command succeeds at once and lands exactly, and a close
-    always closes empty, since the fake's grippers never meet an object. go_to
+    closes empty, since the fake's grippers meet no object, unless the gripper's
+    arm is in `grasping`: its close then holds something. A reach succeeds at once
+    and leaves its arm in no named pose, so not travel-safe. go_to
     and move_relative then refuse to start, as the robot's drive check does,
     while an arm is in a pose that is not travel-safe; arm_poses lacking a table
     of ARMS_START_POSE for each arm raises ValueError. pick, place_on and
@@ -357,7 +365,9 @@ class FakeRobot:
         self._arm_poses = arm_poses
         # The pose each arm is in, each gripper's finger travel in metres, and how
         # many commands each gripper took, as GripperResult.command counts them.
-        self._arm_at = dict.fromkeys(ARMS, ARMS_START_POSE)
+        self._arm_at: dict[str, str | None] = dict.fromkeys(ARMS, ARMS_START_POSE)
+        # The grippers whose closes meet an object and hold it (FakeRobot's docstring).
+        self.grasping: set[str] = set()
         self._finger_m: dict[str, float] = (
             {} if arm_poses is None else dict.fromkeys(ARMS, arm_poses.grippers.open_position)
         )
@@ -540,6 +550,10 @@ class FakeRobot:
     @_verb("arms.gripper")
     def gripper(self, arm: Gripper, state: GripperState) -> GripperMoved:
         position = self._require_arms().grippers.position(state)
+        holds = state == "close" and arm in self.grasping
+        if holds:
+            # The fingers stop on the object, inside the commander's grasp band.
+            position = HELD_FINGER_M
         with self._arm_goal(f"the {arm} gripper command"):
             # The count first, so an arm with no gripper changes nothing.
             self._gripper_commands[arm] += 1
@@ -548,8 +562,30 @@ class FakeRobot:
         if state != "close":
             result = GripperResult(True, ARM_GOAL_STATUS, None, None, command)
             return GripperMoved(arm=arm, state=state, outcome="moved", result=result)
+        if holds:
+            # As on the robot, a close that stalls on an object reports success false.
+            result = GripperResult(False, ARM_GOAL_STATUS, True, position, command)
+            return GripperMoved(
+                arm=arm, state=state, outcome="holding", result=result, finger_m=position
+            )
         result = GripperResult(True, ARM_GOAL_STATUS, False, position, command)
         return GripperMoved(arm=arm, state=state, outcome="empty", result=result, finger_m=position)
+
+    @_verb("arms.reach")
+    def reach(
+        self,
+        arm: Gripper,
+        pose: HandPose,
+        *,
+        whole_body: bool = False,
+        cartesian: bool = False,
+        timeout_s: float = 60.0,
+    ) -> str:
+        self._require_arms()
+        answers.check_reach(pose, whole_body=whole_body, cartesian=cartesian, timeout_s=timeout_s)
+        with self._arm_goal(f"the reach of the {arm} hand"):
+            self._arm_at[arm] = None
+        return WHOLE_BODY_STATUS if whole_body else ARM_GOAL_STATUS
 
     @_verb("arms.pick")
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str:
@@ -706,8 +742,9 @@ class FakeRobot:
         poses = self._arm_poses.poses
 
         def arm(side: str) -> ArmState:
+            # None after a reach: in no named pose, so not safe for driving.
             name = self._arm_at[side]
-            return ArmState(pose=name, travel_safe=poses[name].travel_safe)
+            return ArmState(pose=name, travel_safe=name is not None and poses[name].travel_safe)
 
         return ArmsState(left=arm("left"), right=arm("right"))
 

@@ -1,0 +1,41 @@
+# How pick_object approaches and grasps a remembered object (decision PK-4). The
+# LLM never sees these numbers (ADR-0022). walkie_agent.arm.pick reads this file,
+# from the working directory, at startup with --arms and --object-memory and again
+# at each pick, so a change here applies to the next pick without a restart.
+#
+# The robot drives to a stand-off pose facing the object's remembered centre, then
+# the hand link (openarm_right_hand) goes to a pre-grasp pose through the
+# commander's whole-body group, moves straight in to the grasp pose, the gripper
+# closes, and the hand moves straight up. Every number here is provisional until
+# the Chula simulation has run the pick.
+
+# The arm that picks: "left" or "right".
+arm = "right"
+# The frame of every hand target. The object memory keeps positions in it.
+frame_id = "map"
+
+# Metres from the object's centre to base_footprint at the stand-off pose, which
+# faces the object.
+standoff_m = 0.55
+# The approach headings to try, in degrees, in order: each is added to the bearing
+# from where the robot stands to the object. The next one is tried when Nav2 cannot
+# reach the stand-off pose of the one before.
+heading_offsets_deg = [0.0, 30.0, -30.0, 60.0, -60.0]
+
+# Metres from the hand's tool centre point to the hand link, along the approach:
+# openarm_right_hand_tcp is 0.08 m along the hand link's +z.
+tcp_offset_m = 0.08
+# Metres the pre-grasp pose stands back from the grasp pose, along the approach.
+pregrasp_back_m = 0.10
+# Metres the hand rises after the gripper holds the object.
+lift_m = 0.10
+
+# The hand's orientation, in degrees. Yaw is the approach heading. With roll 0 and
+# pitch 90 the hand link's +z, the direction the fingers point, lies along it.
+hand_roll_deg = 0.0
+hand_pitch_deg = 90.0
+
+# Seconds each motion may take: the whole-body reach to the pre-grasp pose, which
+# plans for the base, the lift and the arm, and each straight-line move of the arm.
+reach_timeout_s = 90.0
+cartesian_timeout_s = 30.0

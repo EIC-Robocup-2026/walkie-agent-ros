@@ -35,6 +35,7 @@ from rclpy.parameter import Parameter
 from rclpy.task import Future
 from unique_identifier_msgs.msg import UUID
 
+from walkie_agent.arm.pick import HandPose
 from walkie_agent.arm.poses import RIGHT_JOINT2, load_arm_poses, load_robot_model
 from walkie_agent.arm.results import Recovery
 from walkie_agent.arm.state import (
@@ -46,7 +47,6 @@ from walkie_agent.arm.state import (
     worst_joint,
 )
 from walkie_agent.capabilities.guards import CancelToken
-from walkie_agent.capabilities.records import HandPose
 from walkie_agent.errors import GoalFailed, StepError
 from walkie_agent.ros import commander as commander_module
 from walkie_agent.ros.commander import CommanderClient

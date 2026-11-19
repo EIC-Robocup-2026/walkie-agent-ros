@@ -103,6 +103,7 @@ from rclpy.task import Future
 from std_msgs.msg import String
 from unique_identifier_msgs.msg import UUID
 
+from walkie_agent.arm.pick import HandPose
 from walkie_agent.arm.poses import (
     ARM_GROUPS,
     ARMS,
@@ -125,7 +126,6 @@ from walkie_agent.arm.results import (
 )
 from walkie_agent.arm.state import ArmsState, ArmState
 from walkie_agent.capabilities.guards import CancelToken, is_finite_number
-from walkie_agent.capabilities.records import HandPose
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.ros.policy import FORBIDDEN_NAMES, check_endpoint
 

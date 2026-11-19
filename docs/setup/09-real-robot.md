@@ -372,10 +372,35 @@ pixi run --as-is ros2 launch robot_bringup real_omnibot.launch.py use_arm:=false
 - With the arms (see [Optional A](#optional-a-the-arms)), drop both arm
   arguments. **The arms then move at start:** to 0 rad when the hardware
   activates, then to a home pose over 5 s. Clear the space around them first.
-- The head servo is a mock in the robot's working tree. Head commands move
-  nothing, and `head_servo_joint` comes from the ZED's IMU instead.
+- The head servo is broken. Uncommitted edits in the team's checkout work
+  around it: the head hardware is `mock_components/GenericSystem`, `joint_broad`
+  no longer publishes `head_servo_joint`, and `head_imu_corrector` publishes it
+  from the ZED's IMU instead. Head commands move nothing. Our
+  `walkie-ros-fullbody` checkout does not have these edits and still loads the
+  Dynamixel head driver, so run the bringup from the team's checkout.
 
-Wait until the log settles, then check from T12 that the sensors publish
+The bringup is up after about 6 s, when these lines have appeared:
+
+- `[zed_watchdog]: ZED streaming healthy after (re)launch`
+- `[head_imu_corrector]: [IMU Pitch: ...] Motor: N/A -> Corrected Joint: ...`,
+  once a second. `Motor: N/A` is expected with the mock head.
+
+These lines are normal and do not mean a failure:
+
+- `No CAN message received from CAN ID: <n>` once or twice at start.
+- `[cloud_to_map]: TF lookup failed: "map" ... does not exist` every 2 s, until
+  SLAM or Nav2 (T4) runs.
+- `[ZED][WARNING] Gravity alignment issues detected. Recomputing alignment...`
+  once.
+- After Ctrl+C: `process has died` for `tf_server`, `head_imu_corrector`,
+  `current_pose_publisher.py`, `lakibeam1_scan_node`, `zed_watchdog.py` and
+  `rviz2`, and a `zed_watchdog.py` traceback ending in `RuntimeError: Unable to
+  convert call argument '0'`. These nodes do not exit cleanly on Ctrl+C. The
+  team's own bringup also reports `tf_server`, `head_imu_corrector`,
+  `current_pose_publisher.py`, `lakibeam1_scan_node` and `zed_watchdog.py` as
+  died when it stops.
+
+Then check from T12 that the sensors publish
 ([step 6](#6-first-checks-before-talking)).
 
 ### Joystick (T3)

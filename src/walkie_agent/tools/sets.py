@@ -2,7 +2,8 @@
 
 The sets are plain lists of the atomics in walkie_agent.tools.atomic, in the order
 the LLM sees them. main.py picks one with --tool-set, and bound_tools drops the arm
-and object memory atomics unless --arms and --object-memory connect what they use.
+and object memory atomics unless --arms and --object-memory connect what they use,
+and pick_object unless both do.
 """
 
 from collections.abc import Callable
@@ -24,6 +25,7 @@ from walkie_agent.tools.atomic import (
     move_relative,
     object_info,
     pick,
+    pick_object,
     place_on,
     recall_object,
     recognize_person,
@@ -53,6 +55,12 @@ _OBJECT_MEMORY_ATOMICS: list[Callable[..., Any]] = [
 ]
 OBJECT_MEMORY_TOOLS: frozenset[str] = frozenset(fn.__name__ for fn in _OBJECT_MEMORY_ATOMICS)
 
+# The atomic that picks up a remembered object: it finds the object in the object
+# memory and reaches with the arms, so bound_tools drops it unless the run has both
+# --arms and --object-memory (decision PK-4).
+_PICK_ATOMICS: list[Callable[..., Any]] = [pick_object]
+PICK_TOOLS: frozenset[str] = frozenset(fn.__name__ for fn in _PICK_ATOMICS)
+
 # The tool sets are plain lists in code (decision 3). Commands name their
 # places, so GPSR has no list_places, as in the spike it was measured with.
 # get_facts came after the spike, for the talk commands (decision M35).
@@ -74,7 +82,7 @@ GPSR: list[Callable[..., Any]] = [
 # without them is the set it was before them. find_objects lets HRI see the seats
 # (decision S4-5); object_info stays out, since nothing measures a live object. The
 # object memory atomics come before the arm atomics, and both are dropped without
-# their flags.
+# their flags. pick_object comes last, and needs both flags.
 HRI: list[Callable[..., Any]] = [
     list_places,
     go_to,
@@ -87,6 +95,7 @@ HRI: list[Callable[..., Any]] = [
     recognize_person,
     *_OBJECT_MEMORY_ATOMICS,
     *_ARM_ATOMICS,
+    *_PICK_ATOMICS,
 ]
 # The arms on their own: the base verbs the drive check guards, speech to say what the
 # arms will do, and the arm atomics. GPSR and DEFAULT have no arm atomics, so their
@@ -124,13 +133,15 @@ def bound_tools(
 
     Without --arms ctx.arms has no commander, and without --object-memory there is no
     object memory, so their atomics would only report UNAVAILABLE: the arm atomics are
-    dropped unless `arms`, and the object memory atomics unless `object_memory`.
-    Raises ValueError for an unknown set.
+    dropped unless `arms`, the object memory atomics unless `object_memory`, and
+    pick_object unless both. Raises ValueError for an unknown set.
     """
     if tool_set not in TOOL_SETS:
         known = ", ".join(TOOL_SETS)
         raise ValueError(f"There is no tool set {tool_set!r}. Known tool sets: {known}.")
     dropped = (set() if arms else ARM_TOOLS) | (set() if object_memory else OBJECT_MEMORY_TOOLS)
+    if not (arms and object_memory):
+        dropped |= PICK_TOOLS
     return [fn for fn in TOOL_SETS[tool_set] if fn.__name__ not in dropped]
 
 

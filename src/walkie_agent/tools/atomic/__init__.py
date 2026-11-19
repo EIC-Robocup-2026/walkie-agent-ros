@@ -9,6 +9,7 @@ walkie_agent.tools.adapter. Which atomics each run binds is in walkie_agent.tool
 
 from walkie_agent.tools.atomic.arms import get_arm_state, list_arm_poses, move_arm_to_pose, set_gripper
 from walkie_agent.tools.atomic.facts import get_facts
+from walkie_agent.tools.atomic.grasp import pick_object
 from walkie_agent.tools.atomic.manipulation import hand_over, pick, place_on
 from walkie_agent.tools.atomic.memory import (
     list_room_objects,
@@ -42,6 +43,7 @@ __all__ = [
     "move_relative",
     "object_info",
     "pick",
+    "pick_object",
     "place_on",
     "recall_object",
     "recognize_person",

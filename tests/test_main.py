@@ -72,6 +72,7 @@ from walkie_agent.tools.sets import (
     GPSR,
     HRI,
     OBJECT_MEMORY_TOOLS,
+    PICK_TOOLS,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -100,9 +101,15 @@ HANDS_UP = ArmState(pose="hands_up", travel_safe=False)
 
 
 def tool_names(tool_set, arms=False, object_memory=False):
-    """What a run binds: the set's atomics, less the arm and object memory atomics without their flags."""
+    """What a run binds: the set's atomics, less the atomics of a missing flag.
+
+    The arm atomics need --arms, the object memory atomics --object-memory, and
+    pick_object both.
+    """
     atomics = {fn.__name__ for fn in TOOL_SET_LISTS[tool_set]}
     dropped = (set() if arms else ARM_TOOLS) | (set() if object_memory else OBJECT_MEMORY_TOOLS)
+    if not (arms and object_memory):
+        dropped |= PICK_TOOLS
     return (atomics - dropped) | MIDDLEWARE_TOOLS
 
 
@@ -866,6 +873,44 @@ def test_with_object_memory_the_agent_gets_the_object_tools_and_their_rule(
     assert named <= bound, f"The prompt names tools it lacks: {named - bound}"
 
 
+def test_with_arms_and_object_memory_hri_gets_pick_object_and_its_rule(
+    build, object_memories, commanders
+):
+    built = build(tool_set="hri", vision=True, object_memory=True, arm_poses=POSES)
+    built.app.start()
+    run_one(built, "Bring me the water bottle.")
+
+    bound = set(built.model.bound[0])
+    assert bound == tool_names("hri", arms=True, object_memory=True)
+    assert PICK_TOOLS <= bound
+    system = built.model.received[0][0].content
+    assert system == prompts.build_system_prompt(
+        "hri", PLACES, ROBOT, vision=True, arms=True, object_memory=True
+    )
+    assert "call\n  `pick_object` with its name" in system
+    named = set(re.findall(r"`(\w+)`", system))
+    assert named <= bound, f"The prompt names tools it lacks: {named - bound}"
+
+
+@pytest.mark.parametrize(
+    ("arms", "object_memory"), [(True, False), (False, True)], ids=["arms", "object-memory"]
+)
+def test_pick_object_needs_both_the_arms_and_the_object_memory(
+    build, object_memories, commanders, arms, object_memory
+):
+    built = build(
+        tool_set="hri",
+        vision=True,
+        object_memory=object_memory,
+        arm_poses=POSES if arms else None,
+    )
+    built.app.start()
+    run_one(built)
+
+    assert PICK_TOOLS.isdisjoint(built.model.bound[0])
+    assert "pick_object" not in built.model.received[0][0].content
+
+
 @pytest.mark.parametrize("tool_set", ["default", "hri"])
 def test_without_object_memory_the_run_keeps_the_tools_and_prompt_it_had(build, tool_set):
     built = build(tool_set=tool_set, vision=True)
@@ -1453,6 +1498,47 @@ def test_a_broken_arm_pose_file_stops_with_one_line_before_ros_init(cli, capsys,
     monkeypatch.chdir(cli.tmp_path)
     assert words in startup_error(cli, capsys, "--arms", "--tool-set", "hri")
     assert cli.connectors == []
+
+
+@pytest.mark.parametrize(
+    ("text", "words"),
+    [
+        (None, "No such file or directory: 'config/pick.toml'"),
+        ("standoff_m = [", "config/pick.toml: 1 problem: - Not valid TOML: "),
+        ('arm = "right"\n', "config/pick.toml: "),
+    ],
+    ids=["no-pick-file", "bad-toml", "missing-keys"],
+)
+def test_a_broken_pick_file_stops_with_one_line_when_pick_object_is_bound(
+    cli, capsys, monkeypatch, text, words
+):
+    (cli.tmp_path / "config").mkdir()
+    for name in ("robot_model.toml", "arm_poses.toml"):
+        source = PROJECT_ROOT / "config" / name
+        (cli.tmp_path / "config" / name).write_bytes(source.read_bytes())
+    if text is not None:
+        (cli.tmp_path / "config" / "pick.toml").write_text(text)
+    monkeypatch.chdir(cli.tmp_path)
+    flags = ("--arms", "--object-memory", "--vision", "--tool-set", "hri")
+    assert words in startup_error(cli, capsys, *flags)
+    assert cli.connectors == []
+
+
+def test_a_run_without_pick_object_never_reads_the_pick_file(cli, monkeypatch):
+    (cli.tmp_path / "config").mkdir()
+    for name in ("robot_model.toml", "arm_poses.toml"):
+        source = PROJECT_ROOT / "config" / name
+        (cli.tmp_path / "config" / name).write_bytes(source.read_bytes())
+    (cli.tmp_path / "config" / "pick.toml").write_text("not toml = [")
+
+    def assemble(**kwargs):
+        app = FakeApp(cli)
+        app.on_start = send
+        return app
+
+    monkeypatch.setattr(main, "assemble", assemble)
+    monkeypatch.chdir(cli.tmp_path)
+    assert cli.run("--arms", "--tool-set", "hri") == 0
 
 
 def test_with_arms_the_shutdown_waits_for_the_commander_to_close_before_the_connector(

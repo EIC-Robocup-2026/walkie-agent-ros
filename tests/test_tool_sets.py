@@ -13,6 +13,7 @@ from walkie_agent.tools.atomic import (
     list_room_objects,
     move_arm_to_pose,
     pick,
+    pick_object,
     place_on,
     recall_object,
     recognize_person,
@@ -26,6 +27,9 @@ from walkie_agent.tools.sets import (
     GPSR,
     HRI,
     OBJECT_MEMORY_TOOLS,
+    PICK_TOOLS,
+    bound_tool_names,
+    bound_tools,
 )
 
 # The fake's object model: pick, place and hand over one held object.
@@ -35,6 +39,8 @@ ARM_ATOMICS = {list_arm_poses, move_arm_to_pose, set_gripper, get_arm_state}
 MEMORY = {remember_person, recognize_person}
 # Read the object memory, and drive to what it remembers (decision SG-16).
 OBJECT_MEMORY = {recall_object, list_room_objects, go_to_object}
+# Picks up a remembered object, with both of the above connected (decision PK-4).
+PICK = {pick_object}
 SETS = {"GPSR": GPSR, "HRI": HRI, "ARMS": ARMS, "DEFAULT": DEFAULT}
 ALL = sorted(set().union(*SETS.values()), key=lambda fn: fn.__name__)
 
@@ -77,6 +83,7 @@ def test_hri_finds_objects_but_cannot_measure_or_move_them_and_ends_with_memorie
         "move_arm_to_pose",
         "set_gripper",
         "get_arm_state",
+        "pick_object",
     ]
 
 
@@ -104,9 +111,9 @@ def test_object_memory_tools_names_the_object_memory_atomics():
 
 
 def test_hri_without_the_arm_and_object_memory_tools_is_the_set_it_was_before_them():
-    # main.py drops ARM_TOOLS without --arms and OBJECT_MEMORY_TOOLS without
-    # --object-memory, which must leave HRI as it was.
-    dropped = ARM_TOOLS | OBJECT_MEMORY_TOOLS
+    # main.py drops ARM_TOOLS without --arms, OBJECT_MEMORY_TOOLS without
+    # --object-memory and PICK_TOOLS without either, which must leave HRI as it was.
+    dropped = ARM_TOOLS | OBJECT_MEMORY_TOOLS | PICK_TOOLS
     assert [name for name in names(HRI) if name not in dropped] == [
         "list_places",
         "go_to",
@@ -129,7 +136,33 @@ def test_the_arm_tools_are_in_hri_and_arms_alone():
 
 
 def test_default_is_every_atomic_that_needs_no_arms_and_no_people_memory():
-    assert set(DEFAULT) == set(ALL) - MANIPULATION - ARM_ATOMICS - MEMORY
+    assert set(DEFAULT) == set(ALL) - MANIPULATION - ARM_ATOMICS - MEMORY - PICK
+
+
+def test_pick_tools_names_pick_object_alone():
+    assert PICK_TOOLS == frozenset({"pick_object"})
+
+
+def test_pick_object_is_in_hri_alone():
+    # It needs the arms and the object memory, and HRI is the one set with both.
+    assert PICK <= set(HRI)
+    assert PICK.isdisjoint(GPSR)
+    assert PICK.isdisjoint(DEFAULT)
+    assert PICK.isdisjoint(ARMS)
+
+
+@pytest.mark.parametrize(
+    ("arms", "object_memory", "bound"),
+    [(False, False, False), (True, False, False), (False, True, False), (True, True, True)],
+)
+def test_pick_object_is_bound_only_with_both_the_arms_and_the_object_memory(
+    arms, object_memory, bound
+):
+    names_bound = bound_tool_names("hri", arms=arms, object_memory=object_memory)
+    assert ("pick_object" in names_bound) is bound
+    assert [fn.__name__ for fn in bound_tools("hri", arms=True, object_memory=True)][-1] == (
+        "pick_object"
+    )
 
 
 def test_default_keeps_its_order_without_the_memory_tools():

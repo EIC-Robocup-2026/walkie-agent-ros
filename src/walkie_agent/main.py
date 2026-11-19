@@ -46,6 +46,11 @@ poses not yet tried on the robot are offered too, and the commander's bounds are
 simulation's. --arms needs a set with the arm atomics, and the arms set needs --arms: a
 bad combination stops the agent at once, with exit code 2.
 
+--arms with --object-memory also binds `pick_object` in the hri set: it drives to a
+remembered object and picks it up with the right hand through the commander's
+whole-body group (decisions PK-4 and PK-5). Its numbers come from config/pick.toml,
+which is checked at startup.
+
 --scripts adds the run_script tool to any set: the LLM writes a short Python script over
 the bound tools, which runs in a Monty worker inside bwrap, and may save functions from
 it for later tasks. The workers start before ROS does, and if bwrap cannot start them the
@@ -83,6 +88,7 @@ from langchain_core.language_models import BaseChatModel
 from rai.communication.ros2 import ROS2Connector
 from rclpy.signals import SignalHandlerOptions
 
+from walkie_agent.arm.pick import load_pick_settings
 from walkie_agent.arm.poses import ArmPoses, load_arm_poses
 from walkie_agent.capabilities import (
     Arms,
@@ -162,6 +168,8 @@ PEOPLE_MEMORIES = ("unavailable", "mock", "ros")
 # With --object-memory, the set must bind this one, so the flag never connects a
 # memory that no tool reads.
 OBJECT_MEMORY_TOOL = "recall_object"
+# A run that binds this one, with --arms and --object-memory, reads config/pick.toml.
+PICK_TOOL = "pick_object"
 # A todo step can require this one too. It cannot require update_todos, because the
 # ledger that proves a step's work leaves that tool out.
 WAIT_TOOL = "wait_for_person"
@@ -788,6 +796,12 @@ def main(argv: list[str] | None = None) -> int:
         # config/arm_poses.toml and config/robot_model.toml, from the working directory.
         # ArmPoseError is a ValueError, so a bad pose stops the agent here, in one line.
         arm_poses = load_arm_poses() if args.arms else None
+        # config/pick.toml, which pick_object reads again at each pick. Checked here
+        # only, so a broken file stops the agent in one line, not at the first pick.
+        if PICK_TOOL in bound_tool_names(
+            args.tool_set, arms=args.arms, object_memory=args.object_memory
+        ):
+            load_pick_settings()
         robot_description = Path(args.robot_description).read_text(encoding="utf-8")
         model = build_model(config)
         fallback = build_fallback(config)

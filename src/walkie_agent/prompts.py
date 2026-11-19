@@ -81,6 +81,13 @@ _TOOL_RULES = {
         "  report UNAVAILABLE, say that you cannot recall objects right now, and never\n"
         "  guess where something is.\n"
     ),
+    # A set binds pick_object only with --arms and --object-memory, so this rule is
+    # always live as well.
+    "pick_object": (
+        "- To pick up an object you remember, as in \"bring me the water bottle\", call\n"
+        "  `pick_object` with its name. It drives to the object itself. Afterwards, move\n"
+        "  the arm that holds it to a pose that is safe for driving before you drive.\n"
+    ),
 }
 
 # The find_people rule of a run with --vision, in place of the one above.

@@ -30,6 +30,10 @@ ARM_GROUPS = {"left": "left_arm", "right": "right_arm"}
 BOTH_ARMS_GROUP = "both_arms"
 GRIPPER_GROUPS = {"left": "left_gripper", "right": "right_gripper"}
 LIFT_GROUP_SUFFIX = "_lift"
+# The commander's whole-body groups: the base's planar joint, the lift and one arm,
+# which take a pose goal only. pick_object reaches through one of them, the one
+# place the agent lets a motion move the lift (decision PK-5).
+WHOLE_BODY_GROUPS = {"left": "whole_body_left", "right": "whole_body_right"}
 
 # walkie-ros launched with right_joint2_fixed makes this a fixed joint, and
 # /get_joint_states then lists no such joint. Every SRDF preset has it at 0.

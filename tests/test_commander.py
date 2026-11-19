@@ -46,17 +46,25 @@ from walkie_agent.arm.state import (
     worst_joint,
 )
 from walkie_agent.capabilities.guards import CancelToken
+from walkie_agent.capabilities.records import HandPose
 from walkie_agent.errors import GoalFailed, StepError
 from walkie_agent.ros import commander as commander_module
 from walkie_agent.ros.commander import CommanderClient
 from walkie_agent.ros.policy import FORBIDDEN_NAMES
-from walkie_agent.sim.fake_commander import CONTROL_GRIPPER, SET_JOINT_POSITION, FakeCommander
+from walkie_agent.sim.fake_commander import (
+    CONTROL_GRIPPER,
+    SET_JOINT_POSITION,
+    WHOLE_BODY_SUCCESS,
+    FakeCommander,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODEL_PATH = PROJECT_ROOT / "config" / "robot_model.toml"
 POSES_PATH = PROJECT_ROOT / "config" / "arm_poses.toml"
 
 GROUPS = ("left_arm", "right_arm", "both_arms", "left_gripper", "right_gripper")
+# A hand target in front of the robot, as pick_object sends one.
+HAND = HandPose(0.6, -0.2, 0.8, 0.0, math.pi / 2, 0.3, "map")
 # The executor threads of the fake's executor. A held goal, a held cancel and a slow
 # read each keep one, so a test can need several at once.
 FAKE_THREADS = 8
@@ -2892,6 +2900,11 @@ def test_a_bound_that_is_not_a_positive_number_of_seconds_is_a_bug(poses, value)
         lambda c: c.read_arms(timeout_s=math.nan),
         lambda c: c.grasp_band(timeout_s=-1.0),
         lambda c: c.last_gripper_position("left_arm"),
+        lambda c: c.go_to_pose("right_arm_lift", HAND, 5.0),
+        lambda c: c.go_to_pose("both_arms", HAND, 5.0),
+        lambda c: c.go_to_pose("whole_body_right", HAND, 5.0, cartesian=True),
+        lambda c: c.go_to_pose("right_arm", HandPose(1.0, 0.0, 0.8, 0.0, 0.0, 0.0, ""), 5.0),
+        lambda c: c.go_to_pose("right_arm", HandPose(math.nan, 0, 0.8, 0, 0, 0, "map"), 5.0),
     ],
 )
 def test_a_group_or_value_the_agent_may_not_send_is_a_bug(commander, call):
@@ -2906,3 +2919,154 @@ def test_integer_positions_arrive_as_their_values(client, fake_commander):
 
     assert fake_commander.joint_goals[-1] == ("left_arm", (0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0))
     assert fake_commander.joints()["openarm_left_joint4"] == 1.0
+
+
+# -- Pose goals (pick_object's reaches) ----------------------------------------------
+
+
+def sent_pose(goal) -> tuple:
+    return (
+        goal.group_name,
+        (goal.x, goal.y, goal.z, goal.roll, goal.pitch, goal.yaw),
+        goal.cartesian_path,
+        goal.frame_id,
+    )
+
+
+def test_a_cartesian_reach_of_one_arm_sends_the_hand_pose_and_forgets_the_arm(
+    client, fake_commander
+):
+    home = client.read_arms()
+    fake_commander.pose_joints = {"openarm_right_joint1": 0.4}
+
+    assert client.go_to_pose("right_arm", HAND, 5.0, cartesian=True) == "Success"
+
+    [goal] = fake_commander.pose_goals
+    assert sent_pose(goal) == (
+        "right_arm",
+        (0.6, -0.2, 0.8, 0.0, pytest.approx(math.pi / 2), 0.3),
+        True,
+        "map",
+    )
+    # A pose goal has no joint target, so the arm is unknown until it is read.
+    assert client.last_state == ArmsState(left=home.left, right=None)
+    assert client.read_arms().right == ArmState(None, False)
+
+
+def test_a_whole_body_reach_returns_the_commanders_status(client, fake_commander):
+    status = client.go_to_pose("whole_body_right", HAND, 5.0)
+
+    assert status == WHOLE_BODY_SUCCESS
+    assert sent_pose(fake_commander.pose_goals[-1])[0::2] == ("whole_body_right", False)
+    assert client.last_state.right is None
+
+
+@pytest.mark.parametrize(
+    ("knob", "value", "message"),
+    [
+        (
+            "plan_failure",
+            True,
+            "MoveIt found no path for whole_body_right (Planning Failed). The arms did not "
+            "move.",
+        ),
+        (
+            "pose_failure",
+            "Refused: no plan reaches the target",
+            "The commander reported 'Refused: no plan reaches the target' (ABORTED) for the "
+            "move of whole_body_right.",
+        ),
+    ],
+)
+def test_a_reach_the_commander_fails_is_a_goal_failure(
+    client, fake_commander, knob, value, message
+):
+    setattr(fake_commander, knob, value)
+
+    with pytest.raises(GoalFailed) as error:
+        client.go_to_pose("whole_body_right", HAND, 5.0)
+
+    assert (error.value.code, error.value.message) == ("SKILL_FAILED", message)
+
+
+def test_plan_only_reports_its_status_for_a_reach(client, fake_commander):
+    fake_commander.plan_only = True
+
+    assert client.go_to_pose("whole_body_right", HAND, 5.0) == "Plan Only (base fixed)"
+
+
+def test_a_rejected_reach_is_internal(client, fake_commander):
+    fake_commander.reject_goals = True
+
+    with pytest.raises(StepError) as error:
+        client.go_to_pose("right_arm", HAND, 5.0, cartesian=True)
+
+    assert (error.value.code, error.value.message) == (
+        "INTERNAL",
+        "The commander rejected the pose goal for right_arm.",
+    )
+
+
+def test_a_stop_mid_reach_cancels_it_and_stops_the_arms(
+    client, fake_commander, token, monkeypatch
+):
+    monkeypatch.setattr(client, "_cancel_answer_s", 10.0)
+    fake_commander.move_time_s = 5.0
+    fake_commander.pose_joints = {"openarm_right_joint1": 0.4}
+    result = threading.Event()
+    fake_commander.result_gate = result
+
+    reaching = Call(client.go_to_pose, "whole_body_right", HAND, 10.0)
+    assert wait_until(
+        lambda: accepted_handle(client) is not None
+        and fake_commander.joints()["openarm_right_joint1"] > 0.0
+    )
+    token.cancel()
+    with pytest.raises(StepError) as error:
+        reaching.result()
+
+    assert error.value.code == "CANCELLED"
+    assert error.value.message == (
+        "A stop or a reset interrupted the reach of whole_body_right; the arms were told to "
+        "stop."
+    )
+    assert fake_commander.cancel_requests == 1
+    assert wait_until(lambda: fake_commander.results == [("whole_body_right", "Execution Failed")])
+    result.set()
+    assert wait_until(lambda: client.busy() is None)
+
+
+def test_recovery_cancels_a_reach_whose_send_was_never_answered_by_its_id(
+    client, fake_commander, monkeypatch, module_clock
+):
+    # As for a joint goal: the handle made from the id needs the pose action's type.
+    clock = module_clock(commander_module)
+    plan = threading.Event()
+    fake_commander.plan_gate = plan
+    client.read_arms()
+    send_goal_async = client._go_to_pose.send_goal_async
+
+    def send_and_lose_the_answer(goal, **kwargs):
+        send_goal_async(goal, **kwargs)
+        return Future()
+
+    monkeypatch.setattr(client._go_to_pose, "send_goal_async", send_and_lose_the_answer)
+    reaching = Call(client.go_to_pose, "right_arm", HAND, 0.3, cartesian=True)
+    assert wait_until(lambda: fake_commander.pose_goals)
+    clock.advance(0.4)
+    with pytest.raises(StepError) as error:
+        reaching.result()
+    assert cancel_answer(error.value) == "pending"
+    clock.advance(client._abandon_after_s + 1)
+    assert client.busy() is None
+    assert client.unverified == (
+        "the reach of right_arm from an earlier call was given up on before its end was known"
+    )
+
+    recovering = Call(client.read_arms)
+    assert wait_until(lambda: fake_commander.cancel_requests == 1)
+    plan.set()
+    assert wait_until(lambda: fake_commander.results == [("right_arm", "Canceled")])
+    recovering.result()
+    assert client.unverified is None
+    assert client.last_recovery.goals == (("the reach of right_arm", "result"),)

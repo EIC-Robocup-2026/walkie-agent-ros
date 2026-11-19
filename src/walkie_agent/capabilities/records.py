@@ -33,6 +33,24 @@ class Pose2D:
 
 
 @dataclass(frozen=True)
+class HandPose:
+    """A target for one hand's link: a position in meters and roll, pitch, yaw in radians.
+
+    In `frame_id`, such as "map". The commander turns the angles into a quaternion
+    with tf2's setRPY. Built only by walkie_agent.arm.pick, and never shown to the
+    LLM (ADR-0022).
+    """
+
+    x: float
+    y: float
+    z: float
+    roll: float
+    pitch: float
+    yaw: float
+    frame_id: str
+
+
+@dataclass(frozen=True)
 class ObjectSeen:
     """One object in view. A plain id that later calls can name (decision 4)."""
 

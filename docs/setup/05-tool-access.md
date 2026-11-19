@@ -40,7 +40,6 @@ FORBIDDEN_NAMES = (
     "/cmd_vel_key",
     "/omni_wheel_drive_controller/cmd_vel",
     "/go_to_home",
-    "/go_to_pose",
     "/go_to_pose_relative",
     "/go_to_pose_quat",
     "/lift_controller/follow_joint_trajectory",
@@ -63,11 +62,14 @@ def check_endpoint(node, name, forbidden=FORBIDDEN_NAMES):
   Nav2's obstacle avoidance. `/cmd_vel_nav` is Nav2's own input to `twist_mux`,
   `/cmd_vel_joy` and `/cmd_vel_key` the operator's, and
   `/omni_wheel_drive_controller/cmd_vel` drives the wheels directly.
-- `/go_to_home` and the three `/go_to_pose*` actions: the commander's other motions.
-  The arms move only through `/set_joint_position` to a named pose
+- `/go_to_home`, `/go_to_pose_relative` and `/go_to_pose_quat`: the commander's other
+  motions. The arms move through `/set_joint_position` to a named pose
   ([ADR-0021](../architecture/decisions/0021-arm-control-through-commander.md)).
+  `/go_to_pose` is allowed for `pick_object` alone, whose hand targets come from the
+  object memory and never from the model (decision PK-4).
 - The three lift names: the agent never commands the lift, whose action rejects every
-  cancel.
+  cancel. The whole-body reach of `pick_object` moves the lift as MoveIt plans it
+  (decision PK-5).
 - `/walkie/reset`: the agent must not wipe its own memory.
 - `/walkie/task`: the agent must not queue its own tasks or seed locked steps.
 - `/walkie/todos`: this is the operator's view, and only `update_todos` edits the list.

@@ -41,7 +41,7 @@ from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location
 from walkie_agent.ros.base import RosBase
-from walkie_agent.ros.commander import STOP_TOPIC
+from walkie_agent.ros.commander import GO_TO_POSE_ACTION, STOP_TOPIC
 from walkie_agent.ros.policy import FORBIDDEN_NAMES
 from walkie_agent.ros.speech import RosSpeech
 from walkie_agent.tools.atomic import face_person, move_relative
@@ -605,7 +605,7 @@ def test_guards_refuse_without_sending(move):
         ("walkie/verdict", FakeNode()),
         ("/nav_alias", FakeNode(remaps={"/nav_alias": "/cmd_vel"})),
         ("cmd_vel_nav", FakeNode()),
-        ("/go_to_pose", FakeNode()),
+        ("/go_to_pose_quat", FakeNode()),
         ("lift/cmd", FakeNode()),
         (
             "/arm_alias",
@@ -635,7 +635,6 @@ def test_forbidden_names_cover_velocity_pose_goal_and_lift_names():
         "/cmd_vel_key",
         "/omni_wheel_drive_controller/cmd_vel",
         "/go_to_home",
-        "/go_to_pose",
         "/go_to_pose_relative",
         "/go_to_pose_quat",
         "/lift_controller/follow_joint_trajectory",
@@ -648,8 +647,9 @@ def test_forbidden_names_cover_velocity_pose_goal_and_lift_names():
     }
     assert len(FORBIDDEN_NAMES) == len(set(FORBIDDEN_NAMES))
     # CommanderClient publishes its stop there, as the one publisher while no
-    # MotionSupervisor exists.
+    # MotionSupervisor exists, and pick_object reaches through /go_to_pose.
     assert STOP_TOPIC not in FORBIDDEN_NAMES
+    assert GO_TO_POSE_ACTION not in FORBIDDEN_NAMES
 
 
 @pytest.mark.parametrize(

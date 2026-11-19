@@ -4,6 +4,8 @@ Provides the commander interfaces the agent uses (ADR-0021), under the same
 names and types:
   - /set_joint_position  my_robot_interfaces/action/SetJointPosition
   - /control_gripper     my_robot_interfaces/action/ControlGripper
+  - /go_to_pose          my_robot_interfaces/action/GoToPose, for one arm or one
+    whole-body group, which refuses a Cartesian path as the commander does
   - /get_joint_states    my_robot_interfaces/srv/GetJointStates
   - /bimanual_commander/get_parameters, rclpy's parameter service of a node
     named bimanual_commander, with grasp_detect_min and grasp_detect_max
@@ -40,6 +42,9 @@ What it copies from the real commander, since the agent must handle it:
 
 Where it differs from the real commander, so a test does not rely on it:
   - the arms start exactly at home and the fingers fully open;
+  - a pose goal solves no IK: it moves the joints in pose_joints, none by default,
+    and a whole-body goal never moves a base or a lift, which the fake does not
+    have;
   - a move goes in a straight line, in time, and ends exactly on its
     target, and a read gives exact positions at once;
   - a failed execution stops exactly half way;
@@ -84,7 +89,7 @@ from contextlib import contextmanager
 from typing import Any
 
 import rclpy
-from my_robot_interfaces.action import ControlGripper, SetJointPosition
+from my_robot_interfaces.action import ControlGripper, GoToPose, SetJointPosition
 from my_robot_interfaces.srv import GetJointStates
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -97,17 +102,26 @@ from walkie_agent.arm.poses import (
     BOTH_ARMS_GROUP,
     GRIPPER_GROUPS,
     RIGHT_JOINT2,
+    WHOLE_BODY_GROUPS,
     RobotModel,
     load_robot_model,
 )
 
 # The groups served, in robot_model.toml's order.
 _GROUPS = (*ARM_GROUPS.values(), BOTH_ARMS_GROUP, *GRIPPER_GROUPS.values())
+# The groups a pose goal is accepted for, and the arm each one moves.
+_POSE_GROUPS = {
+    **{group: arm for arm, group in ARM_GROUPS.items()},
+    **{group: arm for arm, group in WHOLE_BODY_GROUPS.items()},
+}
 # The interfaces, by the names vanish() takes.
 SET_JOINT_POSITION = "set_joint_position"
 CONTROL_GRIPPER = "control_gripper"
+GO_TO_POSE = "go_to_pose"
 GET_JOINT_STATES = "get_joint_states"
-_INTERFACES = (SET_JOINT_POSITION, CONTROL_GRIPPER, GET_JOINT_STATES)
+_INTERFACES = (SET_JOINT_POSITION, CONTROL_GRIPPER, GO_TO_POSE, GET_JOINT_STATES)
+# What a whole-body group reports on success with the base standing still.
+WHOLE_BODY_SUCCESS = "Success (base fixed)"
 # MoveIt's trajectory execution event topic, and the event that stops every
 # execution.
 EXECUTION_EVENT = "trajectory_execution_event"
@@ -159,6 +173,12 @@ class FakeCommander(Node):
         self.plan_only = False
         # Joint name -> radians added to its target, so a move ends that far off.
         self.joint_errors: dict[str, float] = {}
+        # Joint name -> radians that a pose goal that succeeds moves the joint to.
+        # plan_failure, execution_failure and plan_only apply to pose goals too.
+        self.pose_joints: dict[str, float] = {}
+        # A pose goal ends ABORTED with this status without moving, as a
+        # whole-body refusal does; None to plan and move.
+        self.pose_failure: str | None = None
         # Every goal is rejected.
         self.reject_goals = False
         # Goals are accepted and never finish until cancelled.
@@ -175,7 +195,7 @@ class FakeCommander(Node):
         # it until the fake closes, as when the commander restarted and the
         # result never comes.
         self.result_delay_s = 0.0
-        # A joint goal that ends while this is set waits, after
+        # A joint or pose goal that ends while this is set waits, after
         # result_delay_s, until the event is set before its result is sent,
         # so a test decides when the result comes. None to send it then.
         self.result_gate: threading.Event | None = None
@@ -232,6 +252,8 @@ class FakeCommander(Node):
         # every gripper goal, rejected ones included.
         self.joint_goals: list[tuple[str, tuple[float, ...]]] = []
         self.gripper_goals: list[tuple[str, float]] = []
+        # Every pose goal as it came, rejected ones included.
+        self.pose_goals: list[GoToPose.Goal] = []
         # (group, status) of every goal that ended, whether or not its
         # result was sent.
         self.results: list[tuple[str, str]] = []
@@ -292,7 +314,7 @@ class FakeCommander(Node):
         self._closing.set()
         with self._idle:
             self._idle.wait_for(lambda: self._active == 0, timeout=_RELEASE_S)
-        for name in (SET_JOINT_POSITION, CONTROL_GRIPPER):
+        for name in (SET_JOINT_POSITION, CONTROL_GRIPPER, GO_TO_POSE):
             server = self._entities[name]
             if server is not None:
                 server.destroy()
@@ -301,8 +323,8 @@ class FakeCommander(Node):
     def vanish(self, *names: str) -> None:
         """Destroy interfaces at once, as when the commander dies mid-goal.
 
-        `names` are among SET_JOINT_POSITION, CONTROL_GRIPPER and
-        GET_JOINT_STATES; all three by default. A goal that a destroyed
+        `names` are among SET_JOINT_POSITION, CONTROL_GRIPPER, GO_TO_POSE and
+        GET_JOINT_STATES; all four by default. A goal that a destroyed
         server runs or holds sends no result, also after come_back(): it
         ends when the fake closes.
         """
@@ -377,6 +399,13 @@ class FakeCommander(Node):
                 f"Joint count mismatch for {goal.group_name}: expected {len(joints)}, "
                 f"got {len(positions)}"
             )
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
+    def _on_pose_goal(self, goal: GoToPose.Goal) -> GoalResponse:
+        self.pose_goals.append(goal)
+        self._delay_answer()
+        if self.reject_goals or goal.group_name not in _POSE_GROUPS:
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
@@ -488,6 +517,49 @@ class FakeCommander(Node):
                 return self._finish(goal_handle, result, group, False, "Execution Failed")
             return self._finish(goal_handle, result, group, True, "Success")
 
+    def _execute_pose(self, server: tuple[str, int], goal_handle) -> GoToPose.Result:
+        with self._serving():
+            self._took(server, goal_handle)
+            request = goal_handle.request
+            group = request.group_name
+            whole_body = group in WHOLE_BODY_GROUPS.values()
+            result = GoToPose.Result()
+            if self.never_answer:
+                self._hold(self._arm_stopped(goal_handle))
+                return self._finish(goal_handle, result, group, False, "Execution Failed")
+            if whole_body and request.cartesian_path:
+                arm = ARM_GROUPS[_POSE_GROUPS[group]]
+                status = f"Cartesian paths are not supported on {group}: use {arm}_lift"
+                return self._finish(goal_handle, result, group, False, status)
+            if self.plan_time_s > 0:
+                self._closing.wait(self.plan_time_s)
+            self._wait_gate(self.plan_gate)
+            if self.plan_until_cancelled:
+                self._hold(lambda: goal_handle.is_cancel_requested)
+            if goal_handle.is_cancel_requested:
+                return self._finish(goal_handle, result, group, False, "Canceled")
+            if self.pose_failure is not None:
+                return self._finish(goal_handle, result, group, False, self.pose_failure)
+            if self.plan_failure:
+                return self._finish(goal_handle, result, group, False, "Planning Failed")
+            if self.plan_only:
+                status = "Plan Only (base fixed)" if whole_body else "Plan Only"
+                return self._finish(goal_handle, result, group, True, status)
+            targets = dict(self.pose_joints)
+            stopped = self._arm_stopped(goal_handle)
+            if self.execution_failure:
+                with self._lock:
+                    targets = {
+                        joint: (self._joints[joint] + target) / 2
+                        for joint, target in targets.items()
+                    }
+                self._move(targets, self.move_time_s / 2, stopped)
+                return self._finish(goal_handle, result, group, False, "Execution Failed")
+            if not self._move(targets, self.move_time_s, stopped):
+                return self._finish(goal_handle, result, group, False, "Execution Failed")
+            status = WHOLE_BODY_SUCCESS if whole_body else "Success"
+            return self._finish(goal_handle, result, group, True, status)
+
     def _execute_gripper(self, server: tuple[str, int], goal_handle) -> ControlGripper.Result:
         with self._serving():
             self._took(server, goal_handle)
@@ -545,6 +617,17 @@ class FakeCommander(Node):
                 name,
                 execute_callback=functools.partial(self._execute_move, server),
                 goal_callback=self._on_joint_goal,
+                cancel_callback=self._on_joint_cancel,
+                callback_group=self._callbacks,
+            )
+        elif name == GO_TO_POSE:
+            # The commander's pose cancel stops both arms, as a joint cancel does.
+            entity = ActionServer(
+                self,
+                GoToPose,
+                name,
+                execute_callback=functools.partial(self._execute_pose, server),
+                goal_callback=self._on_pose_goal,
                 cancel_callback=self._on_joint_cancel,
                 callback_group=self._callbacks,
             )
@@ -692,7 +775,7 @@ class FakeCommander(Node):
         delay = math.inf if self._server_gone(goal_handle) else self.result_delay_s
         if delay > 0:
             self._closing.wait(None if math.isinf(delay) else delay)
-        if isinstance(result, SetJointPosition.Result):
+        if isinstance(result, SetJointPosition.Result | GoToPose.Result):
             self._wait_gate(self.result_gate)
         return result
 
@@ -703,8 +786,8 @@ def main() -> None:
     executor = MultiThreadedExecutor()
     executor.add_node(node)
     node.get_logger().info(
-        "Fake commander is up (set_joint_position, control_gripper, get_joint_states, "
-        "trajectory_execution_event)."
+        "Fake commander is up (set_joint_position, control_gripper, go_to_pose, "
+        "get_joint_states, trajectory_execution_event)."
     )
     try:
         executor.spin()

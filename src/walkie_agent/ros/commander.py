@@ -2,7 +2,8 @@
 
 The arm capability and the drive check reach the arms only through it. It uses the
 names ADR-0021 allows: /set_joint_position and /control_gripper (my_robot_interfaces
-actions), /get_joint_states (a service), the commander's
+actions), /go_to_pose for pick_object's reaches only (decision PK-4), /get_joint_states
+(a service), the commander's
 /bimanual_commander/get_parameters, read for the grasp detection band only, and
 "stop" on /trajectory_execution_event, which stop() publishes. Each name goes through
 policy.check_endpoint() when the client is made, as RosBase's does.
@@ -66,10 +67,12 @@ Left out of experiment/hri-agent's arm/commander.py and the work around it:
   - the MotionSupervisor (ADR-0023, still proposed), which would own every motion goal
     and repeat "stop" until the goals end: stop() publishes it once, and the cancels
     by id do the rest;
-  - Cartesian goals (/go_to_pose*), which ADR-0021 reserves for robot-side skills with
-    targets from perception;
+  - the other Cartesian goals (/go_to_pose_relative, /go_to_pose_quat), which ADR-0021
+    reserves for robot-side skills; /go_to_pose takes the hand targets that
+    walkie_agent.arm.pick computes from the object memory, never from the LLM;
   - the lift and the *_lift groups (ADR-0026): a goal or a read for one is a
-    ValueError;
+    ValueError. The whole-body groups of go_to_pose() move the lift as MoveIt plans
+    it, which decision PK-5 accepts for the pick;
   - RunSkill, which waits on the team's choice between agent-side bundles and
     robot-side skills;
   - wip/p14's ended-goal ids and external cancel_goals(), which serve only
@@ -89,7 +92,7 @@ from typing import TYPE_CHECKING, Any
 
 from action_msgs.msg import GoalStatus
 from action_msgs.srv import CancelGoal
-from my_robot_interfaces.action import ControlGripper, SetJointPosition
+from my_robot_interfaces.action import ControlGripper, GoToPose, SetJointPosition
 from my_robot_interfaces.srv import GetJointStates
 from rcl_interfaces.msg import ParameterType
 from rcl_interfaces.srv import GetParameters
@@ -107,6 +110,7 @@ from walkie_agent.arm.poses import (
     GRASP_CLOSE_THRESHOLD,
     GRIPPER_GROUPS,
     RIGHT_JOINT2,
+    WHOLE_BODY_GROUPS,
     ArmPoses,
     load_arm_poses,
 )
@@ -121,6 +125,7 @@ from walkie_agent.arm.results import (
 )
 from walkie_agent.arm.state import ArmsState, ArmState
 from walkie_agent.capabilities.guards import CancelToken, is_finite_number
+from walkie_agent.capabilities.records import HandPose
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.ros.policy import FORBIDDEN_NAMES, check_endpoint
 
@@ -133,6 +138,8 @@ logger = logging.getLogger(__name__)
 # commander's node runs in the root namespace.
 SET_JOINT_POSITION_ACTION = "/set_joint_position"
 CONTROL_GRIPPER_ACTION = "/control_gripper"
+# Pose goals for one hand, only for pick_object's reaches (go_to_pose()).
+GO_TO_POSE_ACTION = "/go_to_pose"
 GET_JOINT_STATES_SERVICE = "/get_joint_states"
 # The commander node's standard parameter service, read for its grasp
 # detection band and nothing else (ADR-0021).
@@ -215,13 +222,28 @@ _POLL_S = 0.05
 ARM_GOAL_GROUPS = frozenset((*ARM_GROUPS.values(), BOTH_ARMS_GROUP))
 GRIPPER_GOAL_GROUPS = frozenset(GRIPPER_GROUPS.values())
 READ_GROUPS = ARM_GOAL_GROUPS | GRIPPER_GOAL_GROUPS
+# The groups a pose goal may name: one arm, or one arm with the lift and the base.
+# The whole-body groups refuse a Cartesian path.
+POSE_GOAL_GROUPS = frozenset((*ARM_GROUPS.values(), *WHOLE_BODY_GROUPS.values()))
+WHOLE_BODY_GOAL_GROUPS = frozenset(WHOLE_BODY_GROUPS.values())
 # The arms each arm group moves.
-_GROUP_ARMS = {ARM_GROUPS[arm]: (arm,) for arm in ARMS} | {BOTH_ARMS_GROUP: ARMS}
+_GROUP_ARMS = (
+    {ARM_GROUPS[arm]: (arm,) for arm in ARMS}
+    | {WHOLE_BODY_GROUPS[arm]: (arm,) for arm in ARMS}
+    | {BOTH_ARMS_GROUP: ARMS}
+)
 # Each gripper group's finger joint: the one joint of the group, whose
 # position is the travel of one finger, in metres.
 _FINGER_JOINTS = {
     GRIPPER_GROUPS["left"]: "openarm_left_finger_joint1",
     GRIPPER_GROUPS["right"]: "openarm_right_finger_joint1",
+}
+
+# The action of each goal message the client sends.
+_GOAL_ACTIONS = {
+    SetJointPosition.Goal: SetJointPosition,
+    ControlGripper.Goal: ControlGripper,
+    GoToPose.Goal: GoToPose,
 }
 
 # The commander's status strings that mean a joint goal failed.
@@ -301,6 +323,9 @@ class _Goal:
     # The group it was sent for.
     group: str
     client: ActionClient
+    # The action type of `client`, such as SetJointPosition, for a handle made
+    # from the id alone (_handle_for).
+    action: Any
     # The id it was sent with, made by the client, so that it can be
     # cancelled by its id also when the commander never answered its send.
     goal_id: UUID
@@ -420,6 +445,7 @@ class CommanderClient:
             node, SET_JOINT_POSITION_ACTION, forbidden
         )
         self._control_gripper_name = check_endpoint(node, CONTROL_GRIPPER_ACTION, forbidden)
+        self._go_to_pose_name = check_endpoint(node, GO_TO_POSE_ACTION, forbidden)
         self._joint_states_name = check_endpoint(node, GET_JOINT_STATES_SERVICE, forbidden)
         self._parameters_name = check_endpoint(node, GET_PARAMETERS_SERVICE, forbidden)
         self._stop_topic = check_endpoint(node, STOP_TOPIC, forbidden)
@@ -438,6 +464,9 @@ class CommanderClient:
         )
         self._control_gripper = ActionClient(
             node, ControlGripper, self._control_gripper_name, callback_group=group
+        )
+        self._go_to_pose = ActionClient(
+            node, GoToPose, self._go_to_pose_name, callback_group=group
         )
         self._stop_publisher = node.create_publisher(String, self._stop_topic, 10)
         self._node = node
@@ -866,6 +895,72 @@ class CommanderClient:
             command=record.command,
         )
 
+    def go_to_pose(
+        self, group: str, pose: HandPose, timeout_s: float, *, cartesian: bool = False
+    ) -> str:
+        """Move the hand link of `group` to `pose` and wait for the result.
+
+        For pick_object's reaches only (decision PK-4). `group` is one arm, which may
+        take a Cartesian path, or a whole-body group, which plans the base, the lift
+        and the arm together and refuses one. The orientation goes as roll, pitch and
+        yaw, which the commander turns into a quaternion. A pose goal has no joint
+        target, so nothing checks the joints afterwards: the commander's result is the
+        answer, and the arms of `group` are unknown until the next read.
+
+        Returns the commander's status on success: "Success", a whole-body status such
+        as "Success (base fixed)", or one that starts with "Plan Only" when it runs in
+        plan-only mode and nothing moved. Raises StepError as the class says, and:
+          - INTERNAL when the commander rejects the goal, which it does for a group it
+            does not know;
+          - GoalFailed SKILL_FAILED for "Planning Failed", "Execution Failed", a
+            Cartesian path below the commander's 90 % and any other failure it
+            reports, such as a whole-body refusal with its reason;
+          - SKILL_FAILED when the cancel of an older goal that the commander accepted
+            late may have stopped it (_on_late_answer);
+          - CANCELLED when the commander reports the goal cancelled.
+        A Cartesian path on a whole-body group, or an empty `frame_id`, is a ValueError.
+        """
+        _check_group(group, POSE_GOAL_GROUPS)
+        if cartesian and group in WHOLE_BODY_GOAL_GROUPS:
+            raise ValueError(f"{group} takes no Cartesian path: the commander refuses one.")
+        if not pose.frame_id:
+            raise ValueError("A pose goal needs a frame_id.")
+        x, y, z, roll, pitch, yaw = _finite(
+            [pose.x, pose.y, pose.z, pose.roll, pose.pitch, pose.yaw], "pose"
+        )
+        deadline = _deadline(timeout_s)
+        what = f"the reach of {group}"
+        with self._exclusive(f"move {group}", deadline, running=what):
+            # Before the goal is sent, as for a joint goal.
+            self._forget_arms(group)
+            _, response = self._run_goal(
+                self._go_to_pose,
+                self._go_to_pose_name,
+                GoToPose.Goal(
+                    group_name=group,
+                    x=x,
+                    y=y,
+                    z=z,
+                    roll=roll,
+                    pitch=pitch,
+                    yaw=yaw,
+                    cartesian_path=cartesian,
+                    frame_id=pose.frame_id,
+                ),
+                group,
+                what,
+                deadline,
+                timeout_s,
+            )
+            if response is None:
+                raise StepError(
+                    ErrorCode.INTERNAL, f"The commander rejected the pose goal for {group}."
+                )
+        result = response.result
+        if response.status == GoalStatus.STATUS_SUCCEEDED and result.success:
+            return result.status
+        raise _move_failed(group, response.status, result.status)
+
     # -- Lifecycle --------------------------------------------------------------
 
     def close(self, timeout_s: float) -> bool:
@@ -956,6 +1051,7 @@ class CommanderClient:
             self._destroyed = True
         self._set_joint_position.destroy()
         self._control_gripper.destroy()
+        self._go_to_pose.destroy()
         self._node.destroy_client(self._joint_states)
         self._node.destroy_client(self._parameters)
         self._node.destroy_publisher(self._stop_publisher)
@@ -1436,7 +1532,12 @@ class CommanderClient:
                 # whether or not the commander answers the send.
                 goal_id = UUID(uuid=list(uuid.uuid4().bytes))
                 record = _Goal(
-                    what, group, client, goal_id, client.send_goal_async(goal, goal_uuid=goal_id)
+                    what,
+                    group,
+                    client,
+                    _GOAL_ACTIONS[type(goal)],
+                    goal_id,
+                    client.send_goal_async(goal, goal_uuid=goal_id),
                 )
                 if group in self._gripper_commands:
                     # Counted with the send, under the call lock, so no read
@@ -1537,7 +1638,9 @@ class CommanderClient:
                 elif not current:
                     logger.debug(f"The commander did not accept {goal.what}, which was abandoned.")
                 return
-            arm_goal = goal.group in ARM_GOAL_GROUPS
+            # A joint goal or a pose goal: either moves an arm, and either cancel
+            # stops both arms.
+            arm_goal = goal.group not in GRIPPER_GOAL_GROUPS
             disturbed = None
             with self._state_lock:
                 if self._destroyed:
@@ -1558,7 +1661,7 @@ class CommanderClient:
                     if (
                         arm_goal
                         and newer is not None
-                        and newer.group in ARM_GOAL_GROUPS
+                        and newer.group not in GRIPPER_GOAL_GROUPS
                         and not newer.ended()
                     ):
                         newer.disturbed = (
@@ -1930,8 +2033,7 @@ def _handle_for(goal: _Goal) -> ClientGoalHandle:
         handle = sent.result()
         if handle is not None and handle.accepted:
             return handle
-    action = SetJointPosition if goal.group in ARM_GOAL_GROUPS else ControlGripper
-    response = action.Impl.SendGoalService.Response(accepted=True)
+    response = goal.action.Impl.SendGoalService.Response(accepted=True)
     return ClientGoalHandle(goal.client, goal.goal_id, response)
 
 

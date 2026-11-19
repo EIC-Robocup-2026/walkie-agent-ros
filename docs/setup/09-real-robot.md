@@ -246,19 +246,22 @@ too:
 nvidia-smi --query-gpu=name,memory.total,memory.used --format=csv
 ```
 
-**The agent has its model key.** The robot's agent checkout has no `.env`.
-Write it yourself, and never paste the key into a chat:
+**The agent has its model key.** Since 2026-11-19 the robot's agent checkout
+has a `.env` (mode 600) that sets only `OPENAI_API_KEY`, the team's OpenRouter
+key. OpenRouter accepted it on that day. Do not run `cp .env.example .env`: it
+would replace the key with an empty one. Check that the key is set without
+printing it:
 
 ```bash
 cd ~/Project/robocup_experiments/walkie-agent-ros
-cp .env.example .env
-nano .env
+grep -c '^OPENAI_API_KEY=.' .env
 ```
 
-Set `OPENAI_API_KEY` to the team's OpenRouter key. The other names in
+It prints `1`. If it prints `0` or `.env` is missing, write the file with
+`nano .env` and never paste the key into a chat. The other names in
 `.env.example` (`GOOGLE_API_KEY`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`)
-stay commented out. The agent reads `.env` at startup. Without a key it stops
-at once with one `walkie-agent:` line and exit code 2.
+stay unset. The agent reads `.env` at startup. Without a key it stops at once
+with one `walkie-agent:` line and exit code 2.
 
 **The robot has internet.** The agent's model is
 `deepseek/deepseek-v4.1-flash:nitro` on OpenRouter, with no local fallback. The
@@ -269,10 +272,10 @@ not cached on the robot.
 curl -s -o /dev/null -w '%{http_code}\n' https://openrouter.ai/api/v1/models
 ```
 
-!!! warning "Unverified"
-    This check was not run on the robot. `200` means the robot reaches
-    OpenRouter. The first `Please say hello to everyone.` in
-    [step 7](#7-talk-to-the-robot) proves the whole path.
+`200` means the robot reaches OpenRouter. On 2026-11-19 it printed `200` on
+the robot, and so did `https://huggingface.co`, where the Whisper download
+comes from. The first `Please say hello to everyone.` in
+[step 7](#7-talk-to-the-robot) proves the whole path.
 
 **The microphone and speaker.** As `eic` on the desktop:
 

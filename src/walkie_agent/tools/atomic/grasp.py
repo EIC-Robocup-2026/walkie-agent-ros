@@ -22,6 +22,7 @@ from walkie_agent.arm.pick import (
     PickPlan,
     PickSettings,
     approach_headings,
+    heading_from,
     load_pick_settings,
     plan_pick,
     relative_move,
@@ -157,13 +158,13 @@ def _plans(settings: PickSettings, found: RecalledObject, start: Pose2D) -> list
 
 
 def _plan_from_here(ctx: Ctx, settings: PickSettings, found: RecalledObject) -> PickPlan:
-    """The plan for the heading the robot now faces the object along.
+    """The plan for the heading the robot now faces the object along (arm.pick.heading_from).
 
     The hand approaches along the line from where the base stopped, so a drive that
     ended a little off its goal still reaches straight at the object.
     """
     here = ctx.base.pose()
-    heading = math.atan2(found.y - here.y, found.x - here.x)
+    heading = heading_from(settings, here.x, here.y, found.x, found.y)
     return plan_pick(settings, found.x, found.y, found.z, heading)
 
 

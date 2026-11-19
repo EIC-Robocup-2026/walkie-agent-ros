@@ -11,7 +11,7 @@ nothing here imports ROS.
 Every position is in the settings' frame, the map frame of the object memory. A
 heading is the direction the robot faces at the stand-off pose, in radians from the
 frame's +x. The hand approaches along it, so the object lies straight ahead of the
-robot and of the hand.
+hand, and ahead of the robot a little to its right, on the right hand's side.
 """
 
 import math
@@ -28,11 +28,13 @@ DEFAULT_PICK_PATH = Path("config/pick.toml")
 
 _FLOAT_KEYS = (
     "standoff_m",
-    "tcp_offset_m",
+    "standoff_left_m",
+    "grasp_back_m",
     "pregrasp_back_m",
     "lift_m",
     "hand_roll_deg",
     "hand_pitch_deg",
+    "hand_yaw_offset_deg",
     "reach_timeout_s",
     "cartesian_timeout_s",
 )
@@ -77,12 +79,14 @@ class PickSettings:
     arm: str
     frame_id: str
     standoff_m: float
+    standoff_left_m: float
     heading_offsets_deg: tuple[float, ...]
-    tcp_offset_m: float
+    grasp_back_m: float
     pregrasp_back_m: float
     lift_m: float
     hand_roll_deg: float
     hand_pitch_deg: float
+    hand_yaw_offset_deg: float
     reach_timeout_s: float
     cartesian_timeout_s: float
 
@@ -158,14 +162,30 @@ def approach_headings(
 ) -> tuple[float, ...]:
     """The headings to try, in radians wrapped to [-pi, pi], in the settings' order.
 
-    Each is the bearing from (robot_x, robot_y) to the object plus one of the
-    settings' heading offsets, so the first one faces the object from the side the
-    robot is on, and the stand-off pose is the nearest of them.
+    Each is heading_from() the robot's position plus one of the settings' heading
+    offsets, so the first one approaches the object from the side the robot is on,
+    along the line the robot already stands on.
     """
-    bearing = math.atan2(object_y - robot_y, object_x - robot_x)
-    return tuple(
-        _wrap(bearing + math.radians(offset)) for offset in settings.heading_offsets_deg
-    )
+    start = heading_from(settings, robot_x, robot_y, object_x, object_y)
+    return tuple(_wrap(start + math.radians(offset)) for offset in settings.heading_offsets_deg)
+
+
+def heading_from(
+    settings: PickSettings, robot_x: float, robot_y: float, object_x: float, object_y: float
+) -> float:
+    """The approach heading whose line passes standoff_left_m right of (robot_x, robot_y).
+
+    So a robot standing at (robot_x, robot_y), at any distance from the object, has
+    the object on the same line ahead of its right hand as at the stand-off pose of
+    the heading. A robot closer to the object than standoff_left_m gets the bearing.
+    In radians, wrapped to [-pi, pi].
+    """
+    dx, dy = object_x - robot_x, object_y - robot_y
+    bearing = math.atan2(dy, dx)
+    distance = math.hypot(dx, dy)
+    if distance <= abs(settings.standoff_left_m):
+        return bearing
+    return _wrap(bearing + math.asin(settings.standoff_left_m / distance))
 
 
 def plan_pick(
@@ -173,13 +193,15 @@ def plan_pick(
 ) -> PickPlan:
     """The approach along `heading` to the object whose centre is (x, y, z).
 
-    The stand-off pose lies standoff_m back from the centre along the heading, and
-    faces it. The grasp pose puts the hand's tool centre point on the centre, so
-    the hand link stands tcp_offset_m back from it; the pre-grasp pose stands
-    pregrasp_back_m further back, and the lift pose lift_m above the grasp pose.
-    All three hold the settings' roll and pitch, with the heading as their yaw.
+    The stand-off pose lies standoff_m back from the centre along the heading and
+    standoff_left_m to its left, and faces along the heading. The grasp pose puts
+    the hand link grasp_back_m back from the centre along the heading; the
+    pre-grasp pose stands pregrasp_back_m further back, and the lift pose lift_m
+    above the grasp pose. All three hold the settings' roll and pitch, and the
+    heading plus hand_yaw_offset_deg as their yaw.
     """
     cos, sin = math.cos(heading), math.sin(heading)
+    yaw = _wrap(heading + math.radians(settings.hand_yaw_offset_deg))
 
     def hand(back_m: float, up_m: float = 0.0) -> HandPose:
         return HandPose(
@@ -188,14 +210,14 @@ def plan_pick(
             z=z + up_m,
             roll=math.radians(settings.hand_roll_deg),
             pitch=math.radians(settings.hand_pitch_deg),
-            yaw=heading,
+            yaw=yaw,
             frame_id=settings.frame_id,
         )
 
-    grasp_back = settings.tcp_offset_m
+    grasp_back = settings.grasp_back_m
     return PickPlan(
-        standoff_x=x - settings.standoff_m * cos,
-        standoff_y=y - settings.standoff_m * sin,
+        standoff_x=x - settings.standoff_m * cos - settings.standoff_left_m * sin,
+        standoff_y=y - settings.standoff_m * sin + settings.standoff_left_m * cos,
         heading=heading,
         pregrasp=hand(grasp_back + settings.pregrasp_back_m),
         grasp=hand(grasp_back),

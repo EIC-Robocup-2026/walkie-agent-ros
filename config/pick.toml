@@ -6,34 +6,48 @@
 # The robot drives to a stand-off pose facing the object's remembered centre, then
 # the hand link (openarm_right_hand) goes to a pre-grasp pose through the
 # commander's whole-body group, moves straight in to the grasp pose, the gripper
-# closes, and the hand moves straight up. Every number here is provisional until
-# the Chula simulation has run the pick.
+# closes, and the hand moves straight up. The numbers below picked the Chula
+# simulation's water bottle on 2026-11-20. None has been tried on the robot.
 
 # The arm that picks: "left" or "right".
 arm = "right"
 # The frame of every hand target. The object memory keeps positions in it.
 frame_id = "map"
 
-# Metres from the object's centre to base_footprint at the stand-off pose, which
-# faces the object.
-standoff_m = 0.55
+# Where base_footprint stands at the stand-off pose, which faces along the approach
+# heading: standoff_m back from the object's centre along the heading, and
+# standoff_left_m to the left of that line (negative is to the right). Standing to
+# the left puts the object ahead of the right hand, which hangs right of the base's
+# centre. walkie-ros's scripted bottle pick (sim_bottle_pick.py) proved 0.65 and 0.20
+# in the Chula room: the arm then usually reaches with the base still. From 0.90 m
+# straight behind, the whole-body reach moved and turned the base, and the
+# collision monitor once stopped it.
+standoff_m = 0.65
+standoff_left_m = 0.20
 # The approach headings to try, in degrees, in order: each is added to the bearing
 # from where the robot stands to the object. The next one is tried when Nav2 cannot
 # reach the stand-off pose of the one before.
 heading_offsets_deg = [0.0, 30.0, -30.0, 60.0, -60.0]
 
-# Metres from the hand's tool centre point to the hand link, along the approach:
-# openarm_right_hand_tcp is 0.08 m along the hand link's +z.
-tcp_offset_m = 0.08
+# Metres the hand link stands back from the object's centre at the grasp pose, along
+# the approach. openarm_right_hand_tcp is 0.08 m along the hand link's +z, so 0.06
+# puts the tool centre point 0.02 m past the centre, the depth that walkie-ros's
+# scripted pick and its offline check_grasp.py proved for the water bottle.
+grasp_back_m = 0.06
 # Metres the pre-grasp pose stands back from the grasp pose, along the approach.
 pregrasp_back_m = 0.10
 # Metres the hand rises after the gripper holds the object.
 lift_m = 0.10
 
-# The hand's orientation, in degrees. Yaw is the approach heading. With roll 0 and
-# pitch 90 the hand link's +z, the direction the fingers point, lies along it.
+# The hand's orientation, in degrees. Yaw is the approach heading plus
+# hand_yaw_offset_deg. Pitch -90 with the yaw turned by 180 puts the hand link's +z,
+# the direction the fingers point, along the approach with the wrist camera bracket
+# up. With pitch 90 and no offset the fingers point the same way, but the bracket
+# hangs 0.11 m below the hand and reaches the table top at a bottle's centre height
+# (walkie-ros sim_bottle_pick.py, hand_rpy).
 hand_roll_deg = 0.0
-hand_pitch_deg = 90.0
+hand_pitch_deg = -90.0
+hand_yaw_offset_deg = 180.0
 
 # Seconds each motion may take: the whole-body reach to the pre-grasp pose, which
 # plans for the base, the lift and the arm, and each straight-line move of the arm.

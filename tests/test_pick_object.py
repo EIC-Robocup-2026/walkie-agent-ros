@@ -7,6 +7,7 @@ import pytest
 
 from conftest import PROJECT_ROOT
 from test_object_memory_atomics import WORLD, Remembers
+from walkie_agent.arm.pick import heading_from, load_pick_settings
 from walkie_agent.arm.poses import load_arm_poses
 from walkie_agent.arm.state import NOT_SAFE_SENTENCE, SAFE_SENTENCE
 from walkie_agent.capabilities import Ctx, RecalledObject
@@ -89,6 +90,15 @@ def reaches(robot: FakeRobot) -> list[tuple[bool, bool, bool, float]]:
     ]
 
 
+def at_stand_off(robot: FakeRobot, x: float, y: float) -> None:
+    """The base stands at a stand-off pose of the object at (x, y), facing its heading."""
+    here = robot.pose()
+    settings = load_pick_settings()
+    distance = math.hypot(settings.standoff_m, settings.standoff_left_m)
+    assert math.hypot(x - here.x, y - here.y) == pytest.approx(distance)
+    assert heading_from(settings, here.x, here.y, x, y) == pytest.approx(here.yaw)
+
+
 def fail_on_call(monkeypatch, robot: FakeRobot, verb: str, nth: int, error: StepError) -> None:
     """Make the nth call of robot.<verb> raise `error`; every other call runs as before."""
     original = getattr(robot, verb)
@@ -130,11 +140,12 @@ def test_a_pick_drives_to_the_stand_off_reaches_closes_and_lifts(arm_poses):
         "arms.gripper",
         "arms.reach",
     ]
-    # Straight at the object from 0.55 m back, along the bearing from where it stood.
+    # 0.65 m back from the object and 0.20 m to the left of the right hand's line to
+    # it, which is the line the robot stood on.
     move = next(call for call in robot.calls if call["verb"] == "base.move_relative")
-    assert move["args"]["forward_m"] == pytest.approx(0.45)
-    assert move["args"]["left_m"] == pytest.approx(0.0)
-    assert move["args"]["turn_deg"] == pytest.approx(0.0)
+    heading = math.asin(0.20)
+    assert move["args"]["turn_deg"] == pytest.approx(math.degrees(heading))
+    at_stand_off(robot, 1.0, 0.0)
     grippers = [call["args"]["state"] for call in robot.calls if call["verb"] == "arms.gripper"]
     assert grippers == ["open", "close"]
     # The whole-body reach to the pre-grasp pose, then the straight approach and lift,
@@ -163,14 +174,16 @@ def test_the_first_match_with_a_full_position_is_picked(arm_poses):
 
     pick_object(ctx, "water bottle")
 
-    # The second one, to the left: the base turns a quarter turn to face it.
+    # The second one, to the left: the base turns a quarter turn and a little more, to
+    # face it with the right hand.
     move = next(call for call in robot.calls if call["verb"] == "base.move_relative")
-    assert move["args"]["turn_deg"] == pytest.approx(90.0)
+    assert move["args"]["turn_deg"] == pytest.approx(90.0 + math.degrees(math.asin(0.20)))
+    at_stand_off(robot, 0.0, 1.0)
     assert ctx.object_memory.calls == [("search", "water bottle", 10)]
 
 
 def test_a_robot_already_at_the_stand_off_does_not_drive(arm_poses):
-    robot, ctx = picking(arm_poses, remembered(x=0.55))
+    robot, ctx = picking(arm_poses, remembered(x=0.65, y=-0.20))
 
     pick_object(ctx, "water bottle")
 
@@ -188,10 +201,11 @@ def test_a_far_object_is_driven_to_by_its_nearest_place_first(arm_poses):
     assert robot.calls[[c["verb"] for c in robot.calls].index("base.go_to")]["args"]["place"] == (
         "sofa"
     )
+    # It turns round to face the bottle from the sofa's side.
     move = next(call for call in robot.calls if call["verb"] == "base.move_relative")
-    assert move["args"]["forward_m"] == pytest.approx(-0.45)
-    assert abs(move["args"]["turn_deg"]) == pytest.approx(180.0)
-    assert robot.pose().x == pytest.approx(9.55)
+    assert abs(move["args"]["turn_deg"]) > 150.0
+    at_stand_off(robot, 9.0, 2.0)
+    assert robot.pose().x > 9.0
 
 
 def test_a_far_object_with_no_place_near_it_is_not_driven_to(arm_poses):
@@ -218,12 +232,12 @@ def test_a_failed_drive_tries_the_next_heading(arm_poses, monkeypatch):
     pick_object(ctx, "water bottle")
 
     # The first heading's drive raised before the fake logged it; the second is 30
-    # degrees round, so the base ends 0.55 m from the bottle facing it.
+    # degrees round, and the base ends at its stand-off pose.
     move = next(call for call in robot.calls if call["verb"] == "base.move_relative")
-    assert move["args"]["turn_deg"] == pytest.approx(30.0)
-    here = robot.pose()
-    assert math.hypot(1.0 - here.x, 0.0 - here.y) == pytest.approx(0.55)
-    assert math.degrees(here.yaw) == pytest.approx(30.0)
+    first = math.degrees(math.asin(0.20))
+    assert move["args"]["turn_deg"] == pytest.approx(first + 30.0)
+    assert math.degrees(robot.pose().yaw) == pytest.approx(first + 30.0)
+    at_stand_off(robot, 1.0, 0.0)
 
 
 def test_a_pick_that_reaches_no_stand_off_says_how_many_tries(arm_poses):

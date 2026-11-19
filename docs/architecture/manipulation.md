@@ -135,6 +135,21 @@ sequenceDiagram
 | `get_arm_state`       | none                                              | R      | Reports the nearest named pose for each arm and how far each gripper is open |
 | `list_skills`         | none                                              | R      | Phase 3. Lists the skills the robot offers. Not in the first, mocked set of atomics |
 | `run_skill`           | `skill`, `target`, `arm`                          | M      | Runs a skill and reports whether success was verified. Mocked from phase 2 of the self-evolving agent; the real skill server is phase 3 |
+| `pick_object`         | `name`                                            | M      | Picks up a remembered object with the right hand: drives to a stand-off pose facing it, reaches through the whole-body group, moves straight in, closes, and lifts straight up (decision PK-4) |
+
+`pick_object` is built, unlike the `pick_object` preset under
+[Presets that move the arms](#presets-that-move-the-arms). It takes the
+object's name, looks it up in walkie-database's object memory, and computes
+every pose agent-side in `walkie_agent/arm/pick.py` from the numbers in
+`config/pick.toml`. It reaches through `ctx.arms.reach`, which sends a hand
+pose to the commander's `/go_to_pose`: first the whole-body group
+`whole_body_right` to a pre-grasp pose 0.10 m back, then `right_arm` in
+straight lines for the approach and the 0.10 m lift, since the commander
+refuses a straight line for a whole-body group. The close is judged by the
+commander's grasp band, and the lift runs only when it holds something. The
+LLM gives the name and reads the outcome, never a pose
+([ADR-0022](decisions/0022-named-arm-poses.md)). It is bound in the `hri`
+set only with both `--arms` and `--object-memory`.
 
 Every tool except `list_skills` is an atomic of the self-evolving agent,
 and runs against a mock until its real backend lands

@@ -791,7 +791,8 @@ footer p + p { margin-top: 6px; }
       { "name": "list_arm_poses", "sets": ["hri", "arms"], "arm": true, "backend": "RosArms, --arms", "status": "works" },
       { "name": "move_arm_to_pose", "sets": ["hri", "arms"], "arm": true, "backend": "RosArms, --arms", "status": "works" },
       { "name": "set_gripper", "sets": ["hri", "arms"], "arm": true, "backend": "RosArms, --arms", "status": "tested" },
-      { "name": "get_arm_state", "sets": ["hri", "arms"], "arm": true, "backend": "RosArms, --arms", "status": "tested" }
+      { "name": "get_arm_state", "sets": ["hri", "arms"], "arm": true, "backend": "RosArms, --arms", "status": "tested" },
+      { "name": "pick_object", "sets": ["hri"], "needs": "--arms and --object-memory", "arm": true, "backend": "RosObjectMemory, RosBase and RosArms through /go_to_pose, --arms --object-memory", "status": "tested" }
     ]
   },
   "gym": {

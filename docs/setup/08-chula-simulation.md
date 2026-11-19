@@ -51,6 +51,24 @@ environment lacks it, move_group starts with no IK solver for the arms
 (walkie-ros f695b3a). The agent's arm tools send joint goals and gripper
 commands only, and neither needs one.
 
+**For `--whole-body`, whole-body MoveIt and a world-aware bringup.**
+`up --whole-body` runs walkie-ros's `whole_body_demo.launch.py` as `bringup`:
+Nav2, move_group with `base_mode:=whole_body`, the commander and the base
+follower in one launch, with map to odom from MuJoCo's ground truth and no
+AMCL (decision PK-2). `pick_object` needs it. Two workspaces provide it:
+
+- `WALKIE_ROS`, a walkie-ros workspace on `feat/moveit-full-body` with
+  `openarm_bimanual_moveit_config` and `openarm_bimanual_commander_cpp` built,
+  such as `~/worktrees/walkie-ros-fullbody`.
+- `WALKIE_ROS_OVERLAY`, an overlay whose `robot_bringup` runs
+  `whole_body_demo.launch.py` in a named world (`world:=`), with
+  `walkie_mujoco_worlds` built beside it, such as a worktree of
+  `feat/sim-bottle-pick` built like the overlay above, in `/var/tmp/wr-stack`.
+
+`up --whole-body` refuses to start if either package is missing from
+`WALKIE_ROS`, or if the `whole_body_demo.launch.py` it would load takes no
+`world:=`; an older one would start its own obstacle scene.
+
 **This repository, built.** You need `pixi run build-ros2`, for
 `walkie_vision_msgs` and `rai_interfaces`. You also need `pixi run build-rmw-zenoh`
 for `rmw_zenoh_cpp` 0.2.11, whose `rmw_wait` does not block forever
@@ -159,7 +177,7 @@ scripts/chula-sim.sh check --agent
 | Part | What it runs | `up` waits until |
 | --- | --- | --- |
 | `router` | `rmw_zenohd`, listening on `localhost:7499` | the port accepts connections |
-| `bringup` | `nav_mujoco_omnibot.launch.py world:=chula_pat14_6`, headless | Nav2 logs `Managed nodes are active` (300 s at most) |
+| `bringup` | `nav_mujoco_omnibot.launch.py world:=chula_pat14_6`, headless; with `--whole-body`, `whole_body_demo.launch.py world:=chula_pat14_6 start_router:=false` instead | Nav2 logs `Managed nodes are active` (300 s at most); with `--whole-body`, then also `MoveGroup context initialization complete` and `Bimanual Commander Node Initialized` (120 s each at most) |
 | `moveit` | `moveit_only.launch.py hardware_type:=mujoco use_rviz:=false`, with `--arms` only | move_group logs `MoveGroup context initialization complete` (120 s at most) |
 | `commander` | `launch/commander_sim.launch.py`, the arm commander on sim time, with `--arms` only | the commander logs `Bimanual Commander Node Initialized` (120 s at most) |
 | `vision` | walkie-vision's `pixi run vision task:=memory sim:=true viz:=true`, with `--vision` only | the node logs `loaded the models in` (300 s at most), after the oracle and the agent |
@@ -185,6 +203,12 @@ scripts/chula-sim.sh check --agent
   with the arm tools: `-- --tool-set hri` or `-- --tool-set arms`. With the
   default set the agent exits with code 2 at startup. Without `--arms`, `up`
   starts what it always did.
+- `--whole-body` takes the place of `--arms`, and `up` refuses the two
+  together. Its launch starts move_group and the commander itself, so there is
+  no `moveit` or `commander` part, and `down` stops them with `bringup`. With
+  `--agent`, the agent gets `--arms` as with `--arms`. `up --whole-body`
+  refuses to start while the `moveit` or `commander` part of an earlier
+  `up --arms` runs, since two commanders would serve the same actions.
 - walkie-ros's own `commander.launch.py` declares no `use_sim_time`, so
   passing `use_sim_time:=true` to it does nothing. `launch/commander_sim.launch.py`
   includes that file and sets the parameter on its node.
@@ -203,8 +227,9 @@ scripts/chula-sim.sh check --agent
   retry, and exits once the result comes. walkie-ros's commander then
   panics in Zenoh's thread-local storage as it exits, with code -6, after
   the goal has ended.
-- `up` refuses to start beside another `nav_mujoco_omnibot.launch.py`, on any
-  graph, because two simulations compete for the CPU.
+- `up` refuses to start beside another `nav_mujoco_omnibot.launch.py` or
+  `whole_body_demo.launch.py`, on any graph, because two simulations compete
+  for the CPU.
 - `up` returns only when the oracle, the agent, `vision` and `foxglove`, each
   when asked for, have logged that they are up, and every part is still
   running a few seconds later. If a part exits first,
@@ -248,6 +273,10 @@ through: the `/set_joint_position` and `/control_gripper` actions and the
 names and types, and sends no request. So it cannot tell a commander built
 from another `my_robot_interfaces`: `rmw_zenoh_cpp` finds such a server by its
 type's name, but delivers requests by the type's hash, so none ever arrives.
+
+`check --whole-body` adds a `move_group` line, which passes once a node named
+`move_group` is on the graph, and a `commander` line that also needs the
+`/go_to_pose` action, through which `pick_object` reaches.
 
 ## Talk to the agent
 
@@ -382,6 +411,45 @@ every place in `config/locations.chula_pat14_6.toml` cannot be driven to, and
 the agent is told to go to its room and look instead. Without `--object-tools`
 the agent has none of these tools, and its prompt is the one it had before
 them.
+
+### Pick up a remembered object
+
+`pick_object` picks up an object the memory holds, by its name, with the right
+hand (decision PK-4). The agent has it with the `hri` tool set when it gets
+both `--arms` and `--object-memory`, so start the whole-body run with the
+object tools:
+
+```bash
+export WALKIE_ROS=~/worktrees/walkie-ros-fullbody WALKIE_ROS_OVERLAY=/var/tmp/wr-stack
+scripts/chula-sim.sh reset-memory
+scripts/chula-sim.sh up --agent --whole-body --vision --memory --object-tools -- --tool-set hri
+scripts/chula-sim.sh check --agent --whole-body
+```
+
+Drive the robot past the object first, so that vision has shown it to the
+memory, then ask "Bring me the water bottle." One pick runs these steps, and
+the tool log shows each as a call:
+
+1. **Find it.** The first object of that name the memory holds with a full
+   position, centre height included.
+2. **Drive to a stand-off pose.** 0.55 m back from the object's centre, facing
+   it, through `move_relative`. When that pose is more than 3 m away, a `go_to`
+   to the named place within 2 m of the object comes first. If Nav2 cannot
+   reach it, the headings 30° and 60° to either side are tried in turn.
+3. **Reach.** The right gripper opens, and the hand goes to a pre-grasp pose
+   0.10 m back from the grasp pose through `whole_body_right`, which may move
+   the base, the lift and the arm. The hand then moves in a straight line
+   through `right_arm` until its tool centre point is on the object's centre.
+4. **Close and lift.** The gripper closes. Only when the commander's grasp
+   band says that it holds something does the hand rise 0.10 m in a straight
+   line.
+
+After a pick the right arm is in no travel-safe pose, so `go_to` refuses to
+drive until the agent moves it to one. All the numbers are in
+`config/pick.toml`, which the agent checks at startup and reads again at each
+pick, so a change applies to the next pick without a restart. The pick has
+passed its unit tests on `FakeRobot` only. It has not run in this simulation
+yet, so the numbers are provisional.
 
 ## Watch it in Foxglove
 

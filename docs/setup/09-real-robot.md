@@ -68,7 +68,7 @@ export PATH=$HOME/.pixi/bin:$PATH
 export ROS_DOMAIN_ID=23
 unset ZENOH_CONFIG_OVERRIDE ZENOH_SESSION_CONFIG_URI ZENOH_ROUTER_CONFIG_URI
 export MAP_NAME=31_19112026_lab
-export MAP=$HOME/Project/robocup_ros_ws/walkie-ros/navigation/walkie-navigation/map/$MAP_NAME
+export MAP=$HOME/Project/robocup_experiments/walkie-ros-fullbody/navigation/walkie-navigation/map/$MAP_NAME
 cd ~/Project/robocup_ros_ws/walkie-ros
 ```
 
@@ -79,9 +79,14 @@ export PATH=$HOME/.pixi/bin:$PATH
 export ROS_DOMAIN_ID=23
 unset ZENOH_CONFIG_OVERRIDE ZENOH_SESSION_CONFIG_URI ZENOH_ROUTER_CONFIG_URI
 export MAP_NAME=31_19112026_lab
-export MAP=$HOME/Project/robocup_ros_ws/walkie-ros/navigation/walkie-navigation/map/$MAP_NAME
+export MAP=$HOME/Project/robocup_experiments/walkie-ros-fullbody/navigation/walkie-navigation/map/$MAP_NAME
 cd ~/Project/robocup_experiments/walkie-agent-ros    # T7: walkie-vision, T8: walkie-database
 ```
+
+- **`$MAP` is in our walkie-ros checkout** (`robocup_experiments/walkie-ros-fullbody`),
+  not in the team's `robocup_ros_ws`. Our maps stay out of the team's
+  workspace. Nav2 and the database take the full path, so the map can live in
+  any checkout.
 
 - The `PATH` line matters only in an SSH shell. The desktop's `~/.bashrc` already
   adds pixi.
@@ -389,29 +394,20 @@ Save while SLAM still runs:
 
 ```bash
 cd ~/Project/robocup_ros_ws/walkie-ros
-pixi run --as-is save-map $MAP_NAME
+mkdir -p $MAP
+pixi run --as-is ros2 run nav2_map_server map_saver_cli -t /map -f $MAP/map
 ls $MAP
 ```
 
-`ls` should show `map.pgm` and `map.yaml`. The `save-map` task is one of the
-working tree's uncommitted edits: it makes
-`navigation/walkie-navigation/map/<name>/` and runs `map_saver_cli` into it.
+`ls` should show `map.pgm` and `map.yaml`.
 
-!!! warning "Unverified"
-    `save-map` takes the folder name as a pixi task argument. Whether that works
-    with `--as-is` under pixi 0.81 was not tried. If `ls $MAP` shows no
-    `map.yaml`, run the same steps by hand:
-
-    ```bash
-    mkdir -p $MAP
-    pixi run --as-is ros2 run nav2_map_server map_saver_cli -t /map -f $MAP/map
-    ```
-
+- Do not use the team's `pixi run save-map` task. It writes into the team's
+  `robocup_ros_ws/walkie-ros/navigation/walkie-navigation/map/`, not into `$MAP`.
 - Clean up `map.pgm` by hand now, if you want to. Do it before seeding the
   optional object memory: any later change to the image, its resolution or its
   origin makes the memory refuse to start.
-- The map is not in walkie-ros's `install/share` until the next build. Always
-  pass the full source path, `$MAP`.
+- No `install/share` has the map, because it is outside the team's workspace.
+  Always pass the full path, `$MAP`.
 - A new map has no `keepout.yaml`. Nav2 therefore runs with keepout zones off
   ([step 5](#5-start-the-stack)).
 
@@ -1164,7 +1160,7 @@ Leave the Zenoh router running.
   internet.
 - **HRI end to end** cannot run yet, in simulation or on the robot
   ([HRI](../architecture/hri.md)).
-- **Not run before writing this page:** `pixi run --as-is save-map`, the CAN
+- **Not run before writing this page:** `map_saver_cli` into `$MAP`, the CAN
   fix, the internet check, the `--show-args` of the walkie-ros launch files
   (their arguments were read from the robot's files), and every command that
   joins the robot's ROS graph.

@@ -205,6 +205,9 @@ The driver alone cannot. The whole-body guide runs the same check
 ([Optional C](#optional-c-the-whole-body-moveit-test)).
 
 !!! danger "On 2026-11-19 the names were swapped"
+    By 16:06 the same day the check printed the expected three lines again,
+    with `can0` on `3-2.4:1.0`. Keep running it before every start.
+
     At 06:04 the robot printed `can0 gs_usb 0x0 down`, `can1 peak_usb 0x0
     down` and `can2 peak_usb 0x1 up`. With
     that, the base and the lift would talk to an arm bus, and the arms' FD bus
@@ -357,7 +360,11 @@ pixi run --as-is ros2 launch robot_bringup lift_homing.launch.py
 
 ### Bringup (T2)
 
-The basic run leaves the arms out:
+The basic run leaves the arms out. Its agent runs without `--arms`, so nothing
+in it uses them, and with them the bringup swings every arm joint to 0 rad when
+it starts and drops the arms when it stops. Without them the arm motors stay
+off and the arms hang where they are. The team's commander button starts the
+bringup with the arms; [Optional A](#optional-a-the-arms) does the same.
 
 ```bash
 pixi run --as-is ros2 launch robot_bringup real_omnibot.launch.py use_arm:=false use_fake_arm_hardware:=true

@@ -114,9 +114,10 @@ class RecalledObject:
     is the memory's state, such as "present" or "held". `seen_s_ago` is how long ago
     it was last seen, in seconds of the robot's clock, or None when unknown.
 
-    `x` and `y` are its position in the map frame, in meters, or None when its
-    geometry is not valid. They serve the atomics that approach it and never reach
-    the LLM, which names places only (ADR-0010).
+    `x`, `y` and `z` are the centre of its box in the map frame, in meters, each None
+    when its geometry is not valid. `z` is its height above the floor. They serve the
+    atomics that approach and pick it, and never reach the LLM, which names places
+    only (ADR-0010).
     """
 
     id: str
@@ -129,6 +130,7 @@ class RecalledObject:
     seen_s_ago: float | None
     x: float | None
     y: float | None
+    z: float | None = None
 
 
 @dataclass(frozen=True)

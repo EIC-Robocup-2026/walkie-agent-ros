@@ -392,7 +392,7 @@ def _record(summary: ObjectSummary, on: str | None, now: float | None) -> Recall
     label = summary.label.strip()
     seen = summary.last_seen.sec + summary.last_seen.nanosec * 1e-9
     seen_s_ago = None if not seen or now is None or now < seen else now - seen
-    x = y = None
+    x = y = z = None
     if summary.geometry_valid:
         frame = summary.pose.header.frame_id.lstrip("/")
         position = summary.pose.pose.position
@@ -405,6 +405,10 @@ def _record(summary: ObjectSummary, on: str | None, now: float | None) -> Recall
             )
         elif math.isfinite(position.x) and math.isfinite(position.y):
             x, y = float(position.x), float(position.y)
+            # The height is kept apart, so an object with a broken height can still
+            # be approached; only a pick needs it.
+            if math.isfinite(position.z):
+                z = float(position.z)
     return RecalledObject(
         id=str(summary.id),
         name=_name(summary),
@@ -416,6 +420,7 @@ def _record(summary: ObjectSummary, on: str | None, now: float | None) -> Recall
         seen_s_ago=seen_s_ago,
         x=x,
         y=y,
+        z=z,
     )
 
 

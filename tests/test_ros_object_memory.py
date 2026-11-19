@@ -57,6 +57,7 @@ def summary(
     category: str = "",
     x: float = 1.0,
     y: float = 2.0,
+    z: float = 0.75,
     frame: str = "map",
     geometry_valid: bool = True,
     seen_s: float = 0.0,
@@ -78,6 +79,7 @@ def summary(
     stored.pose.header.frame_id = frame
     stored.pose.pose.position.x = x
     stored.pose.pose.position.y = y
+    stored.pose.pose.position.z = z
     whole = math.floor(seen_s)
     stored.last_seen = TimeMsg(sec=whole, nanosec=round((seen_s - whole) * 1e9))
     return stored
@@ -425,7 +427,7 @@ def test_an_anchor_id_outside_the_answer_gives_none_whatever_the_key_names(datab
 
 def test_a_record_carries_the_memory_fields_and_the_map_position(database, memory):
     database.objects = [
-        summary(18, "cup", room="kitchen room", x=3.1, y=1.1),
+        summary(18, "cup", room="kitchen room", x=3.1, y=1.1, z=0.8),
         summary(30, "thing", room="", category="  gadget "),
     ]
 
@@ -442,6 +444,7 @@ def test_a_record_carries_the_memory_fields_and_the_map_position(database, memor
         seen_s_ago=None,
         x=3.1,
         y=1.1,
+        z=0.8,
     )
     assert (thing.category, thing.room) == ("gadget", None)
 
@@ -449,11 +452,13 @@ def test_a_record_carries_the_memory_fields_and_the_map_position(database, memor
 @pytest.mark.parametrize(
     ("options", "position", "warned"),
     [
-        ({"frame": "/map"}, (1.0, 2.0), False),
-        ({"frame": "odom"}, (None, None), True),
-        ({"geometry_valid": False}, (None, None), False),
-        ({"x": math.nan}, (None, None), False),
-        ({"y": math.inf}, (None, None), False),
+        ({"frame": "/map"}, (1.0, 2.0, 0.75), False),
+        ({"frame": "odom"}, (None, None, None), True),
+        ({"geometry_valid": False}, (None, None, None), False),
+        ({"x": math.nan}, (None, None, None), False),
+        ({"y": math.inf}, (None, None, None), False),
+        # A broken height leaves the floor position, which go_to_object needs.
+        ({"z": math.nan}, (1.0, 2.0, None), False),
     ],
 )
 def test_only_a_valid_finite_map_pose_gives_a_position(
@@ -464,7 +469,7 @@ def test_only_a_valid_finite_map_pose_gives_a_position(
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         [cup] = memory.search("cup")
 
-    assert (cup.x, cup.y) == position
+    assert (cup.x, cup.y, cup.z) == position
     assert bool(warnings(caplog)) is warned
 
 

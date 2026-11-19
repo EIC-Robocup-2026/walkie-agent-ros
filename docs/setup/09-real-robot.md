@@ -54,6 +54,37 @@ user's PipeWire session, and RViz needs the display. SSH as `eic` also works
 once `eic` is logged in at the desktop. Over SSH, start the bringup with
 `use_rviz:=false`.
 
+### Or use our commander
+
+Our copy of the team's walkie-commander, in
+`~/Project/robocup_experiments/walkie-commander`, has a button for each
+terminal above, plus Save map, the Foxglove bridge and a test task. Open
+`http://100.68.160.38:8083`. The team's commander keeps port 8082.
+
+- Every button starts disabled, so **Run Enabled** starts nothing. Click the
+  buttons in group order, and wait for each step's ready line in its log.
+- Each button exports the same variables as the terminals below. `$MAP` names
+  `31_19112026_ChulaPat14_7`.
+- **Save map** refuses to overwrite a map. For a new map, write the buttons
+  again with a new name (below), then restart the commander.
+- **T1 lift homing** has no terminal for `sudo`, so the lift node's own
+  `ip link` calls fail and `can2` stays as it is. Bring `can2` up first
+  ([step 2](#2-before-you-start)).
+- Stopping the commander stops every command it started.
+
+It runs as a user service, which ends at a reboot or a logout. To start it
+again, or to write the buttons again:
+
+```bash
+systemctl --user stop walkie-commander-experiments    # only to write the buttons again
+cd ~/Project/robocup_experiments/walkie-agent-ros
+python3 scripts/robot_commander.py ../walkie-commander/walkie-commander-data --replace --map-name 31_19112026_ChulaPat14_7
+R=~/Project/robocup_experiments/walkie-commander
+systemd-run --user --unit=walkie-commander-experiments --working-directory=$R \
+    --setenv=WALKIE_COMMANDER_PORT=8083 "--setenv=WALKIE_COMMANDER_TITLE=Walkie Commander (experiments)" \
+    --property=KillMode=mixed --property=TimeoutStopSec=20 $R/.venv/bin/python main.py
+```
+
 ### Start every terminal the same way
 
 Choose the map's folder name once. walkie-ros names maps

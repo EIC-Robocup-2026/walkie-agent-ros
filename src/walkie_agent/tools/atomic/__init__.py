@@ -26,6 +26,7 @@ from walkie_agent.tools.atomic.navigation import (
 )
 from walkie_agent.tools.atomic.perception import find_objects, find_people, object_info
 from walkie_agent.tools.atomic.speech import say
+from walkie_agent.tools.atomic.web import search_web
 
 __all__ = [
     "face_person",
@@ -49,5 +50,6 @@ __all__ = [
     "recognize_person",
     "remember_person",
     "say",
+    "search_web",
     "set_gripper",
 ]

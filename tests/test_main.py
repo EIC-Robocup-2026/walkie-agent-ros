@@ -45,8 +45,10 @@ from walkie_agent.capabilities import (
     UnavailableMemory,
     UnavailableObjectMemory,
     UnavailableVision,
+    UnavailableWebSearch,
 )
 from walkie_agent.capabilities.facts import SystemFacts
+from walkie_agent.capabilities.web_search import TavilySearch
 from walkie_agent.chat_models import build_model
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location, load_locations
@@ -1804,6 +1806,55 @@ def test_a_missing_openai_key_stops_with_one_line_before_ros_init(cli, capsys, m
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_ADMIN_KEY", raising=False)
     assert "OPENAI_API_KEY" in startup_error(cli, capsys)
+
+
+def test_web_search_without_a_tavily_key_stops_with_one_line_naming_it(cli, capsys, monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    message = startup_error(cli, capsys, "--web-search")
+    assert message.startswith("--web-search needs TAVILY_API_KEY")
+    # Checked before either model is built.
+    assert "build_model" not in cli.events
+
+
+def test_cli_passes_a_tavily_search_only_with_web_search(cli, monkeypatch):
+    received = []
+
+    def assemble(**kwargs):
+        received.append(kwargs)
+        app = FakeApp(cli)
+        app.on_start = send
+        return app
+
+    monkeypatch.setattr(main, "assemble", assemble)
+    monkeypatch.setenv("TAVILY_API_KEY", "tvly-test-key-not-real")
+    assert cli.run() == 0
+    assert received[-1]["web_search"] is None
+    assert cli.run("--web-search") == 0
+    assert isinstance(received[-1]["web_search"], TavilySearch)
+    # The agent's model and the summarizer: build_model ran once for each.
+    assert cli.events.count("build_model") == 3
+    assert main._parse_args([]).web_search is False
+
+
+def test_assemble_with_a_web_search_binds_search_web_and_its_rule(build, monkeypatch):
+    built_with = {}
+    real_build_agent = main.build_agent
+
+    def recording_build_agent(model, ctx, **kwargs):
+        built_with.update(kwargs)
+        return real_build_agent(model, ctx, **kwargs)
+
+    monkeypatch.setattr(main, "build_agent", recording_build_agent)
+    web = UnavailableWebSearch()
+    app = build(tool_set="gpsr", web_search=web).app
+    assert app.ctx.web is web
+    assert [fn.__name__ for fn in built_with["tools"]][-1] == "search_web"
+    assert "`search_web`" in built_with["system_prompt"]
+
+    plain = build(tool_set="gpsr").app
+    assert isinstance(plain.ctx.web, UnavailableWebSearch)
+    assert "search_web" not in [fn.__name__ for fn in built_with["tools"]]
+    assert "search_web" not in built_with["system_prompt"]
 
 
 def test_an_error_raised_by_ros_init_is_not_a_startup_error(cli, capsys, monkeypatch):

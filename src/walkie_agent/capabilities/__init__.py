@@ -1,4 +1,4 @@
-"""The robot's capabilities on ctx: base, speech, vision, arms, facts, memory and object memory.
+"""The robot's capabilities on ctx: base, speech, vision, arms, facts, memory, object memory and web.
 
 Each capability is a Protocol here. An atomic calls its verbs as
 ctx.base.go_to("shelf") and never sees a topic or an action. A failure is a
@@ -7,8 +7,9 @@ whatever calls a verb gets them. There is no velocity verb.
 
 This package imports no rclpy, rai or ROS message, so a teammate can read and
 test against it without ROS. FakeRobot, in capabilities.fake, implements every
-verb but the object memory's, whose ctx field it leaves unavailable. The ROS-backed
-verbs live in walkie_agent.ros. The arm records build on
+verb but the object memory's and the web search's, whose ctx fields it leaves
+unavailable. The ROS-backed verbs live in walkie_agent.ros, and the web search in
+capabilities.web_search. The arm records build on
 walkie_agent.arm, which imports no ROS either.
 """
 
@@ -39,6 +40,7 @@ from walkie_agent.capabilities.records import (
     Remembered,
     RoomObjects,
     Team,
+    WebAnswer,
 )
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location
@@ -46,6 +48,7 @@ from walkie_agent.locations import Location
 __all__ = [
     "NO_ARMS",
     "NO_OBJECT_MEMORY",
+    "NO_WEB_SEARCH",
     "Arm",
     "ArmPose",
     "Arms",
@@ -78,7 +81,10 @@ __all__ = [
     "UnavailableMemory",
     "UnavailableObjectMemory",
     "UnavailableVision",
+    "UnavailableWebSearch",
     "Vision",
+    "WebAnswer",
+    "WebSearch",
 ]
 
 
@@ -443,6 +449,31 @@ class UnavailableObjectMemory:
         self._refuse()
 
 
+class WebSearch(Protocol):
+    """ctx.web: answers a question from a web search, as a short summary and its sources.
+
+    The answer never holds the pages' own text: a model with no tools summarizes
+    the results, which it reads as untrusted data. search raises StepError REFUSED
+    for a blank or overlong query; TIMEOUT when the search does not answer in time;
+    NOT_FOUND when it finds nothing; and UNAVAILABLE without a search backend, or
+    when the search or the summary fails. It does not check the cancel token, since
+    it moves nothing.
+    """
+
+    def search(self, query: str) -> WebAnswer: ...
+
+
+# What UnavailableWebSearch says, kept here so the atomic's tests can match it.
+NO_WEB_SEARCH = "Walkie cannot search the web here: web search is not enabled."
+
+
+class UnavailableWebSearch:
+    """The ctx.web of a run without --web-search: search refuses."""
+
+    def search(self, query: str) -> WebAnswer:
+        raise StepError(ErrorCode.UNAVAILABLE, NO_WEB_SEARCH)
+
+
 @dataclass(frozen=True)
 class Ctx:
     """What an atomic runs against. Verbs hold the same `cancel` they are built with."""
@@ -455,3 +486,4 @@ class Ctx:
     facts: Facts = UnavailableFacts()
     memory: Memory = UnavailableMemory()
     object_memory: ObjectMemory = UnavailableObjectMemory()
+    web: WebSearch = UnavailableWebSearch()

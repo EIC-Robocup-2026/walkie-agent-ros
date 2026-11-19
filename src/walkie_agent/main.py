@@ -59,6 +59,11 @@ src/walkie_agent/tools, or in WALKIE_TOOLS_HOME when it is set. After a task, th
 judges it on /walkie/verdict (std_msgs/msg/Bool): true verifies the saved functions that
 the task proved, and false verifies nothing.
 
+--web-search adds `search_web` to any set: it searches the web with Tavily and answers
+from the results through a second call of the configured model, with no tools bound
+(decision PK-6). It needs TAVILY_API_KEY, in the environment or in .env: without it the
+agent stops at once, with exit code 2.
+
 A missing or broken file, a missing setting or API key, or a bad [team] table stops the
 agent before ROS starts, with one line on stderr and exit code 2.
 
@@ -102,8 +107,11 @@ from walkie_agent.capabilities import (
     UnavailableMemory,
     UnavailableObjectMemory,
     UnavailableVision,
+    UnavailableWebSearch,
+    WebSearch,
 )
 from walkie_agent.capabilities.facts import facts_from_config
+from walkie_agent.capabilities.web_search import TavilySearch, web_search_key
 from walkie_agent.chat_models import build_callbacks, build_fallback, build_model
 from walkie_agent.config import agent_settings, load_config
 from walkie_agent.locations import Location, load_locations
@@ -203,9 +211,12 @@ def check_templates(
     *,
     arms: bool = False,
     object_memory: bool = False,
+    web_search: bool = False,
 ) -> None:
     """Raise ValueError for a template step that this run's tools could never complete."""
-    names = bound_tool_names(tool_set, arms=arms, object_memory=object_memory)
+    names = bound_tool_names(
+        tool_set, arms=arms, object_memory=object_memory, web_search=web_search
+    )
     check_required_tools(templates, names | {WAIT_TOOL})
 
 
@@ -389,6 +400,7 @@ def assemble(
     object_memory: bool = False,
     arm_poses: ArmPoses | None = None,
     scripts: AgentScripts | None = None,
+    web_search: WebSearch | None = None,
 ) -> Application:
     """Wire the runtime and the ROS wrappers over a connector the caller already made.
 
@@ -423,9 +435,16 @@ def assemble(
     the bound atomics and the run_script rule. The Runner marks each task's start and
     end on it, and the bridge subscribes to /walkie/verdict for its verdict. The
     Application closes it last. A failure here leaves it open for the caller.
+
+    `web_search`, the TavilySearch that main() builds for --web-search, is ctx.web, and
+    adds search_web to the set and its rule to the prompt. Without it, ctx.web is
+    UnavailableWebSearch and no set binds search_web. The caller owns and closes it.
     """
     arms = arm_poses is not None
-    check_templates(templates, tool_set, arms=arms, object_memory=object_memory)
+    searches = web_search is not None
+    check_templates(
+        templates, tool_set, arms=arms, object_memory=object_memory, web_search=searches
+    )
     check_arms(tool_set, arms=arms)
     check_people_memory(people_memory, vision=vision, resume=resume_people_session)
     check_object_memory(tool_set, object_memory=object_memory, vision=vision)
@@ -439,6 +458,7 @@ def assemble(
         arms=arms,
         object_memory=object_memory,
         scripts=scripts is not None,
+        web_search=searches,
     )
     clock = connector.node.get_parameter("use_sim_time").value
     if bool(clock) != use_sim_time:
@@ -496,6 +516,7 @@ def assemble(
             memory=memory,
             arms=ctx_arms,
             object_memory=objects,
+            web=web_search or UnavailableWebSearch(),
         )
         bridge = RosBridge(
             connector,
@@ -508,7 +529,9 @@ def assemble(
             on_verdict=None if scripts is None else scripts.verdict,
         )
         built.append(bridge.close)
-        atomics = bound_tools(tool_set, arms=arms, object_memory=object_memory)
+        atomics = bound_tools(
+            tool_set, arms=arms, object_memory=object_memory, web_search=searches
+        )
         agent = build_agent(
             model,
             ctx,
@@ -763,6 +786,12 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         "bwrap and keeps the functions it saves. Needs bwrap. The operator judges each "
         "task on /walkie/verdict.",
     )
+    parser.add_argument(
+        "--web-search",
+        action="store_true",
+        help="Add search_web to the tool set: a Tavily web search, summarized by the "
+        "configured model with no tools. Needs TAVILY_API_KEY.",
+    )
     args = parser.parse_args(argv)
     try:
         check_arms(args.tool_set, arms=args.arms)
@@ -791,7 +820,11 @@ def main(argv: list[str] | None = None) -> int:
         locations = load_locations(args.locations)
         templates = load_task_templates(args.task_templates)
         check_templates(
-            templates, args.tool_set, arms=args.arms, object_memory=args.object_memory
+            templates,
+            args.tool_set,
+            arms=args.arms,
+            object_memory=args.object_memory,
+            web_search=args.web_search,
         )
         # config/arm_poses.toml and config/robot_model.toml, from the working directory.
         # ArmPoseError is a ValueError, so a bad pose stops the agent here, in one line.
@@ -803,7 +836,16 @@ def main(argv: list[str] | None = None) -> int:
         ):
             load_pick_settings()
         robot_description = Path(args.robot_description).read_text(encoding="utf-8")
+        # Before the models, so a missing Tavily key is the line the operator sees.
+        web_search_api_key = web_search_key() if args.web_search else None
         model = build_model(config)
+        # The summarizer is a second instance of the agent's own model, which never gets
+        # tools. The configured simple_model costs more per output token on OpenRouter.
+        web_search = (
+            None
+            if web_search_api_key is None
+            else TavilySearch(web_search_api_key, build_model(config))
+        )
         fallback = build_fallback(config)
         callbacks = build_callbacks(config)
         facts = facts_from_config(config)
@@ -838,11 +880,14 @@ def main(argv: list[str] | None = None) -> int:
             facts=facts,
             arm_poses=arm_poses,
             scripts=scripts,
+            web_search=web_search,
         )
     finally:
         # Application.close closed it already, unless the run failed before assembling.
         if scripts is not None and not scripts.close(CLOSE_TIMEOUT_S):
             logger.warning("The script sandbox's workers did not close; the exit ends them.")
+        if web_search is not None:
+            web_search.close()
 
 
 if __name__ == "__main__":

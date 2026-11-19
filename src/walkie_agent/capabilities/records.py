@@ -156,6 +156,14 @@ class Team:
 
 
 @dataclass(frozen=True)
+class WebAnswer:
+    """A web search's answer: a short summary of the results, and the pages it came from."""
+
+    summary: str
+    sources: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ArmsReport:
     """What the arm backend knows about the arms at one moment, without asking the commander.
 

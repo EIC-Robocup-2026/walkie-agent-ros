@@ -1,9 +1,9 @@
-"""Which atomics each run binds: the fixed tool sets, and the atomics a missing flag drops.
+"""Which atomics each run binds: the fixed tool sets, and the atomics a flag adds or drops.
 
 The sets are plain lists of the atomics in walkie_agent.tools.atomic, in the order
 the LLM sees them. main.py picks one with --tool-set, and bound_tools drops the arm
 and object memory atomics unless --arms and --object-memory connect what they use,
-and pick_object unless both do.
+and pick_object unless both do. --web-search adds search_web at the end of any set.
 """
 
 from collections.abc import Callable
@@ -31,6 +31,7 @@ from walkie_agent.tools.atomic import (
     recognize_person,
     remember_person,
     say,
+    search_web,
     set_gripper,
 )
 
@@ -125,16 +126,25 @@ DEFAULT: list[Callable[..., Any]] = [
 
 TOOL_SETS = {"default": DEFAULT, "gpsr": GPSR, "hri": HRI, "arms": ARMS}
 
+# The atomic that --web-search adds to every set, last, so a set's tool text without
+# the flag stays the one measured before it (decision PK-6).
+WEB_SEARCH_TOOL = search_web.__name__
+
 
 def bound_tools(
-    tool_set: str, *, arms: bool = False, object_memory: bool = False
+    tool_set: str,
+    *,
+    arms: bool = False,
+    object_memory: bool = False,
+    web_search: bool = False,
 ) -> list[Callable[..., Any]]:
     """The atomics a run binds: the set's, in its order, less the atomics of a missing flag.
 
     Without --arms ctx.arms has no commander, and without --object-memory there is no
     object memory, so their atomics would only report UNAVAILABLE: the arm atomics are
     dropped unless `arms`, the object memory atomics unless `object_memory`, and
-    pick_object unless both. Raises ValueError for an unknown set.
+    pick_object unless both. `web_search` adds search_web after them, whatever the
+    set. Raises ValueError for an unknown set.
     """
     if tool_set not in TOOL_SETS:
         known = ", ".join(TOOL_SETS)
@@ -142,11 +152,21 @@ def bound_tools(
     dropped = (set() if arms else ARM_TOOLS) | (set() if object_memory else OBJECT_MEMORY_TOOLS)
     if not (arms and object_memory):
         dropped |= PICK_TOOLS
-    return [fn for fn in TOOL_SETS[tool_set] if fn.__name__ not in dropped]
+    kept = [fn for fn in TOOL_SETS[tool_set] if fn.__name__ not in dropped]
+    return [*kept, search_web] if web_search else kept
 
 
 def bound_tool_names(
-    tool_set: str, *, arms: bool = False, object_memory: bool = False
+    tool_set: str,
+    *,
+    arms: bool = False,
+    object_memory: bool = False,
+    web_search: bool = False,
 ) -> set[str]:
     """The names of the atomics a run binds (bound_tools)."""
-    return {fn.__name__ for fn in bound_tools(tool_set, arms=arms, object_memory=object_memory)}
+    return {
+        fn.__name__
+        for fn in bound_tools(
+            tool_set, arms=arms, object_memory=object_memory, web_search=web_search
+        )
+    }

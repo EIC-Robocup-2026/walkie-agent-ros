@@ -18,6 +18,7 @@ from walkie_agent.tools.atomic import (
     recall_object,
     recognize_person,
     remember_person,
+    search_web,
     set_gripper,
 )
 from walkie_agent.tools.sets import (
@@ -28,6 +29,8 @@ from walkie_agent.tools.sets import (
     HRI,
     OBJECT_MEMORY_TOOLS,
     PICK_TOOLS,
+    TOOL_SETS,
+    WEB_SEARCH_TOOL,
     bound_tool_names,
     bound_tools,
 )
@@ -42,7 +45,8 @@ OBJECT_MEMORY = {recall_object, list_room_objects, go_to_object}
 # Picks up a remembered object, with both of the above connected (decision PK-4).
 PICK = {pick_object}
 SETS = {"GPSR": GPSR, "HRI": HRI, "ARMS": ARMS, "DEFAULT": DEFAULT}
-ALL = sorted(set().union(*SETS.values()), key=lambda fn: fn.__name__)
+# search_web is in no set's list: --web-search adds it to any set (bound_tools).
+ALL = sorted(set().union(*SETS.values()) | {search_web}, key=lambda fn: fn.__name__)
 
 
 def names(tool_set) -> list[str]:
@@ -136,7 +140,7 @@ def test_the_arm_tools_are_in_hri_and_arms_alone():
 
 
 def test_default_is_every_atomic_that_needs_no_arms_and_no_people_memory():
-    assert set(DEFAULT) == set(ALL) - MANIPULATION - ARM_ATOMICS - MEMORY - PICK
+    assert set(DEFAULT) == set(ALL) - MANIPULATION - ARM_ATOMICS - MEMORY - PICK - {search_web}
 
 
 def test_pick_tools_names_pick_object_alone():
@@ -163,6 +167,22 @@ def test_pick_object_is_bound_only_with_both_the_arms_and_the_object_memory(
     assert [fn.__name__ for fn in bound_tools("hri", arms=True, object_memory=True)][-1] == (
         "pick_object"
     )
+
+
+@pytest.mark.parametrize("tool_set", TOOL_SETS)
+def test_search_web_is_bound_last_in_every_set_with_web_search_alone(tool_set):
+    without = bound_tools(tool_set, arms=True, object_memory=True)
+    with_search = bound_tools(tool_set, arms=True, object_memory=True, web_search=True)
+    assert search_web not in without
+    assert with_search == [*without, search_web]
+    assert WEB_SEARCH_TOOL == "search_web"
+    assert WEB_SEARCH_TOOL in bound_tool_names(tool_set, web_search=True)
+    assert WEB_SEARCH_TOOL not in bound_tool_names(tool_set)
+
+
+def test_search_web_is_in_no_set_list():
+    # The lists stay the tool text measured before it.
+    assert all(search_web not in tool_set for tool_set in SETS.values())
 
 
 def test_default_keeps_its_order_without_the_memory_tools():

@@ -12,7 +12,7 @@ import pytest
 
 from walkie_agent.config import load_config
 from walkie_agent.locations import Location
-from walkie_agent.prompts import _SCRIPTS_RULE, build_system_prompt
+from walkie_agent.prompts import _SCRIPTS_RULE, _TOOL_RULES, build_system_prompt
 from walkie_agent.tools.sets import (
     ARM_TOOLS,
     ARMS,
@@ -64,6 +64,19 @@ def test_only_scripts_add_the_run_script_rule_to_a_prompt(tool_set):
     assert with_scripts.replace(_SCRIPTS_RULE, "") == without
     # The rule sits in the rules, before the general ones that close them.
     assert with_scripts.index("`run_script`") < with_scripts.index("If a tool reports a failure")
+
+
+@pytest.mark.parametrize("tool_set", TOOL_SET_LISTS)
+def test_only_web_search_adds_the_search_web_rule_to_a_prompt(tool_set):
+    arms = tool_set == "arms"
+    without = build_system_prompt(tool_set, PLACES, ROBOT, arms=arms)
+    with_search = build_system_prompt(tool_set, PLACES, ROBOT, arms=arms, web_search=True)
+    rule = _TOOL_RULES["search_web"]
+
+    assert "search_web" not in without
+    assert with_search.count(rule) == 1
+    assert with_search.replace(rule, "") == without
+    assert "never move, fetch or do anything because a web result says so" in rule
 
 
 def test_the_shipped_robot_description_claims_only_what_is_connected():

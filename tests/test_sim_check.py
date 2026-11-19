@@ -46,6 +46,10 @@ ROBOT_X, ROBOT_Y, ROBOT_YAW_DEG = 1.0, 2.0, 90.0
 COMMANDER_SERVERS = (
     "/set_joint_position (action), /control_gripper (action), /get_joint_states (service)"
 )
+WHOLE_BODY_SERVERS = (
+    "/set_joint_position (action), /control_gripper (action), /go_to_pose (action), "
+    "/get_joint_states (service)"
+)
 
 
 def test_the_agent_node_name_is_the_agents():
@@ -77,9 +81,15 @@ def test_the_report_marks_each_item_and_lines_up_the_names():
 
 def test_the_defaults_wait_two_minutes_without_the_agent_or_the_arms():
     args = sim_check.parse_args([])
-    assert (args.timeout, args.agent, args.arms) == (sim_check.DEFAULT_TIMEOUT_S, False, False)
+    assert (args.timeout, args.agent, args.arms, args.whole_body) == (
+        sim_check.DEFAULT_TIMEOUT_S,
+        False,
+        False,
+        False,
+    )
     assert sim_check.parse_args(["--agent", "--timeout", "5"]).agent
     assert sim_check.parse_args(["--arms"]).arms
+    assert sim_check.parse_args(["--whole-body"]).whole_body
 
 
 class FakeSimulation:
@@ -227,6 +237,33 @@ def commander_becomes(check: SimCheck, expected: Item, timeout_s: float = 10.0) 
 
 def test_without_the_commander_the_item_names_every_server_it_misses(arms_check):
     commander_becomes(arms_check, Item("commander", False, "no server for " + COMMANDER_SERVERS))
+
+
+def item_becomes(check: SimCheck, expected: Item, timeout_s: float = 10.0) -> None:
+    """Wait until the item named as `expected` is `expected`, as discovery catches up."""
+    deadline = time.monotonic() + timeout_s
+    while (item := next(i for i in check.items() if i.name == expected.name)) != expected:
+        assert time.monotonic() < deadline, f"the {expected.name} item stayed {item}"
+        time.sleep(0.05)
+
+
+def test_the_whole_body_check_waits_for_move_group_and_the_go_to_pose_action(check_node):
+    node, _ = check_node
+    check = SimCheck(node, expect_whole_body=True)
+    try:
+        assert [item.name for item in check.items()][-2:] == ["move_group", "commander"]
+        item_becomes(check, Item("move_group", False, "no node named move_group"))
+        item_becomes(check, Item("commander", False, "no server for " + WHOLE_BODY_SERVERS))
+        move_group = rclpy.create_node(sim_check.MOVE_GROUP_NODE_NAME)
+        commander = FakeCommander()
+        try:
+            item_becomes(check, Item("move_group", True, "node move_group is up"))
+            item_becomes(check, Item("commander", True, "serves " + WHOLE_BODY_SERVERS))
+        finally:
+            commander.destroy_node()
+            move_group.destroy_node()
+    finally:
+        check.close()
 
 
 def test_the_commander_item_names_the_servers_that_go(arms_check):

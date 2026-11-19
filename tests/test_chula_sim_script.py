@@ -103,10 +103,10 @@ def test_without_a_known_command_it_prints_the_usage(tmp_path, args):
     result = run(*args, sim_dir=tmp_path)
     assert result.returncode == 2
     assert (
-        "up [--agent] [--arms] [--vision] [--memory] [--object-tools] [--foxglove] [--gui] [-- ARGS]"
-        in result.stdout
+        "up [--agent] [--arms | --whole-body] [--vision] [--memory] [--object-tools] [--foxglove]"
+        " [--gui] [-- ARGS]" in result.stdout
     )
-    assert "check [--agent] [--arms]" in result.stdout
+    assert "check [--agent] [--arms | --whole-body]" in result.stdout
     assert "  scripts/chula-sim.sh reset-memory " in result.stdout
     # From the header's first line to its last command, and no further.
     lines = result.stdout.splitlines()
@@ -643,6 +643,7 @@ def test_wait_for_log_stops_at_the_fail_text_of_a_part_that_keeps_running(tmp_pa
 UP_STAND_INS = r"""
 record() { local IFS=$'\x1f'; echo "$*" >> "$SIM_DIR/calls"; }
 check_prerequisites() { record check "$@"; }
+check_whole_body_prerequisites() { record check-whole-body "$@"; }
 check_vision_prerequisites() { record check-vision "$@"; }
 check_memory_prerequisites() { record check-memory "$@"; }
 check_object_tools_prerequisites() { record check-object-tools "$@"; }
@@ -1048,6 +1049,138 @@ def test_up_stops_at_an_arm_part_that_never_logs_it_is_ready(tmp_path, part, mes
     arms = the_arms(tmp_path)
     waits = {"moveit": arms[1], "commander": arms[3]}
     assert calls[-1] == waits[part]
+
+
+def the_whole_body_bringup(sim_dir: Path) -> list[tuple[str, ...]]:
+    """The calls up --whole-body makes to start bringup and wait for Nav2, MoveIt and the commander."""
+    return [
+        (
+            "start", "bringup", str(sim_dir), *WALKIE_ROS_RUN,
+            "ros2", "launch", "robot_bringup", "whole_body_demo.launch.py",
+            "world:=chula_pat14_6", "spawn_pose:=1.7629 -1.483 0", "headless:=true",
+            "use_rviz:=false", "start_router:=false", f"world_output_dir:={sim_dir}/worlds",
+        ),
+        ("wait", "bringup", "Managed nodes are active", "300"),
+        ("wait", "bringup", "MoveGroup context initialization complete", "120"),
+        ("wait", "bringup", "Bimanual Commander Node Initialized", "120"),
+    ]  # fmt: skip
+
+
+def test_up_with_the_whole_body_runs_the_whole_body_launch_as_bringup(tmp_path):
+    result, calls = up_with_stand_ins(
+        tmp_path, "--agent", "--whole-body", "--", "--tool-set", "hri"
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls == [
+        # MoveIt and the commander must be built in WALKIE_ROS, as for --arms.
+        ("check", "true"),
+        ("check-whole-body",),
+        router_and_bringup(tmp_path)[0],
+        *the_whole_body_bringup(tmp_path),
+        # No separate MoveIt or commander part, and the agent still gets --arms.
+        *oracle_speech_and_agent(tmp_path, "--tool-set", "hri", "--arms"),
+    ]
+    assert result.stdout.splitlines()[-1] == (
+        "up. Next: scripts/chula-sim.sh check --agent --whole-body"
+    )
+
+
+def test_up_with_the_whole_body_and_its_bringup_running_only_waits_for_it(tmp_path):
+    result, calls = up_with_stand_ins(
+        tmp_path, "--whole-body", running=("router", "bringup", "oracle", "speech")
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls == [
+        ("check", "true"),
+        ("check-whole-body",),
+        *the_whole_body_bringup(tmp_path)[1:],
+        ("wait", "oracle", "Drawing ", "120"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("ready", "message"),
+    [
+        ("MoveGroup context initialization complete", "whole-body MoveIt did not start"),
+        ("Bimanual Commander Node Initialized", "the arm commander did not start"),
+    ],
+)
+def test_up_with_the_whole_body_stops_at_a_part_that_never_logs_it_is_ready(
+    tmp_path, ready, message
+):
+    never = f'wait_for_log() {{ record wait "$@"; [[ $2 != {shlex.quote(ready)} ]]; }}'
+    result, calls = up_with_stand_ins(tmp_path, "--agent", "--whole-body", setup=never)
+    assert result.returncode == 1
+    assert f"chula-sim: {message}; see {tmp_path}/logs/bringup.log" in result.stderr
+    assert calls[-1] == ("wait", "bringup", ready, "120")
+
+
+@pytest.mark.parametrize("part", ["moveit", "commander"])
+def test_up_with_the_whole_body_refuses_while_an_arm_part_of_up_arms_runs(tmp_path, part):
+    result, calls = up_with_stand_ins(tmp_path, "--whole-body", running=(part,))
+    assert result.returncode == 1
+    assert "MoveIt or the arm commander of an up --arms is running" in result.stderr
+    assert calls == [("check", "true"), ("check-whole-body",)]
+
+
+def test_up_refuses_the_arms_with_the_whole_body(tmp_path):
+    result = run("up", "--arms", "--whole-body", sim_dir=tmp_path / "sim")
+    assert result.returncode == 1
+    assert "--whole-body starts MoveIt and the arm commander in bringup, so it takes no --arms" in (
+        result.stderr
+    )
+    assert not (tmp_path / "sim").exists()
+
+
+WHOLE_BODY_LAUNCH = Path("robot_bringup/share/robot_bringup/launch/whole_body_demo.launch.py")
+
+
+def whole_body_launch(workspace: Path, text: str) -> Path:
+    launch = workspace / "install" / WHOLE_BODY_LAUNCH
+    launch.parent.mkdir(parents=True)
+    launch.write_text(text)
+    return launch
+
+
+@pytest.mark.parametrize(
+    ("in_overlay", "in_walkie_ros", "passes"),
+    [
+        # The overlay's robot_bringup wins over WALKIE_ROS's.
+        ('LaunchConfiguration("world")', "no named worlds", True),
+        ("no named worlds", 'LaunchConfiguration("world")', False),
+        # Without one in the overlay, WALKIE_ROS's is the one bringup loads.
+        (None, 'LaunchConfiguration("world")', True),
+        (None, "no named worlds", False),
+    ],
+)
+def test_the_whole_body_launch_must_take_a_world(tmp_path, in_overlay, in_walkie_ros, passes):
+    walkie_ros = walkie_ros_workspace(tmp_path / "walkie-ros", moveit=True, commander=True)
+    whole_body_launch(walkie_ros, in_walkie_ros)
+    overlay = tmp_path / "overlay"
+    (overlay / "install").mkdir(parents=True)
+    if in_overlay is not None:
+        whole_body_launch(overlay, in_overlay)
+    result = sourced(
+        f"WALKIE_ROS={shlex.quote(str(walkie_ros))} WALKIE_ROS_OVERLAY={shlex.quote(str(overlay))}\n"
+        "check_whole_body_prerequisites && echo passed",
+        tmp_path,
+    )
+    if passes:
+        assert (result.returncode, result.stdout, result.stderr) == (0, "passed\n", "")
+    else:
+        assert result.returncode == 1
+        assert "--whole-body needs a whole_body_demo.launch.py that takes world:=" in result.stderr
+
+
+def test_the_whole_body_launch_must_be_built(tmp_path):
+    walkie_ros = walkie_ros_workspace(tmp_path / "walkie-ros", moveit=True, commander=True)
+    result = sourced(
+        f"WALKIE_ROS={shlex.quote(str(walkie_ros))}\ncheck_whole_body_prerequisites", tmp_path
+    )
+    assert result.returncode == 1
+    assert f"--whole-body needs {walkie_ros}/install/{WHOLE_BODY_LAUNCH}, which is not built" in (
+        result.stderr
+    )
 
 
 def test_up_takes_the_agents_arguments_after_two_dashes_only_with_the_agent(tmp_path):

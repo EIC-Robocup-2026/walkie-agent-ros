@@ -1,7 +1,7 @@
 """Check that a simulation's ROS graph has what the agent and the oracle need.
 
-    scripts/chula-sim.sh check [--agent] [--arms]
-    python -m walkie_agent.sim.sim_check [--timeout 120] [--agent] [--arms]
+    scripts/chula-sim.sh check [--agent] [--arms | --whole-body]
+    python -m walkie_agent.sim.sim_check [--timeout 120] [--agent] [--arms | --whole-body]
 
 It joins the graph it is started in, and chula-sim.sh starts it in the
 simulation's private graph. It listens until every item below has arrived,
@@ -14,9 +14,11 @@ every item arrived:
 - people: walkie-vision's people array, with each person's gestures.
 - objects: walkie-vision's objects array, with each detection's label.
 - agent: the agent's node, with --agent only.
+- move_group: MoveIt's node, with --whole-body only.
 - commander: a server for each of the arm commander's /set_joint_position
   and /control_gripper actions and its /get_joint_states service, with
-  --arms only.
+  --arms or --whole-body, and for its /go_to_pose action with --whole-body,
+  which pick_object reaches through.
 
 An array with nobody in it still counts as arrived: who is in view depends
 on where the robot looks. It publishes nothing and sends no request: the
@@ -36,7 +38,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import rclpy
-from my_robot_interfaces.action import ControlGripper, SetJointPosition
+from my_robot_interfaces.action import ControlGripper, GoToPose, SetJointPosition
 from my_robot_interfaces.srv import GetJointStates
 from rclpy.action import ActionClient
 from rclpy.executors import SingleThreadedExecutor
@@ -54,6 +56,7 @@ from walkie_agent.ros.base import MAP_FRAME, ROBOT_FRAME
 from walkie_agent.ros.commander import (
     CONTROL_GRIPPER_ACTION,
     GET_JOINT_STATES_SERVICE,
+    GO_TO_POSE_ACTION,
     SET_JOINT_POSITION_ACTION,
 )
 from walkie_agent.sim.oracle_perception import HEAD_CAMERA_INFO_TOPIC, transform_matrix
@@ -63,6 +66,8 @@ NODE_NAME = "sim_check"
 # walkie_agent.main.NODE_NAME. Importing main would load RAI and LangChain for
 # one string; tests/test_sim_check.py checks that the two agree.
 AGENT_NODE_NAME = "walkie_agent"
+# The node that MoveIt's move_group executable starts.
+MOVE_GROUP_NODE_NAME = "move_group"
 
 CHECK_FAILED_EXIT_CODE = 1
 DEFAULT_TIMEOUT_S = 120.0
@@ -115,8 +120,9 @@ def describe_camera(info: CameraInfo, robot_from_camera: np.ndarray | None) -> s
 class SimCheck:
     """Listens to one graph and keeps the newest of every item.
 
-    close() destroys the action clients that expect_arms creates, which the
-    node's destroy_node() leaves behind; call it before destroying the node.
+    close() destroys the action clients that expect_arms and expect_whole_body
+    create, which the node's destroy_node() leaves behind; call it before
+    destroying the node. expect_whole_body implies expect_arms.
     """
 
     def __init__(
@@ -128,18 +134,23 @@ class SimCheck:
         objects_topic: str = OBJECTS_TOPIC,
         expect_agent: bool = False,
         expect_arms: bool = False,
+        expect_whole_body: bool = False,
     ) -> None:
         self._node = node
         self._expect_agent = expect_agent
-        self._expect_arms = expect_arms
+        self._expect_arms = expect_arms or expect_whole_body
+        self._expect_whole_body = expect_whole_body
         # The commander's servers, each with what tells whether it is discovered.
         self._actions: list[ActionClient] = []
         self._servers: list[tuple[str, Callable[[], bool]]] = []
-        if expect_arms:
-            for action_type, name in (
+        if self._expect_arms:
+            actions = [
                 (SetJointPosition, SET_JOINT_POSITION_ACTION),
                 (ControlGripper, CONTROL_GRIPPER_ACTION),
-            ):
+            ]
+            if expect_whole_body:
+                actions.append((GoToPose, GO_TO_POSE_ACTION))
+            for action_type, name in actions:
                 action = ActionClient(node, action_type, name)
                 self._actions.append(action)
                 self._servers.append((f"{name} (action)", action.server_is_ready))
@@ -188,6 +199,8 @@ class SimCheck:
         items.append(self._array_item("objects", self._objects, describe_objects))
         if self._expect_agent:
             items.append(self._agent_item())
+        if self._expect_whole_body:
+            items.append(self._move_group_item())
         if self._expect_arms:
             items.append(self._commander_item())
         return items
@@ -236,6 +249,11 @@ class SimCheck:
             return Item("agent", True, f"node {AGENT_NODE_NAME} is up")
         return Item("agent", False, f"no node named {AGENT_NODE_NAME}")
 
+    def _move_group_item(self) -> Item:
+        if MOVE_GROUP_NODE_NAME in self._node.get_node_names():
+            return Item("move_group", True, f"node {MOVE_GROUP_NODE_NAME} is up")
+        return Item("move_group", False, f"no node named {MOVE_GROUP_NODE_NAME}")
+
     def _commander_item(self) -> Item:
         missing = [name for name, discovered in self._servers if not discovered()]
         if missing:
@@ -281,6 +299,11 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Also wait for the arm commander's two actions and its joint state service",
     )
+    parser.add_argument(
+        "--whole-body",
+        action="store_true",
+        help="Also wait for move_group and the commander's servers, /go_to_pose among them",
+    )
     return parser.parse_args(argv)
 
 
@@ -292,7 +315,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     executor.add_node(node)
     check: SimCheck | None = None
     try:
-        check = SimCheck(node, expect_agent=args.agent, expect_arms=args.arms)
+        check = SimCheck(
+            node,
+            expect_agent=args.agent,
+            expect_arms=args.arms,
+            expect_whole_body=args.whole_body,
+        )
         items = wait_for_items(check, executor, args.timeout)
     except KeyboardInterrupt:
         return CHECK_FAILED_EXIT_CODE

@@ -4,11 +4,15 @@
 # and ROS_DOMAIN_ID SIM_DOMAIN_ID. Nothing started here connects to the router on 7447, so
 # it neither sees nor disturbs a robot or another simulation on this computer.
 #
-#   scripts/chula-sim.sh up [--agent] [--arms] [--vision] [--memory] [--object-tools] [--foxglove] [--gui] [-- ARGS]
+#   scripts/chula-sim.sh up [--agent] [--arms | --whole-body] [--vision] [--memory] [--object-tools] [--foxglove] [--gui] [-- ARGS]
 #                                               router, MuJoCo with Nav2, oracle, speech log;
 #                                               --agent adds the agent, given ARGS such as
 #                                               --tool-set hri; --arms adds MoveIt and the arm
 #                                               commander, and gives the agent --arms;
+#                                               --whole-body runs walkie-ros's whole-body
+#                                               demo as bringup instead, with whole-body
+#                                               MoveIt and its commander, and gives the
+#                                               agent --arms;
 #                                               --vision adds walkie-vision's node and its
 #                                               debug visualizer; --memory, with --vision,
 #                                               adds walkie-database's object memory;
@@ -17,8 +21,9 @@
 #                                               detector's objects unless ARGS name a topic;
 #                                               --foxglove adds foxglove_bridge on
 #                                               SIM_FOXGLOVE_PORT
-#   scripts/chula-sim.sh check [--agent] [--arms]
-#                                               wait for the clock, TF, head camera and arrays
+#   scripts/chula-sim.sh check [--agent] [--arms | --whole-body]
+#                                               wait for the clock, TF, head camera and arrays;
+#                                               --whole-body also for move_group and /go_to_pose
 #   scripts/chula-sim.sh reset-memory           restore the object memory's store from its
 #                                               seed, while the memory is stopped
 #   scripts/chula-sim.sh status                 which parts are running, and their logs
@@ -27,11 +32,14 @@
 #
 # docs/setup/08-chula-simulation.md explains each step. Environment:
 #   WALKIE_ROS          a walkie-ros workspace, with its pixi environment installed and its
-#                       install/ built (required); for --arms, install/ must hold
-#                       openarm_bimanual_moveit_config and openarm_bimanual_commander_cpp
+#                       install/ built (required); for --arms and --whole-body, install/
+#                       must hold openarm_bimanual_moveit_config and
+#                       openarm_bimanual_commander_cpp, as feat/moveit-full-body builds them
 #   WALKIE_ROS_OVERLAY  a colcon workspace sourced over WALKIE_ROS's install, such as a
 #                       worktree of feat/chula-pat14-6-simulation with only robot_bringup and
-#                       walkie_mujoco_worlds built (optional)
+#                       walkie_mujoco_worlds built (optional); for --whole-body, the
+#                       robot_bringup it loads must run whole_body_demo.launch.py in a
+#                       named world (world:=)
 #   WALKIE_VISION       for --vision, a walkie-vision checkout with its pixi environment
 #                       installed, its messages built and its models fetched
 #   SIM_VISION_TASK     the vision task, a file in its config/tasks/ (default memory)
@@ -101,6 +109,10 @@ COMMANDER_READY="Bimanual Commander Node Initialized"
 # docs/setup/08-chula-simulation.md builds holds neither package.
 MOVEIT_LAUNCH=openarm_bimanual_moveit_config/share/openarm_bimanual_moveit_config/launch/moveit_only.launch.py
 COMMANDER_EXECUTABLE=openarm_bimanual_commander_cpp/lib/openarm_bimanual_commander_cpp/commander
+# What up --whole-body runs as bringup: Nav2, move_group with base_mode:=whole_body, the
+# commander and the base follower, in one launch, from the overlay's robot_bringup when
+# it has one. Its MoveIt and commander come from WALKIE_ROS's install/, as for --arms.
+WHOLE_BODY_LAUNCH=robot_bringup/share/robot_bringup/launch/whole_body_demo.launch.py
 # What walkie-vision's node logs once its models are loaded, how long that may take, and
 # what it logs when it cannot start (its launch then respawns it, so it never stops).
 # The models load in about 18 s here. On a GPU that ONNX Runtime has no machine code
@@ -379,6 +391,19 @@ check_prerequisites() {
         die "rmw_zenoh_cpp 0.2.11 is not built here: run pixi run build-rmw-zenoh"
 }
 
+# check_whole_body_prerequisites: the whole-body launch that up --whole-body runs, from
+# the overlay's robot_bringup when it has one, else WALKIE_ROS's, must take world:=. An
+# older one, without named worlds, would start its own obstacle scene instead.
+check_whole_body_prerequisites() {
+    local launch=$WALKIE_ROS/install/$WHOLE_BODY_LAUNCH
+    if [[ -n $WALKIE_ROS_OVERLAY && -d $WALKIE_ROS_OVERLAY/install/robot_bringup ]]; then
+        launch=$WALKIE_ROS_OVERLAY/install/$WHOLE_BODY_LAUNCH
+    fi
+    [[ -f $launch ]] || die "--whole-body needs $launch, which is not built"
+    grep -q -w world "$launch" ||
+        die "--whole-body needs a whole_body_demo.launch.py that takes world:=, and $launch does not"
+}
+
 # check_vision_prerequisites: what up --vision needs from WALKIE_VISION. The models are
 # left to the vision launch, which names the command that fetches them.
 check_vision_prerequisites() {
@@ -470,11 +495,12 @@ record_memory_services() {
 
 up() {
     local with_agent=false with_arms=false with_vision=false with_memory=false with_foxglove=false
-    local with_object_tools=false headless=true rviz=false agent_args=()
+    local with_object_tools=false with_whole_body=false headless=true rviz=false agent_args=()
     while (($#)); do
         case $1 in
             --agent) with_agent=true ;;
             --arms) with_arms=true ;;
+            --whole-body) with_whole_body=true ;;
             --vision) with_vision=true ;;
             --memory) with_memory=true ;;
             --object-tools) with_object_tools=true ;;
@@ -493,7 +519,15 @@ up() {
     if $with_object_tools && ! { $with_memory && $with_agent; }; then
         die "the object tools are the agent's and read the object memory, so --object-tools needs --memory and --agent"
     fi
-    check_prerequisites "$with_arms"
+    if $with_arms && $with_whole_body; then
+        die "--whole-body starts MoveIt and the arm commander in bringup, so it takes no --arms"
+    fi
+    if $with_whole_body; then
+        check_prerequisites true
+        check_whole_body_prerequisites
+    else
+        check_prerequisites "$with_arms"
+    fi
     if $with_vision; then
         check_vision_prerequisites
     fi
@@ -513,10 +547,15 @@ up() {
         fi
     fi
 
+    # The whole-body launch runs a commander of its own, and a second one would serve the
+    # same actions on the same graph.
+    if $with_whole_body && { running moveit || running commander; }; then
+        fail "MoveIt or the arm commander of an up --arms is running; scripts/chula-sim.sh down stops them"
+    fi
     if ! running bringup; then
         # A second MuJoCo simulation, on any graph, competes for the CPU with the first.
         local others
-        others=$(pgrep -f "[n]av_mujoco_omnibot.launch.py" || true)
+        others=$(pgrep -f "[n]av_mujoco_omnibot.launch.py|[w]hole_body_demo.launch.py" || true)
         [[ -z $others ]] || fail "another simulation is running (PIDs $(echo $others)); stop it first"
     fi
 
@@ -538,14 +577,30 @@ up() {
         bash -c '[[ -z $0 ]] || source "$0"; exec "$@"'
         "${WALKIE_ROS_OVERLAY:+$WALKIE_ROS_OVERLAY/install/local_setup.bash}")
     if ! running bringup; then
+        local launch=nav_mujoco_omnibot.launch.py launch_args=()
+        if $with_whole_body; then
+            # This script's router serves the graph, so the launch starts none.
+            launch=whole_body_demo.launch.py launch_args=(start_router:=false)
+        fi
         start bringup "$SIM_DIR" "${walkie_ros[@]}" \
-            ros2 launch robot_bringup nav_mujoco_omnibot.launch.py "world:=$WORLD" \
+            ros2 launch robot_bringup "$launch" "world:=$WORLD" \
             "spawn_pose:=$SIM_SPAWN_POSE" "headless:=$headless" "use_rviz:=$rviz" \
-            "world_output_dir:=$SIM_DIR/worlds"
+            "${launch_args[@]}" "world_output_dir:=$SIM_DIR/worlds"
     fi
     echo "waiting up to ${BRINGUP_TIMEOUT_S} s for Nav2 ..."
     wait_for_log bringup "$BRINGUP_READY" "$BRINGUP_TIMEOUT_S" ||
         fail "the simulation did not become ready; see $SIM_DIR/logs/bringup.log"
+    if $with_whole_body; then
+        # The launch starts the commander once move_group serves its actions; both log
+        # to bringup's log.
+        echo "waiting up to ${PART_TIMEOUT_S} s each for whole-body MoveIt and the arm commander ..."
+        wait_for_log bringup "$MOVEIT_READY" "$PART_TIMEOUT_S" ||
+            fail "whole-body MoveIt did not start; see $SIM_DIR/logs/bringup.log"
+        wait_for_log bringup "$COMMANDER_READY" "$PART_TIMEOUT_S" ||
+            fail "the arm commander did not start; see $SIM_DIR/logs/bringup.log"
+        # With --agent, the agent then drives the arms through the commander.
+        agent_args+=(--arms)
+    fi
 
     if $with_arms; then
         # MoveIt drives the arm controllers that bringup spawns, and the commander
@@ -653,7 +708,7 @@ up() {
     if $with_foxglove; then
         echo "Foxglove: open a connection to ws://localhost:$SIM_FOXGLOVE_PORT"
     fi
-    echo "up. Next: scripts/chula-sim.sh check$($with_agent && echo " --agent" || true)$($with_arms && echo " --arms" || true)"
+    echo "up. Next: scripts/chula-sim.sh check$($with_agent && echo " --agent" || true)$($with_arms && echo " --arms" || true)$($with_whole_body && echo " --whole-body" || true)"
 }
 
 check() {
@@ -731,6 +786,6 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
         env) print_env ;;
         reset-memory) reset_memory ;;
         down) down ;;
-        *) sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+        *) sed -n '2,31p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
     esac
 fi

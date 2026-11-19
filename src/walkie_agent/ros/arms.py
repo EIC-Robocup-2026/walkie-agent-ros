@@ -169,6 +169,9 @@ class RosArms:
         self._cancel = cancel
         self._sim = sim
         self._min_move_timeout_s = min_move_timeout_s
+        # The commander's allow_gripper_vs_octomap as this object last set it, None
+        # while unknown: before the first set, or after one that failed.
+        self._touch: bool | None = None
 
     # -- The Arms verbs ----------------------------------------------------------
 
@@ -315,6 +318,8 @@ class RosArms:
                 e, f"Could not move the {arm} gripper: ", self._memory_sentence()
             ) from None
         if state != "close":
+            if state == "open":
+                self._release_touch()
             outcome = "moved" if result.success else "not_reached"
             return GripperMoved(arm=arm, state=state, outcome=outcome, result=result)
         # In each case where whether the close holds something is unknown, the close
@@ -358,12 +363,15 @@ class RosArms:
         *,
         whole_body: bool = False,
         cartesian: bool = False,
+        touch: bool = False,
         timeout_s: float = 60.0,
     ) -> str:
         """Move `arm`'s hand link to `pose` through the commander's /go_to_pose.
 
         See capabilities.Arms. The goal goes to the arm's whole-body group with `whole_body`, else to its
-        arm group, and waits for the longer of `timeout_s` and min_move_timeout_s. A
+        arm group, and waits for the longer of `timeout_s` and min_move_timeout_s.
+        Before the goal, the commander's finger allowance is set to `touch` when it
+        may differ (CommanderClient.set_gripper_touch). A
         reported success is the commander's own check: a pose goal has no joint
         table to compare a reading with. Its plan-only status means nothing moved,
         so it is a failure here. Every message ends with the arm sentence, from a
@@ -372,6 +380,7 @@ class RosArms:
         answers.check_reach(pose, whole_body=whole_body, cartesian=cartesian, timeout_s=timeout_s)
         group = (WHOLE_BODY_GROUPS if whole_body else ARM_GROUPS)[arm]
         try:
+            self._set_touch(touch)
             status = self._client.go_to_pose(
                 group, pose, max(timeout_s, self._min_move_timeout_s), cartesian=cartesian
             )
@@ -466,6 +475,31 @@ class RosArms:
                 f"walkie-ros. {self.state().sentence()}",
             )
         return [targets[joint] for joint in order]
+
+    def _set_touch(self, touch: bool) -> None:
+        """Set the commander's finger allowance to `touch`, unless it was last set so.
+
+        Raises the client's StepError, after which the allowance is unknown.
+        """
+        if self._touch is touch:
+            return
+        self._touch = None
+        self._client.set_gripper_touch(touch)
+        self._touch = touch
+
+    def _release_touch(self) -> None:
+        """After an open: the fingers hold nothing, so they may no longer touch the octomap.
+
+        Only after this object set it to True: the commander starts with it False, so an
+        open costs no call otherwise. The open has already happened, so a failed reset
+        is logged, not raised, and the next reach sets the allowance it needs.
+        """
+        if self._touch is not True:
+            return
+        try:
+            self._set_touch(False)
+        except StepError as e:
+            logger.warning("Could not reset the gripper octomap allowance: %s", e.message)
 
     def _move_error(self, prefix: str, error: StepError) -> StepError:
         """The answer to a move the commander did not finish as asked, `prefix` first."""

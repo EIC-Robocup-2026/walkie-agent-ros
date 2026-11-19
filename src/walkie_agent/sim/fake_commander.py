@@ -7,9 +7,10 @@ names and types:
   - /go_to_pose          my_robot_interfaces/action/GoToPose, for one arm or one
     whole-body group, which refuses a Cartesian path as the commander does
   - /get_joint_states    my_robot_interfaces/srv/GetJointStates
-  - /bimanual_commander/get_parameters, rclpy's parameter service of a node
-    named bimanual_commander, with grasp_detect_min and grasp_detect_max
-    declared as the commander declares them
+  - /bimanual_commander/get_parameters and /bimanual_commander/set_parameters,
+    rclpy's parameter services of a node named bimanual_commander, with
+    grasp_detect_min, grasp_detect_max and allow_gripper_vs_octomap declared
+    as the commander declares them
 and listens on /trajectory_execution_event (std_msgs/String) as MoveIt's
 trajectory execution manager does.
 
@@ -246,6 +247,9 @@ class FakeCommander(Node):
         self.declare_parameter("grasp_close_threshold", 0.03)
         self.declare_parameter("grasp_detect_min", 0.005)
         self.declare_parameter("grasp_detect_max", 0.044)
+        # Whether the fingers may touch the octomap. The fake has no planning
+        # scene, so it only keeps the value.
+        self.declare_parameter("allow_gripper_vs_octomap", False)
 
         # -- What it received, for tests --
         # (group, positions) of every joint goal, and (group, position) of

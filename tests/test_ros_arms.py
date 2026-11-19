@@ -1554,3 +1554,89 @@ def test_a_reach_waits_for_at_least_the_floor(client, token, fake_commander, mon
     RosArms(client, token, sim=True).reach("right", HAND, timeout_s=5.0)
 
     assert sent == [60.0, 5.0]
+
+
+# -- touch: the fingers and the octomap ----------------------------------------------
+
+
+def touches(client, monkeypatch) -> list[bool]:
+    """Record every set_gripper_touch() the client gets, and let it through."""
+    sets: list[bool] = []
+    real = client.set_gripper_touch
+
+    def recording(allow, timeout_s=None):
+        sets.append(allow)
+        real(allow, timeout_s)
+
+    monkeypatch.setattr(commander_module, "TOUCH_SETTLE_S", 0.0)
+    monkeypatch.setattr(client, "set_gripper_touch", recording)
+    return sets
+
+
+def test_a_touching_reach_sets_the_allowance_and_an_open_clears_it(
+    arms, client, fake_commander, monkeypatch
+):
+    sets = touches(client, monkeypatch)
+
+    arms.reach("right", HAND, whole_body=True, timeout_s=5.0)
+    arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is True
+    arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+    arms.gripper("right", "close")
+    arms.gripper("right", "open")
+
+    # Set once per change, before the goal; an open after a close clears it.
+    assert sets == [False, True, False]
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+    assert len(fake_commander.pose_goals) == 3
+
+
+def test_an_open_costs_no_call_unless_the_allowance_was_set(arms, client, monkeypatch):
+    sets = touches(client, monkeypatch)
+
+    arms.gripper("right", "open")
+    arms.reach("right", HAND, whole_body=True, timeout_s=5.0)
+    arms.gripper("right", "open")
+
+    assert sets == [False]
+
+
+def test_a_reach_whose_allowance_cannot_be_set_sends_no_goal(
+    arms, client, fake_commander, monkeypatch
+):
+    sets = []
+
+    def refused(allow, timeout_s=None):
+        sets.append(allow)
+        raise StepError(ErrorCode.TIMEOUT, "The commander did not answer in time.")
+
+    monkeypatch.setattr(client, "set_gripper_touch", refused)
+
+    error = error_of(lambda: arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0))
+
+    assert error.code == ErrorCode.TIMEOUT
+    assert error.message.startswith(
+        "Could not move the right hand: The commander did not answer in time."
+    )
+    assert fake_commander.pose_goals == []
+    # The allowance is unknown now, so the next reach sets it again.
+    with pytest.raises(StepError):
+        arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+    assert sets == [True, True]
+
+
+def test_a_failed_reset_after_an_open_is_logged_and_the_open_stands(
+    arms, client, monkeypatch, caplog
+):
+    touches(client, monkeypatch)
+    arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+
+    def refused(allow, timeout_s=None):
+        raise StepError(ErrorCode.UNAVAILABLE, "The service is gone.")
+
+    monkeypatch.setattr(client, "set_gripper_touch", refused)
+    with caplog.at_level(logging.WARNING, logger=arms_module.__name__):
+        opened = arms.gripper("right", "open")
+
+    assert opened.outcome == "moved"
+    assert "Could not reset the gripper octomap allowance: The service is gone." in caplog.text

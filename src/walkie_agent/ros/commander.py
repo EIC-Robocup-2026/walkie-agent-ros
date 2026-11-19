@@ -4,8 +4,9 @@ The arm capability and the drive check reach the arms only through it. It uses t
 names ADR-0021 allows: /set_joint_position and /control_gripper (my_robot_interfaces
 actions), /go_to_pose for pick_object's reaches only (decision PK-4), /get_joint_states
 (a service), the commander's
-/bimanual_commander/get_parameters, read for the grasp detection band only, and
-"stop" on /trajectory_execution_event, which stop() publishes. Each name goes through
+/bimanual_commander/get_parameters, read for the grasp detection band only,
+/bimanual_commander/set_parameters, written for allow_gripper_vs_octomap only, which
+pick_object's grasp needs (decision PK-4), and "stop" on /trajectory_execution_event, which stop() publishes. Each name goes through
 policy.check_endpoint() when the client is made, as RosBase's does.
 
 It is created once per agent from the connector and the runtime's CancelToken: its
@@ -94,8 +95,8 @@ from action_msgs.msg import GoalStatus
 from action_msgs.srv import CancelGoal
 from my_robot_interfaces.action import ControlGripper, GoToPose, SetJointPosition
 from my_robot_interfaces.srv import GetJointStates
-from rcl_interfaces.msg import ParameterType
-from rcl_interfaces.srv import GetParameters
+from rcl_interfaces.msg import Parameter, ParameterType, ParameterValue
+from rcl_interfaces.srv import GetParameters, SetParameters
 from rclpy.action import ActionClient
 from rclpy.action.client import ClientGoalHandle
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
@@ -146,6 +147,19 @@ GET_JOINT_STATES_SERVICE = "/get_joint_states"
 GET_PARAMETERS_SERVICE = "/bimanual_commander/get_parameters"
 # The parameters a close's `grasped` is judged by, lowest first, in metres.
 GRASP_BAND_PARAMETERS = ("grasp_detect_min", "grasp_detect_max")
+# The commander node's parameter service for writes, used for TOUCH_PARAMETER and
+# nothing else (decision PK-4).
+SET_PARAMETERS_SERVICE = "/bimanual_commander/set_parameters"
+# While true, MoveIt lets both grippers' finger links touch the octomap, the voxels
+# the cameras sensed, and nothing else: the fingers still avoid the robot itself and
+# explicit collision objects. A grasp needs it, since the object it closes on is
+# voxels too. The commander applies a change to MoveIt's planning scene on a timer
+# 0.2 s after it accepts it.
+TOUCH_PARAMETER = "allow_gripper_vs_octomap"
+# How long set_gripper_touch() waits after the commander accepts a change, so the
+# planning scene holds it before the next plan: the commander's 0.2 s timer and its
+# two planning scene calls, under a loaded simulation.
+TOUCH_SETTLE_S = 1.0
 # MoveIt's trajectory execution event topic. "stop" on it stops every running
 # MoveIt execution, including those of other programs, but not a gripper.
 STOP_TOPIC = "/trajectory_execution_event"
@@ -448,6 +462,7 @@ class CommanderClient:
         self._go_to_pose_name = check_endpoint(node, GO_TO_POSE_ACTION, forbidden)
         self._joint_states_name = check_endpoint(node, GET_JOINT_STATES_SERVICE, forbidden)
         self._parameters_name = check_endpoint(node, GET_PARAMETERS_SERVICE, forbidden)
+        self._set_parameters_name = check_endpoint(node, SET_PARAMETERS_SERVICE, forbidden)
         self._stop_topic = check_endpoint(node, STOP_TOPIC, forbidden)
         # Created here, once: rclpy entities must not be created per call. In
         # a group of their own, so the node's other callbacks cannot hold up
@@ -458,6 +473,9 @@ class CommanderClient:
         )
         self._parameters = node.create_client(
             GetParameters, self._parameters_name, callback_group=group
+        )
+        self._set_parameters = node.create_client(
+            SetParameters, self._set_parameters_name, callback_group=group
         )
         self._set_joint_position = ActionClient(
             node, SetJointPosition, self._set_joint_position_name, callback_group=group
@@ -730,6 +748,55 @@ class CommanderClient:
                 f"The commander's {self._parameters_name} did not answer within {timeout_s:g} s.",
             ) from None
         return _band(response)
+
+    def set_gripper_touch(self, allow: bool, timeout_s: float | None = None) -> None:
+        """Let both grippers' fingers touch the sensed octomap, or stop letting them.
+
+        Sets the commander's TOUCH_PARAMETER, then waits TOUCH_SETTLE_S so its planning
+        scene holds the change before the next plan. A grasp needs it: the object the
+        fingers close on is octomap voxels, and MoveIt otherwise finds no path into
+        them. Holds the call lock, so it never changes the scene under a running goal.
+        Raises StepError CANCELLED once the token is set, PRECONDITION_FAILED while a
+        goal is outstanding, UNAVAILABLE when the service is not discovered, TIMEOUT
+        when the commander does not answer within `timeout_s` (by default the client's
+        `read_timeout_s`), and SKILL_FAILED when it refuses the value.
+        """
+        if not isinstance(allow, bool):
+            raise ValueError(f"allow must be a bool, not {allow!r}")
+        timeout_s = self._read_bound(timeout_s)
+        deadline = _deadline(timeout_s)
+        what = f"the change of the commander's {TOUCH_PARAMETER}"
+        with self._exclusive(f"set {TOUCH_PARAMETER}", deadline):
+            self._wait_ready(
+                self._set_parameters.service_is_ready,
+                f"{self._set_parameters_name} service",
+                deadline,
+                what,
+            )
+            value = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=allow)
+            future = self._set_parameters.call_async(
+                SetParameters.Request(parameters=[Parameter(name=TOUCH_PARAMETER, value=value)])
+            )
+            try:
+                response = self._wait(future, deadline, what)
+            except StepError as e:
+                self._set_parameters.remove_pending_request(future)
+                if e.code == ErrorCode.CANCELLED:
+                    raise
+                raise StepError(
+                    ErrorCode.TIMEOUT,
+                    f"The commander's {self._set_parameters_name} did not answer within "
+                    f"{timeout_s:g} s.",
+                ) from None
+            results = list(getattr(response, "results", ()))
+            if len(results) != 1 or not results[0].successful:
+                reason = results[0].reason if len(results) == 1 else "no result"
+                raise StepError(
+                    ErrorCode.SKILL_FAILED,
+                    f"The commander refused {TOUCH_PARAMETER}={allow}: {reason or 'no reason'}.",
+                )
+            if TOUCH_SETTLE_S > 0:
+                self._wait_slice(_never, TOUCH_SETTLE_S, what)
 
     def joint_names(self, group: str, timeout_s: float | None = None) -> tuple[str, ...]:
         """The commander's joint order for `group`: from the last read, else read now.
@@ -1054,6 +1121,7 @@ class CommanderClient:
         self._go_to_pose.destroy()
         self._node.destroy_client(self._joint_states)
         self._node.destroy_client(self._parameters)
+        self._node.destroy_client(self._set_parameters)
         self._node.destroy_publisher(self._stop_publisher)
 
     # -- Helpers ----------------------------------------------------------------

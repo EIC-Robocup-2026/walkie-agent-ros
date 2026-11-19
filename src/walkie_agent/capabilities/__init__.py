@@ -221,8 +221,10 @@ class Arms(Protocol):
     returns the commander's status. `whole_body` plans for the base, the
     lift and the arm together, the one motion that moves the lift
     (decision PK-5); `cartesian` moves the hand along a straight line, for
-    the arm alone. The arm then rests in no named pose, so it is not safe
-    for driving. It raises StepError REFUSED for a pose or a timeout that
+    the arm alone; `touch` lets both grippers' fingers touch the sensed
+    octomap, which a grasp needs, and stays in effect until a reach without
+    it or the next open. The arm then rests in no named pose, so it is not
+    safe for driving. It raises StepError REFUSED for a pose or a timeout that
     is not finite, or a whole-body straight line; SKILL_FAILED when the
     commander fails the goal or only planned it; and the rest as move_to()
     does. Every message ends with the arm sentence.
@@ -253,6 +255,7 @@ class Arms(Protocol):
         *,
         whole_body: bool = False,
         cartesian: bool = False,
+        touch: bool = False,
         timeout_s: float = 60.0,
     ) -> str: ...
 
@@ -298,6 +301,7 @@ class UnavailableArms:
         *,
         whole_body: bool = False,
         cartesian: bool = False,
+        touch: bool = False,
         timeout_s: float = 60.0,
     ) -> str:
         self._refuse()

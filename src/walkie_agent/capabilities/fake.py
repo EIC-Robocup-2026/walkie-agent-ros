@@ -579,6 +579,7 @@ class FakeRobot:
         *,
         whole_body: bool = False,
         cartesian: bool = False,
+        touch: bool = False,
         timeout_s: float = 60.0,
     ) -> str:
         self._require_arms()

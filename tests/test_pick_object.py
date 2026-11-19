@@ -76,9 +76,14 @@ def verbs(robot: FakeRobot) -> list[str]:
     return [call["verb"] for call in robot.calls if call["verb"] not in READS]
 
 
-def reaches(robot: FakeRobot) -> list[tuple[bool, bool, float]]:
+def reaches(robot: FakeRobot) -> list[tuple[bool, bool, bool, float]]:
     return [
-        (call["args"]["whole_body"], call["args"]["cartesian"], call["args"]["timeout_s"])
+        (
+            call["args"]["whole_body"],
+            call["args"]["cartesian"],
+            call["args"]["touch"],
+            call["args"]["timeout_s"],
+        )
         for call in robot.calls
         if call["verb"] == "arms.reach"
     ]
@@ -132,8 +137,13 @@ def test_a_pick_drives_to_the_stand_off_reaches_closes_and_lifts(arm_poses):
     assert move["args"]["turn_deg"] == pytest.approx(0.0)
     grippers = [call["args"]["state"] for call in robot.calls if call["verb"] == "arms.gripper"]
     assert grippers == ["open", "close"]
-    # The whole-body reach to the pre-grasp pose, then the straight approach and lift.
-    assert reaches(robot) == [(True, False, 90.0), (False, True, 30.0), (False, True, 30.0)]
+    # The whole-body reach to the pre-grasp pose, then the straight approach and lift,
+    # on which the fingers may touch the octomap.
+    assert reaches(robot) == [
+        (True, False, False, 90.0),
+        (False, True, True, 30.0),
+        (False, True, True, 30.0),
+    ]
     arms = {call["args"]["arm"] for call in robot.calls if call["verb"].startswith("arms.")}
     assert arms == {"right"}
 

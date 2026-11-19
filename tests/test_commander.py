@@ -2537,6 +2537,73 @@ def test_a_set_token_ends_the_grasp_band_read(client, token):
     )
 
 
+def test_the_finger_allowance_is_set_on_the_commander_and_then_settles(
+    client, fake_commander, monkeypatch
+):
+    waits = []
+    real = client._wait_slice
+
+    def recording(done, seconds, what):
+        waits.append((seconds, what))
+        return real(done, min(seconds, 0.01), what)
+
+    monkeypatch.setattr(client, "_wait_slice", recording)
+
+    client.set_gripper_touch(True)
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is True
+    client.set_gripper_touch(False)
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+
+    settles = [seconds for seconds, what in waits if what.endswith("allow_gripper_vs_octomap")]
+    assert settles.count(commander_module.TOUCH_SETTLE_S) == 2
+
+
+def test_a_finger_allowance_the_commander_refuses_is_a_skill_failure(
+    client, fake_commander, monkeypatch
+):
+    monkeypatch.setattr(commander_module, "TOUCH_SETTLE_S", 0.0)
+    fake_commander.undeclare_parameter("allow_gripper_vs_octomap")
+
+    with pytest.raises(StepError) as error:
+        client.set_gripper_touch(True)
+
+    assert error.value.code == "SKILL_FAILED"
+    assert error.value.message.startswith(
+        "The commander refused allow_gripper_vs_octomap=True: "
+    )
+
+
+def test_the_finger_allowance_waits_out_a_running_goal(client, fake_commander, monkeypatch):
+    monkeypatch.setattr(commander_module, "TOUCH_SETTLE_S", 0.0)
+    fake_commander.move_time_s = 2.0
+    hand = HandPose(0.6, -0.2, 0.8, 0.0, math.pi / 2, 0.3, "map")
+
+    reaching = Call(client.go_to_pose, "right_arm", hand, 10.0)
+    assert wait_until(lambda: accepted_handle(client) is not None)
+    with pytest.raises(StepError) as error:
+        client.set_gripper_touch(True)
+    reaching.result()
+
+    assert error.value.code == "PRECONDITION_FAILED"
+    assert "allow_gripper_vs_octomap" in error.value.message
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+
+
+def test_a_finger_allowance_that_is_not_a_bool_is_a_bug(client):
+    with pytest.raises(ValueError):
+        client.set_gripper_touch(1)
+
+
+def test_a_set_token_ends_the_finger_allowance_before_it_is_sent(client, fake_commander, token):
+    token.cancel()
+
+    with pytest.raises(StepError) as error:
+        client.set_gripper_touch(True)
+
+    assert error.value.code == "CANCELLED"
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+
+
 def test_a_gripper_goal_never_answered_times_out(
     client, fake_commander, monkeypatch, module_clock
 ):
@@ -2810,6 +2877,7 @@ def test_a_set_token_ends_the_wait_for_the_commander(
         commander_module.CONTROL_GRIPPER_ACTION,
         commander_module.GET_JOINT_STATES_SERVICE,
         commander_module.GET_PARAMETERS_SERVICE,
+        commander_module.SET_PARAMETERS_SERVICE,
         commander_module.STOP_TOPIC,
     ],
 )

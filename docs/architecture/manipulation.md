@@ -346,7 +346,10 @@ action's `/_action/feedback` and `/_action/status` topics.
 **Dedicated names** are used only by their own tool, and hidden from every
 generic tool: `/navigate_to_pose`, `/set_joint_position`,
 `/control_gripper`, `/get_joint_states`, and later `/run_skill` and
-`/list_skills`.
+`/list_skills`. The commander client also writes `allow_gripper_vs_octomap`
+through `/bimanual_commander/set_parameters` for `pick_object`'s grasp, and no
+other parameter ([ADR-0021](decisions/0021-arm-control-through-commander.md)).
+No tool uses that service.
 
 **Forbidden names** are never touched by any tool:
 

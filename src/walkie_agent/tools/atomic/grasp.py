@@ -178,7 +178,12 @@ def _grasp(ctx: Ctx, settings: PickSettings, plan: PickPlan, label: str) -> str:
             f"{ctx.arms.state().sentence()}",
         )
     _reach(ctx, settings, plan.pregrasp, f"The reach toward {label} failed: ", whole_body=True)
-    _reach(ctx, settings, plan.grasp, f"The approach to {label} failed: ", cartesian=True)
+    # The fingers close on the object's octomap voxels, so from here on they may touch
+    # the octomap. The allowance stays until the next open (RosArms).
+    _reach(
+        ctx, settings, plan.grasp, f"The approach to {label} failed: ", cartesian=True,
+        touch=True,
+    )
     closed = ctx.arms.gripper(arm, "close")
     if closed.outcome != "holding":
         why = _NOT_HELD.get(closed.outcome, "the close did not hold it").format(arm=arm)
@@ -190,6 +195,7 @@ def _grasp(ctx: Ctx, settings: PickSettings, plan: PickPlan, label: str) -> str:
     _reach(
         ctx, settings, plan.lift, f"The {arm} hand holds {label}, but the lift failed: ",
         cartesian=True,
+        touch=True,
     )
     return (
         f"Picked up {label} with the {arm} hand and lifted it. Before you drive, move the "
@@ -205,6 +211,7 @@ def _reach(
     *,
     whole_body: bool = False,
     cartesian: bool = False,
+    touch: bool = False,
 ) -> None:
     """One reach of the settings' arm, with `prefix` before its error's message.
 
@@ -214,7 +221,12 @@ def _reach(
     timeout_s = settings.reach_timeout_s if whole_body else settings.cartesian_timeout_s
     try:
         ctx.arms.reach(
-            settings.arm, pose, whole_body=whole_body, cartesian=cartesian, timeout_s=timeout_s
+            settings.arm,
+            pose,
+            whole_body=whole_body,
+            cartesian=cartesian,
+            touch=touch,
+            timeout_s=timeout_s,
         )
     except StepError as error:
         raise type(error)(error.code, f"{prefix}{error.message}") from None

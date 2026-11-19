@@ -12,6 +12,7 @@ It was written on 2026-11-19 for these checkouts on the robot's PC
 | `~/Project/robocup_experiments/walkie-agent-ros` | `f9b7a3f` (`feat/mahoraga-demo`) | The agent, voice and every check on this page |
 | `~/Project/robocup_experiments/walkie-vision` | `ad7c833` (`feat/scene-graph-prep`) | People and objects from the head ZED |
 | `~/Project/robocup_experiments/walkie-database` | `41dae92` (`feat/scene-graph-prep`) | People memory, and the optional object memory |
+| `~/Project/robocup_experiments/walkie-ros-fullbody` | `feat/sim-bottle-pick` | Whole-body MoveIt ([Optional C](#optional-c-the-whole-body-moveit-test) and [E](#optional-e-pick-up-a-remembered-object)), and `$MAP` |
 
 The robot runs walkie-ros's **working tree**, not `fcbac5c`. Its uncommitted
 edits change the launch files this page uses. Every walkie-ros command here was
@@ -82,6 +83,9 @@ terminal above, plus Save map, the Foxglove bridge and a test task. Open
 - The text-task buttons wait at most 10 s for the agent. If no agent listens,
   they send nothing and show as failed. Start the agent first, then click
   again.
+- Groups **5** to **10** are the pick test
+  ([Optional E](#optional-e-pick-up-a-remembered-object)). Group **0** holds
+  **Stop the task**, the typed stop of [step 8](#8-stop-and-reset).
 - **Foxglove bridge** only lets clients watch. It leaves out publishing,
   parameters and service calls, so a laptop on the LAN cannot drive the robot
   through it.
@@ -115,6 +119,11 @@ systemd-run --user --unit=walkie-commander-experiments --working-directory=$R \
     --setenv=WALKIE_COMMANDER_PORT=8083 "--setenv=WALKIE_COMMANDER_TITLE=Walkie Commander (experiments)" \
     --property=KillMode=mixed --property=TimeoutStopSec=20 $R/.venv/bin/python main.py
 ```
+
+`--day` (default: today) names the `~/walkie-data/<day>` folder of the T8
+buttons. For the object memory, pass the day you built the seed, such as
+`--day 2026-11-19`. The ids come from the button names, so writing the buttons
+again keeps each card's output history.
 
 ### Start every terminal the same way
 
@@ -1141,8 +1150,12 @@ no agent, vision or database. Its checkout is
   stage 2, which powers the arms, do the CAN driver check in
   [step 2](#2-before-you-start).
 - Its stage 3, whole-body goals that move the lift on the real robot, is held
-  back, because the lift node does not follow a plan's timing. That guide
-  explains why.
+  back there, because the lift node does not follow a plan's timing. The pick
+  runs it anyway, on this page's graph
+  ([Optional E](#optional-e-pick-up-a-remembered-object)), as the owner
+  decided (PK-5).
+- The clone moves to `feat/sim-bottle-pick` for the pick. That branch adds
+  only simulation worlds over `feat/moveit-full-body`.
 
 ## Optional D: web search
 
@@ -1170,6 +1183,149 @@ weather or a recipe with Tavily. It needs a Tavily key in the agent's `.env`.
 Without the key, the agent stops at once with one `walkie-agent:` line that
 names `TAVILY_API_KEY`. The web search has only been tested on recorded
 answers, not against Tavily or on the robot (decision PK-7).
+
+In our commander, **T11 agent, pick and web search** passes `--web-search`, and
+**Ask the web (test task)** asks it a question that moves nothing
+([Optional E](#optional-e-pick-up-a-remembered-object)).
+
+## Optional E: pick up a remembered object
+
+The agent fetches an object it remembers, such as _"Bring me the water
+bottle."_ Its `pick_object` tool finds the object in the object memory, drives
+to a spot facing it, reaches with the right arm through whole-body MoveIt,
+closes the gripper and lifts the object 10 cm. Then the agent moves the arm to
+a pose that is safe for driving and brings the object back.
+
+This is stage 3 of the whole-body guide (`docs/guides/whole-body-real-robot.md`
+in `walkie-ros-fullbody`), which that guide holds back. The owner accepted
+running it (decision PK-5).
+
+!!! danger "Whole-body goals move the base, the lift and the right arm together"
+    - **The lift ignores the plan's timing and rejects a cancel.** It drives
+      straight to the plan's last height at up to 3 cm/s. A stop halts the arm
+      and the base, and the lift finishes its move.
+    - **There is no e-stop.** Keep a hand on the robot's power switch for the
+      whole test. A second person on it is better.
+    - **Only the pre-grasp reach** goes through `whole_body_right` and may move
+      the base and the lift. The approach and the 10 cm lift move the right arm
+      alone, in straight lines.
+    - **The pick has never run on the real robot.** It was written for the
+      Chula MuJoCo simulation, and its numbers (`config/pick.toml`) are
+      provisional.
+
+### What runs
+
+Do the basic run, [Optional A](#optional-a-the-arms) and
+[Optional B](#optional-b-the-object-memory) first, on the same map. The pick
+uses all of them, with whole-body MoveIt in place of T5 and T6.
+
+| Card in our commander | Group | Checkout |
+| --- | --- | --- |
+| T1 lift homing, T2 bringup (with the arms), T3 joystick | 1 base | team's walkie-ros |
+| T4 Nav2 on $MAP | 2 map | team's walkie-ros |
+| T9 speech out | 4 agent | walkie-agent-ros |
+| P1 whole-body base parts, P2 MoveIt, whole body, P3 commander, whole body | 5 pick | walkie-ros-fullbody |
+| T7 vision, memory task, T8 database, object memory, T11 agent, pick and web search | 6 pick | each its own |
+
+- **P1** is `whole_body_real.launch.py static_map_odom:=false
+  collision_monitor:=false`: the base follower and the hand target. AMCL gives
+  `map` to `odom`, and Nav2's own collision monitor guards the base, as the
+  guide's "What this stage relies on" says for a run with a map.
+- **P2** and **P3** are MoveIt and the arm commander with
+  `base_mode:=whole_body`. They refuse to start while another MoveIt or arm
+  commander runs, such as T5 or T6, since both would drive the same
+  controllers.
+- **Every part joins this page's graph** (domain 23, the router on 7447), not
+  the guide's private router on 7499. The pick needs Nav2, vision, the
+  database and the agent on the same graph. So no teammate's joystick or
+  teleop may run on domain 23 during the test.
+- **T3, the joystick, keeps running** for button 0, which cancels Nav2's
+  goals. Push the stick only to stop the robot: it bypasses the collision
+  monitor and overrides the base follower.
+- **T11 agent, pick and web search** needs `TAVILY_API_KEY` in `.env`
+  ([Optional D](#optional-d-web-search)). Without it, the button stops at once
+  with one `walkie-agent:` line. To run without web search, type its command
+  without `--web-search` in the Shell tab.
+
+### Check first
+
+1. Every check of [step 2](#2-before-you-start), the CAN check above all. It
+   must print exactly the three expected lines.
+2. The whole-body guide's "Before you power the arms" list: the space around
+   the arms and the lift is clear, the grippers are empty, and no hand is near
+   them. If the right arm's joint 2 is locked (`right_joint2_fixed`), do not
+   run the pick: it uses the right arm, and `whole_body_right` with a locked
+   joint 2 is untested.
+3. At least 1.5 m of free floor around the robot's path and around the table.
+   Only the bottle, upright, near the table's edge on the robot's side, and
+   nothing else within the arm's reach.
+4. The object memory store for today exists: Optional B steps a to c ran, so
+   `~/walkie-data/<day>/memory.db` is there. **T8 database, object memory**
+   refuses to start without it, and makes the map ID from `$MAP` itself.
+5. Someone holds the robot's power switch.
+
+### Click in this order
+
+Wait for each card's ready line before the next. Never use **Run group** here.
+
+1. **T1 lift homing**. Ready: `Homing Successful. Origin set.`
+2. **T2 bringup** (with the arms). It warns, then waits 5 s. Ready as in
+   [step 3](#bringup-t2).
+3. **T3 joystick**.
+4. **T4 Nav2 on $MAP**. Ready: `Managed nodes are active`. Set the initial
+   pose ([step 5](#nav2-on-the-saved-map-t4)), and check it with
+   **Robot pose on the map**.
+5. **T9 speech out**.
+6. **T7 vision, memory task**, then **T8 database, object memory**. Ready as
+   in [Optional B](#optional-b-the-object-memory), steps d and e.
+7. **P1 whole-body base parts**. It warns, then waits 5 s. **P2 MoveIt, whole
+   body**. Ready: `MoveGroup context initialization complete`. **P3
+   commander, whole body**, which also warns first. Ready:
+   `Bimanual Commander Node Initialized`.
+8. **P check: MoveIt, commander, collision monitor**. It must print
+   `OK: MoveIt runs`, `OK: commander runs` and `active`.
+9. **P slow whole-body plans**. It sets the commander's whole-body velocity
+   and acceleration scaling to 0.3, as the guide asks before the first goal.
+10. **P lift to 74 cm**, alone in group 8. Look along the whole travel first.
+    Wait until the lift stops at the top.
+11. **T11 agent, pick and web search**. Ready:
+    `Walkie's agent is running, with the hri tool set.`
+12. **Ask the web (test task)**, if you set the Tavily key. It moves nothing.
+13. Let the robot see the bottle for a few seconds, from where it stands or
+    driven with the joystick. **P check: object memory status** twice:
+    `arrays_received` climbs. Then **Where did you see a bottle? (test task)**.
+    The reply must place the bottle. Vision's memory task labels it `bottle`.
+14. **P bring me the water bottle**, alone in group 9. It warns, waits 5 s,
+    then sends the task. Watch the robot, the console and
+    `logs/agent-tools.jsonl`.
+
+**To stop at any moment,** click **Stop the task** in group 0, or press
+joystick button 0, and cut the power if anything still moves. The lift
+finishes its move either way.
+
+### Afterwards
+
+1. **Stop the task**, if the agent still works.
+2. Hold the bottle, and type in the Shell tab:
+   `pixi run --frozen ros2 topic pub -w 1 --once --max-wait-time-secs 10 /from_human rai_interfaces/msg/HRIMessage "{text: 'Open your right gripper.'}"`
+3. **P lift to 74 cm**, and wait until the lift stops. `home` needs the lift
+   at 0.50 m or higher, or the fingers hit the base.
+4. **P both arms home**, alone in group 10. Wait until the arms are still.
+5. Stop the cards one at a time, in this order: T11, T9, T8, T7, P3, P2, P1,
+   T4, T3, T2, and T1 last ([step 8](#8-stop-and-reset)).
+
+### Not verified
+
+- No part of this has run on the robot: not the pick, not whole-body MoveIt
+  from `walkie-ros-fullbody` beside the team's bringup and Nav2, and not the
+  base follower feeding Nav2's collision monitor.
+- MoveIt plans with `walkie-ros-fullbody`'s robot model, while the team's
+  bringup publishes its own. They are expected to match, but this was not
+  compared.
+- The hand's orientation for the side grasp, the stand-off distance and the
+  grasp band were tuned in simulation at most.
+- Whether the object memory finds a "water bottle" when vision stores a
+  `bottle`.
 
 ## 8. Stop and reset
 

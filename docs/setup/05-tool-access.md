@@ -68,8 +68,9 @@ def check_endpoint(node, name, forbidden=FORBIDDEN_NAMES):
   `/go_to_pose` is allowed for `pick_object` alone, whose hand targets come from the
   object memory and never from the model (decision PK-4).
 - The three lift names: the agent never commands the lift, whose action rejects every
-  cancel. The whole-body reach of `pick_object` moves the lift as MoveIt plans it
-  (decision PK-5).
+  cancel. `pick_object` alone moves the lift through MoveIt: its whole-body reach
+  and its straight moves as MoveIt plans them, and its move home to the lift's
+  SRDF home height (decision PK-5).
 - `/walkie/reset`: the agent must not wipe its own memory.
 - `/walkie/task`: the agent must not queue its own tasks or seed locked steps.
 - `/walkie/todos`: this is the operator's view, and only `update_todos` edits the list.

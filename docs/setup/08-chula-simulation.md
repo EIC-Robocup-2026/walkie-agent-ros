@@ -432,24 +432,44 @@ the tool log shows each as a call:
 
 1. **Find it.** The first object of that name the memory holds with a full
    position, centre height included.
-2. **Drive to a stand-off pose.** 0.55 m back from the object's centre, facing
-   it, through `move_relative`. When that pose is more than 3 m away, a `go_to`
-   to the named place within 2 m of the object comes first. If Nav2 cannot
-   reach it, the headings 30° and 60° to either side are tried in turn.
-3. **Reach.** The right gripper opens, and the hand goes to a pre-grasp pose
-   0.10 m back from the grasp pose through `whole_body_right`, which may move
-   the base, the lift and the arm. The hand then moves in a straight line
-   through `right_arm` until its tool centre point is on the object's centre.
+   A name the arena uses, such as "water bottle", also finds what the detector
+   labelled with its last word, "bottle".
+2. **Drive to a stand-off pose.** 0.65 m back from the object's centre along
+   the approach, and 0.20 m to the left of it, so the object is ahead of the
+   right hand, through `move_relative`. The first approach is the one whose
+   line the robot already stands on. When that pose is more than 3 m away, a
+   `go_to` to the named place within 2 m of the object comes first. If Nav2
+   cannot reach it, the headings 30° and 60° to either side are tried in turn.
+   A drive that Nav2 aborts within 0.10 m and 10° of its goal counts as
+   arrived, and so does a `go_to` that ends close enough to the stand-off pose.
+   The pick then reads the object's position from the memory again.
+3. **Reach.** The left arm goes to `standby`, out of the way, and the right
+   gripper opens. The hand goes to a pre-grasp pose 0.10 m back from the grasp
+   pose through `whole_body_right`, which may move the base, the lift and the
+   arm. Once the arm is at rest, the hand moves in a straight line through
+   `right_arm_lift` until its tool centre point is 0.02 m past the object's
+   centre. The fingers point along the approach from where the base stopped,
+   with the wrist camera bracket up. For the straight moves the agent sets the
+   commander's `allow_gripper_vs_octomap`, so the fingers may touch the octomap
+   voxels of the object. Without it MoveIt finds no path into the bottle.
 4. **Close and lift.** The gripper closes. Only when the commander's grasp
    band says that it holds something does the hand rise 0.10 m in a straight
-   line.
+   line. A close on nothing brings both arms home and says so.
+5. **Clear and home.** The hand moves in a straight line to 0.30 m ahead of
+   the base and 0.35 m to its right, at the lifted height. Then the right arm
+   goes home through `right_arm_lift`, with the lift at 0.7435 m, its SRDF home,
+   and the left arm goes home, which ends the octomap allowance. Without the
+   move clear, the swing home dragged the bottle across the table's corner and
+   out of the fingers.
 
-After a pick the right arm is in no travel-safe pose, so `go_to` refuses to
-drive until the agent moves it to one. All the numbers are in
-`config/pick.toml`, which the agent checks at startup and reads again at each
-pick, so a change applies to the next pick without a restart. The pick has
-passed its unit tests on `FakeRobot` only. It has not run in this simulation
-yet, so the numbers are provisional.
+After a pick both arms are home, a travel-safe pose, so the robot may drive
+with the object. All the numbers are in `config/pick.toml`, which the agent
+checks at startup and reads again at each pick, so a change applies to the
+next pick without a restart. On 2026-11-20 the pick of the kitchen table's
+water bottle from the spawn point held it through the drive back to the living
+room. The memory must have a fresh position for the object: after earlier runs
+the memory had merged the bottle's carried and reset positions into one 0.6 m
+object, so run `reset-memory` between runs that move objects.
 
 ## Watch it in Foxglove
 

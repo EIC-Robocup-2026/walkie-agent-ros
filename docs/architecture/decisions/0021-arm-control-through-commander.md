@@ -36,8 +36,8 @@ parameters, `grasp_detect_min` and `grasp_detect_max`, from
 grasp band. It reads nothing else there. For `pick_object` only (decision
 PK-4), it sets one parameter through `/bimanual_commander/set_parameters`:
 `allow_gripper_vs_octomap`, which lets the fingers touch the sensed octomap
-during the straight approach and the lift, and which the next open of a gripper
-clears. It sets nothing else.
+during the straight approach and the lift, and which the next joint move or open
+of a gripper clears. It sets nothing else.
 
 **Consequences**
 

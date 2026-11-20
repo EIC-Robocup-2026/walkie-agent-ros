@@ -1193,8 +1193,9 @@ In our commander, **T11 agent, pick and web search** passes `--web-search`, and
 The agent fetches an object it remembers, such as _"Bring me the water
 bottle."_ Its `pick_object` tool finds the object in the object memory, drives
 to a spot facing it, reaches with the right arm through whole-body MoveIt,
-closes the gripper and lifts the object 10 cm. Then the agent moves the arm to
-a pose that is safe for driving and brings the object back.
+closes the gripper and lifts the object 10 cm. It then moves the hand beside
+the base and brings both arms home, a pose that is safe for driving, and the
+agent brings the object back.
 
 This is stage 3 of the whole-body guide (`docs/guides/whole-body-real-robot.md`
 in `walkie-ros-fullbody`), which that guide holds back. The owner accepted
@@ -1207,8 +1208,9 @@ running it (decision PK-5).
     - **There is no e-stop.** Keep a hand on the robot's power switch for the
       whole test. A second person on it is better.
     - **Only the pre-grasp reach** goes through `whole_body_right` and may move
-      the base and the lift. The approach and the 10 cm lift move the right arm
-      alone, in straight lines.
+      the base. The approach, the 10 cm lift and the move beside the base go
+      through `right_arm_lift` in straight lines, and may move the lift. The
+      move home then raises the lift to 74 cm, its SRDF home.
     - **The pick has never run on the real robot.** It was written for the
       Chula MuJoCo simulation, and its numbers (`config/pick.toml`) are
       provisional.

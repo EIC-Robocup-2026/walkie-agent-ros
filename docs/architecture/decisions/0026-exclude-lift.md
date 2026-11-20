@@ -28,4 +28,8 @@ failure, not success, on timeout.
   work at whatever height the lift is at.
 - When W1 lands, a new ADR enables named lift heights (in metres) and
   supersedes this one.
+- Exception, decision PK-5: `pick_object` moves the lift. Its straight moves
+  go to the picking arm's `*_lift` group, and its move home sends that group a
+  joint goal with the lift at its SRDF home height, 0.7435 m. The LLM still
+  cannot choose a lift height, and no other tool moves the lift.
 <!-- --8<-- [end:body] -->

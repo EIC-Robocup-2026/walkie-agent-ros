@@ -1806,6 +1806,150 @@ def test_a_failed_restore_leaves_the_allowance_unknown_so_the_next_motion_sets_i
     assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
 
 
+@pytest.mark.parametrize("code", [ErrorCode.TIMEOUT, ErrorCode.CANCELLED])
+def test_a_set_the_client_gave_up_on_leaves_the_allowance_unknown(
+    arms, client, fake_commander, monkeypatch, code
+):
+    sets = touches(client, monkeypatch)
+    arms.reset_touch_at_start()
+    recording = client.set_gripper_touch
+
+    def given_up(allow, timeout_s=None):
+        # The commander still handles the request the client stopped waiting for.
+        recording(allow, timeout_s)
+        raise StepError(code, "The commander's set_parameters did not answer in time.")
+
+    monkeypatch.setattr(client, "set_gripper_touch", given_up)
+    with pytest.raises(StepError):
+        arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+    assert fake_commander.pose_goals == []
+    monkeypatch.setattr(client, "set_gripper_touch", recording)
+
+    def checked(group, positions, timeout_s):
+        assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+        return real(group, positions, timeout_s)
+
+    real = client.set_joint_position
+    monkeypatch.setattr(client, "set_joint_position", checked)
+    arms.move_to("home", "right")
+
+    # Not held as off: the joint move sets it off before its goal.
+    assert sets == [True, False]
+    assert len(fake_commander.joint_goals) == 1
+
+
+@pytest.mark.parametrize("lands", ["before", "after"])
+def test_an_enable_that_lands_late_around_a_reset_is_never_held_as_off(
+    arms, client, fake_commander, monkeypatch, lands
+):
+    sets = touches(client, monkeypatch)
+    arms.reset_touch_at_start()
+    recording = client.set_gripper_touch
+    late: list[bool] = []
+
+    def timed_out(allow, timeout_s=None):
+        sets.append(allow)
+        # The commander gets the request only later.
+        late.append(allow)
+        raise StepError(ErrorCode.TIMEOUT, "The commander's set_parameters did not answer.")
+
+    def land() -> None:
+        fake_commander.set_parameters([Parameter("allow_gripper_vs_octomap", value=late.pop())])
+
+    monkeypatch.setattr(client, "set_gripper_touch", timed_out)
+    with pytest.raises(StepError):
+        arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+    monkeypatch.setattr(client, "set_gripper_touch", recording)
+    read = client._parameters.call_async
+
+    def landing(request):
+        # Between the reset and its read back.
+        if late:
+            land()
+        return read(request)
+
+    if lands == "before":
+        land()
+        arms.restore_touch()
+        expected_sets = [True]
+    else:
+        monkeypatch.setattr(client._parameters, "call_async", landing)
+        with pytest.raises(StepError) as error:
+            arms.restore_touch()
+        assert error.value.code == ErrorCode.SKILL_FAILED
+        assert "still held allow_gripper_vs_octomap true" in error.value.message
+        assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is True
+        expected_sets = [True, False]
+    arms.move_to("home", "right")
+
+    # Off only when the commander confirmed it: after a reset the enable came
+    # before, no further set; after one it came after, the joint move sets it off.
+    assert sets == expected_sets
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+    assert fake_commander.pose_goals == []
+
+
+def test_a_reset_waits_for_a_change_of_the_allowance_already_running(
+    arms, client, fake_commander, monkeypatch
+):
+    sets = touches(client, monkeypatch)
+    recording = client.set_gripper_touch
+    real_restore = client.restore_gripper_touch
+    order: list[str] = []
+    written = threading.Event()
+    finish = threading.Event()
+
+    def slow(allow, timeout_s=None):
+        recording(allow, timeout_s)
+        order.append(f"set {allow}")
+        written.set()
+        # Written, and not yet returned to RosArms.
+        assert finish.wait(5.0)
+
+    def restore(timeout_s=None):
+        order.append("reset")
+        real_restore(timeout_s)
+
+    monkeypatch.setattr(client, "set_gripper_touch", slow)
+    monkeypatch.setattr(client, "restore_gripper_touch", restore)
+    reaching = Call(arms.reach, "right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+    try:
+        assert written.wait(5.0)
+        resetting = Call(arms.restore_touch)
+        resetting.thread.join(0.3)
+        assert resetting.thread.is_alive()
+        assert order == ["set True"]
+    finally:
+        finish.set()
+    resetting.result()
+    reaching.result()
+
+    assert order == ["set True", "reset"]
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+    # Held as off, as the commander holds it: a joint move costs no call.
+    arms.move_to("home", "right")
+    assert sets == [True]
+
+
+def test_a_change_of_the_allowance_that_never_ends_holds_back_a_gripper_goal(
+    arms, client, fake_commander, monkeypatch
+):
+    sets = touches(client, monkeypatch)
+    monkeypatch.setattr(CommanderClient, "touch_call_bound_s", property(lambda self: 0.1))
+    monkeypatch.setattr(arms_module, "TOUCH_LOCK_MARGIN_S", 0.1)
+    # The lock a change of the allowance holds, as a change that never ends would.
+    assert arms._touch_lock.acquire(timeout=1.0)
+    try:
+        with pytest.raises(StepError) as error:
+            arms.gripper("right", "open")
+    finally:
+        arms._touch_lock.release()
+
+    assert error.value.code == ErrorCode.TIMEOUT
+    assert "another change of it did not finish within 0.2 s" in error.value.message
+    assert (sets, fake_commander.gripper_goals) == ([], [])
+
+
 def test_a_joint_move_clears_the_allowance_before_its_goal(
     arms, client, fake_commander, monkeypatch
 ):

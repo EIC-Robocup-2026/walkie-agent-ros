@@ -2696,6 +2696,29 @@ def test_a_reset_of_the_finger_allowance_never_answered_times_out(client, monkey
     )
 
 
+def test_a_reset_that_a_later_change_turned_back_on_is_a_skill_failure(
+    client, fake_commander, monkeypatch
+):
+    monkeypatch.setattr(commander_module, "TOUCH_SETTLE_S", 0.0)
+    fake_commander.set_parameters([Parameter("allow_gripper_vs_octomap", value=True)])
+    read = client._parameters.call_async
+
+    def enabled_late(request):
+        # An earlier enable that the commander handled after the reset.
+        fake_commander.set_parameters([Parameter("allow_gripper_vs_octomap", value=True)])
+        return read(request)
+
+    monkeypatch.setattr(client._parameters, "call_async", enabled_late)
+    with pytest.raises(StepError) as error:
+        client.restore_gripper_touch()
+
+    assert (error.value.code, error.value.message) == (
+        "SKILL_FAILED",
+        "The commander still held allow_gripper_vs_octomap true after its reset to false: "
+        "another change came after it.",
+    )
+
+
 def test_a_reset_the_commander_refuses_is_a_skill_failure(client, fake_commander, monkeypatch):
     monkeypatch.setattr(commander_module, "TOUCH_SETTLE_S", 0.0)
     fake_commander.undeclare_parameter("allow_gripper_vs_octomap")

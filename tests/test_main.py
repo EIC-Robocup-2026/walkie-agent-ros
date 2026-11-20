@@ -164,6 +164,10 @@ class StandInCommander:
         return self.bounds.get("read_timeout_s", READ_TIMEOUT_S)
 
     @property
+    def touch_call_bound_s(self):
+        return 2 * self.read_timeout_s
+
+    @property
     def last_state(self):
         return self.state
 

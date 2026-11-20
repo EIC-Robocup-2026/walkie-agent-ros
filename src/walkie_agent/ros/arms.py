@@ -16,7 +16,9 @@ the constants that built it (CANCEL_OUTCOMES, PENDING_OUTCOMES).
 
 import logging
 import math
-from collections.abc import Mapping
+import threading
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 
 from walkie_agent.arm import answers
 from walkie_agent.arm.pick import HandPose
@@ -79,6 +81,11 @@ GAP_AGREEMENT_M = 0.002
 STILL_POLL_S = 0.5
 STILL_TOLERANCE_RAD = 0.01
 STILL_WAIT_S = 10.0
+
+# A change of the finger allowance waits for one already running at most this long
+# beyond the longest such a change takes (CommanderClient.touch_call_bound_s), which
+# covers the polls inside it.
+TOUCH_LOCK_MARGIN_S = 1.0
 
 # The answer to pick, place_on and hand_over: the robot has no grasp skill yet.
 NO_GRASP_SKILL = (
@@ -186,6 +193,10 @@ class RosArms:
         # after a set that failed. A run that ended mid-pick can leave it on, so the
         # commander's default says nothing about it.
         self._touch: bool | None = None
+        # Held through each change of the allowance and of _touch, so the commander
+        # gets the changes in the order _touch records them. Not the client's call
+        # lock: restore_touch() must go through while a goal holds that.
+        self._touch_lock = threading.Lock()
 
     # -- The Arms verbs ----------------------------------------------------------
 
@@ -459,14 +470,16 @@ class RosArms:
     def restore_touch(self) -> None:
         """Turn the commander's finger allowance off, also during a stop; see capabilities.Arms.
 
-        Through CommanderClient.restore_gripper_touch(). Raises its StepError, after
-        which the allowance is unknown, so the next motion of an arm or a gripper
-        sets the one it needs before its goal (off, for a gripper) and sends none
-        when that fails.
+        Through CommanderClient.restore_gripper_touch(), which reads the value back.
+        Waits first for a change of the allowance already running (_touch_held).
+        Raises its StepError, after which the allowance is unknown, so the next motion
+        of an arm or a gripper sets the one it needs before its goal (off, for a
+        gripper) and sends none when that fails.
         """
-        self._touch = None
-        self._client.restore_gripper_touch()
-        self._touch = False
+        with self._touch_held("turn the finger allowance off"):
+            self._touch = None
+            self._client.restore_gripper_touch()
+            self._touch = False
 
     def reset_touch_at_start(self) -> None:
         """Read the finger allowance before any motion, and turn it off if it is on.
@@ -482,7 +495,10 @@ class RosArms:
         unknown until then, and that motion sends no goal unless the set works.
         """
         try:
-            allowed = self._client.gripper_touch()
+            with self._touch_held("read the finger allowance"):
+                allowed = self._client.gripper_touch()
+                if not allowed:
+                    self._touch = False
         except StepError as e:
             logger.warning(
                 "Could not read the commander's finger allowance at startup; it stays as it "
@@ -491,7 +507,6 @@ class RosArms:
             )
             return
         if not allowed:
-            self._touch = False
             return
         logger.warning(
             "The commander's finger allowance (allow_gripper_vs_octomap) was on at startup, "
@@ -592,13 +607,36 @@ class RosArms:
     def _set_touch(self, touch: bool) -> None:
         """Set the commander's finger allowance to `touch`, unless it was last set so.
 
-        Raises the client's StepError, after which the allowance is unknown.
+        Raises the client's StepError, after which the allowance is unknown, also when
+        the call timed out or was stopped: the commander may still handle it.
         """
-        if self._touch is touch:
-            return
-        self._touch = None
-        self._client.set_gripper_touch(touch)
-        self._touch = touch
+        with self._touch_held(f"set the finger allowance {'on' if touch else 'off'}"):
+            if self._touch is touch:
+                return
+            self._touch = None
+            self._client.set_gripper_touch(touch)
+            self._touch = touch
+
+    @contextmanager
+    def _touch_held(self, action: str) -> Iterator[None]:
+        """Hold the allowance lock, waiting for a change already running.
+
+        The wait is bounded by the longest a change takes and TOUCH_LOCK_MARGIN_S, and
+        a stop does not end it, so restore_touch() still goes through. Raises
+        StepError TIMEOUT when the lock is not free by then; the allowance is then
+        left as the running change leaves it.
+        """
+        bound_s = self._client.touch_call_bound_s + TOUCH_LOCK_MARGIN_S
+        if not self._touch_lock.acquire(timeout=bound_s):
+            raise StepError(
+                ErrorCode.TIMEOUT,
+                f"Could not {action}: another change of it did not finish within "
+                f"{bound_s:g} s.",
+            )
+        try:
+            yield
+        finally:
+            self._touch_lock.release()
 
     def _wait_still(self, arm: Gripper) -> None:
         """Wait until two reads of `arm`'s joints STILL_POLL_S apart agree.

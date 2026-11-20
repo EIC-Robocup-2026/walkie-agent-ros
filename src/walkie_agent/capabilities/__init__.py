@@ -240,7 +240,8 @@ class Arms(Protocol):
     moves nothing. It goes through also while a stop is in effect, so
     pick_object ends the allowance on every path, a stop included. It raises
     StepError UNAVAILABLE, TIMEOUT or SKILL_FAILED when the commander does not
-    confirm the change; the allowance is then unknown, and the next motion
+    confirm the change, or still holds the allowance on when it is read back
+    after; the allowance is then unknown, and the next motion
     of an arm or a gripper sets the one it needs before its goal (off, for a
     gripper), so nothing moves until that set is confirmed. Its messages
     carry no arm sentence. Without a commander there is nothing to turn off,

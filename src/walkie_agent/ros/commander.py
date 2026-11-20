@@ -25,7 +25,8 @@ getCurrentState(), which the commander's own comments call unsafe to run concurr
 while a goal runs is refused at once rather than queued behind a move that can take
 30 s. grasp_band() and gripper_touch(), which read only the commander's parameters,
 take no lock, and neither does restore_gripper_touch(), which only turns
-allow_gripper_vs_octomap off and must go through also during a stop.
+allow_gripper_vs_octomap off, reads it back, and must go through also during a stop.
+The caller orders its changes of that parameter (RosArms holds a lock of its own).
 
 A goal outlives the call that sent it. It is outstanding from its send until the
 client sees its result, sees it rejected, or abandons it, and until then every other
@@ -633,6 +634,16 @@ class CommanderClient:
         """
         return self._read_timeout_s
 
+    @property
+    def touch_call_bound_s(self) -> float:
+        """The longest set_gripper_touch() or restore_gripper_touch() takes with no timeout_s.
+
+        The restore's write and its read back, each bounded by read_timeout_s, and the
+        settle between them; a set takes one bound and the settle. In seconds of
+        wall-clock time, give or take one poll. Never waits.
+        """
+        return 2 * self._read_timeout_s + TOUCH_SETTLE_S
+
     def snapshot(self) -> ClientSnapshot:
         """last_state, last_recovery, unverified_count and unverified, read together. Never waits.
 
@@ -762,33 +773,36 @@ class CommanderClient:
         call lock: turning the allowance off never lets a plan through that it would
         refuse otherwise, and a stopped call cannot hold it up. It then waits
         TOUCH_SETTLE_S, which a stop does not shorten, so the planning scene holds the
-        change before any later plan. The discovery and the answer are bounded by
-        `timeout_s`, by default the client's `read_timeout_s`. Raises StepError
-        UNAVAILABLE when the service is not discovered, TIMEOUT when the commander does
-        not answer in time, and SKILL_FAILED when it refuses the value.
+        change before any later plan, and reads the value back from the commander's
+        parameter service. The read catches a change to true that the commander
+        handled after this reset, such as an earlier request that reached it late or
+        one from another client. It checks the parameter, not the planning scene the
+        commander built from it. The discovery and the answer of the write are
+        bounded by `timeout_s`, by default the client's `read_timeout_s`, and so are
+        those of the read, so the whole call takes at most twice that and
+        TOUCH_SETTLE_S (touch_call_bound_s). Raises StepError UNAVAILABLE when a
+        service is not discovered or the commander holds no bool of that name,
+        TIMEOUT when the commander does not answer in time, and SKILL_FAILED when it
+        refuses the value or holds it true after the settle.
         """
         timeout_s = self._read_bound(timeout_s)
-        deadline = _deadline(timeout_s)
         what = f"the reset of the commander's {TOUCH_PARAMETER}"
-        name = self._set_parameters_name
-        ready_s = max(min(deadline - time.monotonic(), self._ready_wait_s), _POLL_S)
-        if not _wait_unstoppable(self._set_parameters.service_is_ready, ready_s, what):
-            raise _NotDiscovered(
-                ErrorCode.UNAVAILABLE,
-                f"The commander's {name} service is not available. {COMMANDER_HINT}",
-            )
-        future = self._set_parameters.call_async(_touch_request(False))
-        answer_s = max(deadline - time.monotonic(), _POLL_S)
-        if not _wait_unstoppable(future.done, answer_s, what):
-            # The answer would otherwise be kept for a caller that left.
-            self._set_parameters.remove_pending_request(future)
-            raise StepError(
-                ErrorCode.TIMEOUT,
-                f"The commander's {name} did not answer within {timeout_s:g} s.",
-            )
-        _check_touch_set(future.result(), False)
+        response = self._call_unstoppable(
+            self._set_parameters, self._set_parameters_name, _touch_request(False), timeout_s, what
+        )
+        _check_touch_set(response, False)
         if TOUCH_SETTLE_S > 0:
             _wait_unstoppable(_never, TOUCH_SETTLE_S, what)
+        request = GetParameters.Request(names=[TOUCH_PARAMETER])
+        read = self._call_unstoppable(
+            self._parameters, self._parameters_name, request, timeout_s, what
+        )
+        if _touch(read):
+            raise StepError(
+                ErrorCode.SKILL_FAILED,
+                f"The commander still held {TOUCH_PARAMETER} true after its reset to false: "
+                "another change came after it.",
+            )
 
     def set_gripper_touch(self, allow: bool, timeout_s: float | None = None) -> None:
         """Let both grippers' fingers touch the sensed octomap, or stop letting them.
@@ -1192,6 +1206,32 @@ class CommanderClient:
                 ErrorCode.TIMEOUT,
                 f"The commander's {self._parameters_name} did not answer within {timeout_s:g} s.",
             ) from None
+
+    def _call_unstoppable(
+        self, client: Any, name: str, request: Any, timeout_s: float, what: str
+    ) -> Any:
+        """`client`'s answer to `request`, in waits that a stop does not end, without the call lock.
+
+        The discovery and the answer share `timeout_s`. Raises StepError UNAVAILABLE
+        when the service `name` is not discovered and TIMEOUT when it does not answer.
+        """
+        deadline = _deadline(timeout_s)
+        ready_s = max(min(deadline - time.monotonic(), self._ready_wait_s), _POLL_S)
+        if not _wait_unstoppable(client.service_is_ready, ready_s, what):
+            raise _NotDiscovered(
+                ErrorCode.UNAVAILABLE,
+                f"The commander's {name} service is not available. {COMMANDER_HINT}",
+            )
+        future = client.call_async(request)
+        answer_s = max(deadline - time.monotonic(), _POLL_S)
+        if not _wait_unstoppable(future.done, answer_s, what):
+            # The answer would otherwise be kept for a caller that left.
+            client.remove_pending_request(future)
+            raise StepError(
+                ErrorCode.TIMEOUT,
+                f"The commander's {name} did not answer within {timeout_s:g} s.",
+            )
+        return future.result()
 
     @contextmanager
     def _exclusive(

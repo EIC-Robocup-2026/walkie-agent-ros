@@ -774,7 +774,7 @@ class RosArms:
             if e.code is ErrorCode.CANCELLED:
                 raise
             logger.warning(
-                "Judging a close by the commander's default grasp detection band: %s",
+                "Judging a gripper by the commander's default grasp detection band: %s",
                 e.message,
             )
             return GRASP_DETECT_MIN, GRASP_DETECT_MAX

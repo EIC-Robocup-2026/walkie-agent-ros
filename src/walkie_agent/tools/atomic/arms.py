@@ -15,7 +15,7 @@ from walkie_agent.arm import answers
 from walkie_agent.arm.poses import ARMS, BOTH, GRIPPER_GROUPS
 from walkie_agent.arm.results import Recovery
 from walkie_agent.arm.state import UNKNOWN_SENTENCE, ArmsState
-from walkie_agent.capabilities import Arm, ArmsReport, Ctx, GripperState
+from walkie_agent.capabilities import Arm, ArmsReport, Ctx, GripperReading, GripperState
 from walkie_agent.errors import ErrorCode, StepError
 
 # The pose a guest hands the robot an object in, and how long a close there waits
@@ -175,8 +175,9 @@ def get_arm_state(ctx: Ctx) -> str:
 
     Returns one line per arm, with the named pose it is in, or 'no named pose', and
     whether it is safe for driving; then one line per gripper, open, half open or
-    closed, with the gap; and last whether the arms are safe for driving. Call it
-    after an arm or gripper tool fails, before you try again.
+    closed, with the gap, and for a closed gripper whether it holds something or is
+    empty; and last whether the arms are safe for driving. Call it after an arm or
+    gripper tool fails, before you try again.
     """
     try:
         # It recovers first while the arms are unverified.
@@ -221,10 +222,23 @@ def get_arm_state(ctx: Ctx) -> str:
             )
         else:
             lines.append(
-                f"{which}: {_STATE_WORDS[gripper.reads_as]} (gap {gripper.finger_m:.3f} m)."
+                f"{which}: {_STATE_WORDS[gripper.reads_as]}{_held(gripper)} "
+                f"(gap {gripper.finger_m:.3f} m)."
             )
     lines.append(_safety(end.arms, unsure))
     return "\n".join(lines)
+
+
+def _held(gripper: GripperReading) -> str:
+    """", holding something" or ", empty" for a gripper read as closed, else "".
+
+    By GripperReading.in_grasp_band. Only a closed reading gets the verdict: the half
+    position lies inside the grasp band too, so a half open reading says nothing about
+    a held object.
+    """
+    if gripper.reads_as != "close" or gripper.in_grasp_band is None:
+        return ""
+    return ", holding something" if gripper.in_grasp_band else ", empty"
 
 
 def _in_receive(ctx: Ctx, sides: tuple[str, ...]) -> bool:

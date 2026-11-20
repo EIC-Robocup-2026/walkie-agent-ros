@@ -654,7 +654,7 @@ def test_get_arm_state_reads_the_arms_and_the_grippers(robot):
     assert get_arm_state(robot.ctx).splitlines() == [
         "Left arm: hands_up, not safe for driving.",
         "Right arm: hands_up, not safe for driving.",
-        "Left gripper: closed (gap 0.000 m).",
+        "Left gripper: closed, empty (gap 0.000 m).",
         "Right gripper: half open (gap 0.036 m).",
         NOT_SAFE_SENTENCE,
     ]
@@ -699,6 +699,24 @@ def test_a_gripper_that_cannot_be_read_falls_back_to_its_last_command(ctx, stub,
         "Right gripper: open (gap 0.044 m).",
         SAFE_SENTENCE,
     ]
+
+
+@pytest.mark.parametrize(
+    ("finger", "reads_as", "in_band", "said"),
+    [
+        (0.013, "close", True, "closed, holding something (gap 0.013 m)"),
+        (0.001, "close", False, "closed, empty (gap 0.001 m)"),
+        (0.036, "half", True, "half open (gap 0.036 m)"),
+        (0.013, "close", None, "closed (gap 0.013 m)"),
+    ],
+)
+def test_get_arm_state_says_whether_a_closed_gripper_holds_something(
+    ctx, stub, finger, reads_as, in_band, said
+):
+    held = GripperReading("right", finger, reads_as, in_grasp_band=in_band)
+    stub.reading = reading(grippers=(GripperReading("left", 0.044, "open"), held))
+
+    assert get_arm_state(ctx).splitlines()[3] == f"Right gripper: {said}."
 
 
 @pytest.mark.parametrize(

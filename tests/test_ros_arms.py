@@ -1073,7 +1073,7 @@ def test_a_close_whose_band_cannot_be_read_is_judged_by_the_default_band(
     # The default band, 0.005 to 0.044 m, does not hold a read of about 0.0.
     assert moved.outcome == "empty"
     assert (
-        "Judging a close by the commander's default grasp detection band: The commander's band "
+        "Judging a gripper by the commander's default grasp detection band: The commander's band "
         "did not come."
     ) in caplog.text
 

@@ -64,7 +64,8 @@ It also fixes two bugs in the commander, which the robot runs too (PK-52):
 
 ```text
 editCollisionMatrix       one lock around read, edit, write, for the three toggles and the allowance
-toggle turned back on     its rows go back to the SRDF's disabled pairs and the allowance's pairs
+toggle turned back on     its rows go back to the SRDF's disabled pairs, the allowance's pairs
+                          and the pairs another toggle still ignores
 ```
 
 ### Evidence
@@ -80,7 +81,7 @@ toggle turned back on     its rows go back to the SRDF's disabled pairs and the 
 
 **Blast Radius:** simulation, and the commander's collision matrix
 
-On the robot, a toggle turned back on now resets any other explicit entry in its rows, and a matrix write can wait about 10 s for another. `robot_bringup` installs the script on the robot too. The gate tells a simulation from a real-only graph, but only a private Zenoh router and domain keep the two apart. Any other launch of the MuJoCo `ros2_control_node` must set `mujoco_world`, or the pick refuses to start.
+On the robot, a toggle turned back on now resets any other explicit entry in its rows, and a matrix write waits for every edit ahead of it, each of which can hold the lock for about 10 s. `robot_bringup` installs the script on the robot too. The gate tells a simulation from a real-only graph, but only a private Zenoh router and domain keep the two apart. Any other launch of the MuJoCo `ros2_control_node` must set `mujoco_world`, or the pick refuses to start.
 
 ## walkie-agent-ros: feat/mahoraga-demo
 

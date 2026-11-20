@@ -1138,8 +1138,12 @@ The agent then loses only `recall_object`, `list_room_objects` and
 
 The whole-body MoveIt experiment is a separate test with its own guide. It uses
 no agent, vision or database. Its checkout is
-`~/Project/robocup_experiments/walkie-ros-fullbody` (`feat/moveit-full-body`,
-`1da4535`), and its guide is `docs/guides/whole-body-real-robot.md` there.
+`~/Project/robocup_experiments/walkie-ros-fullbody`, now on
+`feat/sim-bottle-pick` (`e31c1bf`), and its guide is
+`docs/guides/whole-body-real-robot.md` there. That branch sits on
+`feat/moveit-full-body` (`1da4535`) and changes only simulation launches,
+worlds and the scripted sim pick, so the real-robot launches, MoveIt config and
+commander are the same as at `1da4535`.
 
 - **Never run it at the same time as this page's stack.** Stop every terminal
   from this page first ([step 8](#8-stop-and-reset)). Both drive the same CAN
@@ -1154,8 +1158,8 @@ no agent, vision or database. Its checkout is
   runs it anyway, on this page's graph
   ([Optional E](#optional-e-pick-up-a-remembered-object)), as the owner
   decided (PK-5).
-- The clone moves to `feat/sim-bottle-pick` for the pick. That branch adds
-  only simulation worlds over `feat/moveit-full-body`.
+- `feat/sim-bottle-pick` installs `sim_bottle_pick.py` on the robot too. It
+  refuses to run outside the simulation; never start it on the robot's graph.
 
 ## Optional D: web search
 

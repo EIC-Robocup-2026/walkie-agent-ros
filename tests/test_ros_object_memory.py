@@ -494,6 +494,21 @@ def test_an_arena_name_finds_what_the_detector_labelled_with_its_last_word(datab
     assert ids(memory.search("water bottle")) == ["7", "9"]
 
 
+def test_the_arena_name_of_a_brand_finds_what_the_detector_labelled_with_the_brand(
+    database, memory
+):
+    # The memory task's prompt is "pringles"; the arena says "pringles can". A can the
+    # detector mostly called a bottle answers through its second label, after the can
+    # it called only a Pringles.
+    database.objects = [
+        summary(176, "bottle", labels=("bottle", "pringles")),
+        summary(178, "bottle", labels=("bottle",)),
+        summary(180, "pringles", labels=("pringles",)),
+    ]
+
+    assert ids(memory.search("pringles can")) == ["180", "176"]
+
+
 def test_an_anchor_id_outside_the_answer_gives_none_whatever_the_key_names(database, memory):
     database.objects = [
         summary(15, "table"),

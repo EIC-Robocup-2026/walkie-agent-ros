@@ -5,6 +5,7 @@ import pytest
 from walkie_agent.capabilities.fake import OBJECTS
 from walkie_agent.capabilities.fake import PLURALS as FAKE_PLURALS
 from walkie_agent.perception.object_words import (
+    BRANDS,
     CATEGORIES,
     OTHER,
     PLURALS,
@@ -68,6 +69,12 @@ def test_a_query_matches_the_name_the_category_or_its_plural(wanted, label, expe
 )
 def test_a_query_that_names_a_kind_of_the_label_matches_it(wanted, label, expected):
     assert matches(wanted, label) is expected
+
+
+def test_every_brand_is_in_lower_case_and_names_an_object_of_the_table():
+    for brand, name in BRANDS.items():
+        assert brand == brand.strip().lower(), brand
+        assert name in CATEGORIES, name
 
 
 def test_a_brands_label_takes_the_name_and_category_of_its_object():

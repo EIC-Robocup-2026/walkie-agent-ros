@@ -774,9 +774,13 @@ class CommanderClient:
         refuse otherwise, and a stopped call cannot hold it up. It then waits
         TOUCH_SETTLE_S, which a stop does not shorten, so the planning scene holds the
         change before any later plan, and reads the value back from the commander's
-        parameter service. The read catches a change to true that the commander
-        handled after this reset, such as an earlier request that reached it late or
-        one from another client. It checks the parameter, not the planning scene the
+        parameter service. The commander's answer to the reset orders it after every
+        earlier change this client sent, one that timed out included: one Zenoh
+        session delivers requests in the order sent, rmw_zenoh queues a service's
+        requests oldest first and drops the oldest when the queue is full, and the
+        commander's parameter services handle one request at a time. So the read
+        catches a change to true from another client that the commander handled
+        after this reset. It checks the parameter, not the planning scene the
         commander built from it. The discovery and the answer of the write are
         bounded by `timeout_s`, by default the client's `read_timeout_s`, and so are
         those of the read, so the whole call takes at most twice that and

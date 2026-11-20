@@ -439,7 +439,8 @@ the tool log shows each as a call:
    right hand, through `move_relative`. The first approach is the one whose
    line the robot already stands on. When that pose is more than 3 m away, a
    `go_to` to the named place within 2 m of the object comes first. If Nav2
-   cannot reach it, the headings 30° and 60° to either side are tried in turn.
+   cannot reach it, the headings 30° and 60° to either side are tried in turn,
+   then 120° to either side and the far side, 180°.
    A drive that Nav2 aborts within 0.10 m and 10° of its goal counts as
    arrived, and so does a `go_to` that ends close enough to the stand-off pose.
    The pick then reads the object's position from the memory again.

@@ -415,10 +415,10 @@ def test_a_pick_that_reaches_no_stand_off_says_how_many_tries(arm_poses):
 
     assert error.code is ErrorCode.SKILL_FAILED
     assert error.message == (
-        "Walkie could not reach a spot to pick up the water bottle from, after 5 tries. "
+        "Walkie could not reach a spot to pick up the water bottle from, after 8 tries. "
         "The last one: Nav2 aborted the goal."
     )
-    assert verbs(robot) == ["base.move_relative"] * 5
+    assert verbs(robot) == ["base.move_relative"] * 8
 
 
 def test_an_arm_out_stops_the_drive_without_another_try(arm_poses):

@@ -28,8 +28,10 @@ standoff_m = 0.65
 standoff_left_m = 0.20
 # The approach headings to try, in degrees, in order: each is added to the heading
 # whose stand-off line the robot already stands on. The next one is tried when Nav2 cannot
-# reach the stand-off pose of the one before.
-heading_offsets_deg = [0.0, 30.0, -30.0, 60.0, -60.0]
+# reach the stand-off pose of the one before. The last three come from the far side:
+# from the Chula kitchen table's own place, north of the table, every stand-off within
+# 60 degrees of the water bottle at its south-west corner lay on the table.
+heading_offsets_deg = [0.0, 30.0, -30.0, 60.0, -60.0, 120.0, -120.0, 180.0]
 
 # Metres the hand link stands back from the object's centre at the grasp pose, along
 # the hand's approach. openarm_right_hand_tcp is 0.08 m along the hand link's +z, so 0.06

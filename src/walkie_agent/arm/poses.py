@@ -58,6 +58,10 @@ GRASP_CLOSE_THRESHOLD = 0.03
 # and the commander's own band cannot be read.
 GRASP_DETECT_MIN = 0.005
 GRASP_DETECT_MAX = 0.044
+# A close holds something only when the settled finger travel is at least this far
+# below the open position. A travel closer to open means the fingers barely moved,
+# which no object explains: the gripper is stuck or blocked.
+HOLDING_MARGIN_M = 0.004
 
 # How long one move may take when a pose sets no timeout_s. A move takes
 # about 5 s in the simulation, plus planning.

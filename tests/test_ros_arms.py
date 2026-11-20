@@ -1230,6 +1230,48 @@ def test_read_reads_the_arms_and_the_grippers(arms, fake_commander):
     assert right.finger_m == pytest.approx(0.044)
 
 
+def test_read_judges_each_gripper_by_the_band_the_commander_holds_now(arms, fake_commander):
+    fake_commander.object_widths[GRIPPER_GROUPS["right"]] = 0.02
+    arms.gripper("right", "close")
+    arms.gripper("left", "close")
+
+    left, right = arms.read().grippers
+
+    # The right fingers stopped on the object, the left closed on nothing.
+    assert (left.in_grasp_band, right.in_grasp_band) == (False, True)
+    # A band raised past the right fingers, read again at the next read.
+    fake_commander.set_parameters([Parameter("grasp_detect_min", value=0.025)])
+    assert arms.read().grippers[1].in_grasp_band is False
+
+
+def test_read_judges_open_grippers_without_reading_the_band(arms, client, monkeypatch):
+    band_reads = []
+    monkeypatch.setattr(client, "grasp_band", lambda: band_reads.append(1))
+
+    left, right = arms.read().grippers
+
+    assert (left.in_grasp_band, right.in_grasp_band) == (False, False)
+    assert band_reads == []
+
+
+def test_read_reads_the_band_once_for_both_grippers(arms, client, monkeypatch):
+    arms.gripper("left", "close")
+    arms.gripper("right", "close")
+    band_reads = []
+    grasp_band = client.grasp_band
+
+    def counted(timeout_s=None):
+        band_reads.append(1)
+        return grasp_band(timeout_s)
+
+    monkeypatch.setattr(client, "grasp_band", counted)
+
+    left, right = arms.read().grippers
+
+    assert (left.in_grasp_band, right.in_grasp_band) == (False, False)
+    assert band_reads == [1]
+
+
 def test_read_gives_the_before_report_from_before_its_read(arms, fake_commander, poses):
     fake_commander.teleport(targets(poses, "standby", "left"))
 
@@ -1249,6 +1291,7 @@ def test_a_gripper_that_cannot_be_read_falls_back_to_its_last_command(arms, fake
 
     left, right = reading.grippers
     assert (left.finger_m, left.reads_as, left.commanded) == (None, None, "close")
+    assert (left.in_grasp_band, right.in_grasp_band) == (None, None)
     assert left.read_error == (
         "The commander's reading of left_gripper is not usable: "
         "openarm_left_finger_joint1 = nan."

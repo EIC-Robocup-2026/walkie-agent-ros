@@ -154,8 +154,8 @@ def test_both_arms_start_home_with_both_grippers_open(robot, arm_poses):
     reading = robot.read()
     assert reading.before == reading.after == AT_HOME
     assert reading.grippers == (
-        GripperReading("left", open_m, "open"),
-        GripperReading("right", open_m, "open"),
+        GripperReading("left", open_m, "open", in_grasp_band=False),
+        GripperReading("right", open_m, "open", in_grasp_band=False),
     )
 
 
@@ -336,11 +336,24 @@ def test_a_read_finds_each_gripper_at_its_last_position(robot, arm_poses):
     reading = robot.read()
 
     assert reading.grippers == (
-        GripperReading("left", grippers.half_position, "half"),
-        GripperReading("right", grippers.closed_position, "close"),
+        # The half position lies inside the default grasp band: the band says what a
+        # close left, not what a half open holds.
+        GripperReading("left", grippers.half_position, "half", in_grasp_band=True),
+        GripperReading("right", grippers.closed_position, "close", in_grasp_band=False),
     )
     assert reading.before == reading.after == robot.state()
     assert reading.after.arms == ArmsState(left=HOME, right=ArmState("standby", False))
+
+
+def test_a_read_finds_a_held_object_inside_the_grasp_band_and_an_empty_close_below_it(robot):
+    robot.grasping.add("right")
+    robot.gripper("right", "close")
+    robot.gripper("left", "close")
+
+    left, right = robot.read().grippers
+
+    assert (left.reads_as, left.in_grasp_band) == ("close", False)
+    assert (right.reads_as, right.in_grasp_band) == ("close", True)
 
 
 def test_the_grippers_and_the_held_object_are_apart(robot, arm_poses):

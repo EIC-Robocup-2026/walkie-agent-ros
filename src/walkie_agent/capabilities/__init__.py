@@ -196,7 +196,9 @@ class Arms(Protocol):
     does: PRECONDITION_FAILED while a goal runs or is outstanding or when
     recovery refuses, TIMEOUT, UNAVAILABLE, INTERNAL for a reading that lacks
     a joint, CANCELLED on a stop. A gripper that cannot be read is in its
-    GripperReading, not an error, unless a stop ended the read.
+    GripperReading, not an error, unless a stop ended the read. Each reading
+    says whether the finger lies in the grasp band a close is judged by
+    (GripperReading.in_grasp_band).
 
     move_to() moves `arm` to the pose, waits and checks the joints against
     it. It raises StepError NOT_FOUND for a pose that is unknown or not

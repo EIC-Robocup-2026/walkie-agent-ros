@@ -11,7 +11,7 @@ from test_object_memory_atomics import WORLD, Remembers
 from walkie_agent.arm.pick import HandPose, heading_from, load_pick_settings, plan_pick
 from walkie_agent.arm.poses import load_arm_poses
 from walkie_agent.arm.state import NOT_SAFE_SENTENCE, SAFE_SENTENCE
-from walkie_agent.capabilities import Ctx, RecalledObject
+from walkie_agent.capabilities import Ctx, GripperReading, RecalledObject
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.tools.atomic import grasp, pick_object
@@ -204,6 +204,7 @@ def test_a_pick_drives_to_the_stand_off_reaches_closes_and_lifts(arm_poses):
         "arms.reach",
         "arms.move_to",
         "arms.move_to",
+        "arms.read",
         "arms.restore_touch",
     ]
     assert robot.touch is False
@@ -232,11 +233,13 @@ def test_a_pick_drives_to_the_stand_off_reaches_closes_and_lifts(arm_poses):
         {"pose": "home", "arm": "right", "lift_m": 0.7435, "touch": True},
         {"pose": "home", "arm": "left"},
     ]
+    # Every reach and gripper goal is the right arm's; the read after the move home
+    # reads both arms.
     arms = {
         call["args"]["arm"]
         for call in robot.calls
         if call["verb"].startswith("arms.")
-        and call["verb"] not in ("arms.move_to", "arms.restore_touch")
+        and call["verb"] not in ("arms.move_to", "arms.read", "arms.restore_touch")
     }
     assert arms == {"right"}
 
@@ -970,6 +973,101 @@ def test_a_failed_move_clear_of_the_surface_says_the_hand_holds_the_object_and_s
     # The move home would swing the held object over the surface, so it is not tried.
     moves = [call["args"] for call in robot.calls if call["verb"] == "arms.move_to"]
     assert moves == [{"pose": "standby", "arm": "left"}]
+
+
+# The hand read after the move home
+
+
+def drop(robot: FakeRobot, arm: str = "right") -> None:
+    """The object falls out of `arm`'s hand: the fingers close the rest of the way."""
+    robot._finger_m[arm] = robot._require_arms().grippers.closed_position
+
+
+LOST = (
+    "Walkie lifted the water bottle with the right hand, but the hand was empty once both "
+    "arms came home: it lost the water bottle after the lift. It may have fallen near where "
+    "Walkie stood to pick it up: call find_objects to look for it."
+)
+
+
+@pytest.mark.parametrize(("verb", "nth"), [("reach", 4), ("move_to", 2)], ids=["clear", "home"])
+def test_an_object_dropped_after_the_lift_is_reported_lost_not_picked(
+    arm_poses, monkeypatch, verb, nth
+):
+    robot, ctx = picking(arm_poses, remembered())
+    after_call(monkeypatch, robot, verb, nth, lambda: drop(robot))
+
+    error = fails(ctx)
+
+    assert type(error) is StepError and error.code is ErrorCode.SKILL_FAILED
+    assert error.message == f"{LOST} {SAFE_SENTENCE}"
+    # Both arms came home, the hand was read after, and the allowance was turned off.
+    assert verbs(robot)[-4:] == [
+        "arms.move_to",
+        "arms.move_to",
+        "arms.read",
+        "arms.restore_touch",
+    ]
+    assert robot.touch is False
+
+
+def test_a_hand_that_still_holds_the_object_after_the_move_home_is_a_pick(arm_poses):
+    robot, ctx = picking(arm_poses, remembered())
+
+    answer = pick_object(ctx, "water bottle")
+
+    assert answer.startswith("Picked up the water bottle with the right hand")
+    [read] = [call for call in robot.calls if call["verb"] == "arms.read"]
+    assert read["error"] is None
+    # The read comes after the arm that picked is home, the other arm too.
+    assert verbs(robot)[-3:] == ["arms.move_to", "arms.read", "arms.restore_touch"]
+
+
+def test_a_failed_read_after_the_move_home_keeps_its_code_and_says_the_object_may_be_lost(
+    arm_poses,
+):
+    robot, ctx = picking(arm_poses, remembered())
+    robot.faults["arms.read"] = StepError(
+        ErrorCode.TIMEOUT, "The commander did not answer the read of both_arms."
+    )
+
+    error = fails(ctx)
+
+    assert type(error) is StepError and error.code is ErrorCode.TIMEOUT
+    assert error.message == (
+        "Walkie lifted the water bottle with the right hand and brought both arms home, but "
+        "could not read the right gripper after, so it may have lost the water bottle after "
+        "the lift: The commander did not answer the read of both_arms. Call get_arm_state to "
+        f"see whether the right hand still holds it. {SAFE_SENTENCE}"
+    )
+    assert verbs(robot)[-2:] == ["arms.read", "arms.restore_touch"]
+    assert robot.touch is False
+
+
+def test_a_picking_gripper_that_cannot_be_read_after_the_move_home_fails_the_pick(
+    arm_poses, monkeypatch
+):
+    robot, ctx = picking(arm_poses, remembered())
+    read = robot.read
+    why = "The commander's reading of right_gripper lacks openarm_right_finger_joint1."
+
+    def right_unread():
+        reading = read()
+        left = reading.grippers[0]
+        unread = GripperReading("right", None, None, read_error=why, commanded="close")
+        return replace(reading, grippers=(left, unread))
+
+    monkeypatch.setattr(robot, "read", right_unread)
+
+    error = fails(ctx)
+
+    assert type(error) is StepError and error.code is ErrorCode.SKILL_FAILED
+    assert error.message == (
+        "Walkie lifted the water bottle with the right hand and brought both arms home, but "
+        "could not read the right gripper after, so it may have lost the water bottle after "
+        f"the lift: {why} Call get_arm_state to see whether the right hand still holds it. "
+        f"{SAFE_SENTENCE}"
+    )
 
 
 # The finger allowance after the pick

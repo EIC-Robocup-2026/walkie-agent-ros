@@ -4,8 +4,10 @@ The atomic finds the object in the object memory, drives to a stand-off pose fac
 it, raises the other arm out of the way, and reaches through ctx.arms: a whole-body
 reach to a pre-grasp pose, a straight approach, a close of the gripper judged by the
 commander's grasp band, a straight lift, a straight move to beside the base, and a move
-of both arms home, the picking arm with the lift. The geometry and its numbers are in
-walkie_agent.arm.pick and config/pick.toml.
+of both arms home, the picking arm with the lift. The gripper is then read again and
+judged by the same band, so an object that fell out of the hand after the close is
+reported lost, not picked. The geometry and its numbers are in walkie_agent.arm.pick
+and config/pick.toml.
 The LLM gives only the object's name and reads only the outcome: no position, pose or
 joint value reaches it (ADR-0022). Every answer after the drive ends with the arm
 sentence (ADR-0024).
@@ -38,6 +40,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from walkie_agent.arm import answers
 from walkie_agent.arm.pick import (
     HandPose,
     PickPlan,
@@ -508,7 +511,8 @@ def _grasp(ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str) 
     the pre-grasp pose must
     keep the hand's orientation. A refusal at either
     sends no further goal, and the arms stay where they are. After a close that holds
-    nothing, both arms still go home.
+    nothing, both arms still go home. After a close that holds the object, the hand
+    is read again once both arms are home (_still_holds).
 
     Returns the answer to the LLM.
     """
@@ -569,10 +573,61 @@ def _grasp(ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str) 
         touch=True,
     )
     _go_home(ctx, settings, f"The {arm} hand holds {label}, but the move of the arms home failed: ")
+    _still_holds(ctx, arm, label)
     return (
         f"Picked up {label} with the {arm} hand, lifted it and brought both arms home. "
         f"{ctx.arms.state().sentence()}"
     )
+
+
+def _still_holds(ctx: Ctx, arm: str, label: str) -> None:
+    """Raise unless the `arm` hand still holds the object once both arms are home.
+
+    The close was judged before the lift, and the lift, the move clear and the move
+    home can each shake the object out of the fingers. So the gripper is read again
+    through ctx.arms.read(), whose GripperReading.in_grasp_band applies the band the
+    close was judged by. A hand found empty is SKILL_FAILED: the object was lost
+    after the lift. A read that fails keeps its code and class, and a gripper that
+    could not be read is SKILL_FAILED; both say that the object may be lost. A stop
+    during the read is raised as it is.
+    """
+    unsure = (
+        f"Walkie lifted {label} with the {arm} hand and brought both arms home, but could not "
+        f"read the {arm} gripper after, so it may have lost {label} after the lift: "
+    )
+    check = f"Call get_arm_state to see whether the {arm} hand still holds it."
+    try:
+        reading = ctx.arms.read()
+    except StepError as error:
+        if error.code is ErrorCode.CANCELLED:
+            raise
+        logger.warning("Could not read the %s gripper after the pick of %s: %s", arm, label, error)
+        now = ctx.arms.state(read=False)
+        raise answers.with_sentence(error, unsure, f"{check} {now.sentence()}") from None
+    gripper = next((found for found in reading.grippers if found.arm == arm), None)
+    if gripper is None or gripper.in_grasp_band is None:
+        why = gripper.read_error if gripper is not None and gripper.read_error else (
+            f"The reading lacks the {arm} gripper."
+        )
+        logger.warning("Could not read the %s gripper after the pick of %s: %s", arm, label, why)
+        raise StepError(
+            ErrorCode.SKILL_FAILED,
+            f"{unsure}{answers.full_stop(why)} {check} {ctx.arms.state().sentence()}",
+        )
+    if not gripper.in_grasp_band:
+        logger.warning(
+            "The %s hand was empty after the pick of %s: finger at %.4f m.",
+            arm,
+            label,
+            gripper.finger_m,
+        )
+        raise StepError(
+            ErrorCode.SKILL_FAILED,
+            f"Walkie lifted {label} with the {arm} hand, but the hand was empty once both arms "
+            f"came home: it lost {label} after the lift. It may have fallen near where Walkie "
+            f"stood to pick it up: call find_objects to look for it. "
+            f"{ctx.arms.state().sentence()}",
+        )
 
 
 def _go_home(ctx: Ctx, settings: PickSettings, prefix: str) -> None:

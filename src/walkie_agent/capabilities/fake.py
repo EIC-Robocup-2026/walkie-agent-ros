@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Concatenate, ParamSpec, TypeVar
 
 from walkie_agent.arm import answers
-from walkie_agent.arm.poses import ARMS, BOTH, ArmPoses
+from walkie_agent.arm.poses import ARMS, BOTH, GRASP_DETECT_MAX, GRASP_DETECT_MIN, ArmPoses
 from walkie_agent.arm.results import DriveCheck, GripperResult
 from walkie_agent.arm.state import ArmsState, ArmState
 from walkie_agent.capabilities import (
@@ -523,6 +523,8 @@ class FakeRobot:
 
     @_verb("arms.read")
     def read(self) -> ArmsReading:
+        # Each gripper is judged by the commander's default grasp band, inside which a
+        # close of a gripper in `grasping` stops (HELD_FINGER_M).
         positions = self._require_arms().grippers
         self.cancel.check("the read of the arms")
         report = self.state()
@@ -531,7 +533,14 @@ class FakeRobot:
             before=report,
             after=report,
             grippers=tuple(
-                GripperReading(side, fingers[side], answers.reads_as(positions, fingers[side]))
+                GripperReading(
+                    side,
+                    fingers[side],
+                    answers.reads_as(positions, fingers[side]),
+                    in_grasp_band=answers.in_grasp_band(
+                        positions, fingers[side], lambda: (GRASP_DETECT_MIN, GRASP_DETECT_MAX)
+                    ),
+                )
                 for side in ARMS
             ),
         )

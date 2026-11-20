@@ -14,6 +14,7 @@ no data, so what it says about a cancel is read from the end of its message, aga
 the constants that built it (CANCEL_OUTCOMES, PENDING_OUTCOMES).
 """
 
+import functools
 import logging
 import math
 import threading
@@ -30,6 +31,7 @@ from walkie_agent.arm.poses import (
     GRASP_DETECT_MAX,
     GRASP_DETECT_MIN,
     GRIPPER_GROUPS,
+    HOLDING_MARGIN_M,
     LIFT_ARM_GROUPS,
     LIFT_JOINT,
     RIGHT_JOINT2,
@@ -60,10 +62,6 @@ logger = logging.getLogger(__name__)
 # the travel of one finger, in metres.
 FINGER_JOINTS = {"left": "openarm_left_finger_joint1", "right": "openarm_right_finger_joint1"}
 
-# A close holds something only when the settled finger travel is at least this far
-# below the open position. A travel closer to open means the fingers barely moved,
-# which no object explains: the gripper is stuck or blocked.
-HOLDING_MARGIN_M = 0.004
 # After a close, the commander's `grasped` is used only when its gap is within this of
 # the read of the finger after the close. A close that the commander did not measure
 # reports a gap of 0.0, and every travel that the default detection band counts as
@@ -236,12 +234,15 @@ class RosArms:
         are unverified, and its StepError is raised as it is. A gripper that cannot be
         read, also one whose reading lacks its finger joint, is a GripperReading with
         `read_error` and the state of the last position sent to it, unless a stop
-        ended the read: that CANCELLED is raised as it is.
+        ended the read: that CANCELLED is raised as it is. A gripper read is judged
+        by the band a close is judged by (_band), read once, and only for a finger
+        that is not near open.
         """
         client = self._client
         before = arms_report(client.snapshot())
         client.read_arms()
-        grippers = tuple(self._read_gripper(arm) for arm in ARMS)
+        band = functools.cache(self._band)
+        grippers = tuple(self._read_gripper(arm, band) for arm in ARMS)
         return ArmsReading(before=before, after=arms_report(client.snapshot()), grippers=grippers)
 
     def move_to(
@@ -564,8 +565,13 @@ class RosArms:
         """The arm sentence from the client's memory, with no call to the commander."""
         return self.state(read=False).sentence()
 
-    def _read_gripper(self, arm: Gripper) -> GripperReading:
-        """One gripper for read(): its finger read now, or why not and its last command."""
+    def _read_gripper(
+        self, arm: Gripper, band: Callable[[], tuple[float, float]]
+    ) -> GripperReading:
+        """One gripper for read(): its finger read now, or why not and its last command.
+
+        A finger read is judged by `band`, the grasp detection band (in_grasp_band).
+        """
         client = self._client
         group = GRIPPER_GROUPS[arm]
         positions = client.poses.grippers
@@ -576,7 +582,12 @@ class RosArms:
                 raise
             commanded = answers.commanded_state(positions, client.last_gripper_position(group))
             return GripperReading(arm, None, None, read_error=e.message, commanded=commanded)
-        return GripperReading(arm, finger, answers.reads_as(positions, finger))
+        return GripperReading(
+            arm,
+            finger,
+            answers.reads_as(positions, finger),
+            in_grasp_band=answers.in_grasp_band(positions, finger, band),
+        )
 
     def _positions(
         self, pose: ArmPose, arm: Arm, targets: dict[str, float], order: tuple[str, ...]
@@ -748,8 +759,7 @@ class RosArms:
         gap = result.gripper_gap
         if gap is not None and abs(gap - finger) <= GAP_AGREEMENT_M:
             return bool(result.grasped)
-        low, high = self._band()
-        return low <= finger <= high
+        return answers.in_grasp_band(grippers, finger, self._band)
 
     def _band(self) -> tuple[float, float]:
         """The commander's grasp detection band now, or its default when that cannot be read.

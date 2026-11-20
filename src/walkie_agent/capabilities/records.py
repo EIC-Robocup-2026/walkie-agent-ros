@@ -255,6 +255,10 @@ class GripperReading:
     # or None when that is unknown too.
     read_error: str | None = None
     commanded: GripperState | None = None
+    # Whether the finger lies where a close that holds something stops, by the grasp
+    # band a close is judged by (arm.answers.in_grasp_band): after a close, whether the
+    # hand still holds something. None when unread.
+    in_grasp_band: bool | None = None
 
 
 @dataclass(frozen=True)

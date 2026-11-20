@@ -16,6 +16,7 @@ from walkie_agent.arm.poses import (
     BOTH,
     GRASP_CLOSE_THRESHOLD,
     GRIPPER_STATES,
+    HOLDING_MARGIN_M,
     ArmPose,
     GripperPositions,
     GripperState,
@@ -168,6 +169,24 @@ def reads_as(positions: GripperPositions, finger_m: float) -> GripperState:
     if finger_m <= GRASP_CLOSE_THRESHOLD:
         return "close"
     return min(("open", "half"), key=lambda state: abs(positions.position(state) - finger_m))
+
+
+def in_grasp_band(
+    positions: GripperPositions, finger_m: float, band: Callable[[], tuple[float, float]]
+) -> bool:
+    """Whether a gripper read at `finger_m` lies where a close that holds something stops.
+
+    That is at least HOLDING_MARGIN_M below the open position, and inside the grasp
+    detection band that `band()` gives, (grasp_detect_min, grasp_detect_max), both ends
+    included: the band a close is judged by. `band` is called only for a finger below
+    that margin. After a close, it tells whether the hand still holds something. It
+    says nothing about a gripper sent elsewhere: the half position lies inside the
+    default band too.
+    """
+    if finger_m >= positions.open_position - HOLDING_MARGIN_M:
+        return False
+    low, high = band()
+    return low <= finger_m <= high
 
 
 def commanded_state(

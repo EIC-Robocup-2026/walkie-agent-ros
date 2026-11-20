@@ -146,8 +146,10 @@ pose to the commander's `/go_to_pose`: first the whole-body group
 `whole_body_right` to a pre-grasp pose 0.10 m back, then `right_arm` in
 straight lines for the approach and the 0.10 m lift, since the commander
 refuses a straight line for a whole-body group. The close is judged by the
-commander's grasp band, and the lift runs only when it holds something. The
-LLM gives the name and reads the outcome, never a pose
+commander's grasp band, and the lift runs only when it holds something. Once
+both arms are home, it reads the gripper again (`ctx.arms.read()`) and judges
+it by the same band, so an object that fell out after the close is reported
+lost, not picked. The LLM gives the name and reads the outcome, never a pose
 ([ADR-0022](decisions/0022-named-arm-poses.md)). It is bound in the `hri`
 set only with both `--arms` and `--object-memory`.
 

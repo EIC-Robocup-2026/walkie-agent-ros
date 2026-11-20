@@ -44,7 +44,9 @@ reads as None. ObjectSummary tells no run from another, so a sim run restores th
 store from its seed first, with walkie-database's `db-restore` (decision SG-20).
 
 `x` and `y` are the pose's position when geometry_valid and the pose is in the map
-frame, else None.
+frame, else None. Under the same condition, `size` is ObjectSummary.size, the upright
+box's sides, when each is finite and above zero, and `yaw` is the box's turn about
+the vertical, from the pose's orientation, when that quaternion is not broken.
 
 Each wait for discovery lasts at most `server_timeout_s`, and each wait for an answer
 at most `call_timeout_s`. A call's `timeout_s` bounds the whole call.
@@ -411,7 +413,8 @@ def _record(summary: ObjectSummary, on: str | None, now: float | None) -> Recall
     label = summary.label.strip()
     seen = summary.last_seen.sec + summary.last_seen.nanosec * 1e-9
     seen_s_ago = None if not seen or now is None or now < seen else now - seen
-    x = y = z = None
+    x = y = z = yaw = None
+    size = None
     if summary.geometry_valid:
         frame = summary.pose.header.frame_id.lstrip("/")
         position = summary.pose.pose.position
@@ -422,12 +425,15 @@ def _record(summary: ObjectSummary, on: str | None, now: float | None) -> Recall
                 frame,
                 MAP_FRAME,
             )
-        elif math.isfinite(position.x) and math.isfinite(position.y):
-            x, y = float(position.x), float(position.y)
-            # The height is kept apart, so an object with a broken height can still
-            # be approached; only a pick needs it.
-            if math.isfinite(position.z):
-                z = float(position.z)
+        else:
+            if math.isfinite(position.x) and math.isfinite(position.y):
+                x, y = float(position.x), float(position.y)
+                # The height is kept apart, so an object with a broken height can still
+                # be approached; only a pick needs it.
+                if math.isfinite(position.z):
+                    z = float(position.z)
+            size = _size(summary)
+            yaw = _yaw(summary)
     return RecalledObject(
         id=str(summary.id),
         name=_name(summary),
@@ -440,7 +446,33 @@ def _record(summary: ObjectSummary, on: str | None, now: float | None) -> Recall
         x=x,
         y=y,
         z=z,
+        size=size,
+        yaw=yaw,
     )
+
+
+def _size(summary: ObjectSummary) -> tuple[float, float, float] | None:
+    """The box's sides, along its yaw, across it and upright; None unless each is above zero.
+
+    A side that is not finite gives None too, and a box the memory never measured
+    holds zeros.
+    """
+    sides = (float(summary.size.x), float(summary.size.y), float(summary.size.z))
+    return sides if all(math.isfinite(side) and side > 0 for side in sides) else None
+
+
+def _yaw(summary: ObjectSummary) -> float | None:
+    """The box's turn about the vertical, from its pose's quaternion; None for a broken one.
+
+    The memory's box stands upright, so its quaternion turns about +z only. The formula
+    holds for a quaternion of any length, and one of length zero or with a number that
+    is not finite is broken.
+    """
+    q = summary.pose.pose.orientation
+    parts = (q.x, q.y, q.z, q.w)
+    if not all(math.isfinite(part) for part in parts) or not any(parts):
+        return None
+    return math.atan2(2.0 * (q.w * q.z + q.x * q.y), q.w**2 + q.x**2 - q.y**2 - q.z**2)
 
 
 def _may_pass(status: OperationStatus) -> bool:

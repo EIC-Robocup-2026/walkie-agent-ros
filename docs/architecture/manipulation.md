@@ -151,6 +151,11 @@ LLM gives the name and reads the outcome, never a pose
 ([ADR-0022](decisions/0022-named-arm-poses.md)). It is bound in the `hri`
 set only with both `--arms` and `--object-memory`.
 
+Before the drive, `pick_object` refuses an object wider than the open
+gripper: the narrower horizontal side of the memory's upright box
+(`ObjectSummary.size`) above `max_grasp_width_m`. An object the memory has
+no box for passes.
+
 `pick_object` reads the object again at three checkpoints: after the drive,
 before its first arm goal; before the whole-body reach, once the left arm is
 in standby and the hand is open; and right before the straight approach's

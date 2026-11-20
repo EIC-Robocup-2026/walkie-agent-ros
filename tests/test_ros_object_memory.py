@@ -38,6 +38,8 @@ SERVICES = {
 }
 DATABASE_FAILURE = "The database could not search objects: database is locked"
 NOT_READY = "The object memory is not ready: no clock yet."
+# A cup's box as the memory stores it: along its yaw, across it, and its height, in metres.
+BOX = (0.07, 0.08, 0.12)
 # Short timeouts are flaky under Fast DDS discovery, so the tests wait 2 s unless they
 # test a timeout, and a timeout test lowers it only for the call under test.
 TIMEOUTS = {"server_timeout_s": 2.0, "call_timeout_s": 2.0}
@@ -61,8 +63,14 @@ def summary(
     frame: str = "map",
     geometry_valid: bool = True,
     seen_s: float = 0.0,
+    size: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    orientation: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
 ) -> ObjectSummary:
-    """An ObjectSummary with the fields RosObjectMemory reads; seen_s is last_seen."""
+    """An ObjectSummary with the fields RosObjectMemory reads; seen_s is last_seen.
+
+    `size` is the box's sides, as ObjectSummary.size holds them, and `orientation` the
+    pose's quaternion, (x, y, z, w).
+    """
     stored = ObjectSummary(
         id=object_id,
         label=label,
@@ -80,6 +88,9 @@ def summary(
     stored.pose.pose.position.x = x
     stored.pose.pose.position.y = y
     stored.pose.pose.position.z = z
+    stored.size.x, stored.size.y, stored.size.z = size
+    quaternion = stored.pose.pose.orientation
+    quaternion.x, quaternion.y, quaternion.z, quaternion.w = orientation
     whole = math.floor(seen_s)
     stored.last_seen = TimeMsg(sec=whole, nanosec=round((seen_s - whole) * 1e9))
     return stored
@@ -496,7 +507,7 @@ def test_an_anchor_id_outside_the_answer_gives_none_whatever_the_key_names(datab
 
 def test_a_record_carries_the_memory_fields_and_the_map_position(database, memory):
     database.objects = [
-        summary(18, "cup", room="kitchen room", x=3.1, y=1.1, z=0.8),
+        summary(18, "cup", room="kitchen room", x=3.1, y=1.1, z=0.8, size=BOX),
         summary(30, "thing", room="", category="  gadget "),
     ]
 
@@ -514,8 +525,43 @@ def test_a_record_carries_the_memory_fields_and_the_map_position(database, memor
         x=3.1,
         y=1.1,
         z=0.8,
+        size=BOX,
+        yaw=0.0,
     )
     assert (thing.category, thing.room) == ("gadget", None)
+
+
+def turned(yaw: float, scale: float = 1.0) -> tuple[float, float, float, float]:
+    """The quaternion (x, y, z, w) of a turn by `yaw` about +z, times `scale`."""
+    return (0.0, 0.0, scale * math.sin(yaw / 2.0), scale * math.cos(yaw / 2.0))
+
+
+@pytest.mark.parametrize(
+    ("options", "size", "yaw"),
+    [
+        ({"orientation": turned(0.5)}, BOX, 0.5),
+        ({"orientation": turned(-2.0)}, BOX, -2.0),
+        # A quaternion that is not of unit length still gives its yaw.
+        ({"orientation": turned(1.0, scale=2.0)}, BOX, 1.0),
+        # A box the memory has not measured holds zeros.
+        ({"size": (0.0, 0.0, 0.0)}, None, 0.0),
+        ({"size": (0.07, 0.0, 0.12)}, None, 0.0),
+        ({"size": (0.07, -0.08, 0.12)}, None, 0.0),
+        ({"size": (0.07, math.nan, 0.12)}, None, 0.0),
+        ({"size": (0.07, 0.08, math.inf)}, None, 0.0),
+        ({"orientation": (0.0, 0.0, 0.0, 0.0)}, BOX, None),
+        ({"orientation": (0.0, 0.0, math.nan, 1.0)}, BOX, None),
+        ({"geometry_valid": False}, None, None),
+        ({"frame": "odom"}, None, None),
+    ],
+)
+def test_only_a_valid_map_box_gives_a_size_and_a_yaw(database, memory, options, size, yaw):
+    database.objects = [summary(18, "cup", **{"size": BOX, **options})]
+
+    [cup] = memory.search("cup")
+
+    assert cup.size == size
+    assert cup.yaw == (None if yaw is None else pytest.approx(yaw))
 
 
 @pytest.mark.parametrize(

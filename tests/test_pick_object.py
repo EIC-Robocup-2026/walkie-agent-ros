@@ -41,6 +41,7 @@ def remembered(
     y: float | None = 0.0,
     z: float | None = 0.75,
     room: str | None = "kitchen room",
+    size: tuple[float, float, float] | None = None,
 ) -> RecalledObject:
     return RecalledObject(
         id=object_id,
@@ -55,6 +56,7 @@ def remembered(
         x=x,
         y=y,
         z=z,
+        size=size,
     )
 
 
@@ -1232,6 +1234,31 @@ def test_an_empty_name_is_refused(arm_poses):
     _, ctx = picking(arm_poses, remembered())
 
     assert fails(ctx, "  ").code is ErrorCode.REFUSED
+
+
+@pytest.mark.parametrize(
+    "size",
+    [(0.068, 0.068, 0.22), (0.076, 0.076, 0.12), None],
+    ids=["bottle", "can", "no-size"],
+)
+def test_an_object_that_fits_the_open_hand_is_picked(arm_poses, size):
+    _, ctx = picking(arm_poses, remembered(size=size))
+
+    assert pick_object(ctx, "water bottle").startswith("Picked up the water bottle")
+
+
+def test_an_object_wider_than_the_open_hand_is_refused_before_the_drive(arm_poses):
+    # A mug: its handle makes the box long one way, and its body is 0.082 m across.
+    robot, ctx = picking(arm_poses, remembered(name="mug", size=(0.12, 0.082, 0.10)))
+
+    error = fails(ctx, "mug")
+
+    assert type(error) is StepError and error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message == (
+        "The mug is 0.082 m wide, and the right hand cannot open that wide, so Walkie did "
+        "not try to pick it up. Tell the person it cannot pick it up."
+    )
+    assert robot.calls == []
 
 
 def test_unreadable_settings_stop_the_pick_before_anything_moves(arm_poses, monkeypatch, tmp_path):

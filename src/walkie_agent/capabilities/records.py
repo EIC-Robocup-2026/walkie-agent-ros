@@ -115,7 +115,10 @@ class RecalledObject:
     it was last seen, in seconds of the robot's clock, or None when unknown.
 
     `x`, `y` and `z` are the centre of its box in the map frame, in meters, each None
-    when its geometry is not valid. `z` is its height above the floor. They serve the
+    when its geometry is not valid. `z` is its height above the floor. `size` is the
+    box's sides, in meters: along `yaw`, across it, and upright. `yaw` is the box's
+    turn about the vertical in the map frame, in radians. Each is None when the
+    memory has no valid box for it, as when it never measured one. They serve the
     atomics that approach and pick it, and never reach the LLM, which names places
     only (ADR-0010).
     """
@@ -131,6 +134,8 @@ class RecalledObject:
     x: float | None
     y: float | None
     z: float | None = None
+    size: tuple[float, float, float] | None = None
+    yaw: float | None = None
 
 
 @dataclass(frozen=True)

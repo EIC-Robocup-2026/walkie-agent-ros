@@ -18,6 +18,7 @@ from walkie_agent.arm.pick import (
     plan_pick,
     reach_problems,
     relative_move,
+    too_wide_to_grasp,
 )
 
 VALID = {
@@ -46,6 +47,7 @@ VALID = {
     "max_reach_m": 0.90,
     "min_reach_z_m": 0.50,
     "max_reach_z_m": 1.30,
+    "max_grasp_width_m": 0.078,
 }
 SETTINGS = check_pick_settings(VALID)
 OFFSETS_PROBLEM = "heading_offsets_deg must be a non-empty list of finite numbers."
@@ -107,6 +109,7 @@ def test_the_shipped_file_loads_with_the_numbers_the_walkie_ros_pick_proved():
         max_reach_m=0.90,
         min_reach_z_m=0.50,
         max_reach_z_m=1.30,
+        max_grasp_width_m=0.078,
     )
 
 
@@ -170,6 +173,7 @@ def test_every_problem_is_listed_at_once_with_the_source():
         ({"min_target_z_m": 1.15}, "min_target_z_m must be below max_target_z_m, not 1.15."),
         ({"max_reach_m": 0.30}, "min_reach_m must be below max_reach_m, not 0.35."),
         ({"min_reach_z_m": 1.4}, "min_reach_z_m must be below max_reach_z_m, not 1.4."),
+        ({"max_grasp_width_m": 0.0}, "max_grasp_width_m must be above zero, not 0.0."),
     ],
 )
 def test_a_wrong_value_is_named(changes, problem):
@@ -427,6 +431,41 @@ def test_an_object_beside_the_base_is_too_close():
 
     assert found[0] == "the object is 0.100 m from the base, outside [0.35, 0.9]"
     assert "the clear pose" not in " ".join(found)
+
+
+# The open gripper's width
+
+
+@pytest.mark.parametrize(
+    "size",
+    [
+        # A water bottle and a soda can, as the object memory's upright box: the side
+        # along the box's yaw, the side across it, and the height.
+        (0.068, 0.068, 0.22),
+        (0.076, 0.076, 0.12),
+        # A side exactly at the limit still fits.
+        (0.078, 0.078, 0.10),
+        # A partial view's box can be long one way: the narrower side is the one gripped.
+        (0.14, 0.068, 0.22),
+    ],
+    ids=["bottle", "can", "at-limit", "long-box"],
+)
+def test_an_object_as_narrow_as_the_open_gripper_fits(size):
+    assert too_wide_to_grasp(SETTINGS, size) is None
+
+
+@pytest.mark.parametrize("size", [(0.12, 0.082, 0.10), (0.082, 0.12, 0.10)], ids=["x", "y"])
+def test_an_object_wider_than_the_open_gripper_gives_its_narrower_side(size):
+    assert too_wide_to_grasp(SETTINGS, size) == 0.082
+
+
+@pytest.mark.parametrize(
+    "size",
+    [None, (0.0, 0.0, 0.0), (0.12, 0.0, 0.10), (math.nan, 0.12, 0.10), (math.inf, 0.12, 0.10)],
+    ids=["none", "zero", "zero-side", "nan", "inf"],
+)
+def test_an_object_with_no_usable_size_is_not_refused(size):
+    assert too_wide_to_grasp(SETTINGS, size) is None
 
 
 # Relative moves

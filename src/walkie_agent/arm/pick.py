@@ -5,10 +5,10 @@ hand to a pre-grasp pose through the commander's whole-body group, moves it stra
 in to grasp the object at its centre height, closes the gripper, lifts the hand
 straight up and moves it beside the base, clear of the surface (decision PK-4). This
 module holds the numbers, read from config/pick.toml, the plain geometry that
-turns an object's centre and an approach heading into those poses, and the check
-that the object and every pose lie in a sane envelope around the base before any
-arm goal is sent. None of it reaches the LLM (ADR-0022), and nothing here imports
-ROS.
+turns an object's centre and an approach heading into those poses, the check that
+the object and every pose lie in a sane envelope around the base before any arm goal
+is sent, and the check that the object is no wider than the open gripper. None of it
+reaches the LLM (ADR-0022), and nothing here imports ROS.
 
 Every position is in the settings' frame, the map frame of the object memory. A
 heading is the direction the robot faces at the stand-off pose, in radians from the
@@ -54,6 +54,7 @@ _FLOAT_KEYS = (
     "max_reach_m",
     "min_reach_z_m",
     "max_reach_z_m",
+    "max_grasp_width_m",
 )
 # The keys that must be above zero; every float key must be finite.
 _POSITIVE_KEYS = frozenset(
@@ -69,6 +70,7 @@ _POSITIVE_KEYS = frozenset(
         "max_target_shift_m",
         "min_reach_m",
         "max_reach_m",
+        "max_grasp_width_m",
     )
 )
 # Each range's lower and upper key: the lower must be below the upper.
@@ -136,6 +138,7 @@ class PickSettings:
     max_reach_m: float
     min_reach_z_m: float
     max_reach_z_m: float
+    max_grasp_width_m: float
 
 
 @dataclass(frozen=True)
@@ -355,6 +358,27 @@ def reach_problems(
                 f" [{settings.min_reach_z_m:g}, {settings.max_reach_z_m:g}]"
             )
     return problems
+
+
+def too_wide_to_grasp(
+    settings: PickSettings, size: tuple[float, float, float] | None
+) -> float | None:
+    """The object's width in metres when it is wider than the open gripper, else None.
+
+    `size` is the object memory's upright box (RecalledObject.size): along its yaw,
+    across it, and its height. The hand grips the object from the side, so the width
+    is the narrower of the two horizontal sides, whatever the approach: the widest
+    reading that could still fit. It is too wide above max_grasp_width_m. An object
+    with no size, or with a horizontal side that is not finite or not above zero, is
+    never too wide: the memory did not measure it.
+    """
+    if size is None:
+        return None
+    sides = size[:2]
+    if not all(_finite(side) and side > 0 for side in sides):
+        return None
+    width = min(sides)
+    return width if width > settings.max_grasp_width_m else None
 
 
 def relative_move(

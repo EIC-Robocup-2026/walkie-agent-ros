@@ -1,7 +1,9 @@
 """pick_object: pick up a remembered object with one hand, by its name (decision PK-4).
 
-The atomic finds the object in the object memory, drives to a stand-off pose facing
-it, raises the other arm out of the way, and reaches through ctx.arms: a whole-body
+The atomic finds the object in the object memory, refuses it before anything moves
+when the memory's box for it is wider than the open gripper (max_grasp_width_m),
+drives to a stand-off pose facing it, raises the other arm out of the way, and
+reaches through ctx.arms: a whole-body
 reach to a pre-grasp pose, a straight approach, a close of the gripper judged by the
 commander's grasp band, a straight lift, a straight move to beside the base, and a move
 of both arms home, the picking arm with the lift. The gripper is then read again and
@@ -51,6 +53,7 @@ from walkie_agent.arm.pick import (
     plan_pick,
     reach_problems,
     relative_move,
+    too_wide_to_grasp,
 )
 from walkie_agent.capabilities import Ctx, Pose2D, RecalledObject
 from walkie_agent.capabilities.guards import MAX_MOVE_M
@@ -168,6 +171,7 @@ def pick_object(ctx: Ctx, name: str) -> str:
         ) from None
     found = _remembered(ctx, name)
     label = f"the {found.name}"
+    _fits_hand(settings, found, label)
     _drive_to_standoff(ctx, settings, found, label)
     found = _seen_again(ctx, settings, found, label, _AFTER_DRIVE)
     _plan_in_reach(ctx, settings, found, label, _AFTER_DRIVE)
@@ -192,6 +196,29 @@ def _remembered(ctx: Ctx, name: str) -> RecalledObject:
         ErrorCode.PRECONDITION_FAILED,
         f"Walkie remembers a {asked}, but not exactly where it is, so it cannot reach for "
         "it. Go to it and call find_objects to look again.",
+    )
+
+
+def _fits_hand(settings: PickSettings, found: RecalledObject, label: str) -> None:
+    """Refuse an object wider than the open gripper, before anything moves.
+
+    By the memory's box (arm.pick.too_wide_to_grasp). An object with no box passes.
+    The width goes to the LLM: a size, not a position (ADR-0022).
+    """
+    width = too_wide_to_grasp(settings, found.size)
+    if width is None:
+        return
+    logger.info(
+        "Refused to pick %s (object %s): %.3f m wide, above max_grasp_width_m %g.",
+        label,
+        found.id,
+        width,
+        settings.max_grasp_width_m,
+    )
+    raise StepError(
+        ErrorCode.PRECONDITION_FAILED,
+        f"{label.capitalize()} is {width:.3f} m wide, and the {settings.arm} hand cannot open "
+        "that wide, so Walkie did not try to pick it up. Tell the person it cannot pick it up.",
     )
 
 

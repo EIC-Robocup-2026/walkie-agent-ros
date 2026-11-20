@@ -12,7 +12,7 @@ It was written on 2026-11-19 for these checkouts on the robot's PC
 | `~/Project/robocup_experiments/walkie-agent-ros` | `f9b7a3f` (`feat/mahoraga-demo`) | The agent, voice and every check on this page |
 | `~/Project/robocup_experiments/walkie-vision` | `ad7c833` (`feat/scene-graph-prep`) | People and objects from the head ZED |
 | `~/Project/robocup_experiments/walkie-database` | `41dae92` (`feat/scene-graph-prep`) | People memory, and the optional object memory |
-| `~/Project/robocup_experiments/walkie-ros-fullbody` | `feat/sim-bottle-pick` | Whole-body MoveIt ([Optional C](#optional-c-the-whole-body-moveit-test) and [E](#optional-e-pick-up-a-remembered-object)), and `$MAP` |
+| `~/Project/robocup_experiments/walkie-ros-fullbody` | `a475236` (`feat/sim-bottle-pick`) | Whole-body MoveIt ([Optional C](#optional-c-the-whole-body-moveit-test) and [E](#optional-e-pick-up-a-remembered-object)), and `$MAP` |
 
 The robot runs walkie-ros's **working tree**, not `fcbac5c`. Its uncommitted
 edits change the launch files this page uses. Every walkie-ros command here was
@@ -1139,11 +1139,13 @@ The agent then loses only `recall_object`, `list_room_objects` and
 The whole-body MoveIt experiment is a separate test with its own guide. It uses
 no agent, vision or database. Its checkout is
 `~/Project/robocup_experiments/walkie-ros-fullbody`, now on
-`feat/sim-bottle-pick` (`e31c1bf`), and its guide is
+`feat/sim-bottle-pick` (`a475236`), and its guide is
 `docs/guides/whole-body-real-robot.md` there. That branch sits on
-`feat/moveit-full-body` (`1da4535`) and changes only simulation launches,
-worlds and the scripted sim pick, so the real-robot launches, MoveIt config and
-commander are the same as at `1da4535`.
+`feat/moveit-full-body` (`1da4535`). It changes simulation launches, worlds and
+the scripted sim pick, and one thing the robot runs: the commander now makes its
+collision-matrix writes one at a time, and a collision toggle turned back on
+restores the matrix (PK-52). The real-robot launches and the MoveIt config are
+the same as at `1da4535`.
 
 - **Never run it at the same time as this page's stack.** Stop every terminal
   from this page first ([step 8](#8-stop-and-reset)). Both drive the same CAN

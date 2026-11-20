@@ -60,18 +60,27 @@ sim_bottle_pick.py
 
 Exit codes: 0 passed, 1 failed, 2 gate or prerequisite, 3 inconclusive, 4 cleanup failed or a goal's end unknown, 130 interrupted. Signals during a goal send are deferred, so no sent goal goes untracked.
 
+It also fixes two bugs in the commander, which the robot runs too (PK-52):
+
+```text
+editCollisionMatrix       one lock around read, edit, write, for the three toggles and the allowance
+toggle turned back on     its rows go back to the SRDF's disabled pairs and the allowance's pairs
+```
+
 ### Evidence
 
 - **Before:** in the exported world the bottle slid out between the fingers, and `check_grasp.py` fails on that export.
   **After:** the check passes on the lowpoly and baked worlds. After two review rounds, fresh-launch runs gave 5 passes, 1 inconclusive camera view and failures that each ended with a verified cleanup. A SIGINT during the approach exits 130 with both values read back as defaults, and a changed allowance at the start exits 2. With no simulation running, the script exits 2 in about 11 s and changes nothing. 102 unit tests pass.
+- **Before:** a collision toggle turned off and on again left the matrix changed, and overlapping writes could undo each other.
+  **After:** the toggle tests pass 4 of 4 and failed 4 of 4 before the fix. The lock tests pass 6 of 6 and fail 5 of 6 on the commander without the lock. 10 unit tests pass.
 
 ### Merge Danger
 
 **Door:** two-way
 
-**Blast Radius:** simulation
+**Blast Radius:** simulation, and the commander's collision matrix
 
-`robot_bringup` installs the script on the robot too. The gate tells a simulation from a real-only graph, but only a private Zenoh router and domain keep the two apart. Any other launch of the MuJoCo `ros2_control_node` must set `mujoco_world`, or the pick refuses to start.
+On the robot, a toggle turned back on now resets any other explicit entry in its rows, and a matrix write can wait about 10 s for another. `robot_bringup` installs the script on the robot too. The gate tells a simulation from a real-only graph, but only a private Zenoh router and domain keep the two apart. Any other launch of the MuJoCo `ros2_control_node` must set `mujoco_world`, or the pick refuses to start.
 
 ## walkie-agent-ros: feat/mahoraga-demo
 

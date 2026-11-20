@@ -1349,9 +1349,10 @@ finishes its move either way.
   compared.
 - The hand's orientation for the side grasp, the stand-off distance and the
   grasp band were tuned in simulation at most.
-- The sighting age, the 15 cm move limit and the reach envelope were derived
-  from one simulated pick and the arm's reach. End-to-end picks in the Chula
-  simulation passed all three checks, after the drive, before the reach and
+- The sighting age and the 15 cm move limit were derived from one simulated
+  pick, and the reach envelope's 0.82 m from 23 scripted picks in simulation
+  (decision PK-57); the real arm may reach less or further. End-to-end picks
+  in the Chula simulation passed all three checks, after the drive, before the reach and
   right before the approach, also after PK-51 moved the last one after the
   wait for the arm to rest; none has run on the robot.
   A pick that refuses a bottle in plain view points at one of them first.

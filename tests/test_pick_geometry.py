@@ -107,7 +107,7 @@ def test_the_shipped_file_loads_with_the_numbers_the_walkie_ros_pick_proved():
         min_target_z_m=0.55,
         max_target_z_m=1.15,
         min_reach_m=0.35,
-        max_reach_m=0.90,
+        max_reach_m=0.82,
         min_reach_z_m=0.50,
         max_reach_z_m=1.30,
         max_grasp_width_m=0.078,
@@ -127,6 +127,40 @@ def test_the_shipped_envelope_holds_the_proven_chula_pick_with_the_base_a_little
         stopped = plan_pick(settings, *bottle, 0.7, approach, (base_x, base_y, plan.heading))
 
         assert reach_problems(settings, stopped, bottle, (base_x, base_y, plan.heading)) == []
+
+
+# Where base_footprint stood (x, y, yaw) for scripted picks in the Chula simulation on
+# 2026-11-21, and the object's centre: the straight approach held the bottle from the
+# first two and could not be planned from the last two (the bottle, then a can).
+HELD_FROM = [
+    ((0.7249, -6.3377, 1.5796), (0.94, -5.57, 0.862)),
+    ((0.6855, -6.3436, 1.6465), (0.94, -5.57, 0.862)),
+]
+FAILED_FROM = [
+    ((0.7212, -6.3872, 1.5805), (0.94, -5.57, 0.862)),
+    ((1.3453, -4.3317, -1.1093), (1.65, -5.12, 0.867)),
+]
+
+
+def plan_from(settings, base, target):
+    approach = math.atan2(target[1] - base[1], target[0] - base[0])
+    return plan_pick(settings, *target, base[2], approach, base)
+
+
+@pytest.mark.parametrize(("base", "target"), HELD_FROM)
+def test_the_shipped_envelope_keeps_the_furthest_picks_that_held_in_simulation(base, target):
+    settings = load_pick_settings(PROJECT_ROOT / DEFAULT_PICK_PATH)
+
+    assert reach_problems(settings, plan_from(settings, base, target), target, base) == []
+
+
+@pytest.mark.parametrize(("base", "target"), FAILED_FROM)
+def test_the_shipped_envelope_refuses_the_picks_whose_straight_approach_failed(base, target):
+    settings = load_pick_settings(PROJECT_ROOT / DEFAULT_PICK_PATH)
+
+    problems = reach_problems(settings, plan_from(settings, base, target), target, base)
+
+    assert [line.split(" is ")[0] for line in problems] == ["the object"]
 
 
 def test_integers_are_taken_as_floats_and_the_frame_is_trimmed():

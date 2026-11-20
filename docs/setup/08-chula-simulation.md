@@ -450,7 +450,7 @@ the tool log shows each as a call:
    `held` or `missing`, or holds without a full position, and one seen more
    than 0.15 m from where it was before the drive, which it tells the agent
    to pick again. It also refuses an object whose centre is not 0.55 to
-   1.15 m high, an object or hand pose of the pick outside 0.35 to 0.90 m
+   1.15 m high, an object or hand pose of the pick outside 0.35 to 0.82 m
    from the base, and a hand pose not 0.50 to 1.30 m high. A memory that does
    not answer is its own error, which never means the object is gone.
 4. **Reach.** The left arm goes to `standby`, out of the way, and the right

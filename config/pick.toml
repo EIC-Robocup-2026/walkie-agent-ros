@@ -10,7 +10,8 @@
 # home, the picking arm with the lift at home_lift_m. The numbers below picked the Chula
 # simulation's water bottle on 2026-11-20. The checks at the end of the file, on the
 # sighting's age, the object's shift and the reach envelope, were derived from that
-# pick and the arm's reach afterwards. Later end-to-end picks in the Chula simulation
+# pick and the arm's reach afterwards; the envelope's furthest reach was set from
+# scripted picks on 2026-11-21. Later end-to-end picks in the Chula simulation
 # the same day ran them after the drive, before the whole-body reach and right before
 # the straight approach, and held the bottle. None of the numbers has been tried on
 # the robot.
@@ -105,9 +106,14 @@ max_target_z_m = 1.15
 # clear) may lie from base_footprint where the base stopped. With the numbers above
 # the Chula pick had the object 0.68 m away, pregrasp 0.52, grasp and lift 0.62 and
 # clear 0.46; the base stopping 0.10 m short or long moves the object to 0.58 to
-# 0.78. The arm's hand link reaches about 0.87 m from base_footprint at full stretch.
+# 0.78. The upper bound comes from 23 scripted picks of the Chula bottle and can on
+# 2026-11-21, with the base fixed for the straight approach (decision PK-57): every
+# pick with the object up to 0.814 m away held, no straight approach could be planned
+# with it 0.845 or 0.846 m away, and the one at 0.848 m caught the table on the way
+# to the pre-grasp pose. The object is the furthest point of a pick, 0.06 m past the
+# grasp pose.
 min_reach_m = 0.35
-max_reach_m = 0.90
+max_reach_m = 0.82
 # How high each hand pose may be: from just under the lowest object to just over
 # the shoulder's highest point (the Chula pick's hand poses stood 0.862 to 0.962 m
 # high).

@@ -1039,8 +1039,8 @@ RESET_FAILED = StepError(
 )
 RESET_NOTE = (
     "Walkie could not turn off its fingers' allowance to touch what its cameras sense: The "
-    "commander's /bimanual_commander/set_parameters did not answer. Its next arm motion sets "
-    "the allowance again first, and moves only if that works."
+    "commander's /bimanual_commander/set_parameters did not answer. Its next motion of an arm "
+    "or a gripper sets the allowance again first, and moves only if that works."
 )
 
 

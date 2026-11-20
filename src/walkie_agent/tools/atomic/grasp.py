@@ -486,8 +486,8 @@ def _touch_off(ctx: Ctx, label: str, error: BaseException | None, answer: str) -
             code, why = ErrorCode.INTERNAL, "the reset failed"
     note = (
         "Walkie could not turn off its fingers' allowance to touch what its cameras sense: "
-        f"{why}. Its next arm motion sets the allowance again first, and moves only if that "
-        "works."
+        f"{why}. Its next motion of an arm or a gripper sets the allowance again first, and "
+        "moves only if that works."
     )
     if error is None:
         raise StepError(code, f"{note} {answer}")

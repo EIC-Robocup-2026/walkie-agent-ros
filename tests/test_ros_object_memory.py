@@ -323,6 +323,55 @@ def test_an_object_the_detector_also_called_something_else_comes_last(database, 
     assert ids(memory.search("")) == ["176", "178", "40"]
 
 
+# Mixed objects. The ranking reads only the labels and the official names, so it is a
+# heuristic, not proof of what an object is. pick_object reaches for the first match
+# that has a position, so these pin which object that is.
+
+
+def test_two_bottles_with_the_same_labels_keep_the_node_s_order(database, memory):
+    # Either one is a water bottle, and pick_object takes the first.
+    database.objects = [
+        summary(181, "bottle", labels=("bottle",)),
+        summary(4, "cup"),
+        summary(178, "bottle", labels=("bottle",)),
+    ]
+
+    assert ids(memory.search("water bottle")) == ["181", "178"]
+    assert ids(memory.search("bottle")) == ["181", "178"]
+
+
+def test_a_steady_wrong_label_comes_before_a_right_label_the_detector_once_disputed(
+    database, memory
+):
+    # The node's order: a water bottle the detector once called a cup, then a can it
+    # called a bottle every time. The labels alone cannot tell the can is wrong, so it
+    # comes first.
+    database.objects = [
+        summary(178, "bottle", labels=("bottle", "cup")),
+        summary(176, "bottle", labels=("bottle",)),
+    ]
+
+    assert ids(memory.search("water bottle")) == ["176", "178"]
+
+
+def test_an_official_name_is_the_object_s_own_name_and_is_never_disputed(database, memory):
+    # The node's order: a bottle the detector once called a cup; a cup the catalogue
+    # names "Water Bottle"; a catalogued bottle the detector once called a cup; a bottle
+    # it only ever called a bottle.
+    database.objects = [
+        summary(50, "bottle", labels=("bottle", "cup")),
+        summary(51, "cup", labels=("cup",), official_name="Water Bottle"),
+        summary(52, "bottle", labels=("bottle", "cup"), official_name="Aqua"),
+        summary(53, "bottle", labels=("bottle",)),
+    ]
+
+    assert ids(memory.search("water bottle")) == ["51", "52", "53", "50"]
+    assert ids(memory.search("aqua")) == ["52"]
+    # The detector's label is the object's own name too, so a cup comes first for "cup"
+    # even when the catalogue names it a water bottle.
+    assert ids(memory.search("cup")) == ["51", "52", "50"]
+
+
 def test_an_empty_name_recalls_every_present_object_up_to_the_limit(memory):
     assert ids(memory.search("")) == ["15", "18", "4", "14", "13", "16", "6"]
     assert ids(memory.search("", limit=2)) == ["15", "18"]

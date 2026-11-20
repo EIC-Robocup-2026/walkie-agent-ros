@@ -2704,7 +2704,7 @@ def test_a_reset_that_a_later_change_turned_back_on_is_a_skill_failure(
     read = client._parameters.call_async
 
     def enabled_late(request):
-        # An earlier enable that the commander handled after the reset.
+        # Another client's enable that the commander handled after the reset.
         fake_commander.set_parameters([Parameter("allow_gripper_vs_octomap", value=True)])
         return read(request)
 

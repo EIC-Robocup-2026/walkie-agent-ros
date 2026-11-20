@@ -10,10 +10,10 @@
 # home, the picking arm with the lift at home_lift_m. The numbers below picked the Chula
 # simulation's water bottle on 2026-11-20. The checks at the end of the file, on the
 # sighting's age, the object's shift and the reach envelope, were derived from that
-# pick and the arm's reach afterwards. A later end-to-end pick in the Chula simulation
-# the same day ran them after the drive and held the bottle; their second and third
-# runs, before the whole-body reach and before the straight approach, came after it
-# and have not run in a pick yet. None of the numbers has been tried on the robot.
+# pick and the arm's reach afterwards. Later end-to-end picks in the Chula simulation
+# the same day ran them after the drive, before the whole-body reach and right before
+# the straight approach, and held the bottle. None of the numbers has been tried on
+# the robot.
 
 # The arm that picks: "left" or "right".
 arm = "right"

@@ -47,8 +47,10 @@ as unknown, so the first motion of an arm or a gripper sets it before its goal
 (false, for a gripper) and sends no goal unless the commander confirms that. The
 agent sends every change of it through one client, one at a time under a lock of
 its own, and the reset reads the value back after it settles: a true read then,
-as from a change that reached the commander late, fails the reset and leaves the
-value unknown. The read checks the parameter, not the planning scene the
+as from a change by another client that the commander handled after the reset,
+fails the reset and leaves the value unknown. The agent's own earlier changes
+reach the commander before the reset, since it handles one client's requests in
+the order sent. The read checks the parameter, not the planning scene the
 commander builds from it. It sets nothing else.
 
 **Consequences**

@@ -14,7 +14,7 @@ The object is read from the memory again at three checkpoints, and each refusal 
 no further goal: after the drive, before the first arm goal; before the whole-body
 reach, once the other arm is out of the way and the hand is open (checkpoint A); and
 right before the straight approach's goal, with the hand at the pre-grasp pose, the
-allowance on and the arm at rest (checkpoint B).
+allowance on and the wait for the arm to rest over (checkpoint B).
 Each time the memory must hold the object as present, with a full position, seen at
 most max_observation_age_s ago, and the atomic waits up to observation_wait_s for such
 a sighting. That position must lie within max_target_shift_m of the previous
@@ -504,7 +504,8 @@ def _grasp(ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str) 
     `found` is the object as the memory held it after the drive. It is read again
     before the reach (checkpoint A), which plans the hand poses from that reading,
     and right before the approach's goal (checkpoint B), once the allowance is on and
-    the arm rests, which keeps A's plan: a straight move from the pre-grasp pose must
+    the wait for the arm to rest is over, which keeps A's plan: a straight move from
+    the pre-grasp pose must
     keep the hand's orientation. A refusal at either
     sends no further goal, and the arms stay where they are. After a close that holds
     nothing, both arms still go home.
@@ -535,10 +536,10 @@ def _grasp(ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str) 
     _reach(ctx, settings, plan.pregrasp, f"The reach toward {label} failed: ", whole_body=True)
     # The fingers close on the object's octomap voxels, so from here on they may touch
     # the octomap. The allowance stays until the move of the other arm home (_go_home).
-    # The whole-body reach can take a minute or more, and the arm then takes up to
-    # STILL_WAIT_S to come to rest. The memory kept saving sightings of the Chula
-    # bottle throughout, so a fresh one is required once the arm rests, right before
-    # the approach's goal.
+    # The whole-body reach can take a minute or more, and the arm then gets up to 10 s
+    # to come to rest. The memory kept saving sightings of the Chula bottle
+    # throughout, so a fresh one is required after that wait, right before the
+    # approach's goal.
     _reach(
         ctx, settings, plan.grasp, f"The approach to {label} failed: ", cartesian=True,
         touch=True, ready=lambda: _seen_again(ctx, settings, seen, label, _BEFORE_APPROACH),

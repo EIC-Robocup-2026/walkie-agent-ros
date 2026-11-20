@@ -154,8 +154,8 @@ set only with both `--arms` and `--object-memory`.
 `pick_object` reads the object again at three checkpoints: after the drive,
 before its first arm goal; before the whole-body reach, once the left arm is
 in standby and the hand is open; and right before the straight approach's
-goal, with the hand at the pre-grasp pose, the allowance on and the arm at
-rest. Each time it refuses unless the memory still
+goal, with the hand at the pre-grasp pose, the allowance on and the wait for
+the arm to rest over. Each time it refuses unless the memory still
 holds the object as present with a full position, seen within
 `max_observation_age_s` (it waits up to `observation_wait_s` for such a
 sighting), no further than `max_target_shift_m` from the previous

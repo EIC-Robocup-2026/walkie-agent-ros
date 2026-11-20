@@ -1849,7 +1849,9 @@ def test_an_enable_that_lands_late_around_a_reset_is_never_held_as_off(
 
     def timed_out(allow, timeout_s=None):
         sets.append(allow)
-        # The commander gets the request only later.
+        # The commander gets the request only later. Through one client it still
+        # answers before the reset (PK-51); landing after the reset stands in for
+        # another client's enable, which the read-back must catch the same way.
         late.append(allow)
         raise StepError(ErrorCode.TIMEOUT, "The commander's set_parameters did not answer.")
 
@@ -1863,7 +1865,7 @@ def test_an_enable_that_lands_late_around_a_reset_is_never_held_as_off(
     read = client._parameters.call_async
 
     def landing(request):
-        # Between the reset and its read back.
+        # Between the reset and its read-back.
         if late:
             land()
         return read(request)

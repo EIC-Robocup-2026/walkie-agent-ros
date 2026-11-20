@@ -231,8 +231,9 @@ class Arms(Protocol):
     sensed octomap, which a grasp needs, and stays in effect until a reach
     or a move_to() without it, the next open or restore_touch(). `ready`, when
     given, runs right before the goal, after the allowance is set and, for a
-    straight reach, the arm has come to rest; whatever it raises ends the reach
-    unchanged, with no goal sent. The arm then
+    straight reach, after the wait for the arm to come to rest, which a backend
+    may end after a bound; whatever it raises ends the reach unchanged, with no
+    goal sent. The arm then
     rests in no named pose, so it is not safe for driving. It raises
     StepError REFUSED for a pose or a timeout that
     is not finite, or a whole-body straight line; SKILL_FAILED when the

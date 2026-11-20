@@ -4,8 +4,9 @@ Provides the commander interfaces the agent uses (ADR-0021), under the same
 names and types:
   - /set_joint_position  my_robot_interfaces/action/SetJointPosition
   - /control_gripper     my_robot_interfaces/action/ControlGripper
-  - /go_to_pose          my_robot_interfaces/action/GoToPose, for one arm or one
-    whole-body group, which refuses a Cartesian path as the commander does
+  - /go_to_pose          my_robot_interfaces/action/GoToPose, for one arm, one arm
+    with the lift, or one whole-body group, which refuses a Cartesian path as
+    the commander does
   - /get_joint_states    my_robot_interfaces/srv/GetJointStates
   - /bimanual_commander/get_parameters and /bimanual_commander/set_parameters,
     rclpy's parameter services of a node named bimanual_commander, with
@@ -16,8 +17,10 @@ trajectory execution manager does.
 
 The groups and their joints come from config/robot_model.toml, the snapshot
 of the pinned walkie-ros commit, so the fake and the real commander agree on
-names and order. It has no *_lift groups, which the agent never commands
-(ADR-0026), so a goal for one is rejected as for an unknown group.
+names and order. It serves the one-arm *_lift groups for pose goals, joint
+goals and reads, the lift's joints first, as the commander lists them; these
+are the goals pick_object sends them (ADR-0026, decision PK-5). Any goal or
+read for both_arms_lift is rejected as for an unknown group.
 
 What it copies from the real commander, since the agent must handle it:
   - a joint goal whose position count differs from the group's joints is
@@ -42,7 +45,7 @@ What it copies from the real commander, since the agent must handle it:
     object ends with success false.
 
 Where it differs from the real commander, so a test does not rely on it:
-  - the arms start exactly at home and the fingers fully open;
+  - the arms start exactly at home, the fingers fully open and the lift at 0;
   - a pose goal solves no IK: it moves the joints in pose_joints, none by default,
     and a whole-body goal never moves a base or a lift, which the fake does not
     have;
@@ -102,18 +105,22 @@ from walkie_agent.arm.poses import (
     ARM_GROUPS,
     BOTH_ARMS_GROUP,
     GRIPPER_GROUPS,
+    LIFT_ARM_GROUPS,
     RIGHT_JOINT2,
     WHOLE_BODY_GROUPS,
     RobotModel,
     load_robot_model,
 )
 
-# The groups served, in robot_model.toml's order.
+# The groups served, in robot_model.toml's order, and the arm each one-arm *_lift
+# group moves with the lift.
 _GROUPS = (*ARM_GROUPS.values(), BOTH_ARMS_GROUP, *GRIPPER_GROUPS.values())
+_LIFT_GROUP_ARMS = {group: arm for arm, group in LIFT_ARM_GROUPS.items()}
 # The groups a pose goal is accepted for, and the arm each one moves.
 _POSE_GROUPS = {
     **{group: arm for arm, group in ARM_GROUPS.items()},
     **{group: arm for arm, group in WHOLE_BODY_GROUPS.items()},
+    **{group: arm for arm, group in LIFT_ARM_GROUPS.items()},
 }
 # The interfaces, by the names vanish() takes.
 SET_JOINT_POSITION = "set_joint_position"
@@ -272,8 +279,8 @@ class FakeCommander(Node):
         # Reentrant, so that a motion step can check whether it was stopped
         # while it holds the lock.
         self._lock = threading.RLock()
-        # Every arm and finger joint, including openarm_right_joint2, which
-        # stays where it is while right_joint2_fixed hides it.
+        # Every arm, finger and lift joint, including openarm_right_joint2,
+        # which stays where it is while right_joint2_fixed hides it.
         home = self.model.states.get(BOTH_ARMS_GROUP, {}).get("home", {})
         self._joints: dict[str, float] = {}
         for group in (*ARM_GROUPS.values(), *GRIPPER_GROUPS.values()):
@@ -281,6 +288,8 @@ class FakeCommander(Node):
                 # The fingers start open, at the top of their travel.
                 default = self.model.limits[joint][1] if group in GRIPPER_GROUPS.values() else 0.0
                 self._joints[joint] = float(home.get(joint, default))
+        for joint in sorted(self.model.lift_joints):
+            self._joints[joint] = 0.0
         # How many times an accepted joint cancel or a "stop" event stopped
         # the arms. A motion stops when this changes, as MoveIt's stop ends
         # every execution.
@@ -365,7 +374,7 @@ class FakeCommander(Node):
             self._joints[finger] = float(position)
 
     def joints(self) -> dict[str, float]:
-        """Every arm and finger joint by name."""
+        """Every arm, finger and lift joint by name."""
         with self._lock:
             return dict(self._joints)
 
@@ -379,9 +388,13 @@ class FakeCommander(Node):
 
     def group_joints(self, group: str) -> list[str] | None:
         """The joints of `group` in the order served, or None for a group it does not have."""
-        if group not in _GROUPS:
+        if group in _LIFT_GROUP_ARMS:
+            arm_group = ARM_GROUPS[_LIFT_GROUP_ARMS[group]]
+            joints = [*sorted(self.model.lift_joints), *self.model.groups[arm_group]]
+        elif group in _GROUPS:
+            joints = list(self.model.groups[group])
+        else:
             return None
-        joints = list(self.model.groups[group])
         if self.right_joint2_fixed:
             joints = [joint for joint in joints if joint != RIGHT_JOINT2]
         if self.reverse_joint_order:

@@ -2957,7 +2957,7 @@ def test_a_bound_that_is_not_a_positive_number_of_seconds_is_a_bug(poses, value)
 @pytest.mark.parametrize(
     "call",
     [
-        lambda c: c.set_joint_position("left_arm_lift", [0.0] * 8, 5.0),
+        lambda c: c.set_joint_position("both_arms_lift", [0.0] * 15, 5.0),
         lambda c: c.set_joint_position("left_gripper", [0.0], 5.0),
         lambda c: c.set_joint_position("left_arm", [float("nan")] * 7, 5.0),
         lambda c: c.set_joint_position("left_arm", [0.0] * 7, math.inf),
@@ -3019,6 +3019,28 @@ def test_a_cartesian_reach_of_one_arm_sends_the_hand_pose_and_forgets_the_arm(
     # A pose goal has no joint target, so the arm is unknown until it is read.
     assert client.last_state == ArmsState(left=home.left, right=None)
     assert client.read_arms().right == ArmState(None, False)
+
+
+def test_a_cartesian_reach_of_an_arm_with_the_lift_forgets_the_arm(client, fake_commander):
+    home = client.read_arms()
+
+    assert client.go_to_pose("right_arm_lift", HAND, 5.0, cartesian=True) == "Success"
+
+    assert sent_pose(fake_commander.pose_goals[-1])[0::2] == ("right_arm_lift", True)
+    assert client.last_state == ArmsState(left=home.left, right=None)
+
+
+def test_a_joint_goal_of_an_arm_with_the_lift_moves_the_lift_and_the_arm(client, fake_commander):
+    order = client.joint_names("right_arm_lift")
+    assert order[0] == "lift_joint"
+    targets = [0.7435, *([0.1] * (len(order) - 1))]
+
+    assert client.set_joint_position("right_arm_lift", targets, 5.0) == "Success"
+
+    assert fake_commander.joint_goals[-1] == ("right_arm_lift", tuple(targets))
+    reading = client.joint_states("right_arm_lift")
+    assert list(reading) == list(order)
+    assert list(reading.values()) == pytest.approx(targets)
 
 
 def test_a_whole_body_reach_returns_the_commanders_status(client, fake_commander):

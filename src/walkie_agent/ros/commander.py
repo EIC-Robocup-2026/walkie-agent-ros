@@ -71,9 +71,11 @@ Left out of experiment/hri-agent's arm/commander.py and the work around it:
   - the other Cartesian goals (/go_to_pose_relative, /go_to_pose_quat), which ADR-0021
     reserves for robot-side skills; /go_to_pose takes the hand targets that
     walkie_agent.arm.pick computes from the object memory, never from the LLM;
-  - the lift and the *_lift groups (ADR-0026): a goal or a read for one is a
-    ValueError. The whole-body groups of go_to_pose() move the lift as MoveIt plans
-    it, which decision PK-5 accepts for the pick;
+  - the lift and the *_lift groups (ADR-0026), apart from the pick's motions
+    (decision PK-5): go_to_pose()'s Cartesian path on one arm with the lift, which
+    moves the lift as MoveIt plans it, as the whole-body groups of go_to_pose() do,
+    and a joint goal and a read for one arm with the lift, which bring the arm home
+    with the lift at its home height after a pick;
   - RunSkill, which waits on the team's choice between agent-side bundles and
     robot-side skills;
   - wip/p14's ended-goal ids and external cancel_goals(), which serve only
@@ -111,6 +113,7 @@ from walkie_agent.arm.poses import (
     BOTH_ARMS_GROUP,
     GRASP_CLOSE_THRESHOLD,
     GRIPPER_GROUPS,
+    LIFT_ARM_GROUPS,
     RIGHT_JOINT2,
     WHOLE_BODY_GROUPS,
     ArmPoses,
@@ -231,19 +234,25 @@ SETTLE_TOLERANCE_M = 0.001
 # How often a wait looks at the clock between its waits on the token.
 _POLL_S = 0.05
 
-# The goals the agent may send. The *_lift groups also move the lift, which
-# the agent never commands (ADR-0026).
-ARM_GOAL_GROUPS = frozenset((*ARM_GROUPS.values(), BOTH_ARMS_GROUP))
+# The goals the agent may send. The *_lift groups also move the lift, which the
+# agent commands only in pick_object: its pose goals, and the joint goal that
+# brings the arm home after the pick (ADR-0026, decision PK-5).
+ARM_GOAL_GROUPS = frozenset((*ARM_GROUPS.values(), BOTH_ARMS_GROUP, *LIFT_ARM_GROUPS.values()))
 GRIPPER_GOAL_GROUPS = frozenset(GRIPPER_GROUPS.values())
 READ_GROUPS = ARM_GOAL_GROUPS | GRIPPER_GOAL_GROUPS
-# The groups a pose goal may name: one arm, or one arm with the lift and the base.
-# The whole-body groups refuse a Cartesian path.
-POSE_GOAL_GROUPS = frozenset((*ARM_GROUPS.values(), *WHOLE_BODY_GROUPS.values()))
+# The groups a pose goal may name: one arm, one arm with the lift and the base, or,
+# for a Cartesian path only, one arm with the lift (decision PK-5). The whole-body
+# groups refuse a Cartesian path.
+POSE_GOAL_GROUPS = frozenset(
+    (*ARM_GROUPS.values(), *WHOLE_BODY_GROUPS.values(), *LIFT_ARM_GROUPS.values())
+)
 WHOLE_BODY_GOAL_GROUPS = frozenset(WHOLE_BODY_GROUPS.values())
+CARTESIAN_ONLY_GROUPS = frozenset(LIFT_ARM_GROUPS.values())
 # The arms each arm group moves.
 _GROUP_ARMS = (
     {ARM_GROUPS[arm]: (arm,) for arm in ARMS}
     | {WHOLE_BODY_GROUPS[arm]: (arm,) for arm in ARMS}
+    | {LIFT_ARM_GROUPS[arm]: (arm,) for arm in ARMS}
     | {BOTH_ARMS_GROUP: ARMS}
 )
 # Each gripper group's finger joint: the one joint of the group, whose
@@ -968,8 +977,9 @@ class CommanderClient:
         """Move the hand link of `group` to `pose` and wait for the result.
 
         For pick_object's reaches only (decision PK-4). `group` is one arm, which may
-        take a Cartesian path, or a whole-body group, which plans the base, the lift
-        and the arm together and refuses one. The orientation goes as roll, pitch and
+        take a Cartesian path; a whole-body group, which plans the base, the lift
+        and the arm together and refuses one; or one arm with the lift, for a
+        Cartesian path only (decision PK-5). The orientation goes as roll, pitch and
         yaw, which the commander turns into a quaternion. A pose goal has no joint
         target, so nothing checks the joints afterwards: the commander's result is the
         answer, and the arms of `group` are unknown until the next read.
@@ -985,11 +995,16 @@ class CommanderClient:
           - SKILL_FAILED when the cancel of an older goal that the commander accepted
             late may have stopped it (_on_late_answer);
           - CANCELLED when the commander reports the goal cancelled.
-        A Cartesian path on a whole-body group, or an empty `frame_id`, is a ValueError.
+        A Cartesian path on a whole-body group, any other path on an arm with the
+        lift, or an empty `frame_id`, is a ValueError.
         """
         _check_group(group, POSE_GOAL_GROUPS)
         if cartesian and group in WHOLE_BODY_GOAL_GROUPS:
             raise ValueError(f"{group} takes no Cartesian path: the commander refuses one.")
+        if not cartesian and group in CARTESIAN_ONLY_GROUPS:
+            raise ValueError(
+                f"{group} moves the lift, so the agent sends it Cartesian paths only."
+            )
         if not pose.frame_id:
             raise ValueError("A pose goal needs a frame_id.")
         x, y, z, roll, pitch, yaw = _finite(

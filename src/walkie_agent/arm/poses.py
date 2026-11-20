@@ -31,9 +31,18 @@ BOTH_ARMS_GROUP = "both_arms"
 GRIPPER_GROUPS = {"left": "left_gripper", "right": "right_gripper"}
 LIFT_GROUP_SUFFIX = "_lift"
 # The commander's whole-body groups: the base's planar joint, the lift and one arm,
-# which take a pose goal only. pick_object reaches through one of them, the one
-# place the agent lets a motion move the lift (decision PK-5).
+# which take a pose goal only. pick_object reaches through one of them (decision
+# PK-5).
 WHOLE_BODY_GROUPS = {"left": "whole_body_left", "right": "whole_body_right"}
+# One arm with the lift. pick_object's straight approach and lift go through one of
+# them, since the whole-body groups refuse a Cartesian path and the arm group alone
+# could not follow the approach in the Chula simulation. With the whole-body reach,
+# these are the only motions in which the agent lets the lift move (decision PK-5).
+# After the pick, a joint goal on the same group brings the arm home and the lift
+# back to its home height.
+LIFT_ARM_GROUPS = {"left": "left_arm_lift", "right": "right_arm_lift"}
+# The one joint that robot_model.toml's [lift] lists, which the *_lift groups add.
+LIFT_JOINT = "lift_joint"
 
 # walkie-ros launched with right_joint2_fixed makes this a fixed joint, and
 # /get_joint_states then lists no such joint. Every SRDF preset has it at 0.

@@ -31,6 +31,7 @@ from rclpy.task import Future
 from walkie_agent.arm.pick import HandPose
 from walkie_agent.arm.poses import (
     GRIPPER_GROUPS,
+    LIFT_JOINT,
     RIGHT_JOINT2,
     ArmPoses,
     load_arm_poses,
@@ -1465,11 +1466,19 @@ def test_a_whole_body_reach_goes_to_the_arms_whole_body_group(arms, fake_command
     assert arms.state().sentence() == NOT_SAFE_SENTENCE
 
 
-def test_a_straight_reach_goes_to_the_arm_group(arms, fake_commander):
+def test_a_straight_reach_goes_to_the_arm_with_the_lift(arms, fake_commander):
+    # The arm group alone could not follow a pick's approach in the Chula simulation.
     assert arms.reach("left", HAND, cartesian=True, timeout_s=5.0) == "Success"
 
     [goal] = fake_commander.pose_goals
-    assert (goal.group_name, goal.cartesian_path) == ("left_arm", True)
+    assert (goal.group_name, goal.cartesian_path) == ("left_arm_lift", True)
+
+
+def test_a_reach_neither_straight_nor_whole_body_goes_to_the_arm_group(arms, fake_commander):
+    assert arms.reach("right", HAND, timeout_s=5.0) == "Success"
+
+    [goal] = fake_commander.pose_goals
+    assert (goal.group_name, goal.cartesian_path) == ("right_arm", False)
 
 
 @pytest.mark.parametrize(
@@ -1556,6 +1565,74 @@ def test_a_reach_waits_for_at_least_the_floor(client, token, fake_commander, mon
     assert sent == [60.0, 5.0]
 
 
+def readings_of(client, monkeypatch, wrist_values) -> list[str]:
+    """Make the client's reads of right_arm give each of `wrist_values` for joint7 in turn.
+
+    The last value repeats. Returns the log of reads and goals, in order.
+    """
+    log: list[str] = []
+    values = list(wrist_values)
+
+    def joint_states(group, timeout_s=None):
+        log.append(f"read {group}")
+        value = values.pop(0) if len(values) > 1 else values[0]
+        return {"openarm_right_joint1": 0.2, "openarm_right_joint7": value}
+
+    def go_to_pose(group, pose, timeout_s, *, cartesian):
+        log.append(f"goal {group}")
+        return "Success"
+
+    monkeypatch.setattr(arms_module, "STILL_POLL_S", 0.01)
+    monkeypatch.setattr(client, "joint_states", joint_states)
+    monkeypatch.setattr(client, "go_to_pose", go_to_pose)
+    return log
+
+
+def test_a_straight_reach_waits_until_the_arm_is_still(arms, client, monkeypatch):
+    # The wrist was still closing in on the end of the reach before.
+    log = readings_of(client, monkeypatch, [0.40, 0.50, 0.57, 0.575])
+
+    arms.reach("right", HAND, cartesian=True, timeout_s=5.0)
+
+    assert log == ["read right_arm"] * 4 + ["goal right_arm_lift"]
+
+
+def test_a_straight_reach_goes_ahead_when_the_arm_never_comes_to_rest(
+    arms, client, monkeypatch, caplog
+):
+    monkeypatch.setattr(arms_module, "STILL_WAIT_S", 0.05)
+    log = readings_of(client, monkeypatch, [0.1 * n for n in range(1000)])
+
+    with caplog.at_level(logging.WARNING, logger=arms_module.__name__):
+        arms.reach("right", HAND, cartesian=True, timeout_s=5.0)
+
+    assert log[-1] == "goal right_arm_lift"
+    assert "The right arm still moved after 0.05 s" in caplog.text
+
+
+def test_a_straight_reach_whose_arm_cannot_be_read_sends_no_goal(arms, client, monkeypatch):
+    log = readings_of(client, monkeypatch, [0.5])
+
+    def unreadable(group, timeout_s=None):
+        raise StepError(ErrorCode.UNAVAILABLE, "The service is gone.")
+
+    monkeypatch.setattr(client, "joint_states", unreadable)
+    error = error_of(lambda: arms.reach("right", HAND, cartesian=True, timeout_s=5.0))
+
+    assert error.code == ErrorCode.UNAVAILABLE
+    assert error.message.startswith("Could not move the right hand: The service is gone.")
+    assert log == []
+
+
+def test_only_a_straight_reach_waits_for_the_arm(arms, client, monkeypatch):
+    log = readings_of(client, monkeypatch, [0.5])
+
+    arms.reach("right", HAND, whole_body=True, timeout_s=5.0)
+    arms.reach("right", HAND, timeout_s=5.0)
+
+    assert log == ["goal whole_body_right", "goal right_arm"]
+
+
 # -- touch: the fingers and the octomap ----------------------------------------------
 
 
@@ -1585,20 +1662,108 @@ def test_a_touching_reach_sets_the_allowance_and_an_open_clears_it(
     arms.gripper("right", "close")
     arms.gripper("right", "open")
 
-    # Set once per change, before the goal; an open after a close clears it.
-    assert sets == [False, True, False]
+    # Set once per change from the commander's default, before the goal; an open
+    # after a close clears it.
+    assert sets == [True, False]
     assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
     assert len(fake_commander.pose_goals) == 3
 
 
-def test_an_open_costs_no_call_unless_the_allowance_was_set(arms, client, monkeypatch):
+def test_an_open_or_a_joint_move_costs_no_call_unless_the_allowance_was_set(
+    arms, client, monkeypatch
+):
     sets = touches(client, monkeypatch)
 
     arms.gripper("right", "open")
     arms.reach("right", HAND, whole_body=True, timeout_s=5.0)
+    arms.move_to("home", "right")
     arms.gripper("right", "open")
 
-    assert sets == [False]
+    assert sets == []
+
+
+def test_a_joint_move_clears_the_allowance_before_its_goal(
+    arms, client, fake_commander, monkeypatch
+):
+    sets = touches(client, monkeypatch)
+    arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+    goals_before = len(fake_commander.joint_goals)
+
+    def checked(group, positions, timeout_s):
+        # The fingers keep off the octomap while the joint move plans.
+        assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+        return real(group, positions, timeout_s)
+
+    real = client.set_joint_position
+    monkeypatch.setattr(client, "set_joint_position", checked)
+    arms.move_to("home", "right")
+
+    assert sets == [True, False]
+    assert len(fake_commander.joint_goals) == goals_before + 1
+
+
+def test_a_move_with_the_lift_goes_to_the_arms_lift_group_and_keeps_a_touch(
+    arms, client, fake_commander, poses, monkeypatch
+):
+    sets = touches(client, monkeypatch)
+    arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+
+    moved = arms.move_to("home", "right", lift_m=0.7435, touch=True)
+
+    assert (moved.pose, moved.arm, moved.status) == ("home", "right", "Success")
+    wanted = {"lift_joint": 0.7435, **targets(poses, "home", "right")}
+    order = fake_commander.group_joints("right_arm_lift")
+    assert order[0] == "lift_joint"
+    assert fake_commander.joint_goals[-1] == (
+        "right_arm_lift",
+        tuple(wanted[joint] for joint in order),
+    )
+    assert in_pose(fake_commander, wanted)
+    assert fake_commander.joint_state_requests[-1] == "right_arm_lift"
+    # The allowance the touching reach set stays for the move.
+    assert sets == [True]
+    assert moved.report.arms.right.pose == "home"
+
+    arms.move_to("home", "left")
+    assert sets == [True, False]
+
+
+def test_a_move_with_the_lift_checks_the_lift_too(arms, fake_commander):
+    fake_commander.joint_errors = {"lift_joint": 0.2}
+
+    error = error_of(lambda: arms.move_to("home", "right", lift_m=0.7435))
+
+    assert error.code == ErrorCode.SKILL_FAILED
+    assert "lift_joint is 0.20 rad from 'home'" in error.message
+
+
+def test_the_lift_joint_is_the_one_the_robot_model_lists(model):
+    assert model.lift_joints == {LIFT_JOINT}
+
+
+def test_a_move_of_both_arms_with_the_lift_is_a_bug(arms):
+    with pytest.raises(ValueError):
+        arms.move_to("home", lift_m=0.7435)
+
+
+def test_a_joint_move_whose_allowance_cannot_be_cleared_sends_no_goal(
+    arms, client, fake_commander, monkeypatch
+):
+    touches(client, monkeypatch)
+    arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+    goals_before = len(fake_commander.joint_goals)
+
+    def refused(allow, timeout_s=None):
+        raise StepError(ErrorCode.TIMEOUT, "The commander did not answer in time.")
+
+    monkeypatch.setattr(client, "set_gripper_touch", refused)
+    error = error_of(lambda: arms.move_to("home", "right"))
+
+    assert error.code == ErrorCode.TIMEOUT
+    assert error.message.startswith(
+        "Could not move to 'home': The commander did not answer in time."
+    )
+    assert len(fake_commander.joint_goals) == goals_before
 
 
 def test_a_reach_whose_allowance_cannot_be_set_sends_no_goal(

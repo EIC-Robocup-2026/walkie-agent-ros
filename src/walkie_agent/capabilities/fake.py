@@ -533,7 +533,17 @@ class FakeRobot:
         )
 
     @_verb("arms.move_to")
-    def move_to(self, pose: str, arm: Arm = "both") -> ArmsMoved:
+    def move_to(
+        self,
+        pose: str,
+        arm: Arm = "both",
+        *,
+        lift_m: float | None = None,
+        touch: bool = False,
+    ) -> ArmsMoved:
+        # The fake has no lift and no octomap, so lift_m and touch are only recorded.
+        if lift_m is not None and arm == BOTH:
+            raise ValueError("A move with the lift takes one arm.")
         offered = self._require_arms().offered_poses(sim=True)
         found = answers.offered_pose(offered, pose, arm, self._arms_sentence)
         with self._arm_goal(f"the move to {found.name!r}"):

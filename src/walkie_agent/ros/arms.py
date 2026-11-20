@@ -28,6 +28,8 @@ from walkie_agent.arm.poses import (
     GRASP_DETECT_MAX,
     GRASP_DETECT_MIN,
     GRIPPER_GROUPS,
+    LIFT_ARM_GROUPS,
+    LIFT_JOINT,
     RIGHT_JOINT2,
     WHOLE_BODY_GROUPS,
     ArmPose,
@@ -67,6 +69,16 @@ HOLDING_MARGIN_M = 0.004
 # nothing can be measured before the fingers settle, up to 7.7 mm from the read in a
 # loaded simulation. Either way the read is then judged by the commander's band.
 GAP_AGREEMENT_M = 0.002
+
+# Before a straight reach, the arm is read every STILL_POLL_S seconds of real time
+# until two reads in a row agree within STILL_TOLERANCE_RAD, for at most STILL_WAIT_S.
+# The simulation's arm controllers report a trajectory done without checking where it
+# ended, so the wrist can still be closing in on the end of the previous reach. A
+# straight path planned from such a reading starts more than 0.1 rad from where the
+# arm is when it runs, and MoveIt refuses to execute it ("Execution Failed").
+STILL_POLL_S = 0.5
+STILL_TOLERANCE_RAD = 0.01
+STILL_WAIT_S = 10.0
 
 # The answer to pick, place_on and hand_over: the robot has no grasp skill yet.
 NO_GRASP_SKILL = (
@@ -169,9 +181,9 @@ class RosArms:
         self._cancel = cancel
         self._sim = sim
         self._min_move_timeout_s = min_move_timeout_s
-        # The commander's allow_gripper_vs_octomap as this object last set it, None
-        # while unknown: before the first set, or after one that failed.
-        self._touch: bool | None = None
+        # The commander's allow_gripper_vs_octomap as this object last left it: False,
+        # the commander's default, at the start, and None after a set that failed.
+        self._touch: bool | None = False
 
     # -- The Arms verbs ----------------------------------------------------------
 
@@ -219,20 +231,36 @@ class RosArms:
         grippers = tuple(self._read_gripper(arm) for arm in ARMS)
         return ArmsReading(before=before, after=arms_report(client.snapshot()), grippers=grippers)
 
-    def move_to(self, pose: str, arm: Arm = "both") -> ArmsMoved:
+    def move_to(
+        self,
+        pose: str,
+        arm: Arm = "both",
+        *,
+        lift_m: float | None = None,
+        touch: bool = False,
+    ) -> ArmsMoved:
         """Move `arm` to the offered pose `pose`, wait, and check the joints against it.
 
         Raises StepError as capabilities.Arms says. Every message ends with the arm
         sentence: from the client's memory when the commander did not answer or a stop
         came, and from a fresh read after a failure that the commander reported, which
-        may have stopped the arms part way.
+        may have stopped the arms part way. With `lift_m`, the goal goes to the arm's
+        *_lift group, which also moves the lift to `lift_m`, and the check reads that
+        group; one arm only. Before the goal, the commander's finger allowance is set
+        to `touch`.
         """
+        if lift_m is not None and arm == BOTH:
+            raise ValueError("A move with the lift takes one arm.")
         client = self._client
         found = answers.offered_pose(self.poses(), pose, arm, lambda: self.state().sentence())
         name = found.name
         arms = ARMS if arm == BOTH else (arm,)
-        group = BOTH_ARMS_GROUP if arm == BOTH else ARM_GROUPS[arm]
         targets = {joint: value for side in arms for joint, value in found.tables[side].items()}
+        if lift_m is None:
+            group = BOTH_ARMS_GROUP if arm == BOTH else ARM_GROUPS[arm]
+        else:
+            group = LIFT_ARM_GROUPS[arm]
+            targets[LIFT_JOINT] = lift_m
 
         try:
             order = client.joint_names(group)
@@ -251,12 +279,17 @@ class RosArms:
 
         timeout_s = max(found.timeout_s, self._min_move_timeout_s)
         try:
+            # A joint move keeps the fingers off the octomap unless asked. With the
+            # allowance a pick left on, MoveIt routed them through the table in the
+            # Chula simulation. Right after a pick's lift, the octomap still has voxels
+            # at the hand, so the move home that ends the pick keeps it.
+            self._set_touch(touch)
             status = client.set_joint_position(group, positions, timeout_s)
         except StepError as e:
             raise self._move_error(f"Could not move to {name!r}: ", e) from None
 
         try:
-            reading = client.joint_states(BOTH_ARMS_GROUP)
+            reading = client.joint_states(BOTH_ARMS_GROUP if lift_m is None else group)
         except StepError as e:
             if self._stopped(e):
                 raise StepError(
@@ -368,19 +401,26 @@ class RosArms:
     ) -> str:
         """Move `arm`'s hand link to `pose` through the commander's /go_to_pose.
 
-        See capabilities.Arms. The goal goes to the arm's whole-body group with `whole_body`, else to its
-        arm group, and waits for the longer of `timeout_s` and min_move_timeout_s.
+        See capabilities.Arms. The goal goes to the arm's whole-body group with
+        `whole_body`, to the arm with the lift with `cartesian`, else to its arm
+        group, and waits for the longer of `timeout_s` and min_move_timeout_s.
         Before the goal, the commander's finger allowance is set to `touch` when it
-        may differ (CommanderClient.set_gripper_touch). A
-        reported success is the commander's own check: a pose goal has no joint
-        table to compare a reading with. Its plan-only status means nothing moved,
-        so it is a failure here. Every message ends with the arm sentence, from a
-        fresh read after a failure the commander reported, as move_to()'s does.
+        may differ (CommanderClient.set_gripper_touch), and a straight reach waits
+        for the arm to come to rest (_wait_still). A reported success is the
+        commander's own check: a pose goal has no joint table to compare a reading
+        with. Its plan-only status means nothing moved, so it is a failure here.
+        Every message ends with the arm sentence, from a fresh read after a failure
+        the commander reported, as move_to()'s does.
         """
         answers.check_reach(pose, whole_body=whole_body, cartesian=cartesian, timeout_s=timeout_s)
-        group = (WHOLE_BODY_GROUPS if whole_body else ARM_GROUPS)[arm]
+        if whole_body:
+            group = WHOLE_BODY_GROUPS[arm]
+        else:
+            group = (LIFT_ARM_GROUPS if cartesian else ARM_GROUPS)[arm]
         try:
             self._set_touch(touch)
+            if cartesian:
+                self._wait_still(arm)
             status = self._client.go_to_pose(
                 group, pose, max(timeout_s, self._min_move_timeout_s), cartesian=cartesian
             )
@@ -487,14 +527,63 @@ class RosArms:
         self._client.set_gripper_touch(touch)
         self._touch = touch
 
+    def _wait_still(self, arm: Gripper) -> None:
+        """Wait until two reads of `arm`'s joints STILL_POLL_S apart agree.
+
+        After STILL_WAIT_S the reach goes ahead anyway, with a warning: MoveIt still
+        refuses a path whose start is off. Raises StepError CANCELLED on a stop, and
+        the client's StepError when a read fails.
+        """
+        group = ARM_GROUPS[arm]
+        readings: list[Mapping[str, float]] = []
+        failed: list[StepError] = []
+
+        def still() -> bool:
+            try:
+                readings.append(self._client.joint_states(group))
+            except StepError as e:
+                failed.append(e)
+                return True
+            if len(readings) < 2:
+                return False
+            before, now = readings[-2], readings[-1]
+            moved = max(
+                (abs(value - before[name]) for name, value in now.items() if name in before),
+                default=0.0,
+            )
+            return moved <= STILL_TOLERANCE_RAD
+
+        try:
+            self._cancel.wait_for(
+                still, STILL_WAIT_S, f"the rest of the {arm} arm", poll_s=STILL_POLL_S
+            )
+        except StepError as e:
+            if e.code is not ErrorCode.TIMEOUT or failed:
+                raise
+            logger.warning(
+                "The %s arm still moved after %g s; the straight reach goes ahead.",
+                arm,
+                STILL_WAIT_S,
+            )
+        if failed:
+            raise failed[0]
+        if len(readings) > 2:
+            logger.info(
+                "The %s arm came to rest after %d reads %g s apart.",
+                arm,
+                len(readings),
+                STILL_POLL_S,
+            )
+
     def _release_touch(self) -> None:
         """After an open: the fingers hold nothing, so they may no longer touch the octomap.
 
-        Only after this object set it to True: the commander starts with it False, so an
-        open costs no call otherwise. The open has already happened, so a failed reset
-        is logged, not raised, and the next reach sets the allowance it needs.
+        Only when this object may have set it: the commander starts with it False, so
+        an open costs no call otherwise. The open has already happened, so a failed
+        reset is logged, not raised, and the next reach or joint move sets the
+        allowance it needs.
         """
-        if self._touch is not True:
+        if self._touch is False:
             return
         try:
             self._set_touch(False)

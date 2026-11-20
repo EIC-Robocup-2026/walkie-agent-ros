@@ -150,7 +150,7 @@ class StubArms:
             raise self.read_error
         return self.reading
 
-    def move_to(self, pose, arm="both") -> ArmsMoved:
+    def move_to(self, pose, arm="both", *, lift_m=None, touch=False) -> ArmsMoved:
         self.asked.append(("move_to", pose, arm))
         if self.move_error is not None:
             raise self.move_error

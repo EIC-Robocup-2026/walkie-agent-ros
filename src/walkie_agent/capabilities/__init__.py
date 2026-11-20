@@ -209,7 +209,10 @@ class Arms(Protocol):
     UNAVAILABLE without the commander or when it cannot read the joints;
     INTERNAL for a rejected goal or joints that do not match the robot
     model; CANCELLED on a stop or a reset. Every message ends with the arm
-    sentence.
+    sentence. `lift_m` also moves the lift to that height, through the arm's
+    *_lift group, for one arm only: pick_object brings the arm home with it
+    after a pick (decision PK-5), never the LLM. `touch` is reach()'s, and a
+    move without it ends the allowance.
 
     gripper() moves one gripper to a named position. It raises StepError
     PRECONDITION_FAILED, TIMEOUT, UNAVAILABLE, INTERNAL or CANCELLED as
@@ -219,12 +222,12 @@ class Arms(Protocol):
     reach() moves one hand's link to a HandPose that pick_object computed
     from the object memory, never one from the LLM (decision PK-4), and
     returns the commander's status. `whole_body` plans for the base, the
-    lift and the arm together, the one motion that moves the lift
-    (decision PK-5); `cartesian` moves the hand along a straight line, for
-    the arm alone; `touch` lets both grippers' fingers touch the sensed
-    octomap, which a grasp needs, and stays in effect until a reach without
-    it or the next open. The arm then rests in no named pose, so it is not
-    safe for driving. It raises StepError REFUSED for a pose or a timeout that
+    lift and the arm together; `cartesian` moves the hand along a straight
+    line, for the arm and the lift. These are the only motions that move
+    the lift (decision PK-5). `touch` lets both grippers' fingers touch the
+    sensed octomap, which a grasp needs, and stays in effect until a reach
+    without it, a move_to() or the next open. The arm then rests in no named
+    pose, so it is not safe for driving. It raises StepError REFUSED for a pose or a timeout that
     is not finite, or a whole-body straight line; SKILL_FAILED when the
     commander fails the goal or only planned it; and the rest as move_to()
     does. Every message ends with the arm sentence.
@@ -244,7 +247,14 @@ class Arms(Protocol):
 
     def read(self) -> ArmsReading: ...
 
-    def move_to(self, pose: str, arm: Arm = "both") -> ArmsMoved: ...
+    def move_to(
+        self,
+        pose: str,
+        arm: Arm = "both",
+        *,
+        lift_m: float | None = None,
+        touch: bool = False,
+    ) -> ArmsMoved: ...
 
     def gripper(self, arm: Gripper, state: GripperState) -> GripperMoved: ...
 
@@ -288,7 +298,14 @@ class UnavailableArms:
     def read(self) -> ArmsReading:
         self._refuse()
 
-    def move_to(self, pose: str, arm: Arm = "both") -> ArmsMoved:
+    def move_to(
+        self,
+        pose: str,
+        arm: Arm = "both",
+        *,
+        lift_m: float | None = None,
+        touch: bool = False,
+    ) -> ArmsMoved:
         self._refuse()
 
     def gripper(self, arm: Gripper, state: GripperState) -> GripperMoved:

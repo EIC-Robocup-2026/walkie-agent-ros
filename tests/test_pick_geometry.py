@@ -512,11 +512,26 @@ def test_a_long_box_is_as_wide_across_the_fingers_as_the_ellipse_inside_it(hand_
 
 @pytest.mark.parametrize(
     ("size", "yaw"),
-    [(None, 0.0), (LONG_BOX, None), ((0.14, 0.0, 0.22), 0.0), ((math.nan, 0.068, 0.22), 0.0)],
-    ids=["no-size", "no-yaw", "zero-side", "nan-side"],
+    [
+        (None, 0.0),
+        (LONG_BOX, None),
+        (LONG_BOX, math.nan),
+        (LONG_BOX, math.inf),
+        ((0.14, 0.0, 0.22), 0.0),
+        ((math.nan, 0.068, 0.22), 0.0),
+    ],
+    ids=["no-size", "no-yaw", "nan-yaw", "inf-yaw", "zero-side", "nan-side"],
 )
 def test_a_box_with_no_usable_side_or_yaw_has_no_width_across_the_fingers(size, yaw):
     assert width_across_fingers(size, yaw, 0.0) is None
+
+
+def test_a_round_object_as_wide_as_the_open_hand_fits_it_at_every_hand_yaw():
+    size = (SETTINGS.max_grasp_width_m, SETTINGS.max_grasp_width_m, 0.1)
+
+    widths = [width_across_fingers(size, 0.0, math.radians(tenth / 10)) for tenth in range(3600)]
+
+    assert max(widths) <= SETTINGS.max_grasp_width_m
 
 
 def test_a_long_box_lying_along_the_fingers_of_the_robot_s_own_line_gets_turned_headings():
@@ -565,8 +580,9 @@ def test_an_object_that_fits_the_fingers_either_way_keeps_the_settings_headings(
     )
 
 
-def test_a_long_box_with_no_yaw_keeps_the_settings_headings():
-    assert approach_headings(SETTINGS, 0.0, 0.0, 1.0, 0.0, LONG_BOX, None) == approach_headings(
+@pytest.mark.parametrize("yaw", [None, math.nan, math.inf], ids=["none", "nan", "inf"])
+def test_a_long_box_with_no_finite_yaw_keeps_the_settings_headings(yaw):
+    assert approach_headings(SETTINGS, 0.0, 0.0, 1.0, 0.0, LONG_BOX, yaw) == approach_headings(
         SETTINGS, 0.0, 0.0, 1.0, 0.0
     )
 

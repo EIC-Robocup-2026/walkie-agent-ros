@@ -237,7 +237,12 @@ def approach_headings(
     """
     start = heading_from(settings, robot_x, robot_y, object_x, object_y)
     sides = _sides(size)
-    if sides is None or yaw is None or max(sides) <= settings.max_grasp_width_m:
+    if (
+        sides is None
+        or yaw is None
+        or not math.isfinite(yaw)
+        or max(sides) <= settings.max_grasp_width_m
+    ):
         return tuple(
             _wrap(start + math.radians(offset)) for offset in settings.heading_offsets_deg
         )
@@ -417,13 +422,15 @@ def width_across_fingers(
     the two sides otherwise. The ellipse is a round object's outline, such as a
     bottle's, whose box is square at any yaw; a box's corners would make it read
     wider than the bottle. None when the box has no usable horizontal side or no
-    yaw: the memory did not measure which way the object lies.
+    finite yaw: the memory did not measure which way the object lies. The width is
+    capped at the longer side, which rounding could otherwise pass by a hair and so
+    refuse an object exactly as wide as the hand opens.
     """
     sides = _sides(size)
-    if sides is None or yaw is None:
+    if sides is None or yaw is None or not math.isfinite(yaw):
         return None
     across = hand_yaw + math.pi / 2 - yaw
-    return math.hypot(sides[0] * math.cos(across), sides[1] * math.sin(across))
+    return min(max(sides), math.hypot(sides[0] * math.cos(across), sides[1] * math.sin(across)))
 
 
 def _sides(size: tuple[float, float, float] | None) -> tuple[float, float] | None:

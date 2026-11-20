@@ -203,8 +203,16 @@ def _fits_hand(settings: PickSettings, found: RecalledObject, label: str) -> Non
     """Refuse an object wider than the open gripper, before anything moves.
 
     By the memory's box (arm.pick.too_wide_to_grasp). An object with no box passes.
-    The width goes to the LLM: a size, not a position (ADR-0022).
+    The width goes to the LLM: a size, not a position (ADR-0022). The box is logged
+    for every pick, since nothing yet checks the memory's boxes against the objects.
     """
+    logger.info(
+        "Picking %s (object %s): the memory's box is %s m, yaw %s rad.",
+        label,
+        found.id,
+        "none" if found.size is None else "x".join(f"{side:.3f}" for side in found.size),
+        "none" if found.yaw is None else f"{found.yaw:.2f}",
+    )
     width = too_wide_to_grasp(settings, found.size)
     if width is None:
         return

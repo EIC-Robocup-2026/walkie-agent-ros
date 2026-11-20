@@ -151,14 +151,22 @@ LLM gives the name and reads the outcome, never a pose
 ([ADR-0022](decisions/0022-named-arm-poses.md)). It is bound in the `hri`
 set only with both `--arms` and `--object-memory`.
 
-After the drive, and before its first arm goal, `pick_object` reads the object
-again and refuses unless the memory still holds it as present with a full
-position, seen within `max_observation_age_s`, no further than
-`max_target_shift_m` from where it was before the drive. It then checks the
-object's centre height and the horizontal distance and height of the object
-and of every hand pose from the base against the reach envelope in
-`config/pick.toml`. A refusal sends no arm goal. However the grasp ends, the
-tool sets `allow_gripper_vs_octomap` back to false through
+`pick_object` reads the object again at three checkpoints: after the drive,
+before its first arm goal; before the whole-body reach, once the left arm is
+in standby and the hand is open; and before the straight approach, with the
+hand at the pre-grasp pose. Each time it refuses unless the memory still
+holds the object as present with a full position, seen within
+`max_observation_age_s` (it waits up to `observation_wait_s` for such a
+sighting), no further than `max_target_shift_m` from the previous
+checkpoint's reading, or from where it was before the drive. After the drive
+and before the reach, it also checks the object's centre height and the
+horizontal distance and height of the object and of every hand pose from the
+base against the reach envelope in `config/pick.toml`; the reach plans its
+hand poses afresh from its own reading, and the approach keeps them. A
+refusal sends no further goal and leaves the arms where they are, so the
+answer asks for them to come home with `move_arm_to_pose` once they have
+moved. A motion is never cut short for a newer reading. However the grasp
+ends, the tool sets `allow_gripper_vs_octomap` back to false through
 `ctx.arms.restore_touch()`, which a stop does not cut short and which moves
 nothing.
 

@@ -285,3 +285,46 @@ def test_a_refused_pick_sends_no_arm_goal_and_leaves_the_allowance_off(
     assert fake_commander.joint_goals == []
     assert fake_commander.gripper_goals == []
     assert allowance(fake_commander) is False
+
+
+# Refusals between the arm goals
+
+
+@pytest.mark.parametrize(
+    ("during", "pose_goals"), [("standby", 0), ("reach", 1)], ids=["standby", "reach"]
+)
+def test_an_object_taken_during_an_arm_motion_gets_no_further_goal(
+    ctx, client, fake_commander, monkeypatch, during, pose_goals
+):
+    def taken():
+        memory = ctx.object_memory
+        memory.objects["7"] = replace(memory.objects["7"], state="held")
+
+    if during == "standby":
+        real_joint = client.set_joint_position
+
+        def standby(group, positions, timeout_s):
+            status = real_joint(group, positions, timeout_s)
+            taken()
+            return status
+
+        monkeypatch.setattr(client, "set_joint_position", standby)
+    else:
+        real_pose = client.go_to_pose
+
+        def reach(group, pose, timeout_s, *, cartesian=False):
+            status = real_pose(group, pose, timeout_s, cartesian=cartesian)
+            taken()
+            return status
+
+        monkeypatch.setattr(client, "go_to_pose", reach)
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert "as held" in error.message
+    # The other arm's standby and the open, then nothing after the motion it was taken in.
+    assert [group for group, _ in fake_commander.joint_goals] == ["left_arm"]
+    assert [group for group, _ in fake_commander.gripper_goals] == ["right_gripper"]
+    assert len(fake_commander.pose_goals) == pose_goals
+    assert allowance(fake_commander) is False

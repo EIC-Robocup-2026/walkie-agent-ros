@@ -10,8 +10,10 @@
 # home, the picking arm with the lift at home_lift_m. The numbers below picked the Chula
 # simulation's water bottle on 2026-11-20. The checks at the end of the file, on the
 # sighting's age, the object's shift and the reach envelope, were derived from that
-# pick and the arm's reach afterwards, and have not run in a pick yet. None of the
-# numbers has been tried on the robot.
+# pick and the arm's reach afterwards. A later end-to-end pick in the Chula simulation
+# the same day ran them after the drive and held the bottle; their second and third
+# runs, before the whole-body reach and before the straight approach, came after it
+# and have not run in a pick yet. None of the numbers has been tried on the robot.
 
 # The arm that picks: "left" or "right".
 arm = "right"
@@ -73,22 +75,26 @@ hand_yaw_offset_deg = 180.0
 reach_timeout_s = 90.0
 cartesian_timeout_s = 30.0
 
-# After the drive, pick_object reaches only for an object the object memory saw at
-# most max_observation_age_s seconds ago. Older, it waits up to observation_wait_s
-# seconds for a newer sighting, then refuses without moving an arm. The memory saves
+# After the drive, before the whole-body reach and before the straight approach,
+# pick_object goes on only with an object the object memory saw at most
+# max_observation_age_s seconds ago. Older, it waits up to observation_wait_s
+# seconds for a newer sighting, then refuses with no further arm goal. The memory saves
 # a sighting about every 2 s while the object stays in view, and the Chula
 # simulation's sightings were about 1 s old, so 5 s allows two missed saves. There
 # is no head to point at the object yet, so the stand-off pose must leave it in view.
 max_observation_age_s = 5.0
 observation_wait_s = 6.0
-# Metres the object's centre may have moved between the position pick_object drove
-# to and the sighting after the drive. Further, it refuses and asks the agent to
-# call pick_object again, which plans a new stand-off pose from the new position.
+# Metres the object's centre may have moved from one reading to the next: from the
+# position pick_object drove to, to the sighting after the drive, to the one before
+# the whole-body reach, to the one before the straight approach. Further, it refuses
+# and asks the agent to call pick_object again, which plans a new stand-off pose from
+# the new position.
 max_target_shift_m = 0.15
 
-# The envelope every pick must fit before the first arm goal is sent; outside it,
-# pick_object refuses and moves no arm. Heights are in metres above the frame's
-# floor, where base_footprint stands.
+# The envelope every pick must fit after the drive, before the first arm goal, and
+# again before the whole-body reach; outside it, pick_object refuses and sends no
+# further arm goal. Heights are in metres above the frame's floor, where
+# base_footprint stands.
 # The object's centre height: a table or counter top object. The Chula water
 # bottle's centre stood at 0.862 m. The hand approaches level, so it works near the
 # height of the arm's shoulder, which the lift moves between about 0.54 and 1.28 m

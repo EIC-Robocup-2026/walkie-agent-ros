@@ -153,6 +153,22 @@ def read_again(monkeypatch, ctx: Ctx, *answers: RecalledObject | StepError) -> l
     return reads
 
 
+def after_call(monkeypatch, robot: FakeRobot, verb: str, nth: int, then) -> None:
+    """Run then() right after the nth call of robot.<verb> returns, as if during that motion."""
+    original = getattr(robot, verb)
+    count = 0
+
+    def changing(*args, **kwargs):
+        nonlocal count
+        count += 1
+        result = original(*args, **kwargs)
+        if count == nth:
+            then()
+        return result
+
+    monkeypatch.setattr(robot, verb, changing)
+
+
 def pick_settings(monkeypatch, **changes) -> None:
     """Pick with config/pick.toml's numbers but `changes`, and read the memory often."""
     settings = replace(load_pick_settings(PROJECT_ROOT / "config" / "pick.toml"), **changes)
@@ -240,7 +256,8 @@ def test_the_first_match_with_a_full_position_is_picked(arm_poses):
     move = next(call for call in robot.calls if call["verb"] == "base.move_relative")
     assert move["args"]["turn_deg"] == pytest.approx(90.0 + math.degrees(math.asin(0.20)))
     at_stand_off(robot, 0.0, 1.0)
-    assert ctx.object_memory.calls == [("search", "water bottle", 10), ("get", "7")]
+    # Read again after the drive, before the reach and before the approach.
+    assert ctx.object_memory.calls == [("search", "water bottle", 10)] + [("get", "7")] * 3
 
 
 def test_the_reach_goes_to_where_the_memory_holds_the_object_after_the_drive(
@@ -378,7 +395,8 @@ def test_a_new_sighting_during_the_wait_is_the_one_reached_for(arm_poses, monkey
 
     pick_object(ctx, "water bottle")
 
-    assert len(reads) == 3
+    # Three reads after the drive, then one before the reach and one before the approach.
+    assert len(reads) == 5
     here = robot.pose()
     plan = plan_pick(
         load_pick_settings(), 1.02, 0.0, 0.75, here.yaw, math.atan2(-here.y, 1.02 - here.x)
@@ -401,6 +419,211 @@ def test_an_object_that_moved_too_far_during_the_drive_asks_for_a_new_pick(
         f"Call pick_object again to approach it where it is now. {SAFE_SENTENCE}"
     )
     assert verbs(robot) == ["base.move_relative"]
+
+
+# Seeing the object again before the reach and before the approach
+
+HOME_FIRST = "Bring both arms home with move_arm_to_pose, then"
+
+
+def changed(ctx: Ctx, **changes) -> None:
+    """The memory now holds object 7 with `changes`, or no longer holds it with none."""
+    memory = ctx.object_memory
+    if changes:
+        memory.objects["7"] = replace(memory.objects["7"], **changes)
+    else:
+        del memory.objects["7"]
+
+
+@pytest.mark.parametrize(
+    ("changes", "code", "words"),
+    [
+        (
+            {},
+            ErrorCode.NOT_FOUND,
+            "Walkie's memory no longer holds the water bottle, so it did not reach for it. "
+            f"{HOME_FIRST} call find_objects to look for it again.",
+        ),
+        (
+            {"state": "held"},
+            ErrorCode.PRECONDITION_FAILED,
+            "Walkie's memory now holds the water bottle as held, so it did not reach for it. "
+            f"{HOME_FIRST} call find_objects to look again.",
+        ),
+        (
+            {"y": -0.16},
+            ErrorCode.PRECONDITION_FAILED,
+            "The water bottle moved while Walkie readied its arms, so it did not reach for it. "
+            f"{HOME_FIRST} call pick_object again to approach it where it is now.",
+        ),
+    ],
+    ids=["vanished", "held", "moved"],
+)
+def test_an_object_gone_or_moved_while_the_other_arm_moves_gets_no_reach(
+    arm_poses, monkeypatch, changes, code, words
+):
+    robot, ctx = picking(arm_poses, remembered())
+    # Taken or moved while the left arm goes to standby.
+    after_call(monkeypatch, robot, "move_to", 1, lambda: changed(ctx, **changes))
+
+    error = fails(ctx)
+
+    assert error.code is code
+    assert error.message == f"{words} {NOT_SAFE_SENTENCE}"
+    # No pre-grasp goal, nor any other motion after the open.
+    assert reaches(robot) == []
+    assert verbs(robot) == [
+        "base.move_relative",
+        "arms.move_to",
+        "arms.gripper",
+        "arms.restore_touch",
+    ]
+    assert robot.touch is False
+
+
+def test_a_sighting_that_ages_past_the_limit_before_the_reach_gets_no_reach(
+    arm_poses, monkeypatch
+):
+    pick_settings(monkeypatch, observation_wait_s=0.2)
+    robot, ctx = picking(arm_poses, remembered())
+    # Fresh after the drive; while the left arm moves, nothing sees the object again.
+    after_call(monkeypatch, robot, "move_to", 1, lambda: changed(ctx, seen_s_ago=5.5))
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message == (
+        "Walkie stands by the water bottle but has not seen it in the last few seconds, so "
+        f"it did not reach for it: it may have moved or be out of view. {HOME_FIRST} call "
+        f"find_objects to look again. {NOT_SAFE_SENTENCE}"
+    )
+    # After the drive once, then again and again while the atomic waited.
+    assert ctx.object_memory.calls.count(("get", "7")) > 2
+    assert reaches(robot) == []
+
+
+def test_a_sighting_during_the_wait_before_the_reach_is_reached_for(arm_poses, monkeypatch):
+    pick_settings(monkeypatch, observation_wait_s=5.0)
+    robot, ctx = picking(arm_poses, remembered())
+    reads = read_again(
+        monkeypatch,
+        ctx,
+        remembered(),
+        replace(remembered(), seen_s_ago=6.0),
+        # A new sighting, 4 cm further than after the drive.
+        replace(remembered(), x=1.04, seen_s_ago=0.5),
+    )
+    targets = hand_targets(monkeypatch, robot)
+
+    pick_object(ctx, "water bottle")
+
+    # One read after the drive, two before the reach and one before the approach.
+    assert len(reads) == 4
+    here = robot.pose()
+    plan = plan_pick(
+        load_pick_settings(), 1.04, 0.0, 0.75, here.yaw, math.atan2(-here.y, 1.04 - here.x)
+    )
+    assert targets[:2] == [plan.pregrasp, plan.grasp]
+
+
+def test_an_object_lowered_out_of_the_envelope_before_the_reach_gets_no_reach(
+    arm_poses, monkeypatch
+):
+    # 0.60 m high after the drive, then seen 0.50 m high, under the envelope's 0.55 m.
+    robot, ctx = picking(arm_poses, remembered(z=0.60))
+    after_call(monkeypatch, robot, "move_to", 1, lambda: changed(ctx, z=0.50))
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message == (
+        "The water bottle is too low for the right hand to pick up, so Walkie did not reach "
+        f"for it. Bring both arms home with move_arm_to_pose. {NOT_SAFE_SENTENCE}"
+    )
+    assert reaches(robot) == []
+
+
+@pytest.mark.parametrize(
+    ("changes", "code", "words"),
+    [
+        (
+            {},
+            ErrorCode.NOT_FOUND,
+            "Walkie's memory no longer holds the water bottle, so it did not move the hand in "
+            f"to grasp it. {HOME_FIRST} call find_objects to look for it again.",
+        ),
+        (
+            {"state": "held"},
+            ErrorCode.PRECONDITION_FAILED,
+            "Walkie's memory now holds the water bottle as held, so it did not move the hand "
+            f"in to grasp it. {HOME_FIRST} call find_objects to look again.",
+        ),
+        (
+            {"state": "missing"},
+            ErrorCode.PRECONDITION_FAILED,
+            "Walkie's memory now holds the water bottle as missing, so it did not move the "
+            f"hand in to grasp it. {HOME_FIRST} call find_objects to look again.",
+        ),
+        (
+            {"x": 1.16},
+            ErrorCode.PRECONDITION_FAILED,
+            "The water bottle moved while Walkie reached toward it, so it did not move the "
+            f"hand in to grasp it. {HOME_FIRST} call pick_object again to approach it where "
+            "it is now.",
+        ),
+    ],
+    ids=["vanished", "held", "missing", "moved"],
+)
+def test_an_object_gone_or_moved_during_the_reach_gets_no_approach(
+    arm_poses, monkeypatch, changes, code, words
+):
+    robot, ctx = picking(arm_poses, remembered())
+    # Taken or moved while the whole-body reach brings the hand to the pre-grasp pose.
+    after_call(monkeypatch, robot, "reach", 1, lambda: changed(ctx, **changes))
+
+    error = fails(ctx)
+
+    assert error.code is code
+    assert error.message == f"{words} {NOT_SAFE_SENTENCE}"
+    # The pre-grasp reach only: no approach, close or any other motion after it.
+    assert reaches(robot) == [(True, False, False, 90.0)]
+    assert verbs(robot)[-2:] == ["arms.reach", "arms.restore_touch"]
+    assert robot.touch is False
+
+
+def test_a_sighting_that_ages_past_the_limit_during_the_reach_gets_no_approach(
+    arm_poses, monkeypatch
+):
+    pick_settings(monkeypatch, observation_wait_s=0.2)
+    robot, ctx = picking(arm_poses, remembered())
+    after_call(monkeypatch, robot, "reach", 1, lambda: changed(ctx, seen_s_ago=30.0))
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message.startswith(
+        "Walkie stands by the water bottle but has not seen it in the last few seconds, so "
+        "it did not move the hand in to grasp it"
+    )
+    assert reaches(robot) == [(True, False, False, 90.0)]
+
+
+def test_the_approach_keeps_the_plan_of_the_reach_when_the_object_shifts_a_little(
+    arm_poses, monkeypatch
+):
+    robot, ctx = picking(arm_poses, remembered())
+    # Seen 5 cm further while the hand reached: within max_target_shift_m.
+    after_call(monkeypatch, robot, "reach", 1, lambda: changed(ctx, x=1.05))
+    targets = hand_targets(monkeypatch, robot)
+
+    pick_object(ctx, "water bottle")
+
+    # The straight approach goes from the pre-grasp pose along the reach's own line.
+    here = robot.pose()
+    plan = plan_pick(
+        load_pick_settings(), 1.0, 0.0, 0.75, here.yaw, math.atan2(-here.y, 1.0 - here.x)
+    )
+    assert targets[:2] == [plan.pregrasp, plan.grasp]
 
 
 # The reach envelope

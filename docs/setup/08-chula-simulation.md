@@ -454,9 +454,15 @@ the tool log shows each as a call:
    from the base, and a hand pose not 0.50 to 1.30 m high. A memory that does
    not answer is its own error, which never means the object is gone.
 4. **Reach.** The left arm goes to `standby`, out of the way, and the right
-   gripper opens. The hand goes to a pre-grasp pose 0.10 m back from the grasp
+   gripper opens. The pick sees the object again, with every check of step 3
+   against the reading after the drive, and plans the hand poses afresh from
+   this reading. The hand goes to a pre-grasp pose 0.10 m back from the grasp
    pose through `whole_body_right`, which may move the base, the lift and the
-   arm. Once the arm is at rest, the hand moves in a straight line through
+   arm. Before the straight move the pick sees the object once more: present,
+   with a full position, at most 5 s old and within 0.15 m of the reading
+   before the reach. A refusal at either check sends no further goal and asks
+   the agent to bring the arms home with `move_arm_to_pose` first.
+   Once the arm is at rest, the hand moves in a straight line through
    `right_arm_lift` until its tool centre point is 0.02 m past the object's
    centre. The fingers point along the approach from where the base stopped,
    with the wrist camera bracket up. For the straight moves the agent sets the
@@ -487,8 +493,10 @@ stand-off pose, the pick refuses with "has not seen it in the last few
 seconds"; a longer `observation_wait_s` or `max_observation_age_s` in that
 file is the first thing to try. On 2026-11-20 the pick of the kitchen table's
 water bottle from the spawn point held it through the drive back to the living
-room. The checks of step 3 and the reset of the allowance came after that run,
-and no pick has run with them yet. The memory must have a fresh position for the object: after earlier runs
+room. A later run that day picked it again with the checks of step 3 and the
+reset of the allowance. The checks before the reach and before the straight
+move of step 4 came after both runs, and no pick has run with them yet. The
+memory must have a fresh position for the object: after earlier runs
 the memory had merged the bottle's carried and reset positions into one 0.6 m
 object, so run `reset-memory` between runs that move objects.
 

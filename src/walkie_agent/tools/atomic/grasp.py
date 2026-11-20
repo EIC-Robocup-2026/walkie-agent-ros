@@ -10,15 +10,20 @@ The LLM gives only the object's name and reads only the outcome: no position, po
 joint value reaches it (ADR-0022). Every answer after the drive ends with the arm
 sentence (ADR-0024).
 
-Three checks stand between the drive and the first arm goal, and each refusal sends
-none. The memory must hold the object as present, with a full position, seen at most
-max_observation_age_s ago; the atomic waits up to observation_wait_s for such a
-sighting. That position must lie within max_target_shift_m of the one the drive aimed
-at. The object and every hand pose must lie in the reach envelope around where the
-base stopped (arm.pick.reach_problems). Once the first arm goal may go, the fingers'
-octomap allowance (allow_gripper_vs_octomap) is turned off again however the pick
-ends, a stop included (_grasp_then_touch_off). That reset sends no motion, so a stop
-still ends every motion.
+The object is read from the memory again at three checkpoints, and each refusal sends
+no further goal: after the drive, before the first arm goal; before the whole-body
+reach, once the other arm is out of the way and the hand is open (checkpoint A); and
+before the straight approach, with the hand at the pre-grasp pose (checkpoint B).
+Each time the memory must hold the object as present, with a full position, seen at
+most max_observation_age_s ago, and the atomic waits up to observation_wait_s for such
+a sighting. That position must lie within max_target_shift_m of the previous
+checkpoint's, or of the one the drive aimed at. After the drive and at A, the object
+and every hand pose must also lie in the reach envelope around where the base stands
+(arm.pick.reach_problems); A plans the hand poses afresh from its own reading. A
+motion is never cut short for a newer reading: the checks run between motions. Once
+the first arm goal may go, the fingers' octomap allowance (allow_gripper_vs_octomap)
+is turned off again however the pick ends, a stop included (_grasp_then_touch_off).
+That reset sends no motion, so a stop still ends every motion.
 
 The stand-off pose is reached with ctx.base.move_relative, a Nav2 goal like any other
 drive, after a go_to to the named place nearest the object when the object is further
@@ -29,6 +34,7 @@ workspace does not build, and its pose would not match the hand's approach here.
 
 import logging
 import math
+from dataclasses import dataclass
 
 from walkie_agent.arm.pick import (
     HandPose,
@@ -74,8 +80,55 @@ _OTHER_ARM = {"left": "right", "right": "left"}
 # for driving with an object in the hand (walkie-agent-v2 carried objects in it).
 HOME_POSE = "home"
 # How often the memory is read while the atomic waits for a new sighting of the
-# object after the drive, in seconds. The memory saves a sighting about every 2 s.
+# object at a checkpoint, in seconds. The memory saves a sighting about every 2 s.
 SIGHTING_POLL_S = 0.5
+
+
+@dataclass(frozen=True)
+class _Checkpoint:
+    """One moment at which pick_object reads the object again, and how its refusals say it.
+
+    `name` goes to the log. A refusal says that, for its reason, `refused`; that the
+    object moved `moving`; and that the memory could not be read `unreadable`, in
+    which "{label}" stands for the object. With `arms_out`, the arms have left their
+    driving pose by then, so every refusal first asks for them to come home.
+    """
+
+    name: str
+    refused: str
+    moving: str
+    unreadable: str
+    arms_out: bool
+
+    def advice(self, step: str | None) -> str:
+        """The next step the LLM is asked to take, `step` starting in lower case."""
+        if self.arms_out:
+            home = "Bring both arms home with move_arm_to_pose"
+            return f"{home}, then {step}." if step else f"{home}."
+        return f"{step[0].upper()}{step[1:]}." if step else ""
+
+
+_AFTER_DRIVE = _Checkpoint(
+    name="after the drive",
+    refused="it did not reach for it",
+    moving="while Walkie drove up to it",
+    unreadable="after driving up to {label}",
+    arms_out=False,
+)
+_BEFORE_REACH = _Checkpoint(
+    name="before the reach",
+    refused="it did not reach for it",
+    moving="while Walkie readied its arms",
+    unreadable="before reaching for {label}",
+    arms_out=True,
+)
+_BEFORE_APPROACH = _Checkpoint(
+    name="before the approach",
+    refused="it did not move the hand in to grasp it",
+    moving="while Walkie reached toward it",
+    unreadable="before moving the hand in to {label}",
+    arms_out=True,
+)
 
 # What the answer says when a close did not show that the hand holds the object, by
 # GripperMoved.outcome.
@@ -111,11 +164,9 @@ def pick_object(ctx: Ctx, name: str) -> str:
     found = _remembered(ctx, name)
     label = f"the {found.name}"
     _drive_to_standoff(ctx, settings, found, label)
-    found = _seen_again(ctx, settings, found, label)
-    here = ctx.base.pose()
-    plan = _plan_from_here(settings, found, here)
-    _check_reach(ctx, settings, plan, found, here, label)
-    return _grasp_then_touch_off(ctx, settings, plan, label)
+    found = _seen_again(ctx, settings, found, label, _AFTER_DRIVE)
+    _plan_in_reach(ctx, settings, found, label, _AFTER_DRIVE)
+    return _grasp_then_touch_off(ctx, settings, found, label)
 
 
 def _remembered(ctx: Ctx, name: str) -> RecalledObject:
@@ -140,33 +191,40 @@ def _remembered(ctx: Ctx, name: str) -> RecalledObject:
 
 
 def _seen_again(
-    ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str
+    ctx: Ctx,
+    settings: PickSettings,
+    found: RecalledObject,
+    label: str,
+    checkpoint: _Checkpoint,
 ) -> RecalledObject:
-    """`found` as the memory holds it now, freshly seen, once the base stands near it.
+    """`found` as the memory holds it now, freshly seen, at `checkpoint`.
 
+    `found` is the reading of the checkpoint before, or the one the drive aimed at.
     The memory keeps updating an object's position while the camera sees it, and
     from the stand-off pose it sees the object from close by. The position read
     before the drive can be old: in the Chula simulation it was where the hand had
     lifted the bottle in an earlier pick, 6 cm above where it stood again, and the
-    hand closed on nothing. So the reach goes only to a sighting at most
-    max_observation_age_s old, and the memory is read every SIGHTING_POLL_S for up
-    to observation_wait_s until it holds one. Walkie has no head to turn toward the
-    object, so it only waits. Every refusal comes before any arm goal:
+    hand closed on nothing. A motion of the arms can take a minute or more, and the
+    object can be taken or moved meanwhile. So each next goal goes only to a sighting
+    at most max_observation_age_s old, and the memory is read every SIGHTING_POLL_S
+    for up to observation_wait_s until it holds one. Walkie has no head to turn
+    toward the object, so it only waits. Every refusal comes before the
+    checkpoint's next goal:
 
     - NOT_FOUND: the memory no longer holds the object.
     - UNAVAILABLE: the memory could not be read (any other memory error). That never
       means the object is gone, and the atomic may be called again.
     - PRECONDITION_FAILED: the memory holds it in a state other than present, such as
       held or missing, or without a full position; no fresh sighting came in time;
-      or the sighting lies more than max_target_shift_m from the position the drive
-      aimed at, when a new stand-off pose is needed.
+      or the sighting lies more than max_target_shift_m from `found`, when a new
+      stand-off pose is needed.
 
     A stop is raised as CANCELLED.
     """
     latest: list[RecalledObject] = []
 
     def fresh() -> bool:
-        now = _read_again(ctx, found, label)
+        now = _read_again(ctx, found, label, checkpoint)
         latest[:] = [now]
         return now.seen_s_ago is not None and now.seen_s_ago <= settings.max_observation_age_s
 
@@ -179,33 +237,38 @@ def _seen_again(
         if error.code is not ErrorCode.TIMEOUT:
             raise
         logger.info(
-            "No sighting of %s at most %g s old within %g s; the last was %s s old.",
+            "No sighting of %s at most %g s old within %g s %s; the last was %s s old.",
             found.id,
             settings.max_observation_age_s,
             settings.observation_wait_s,
+            checkpoint.name,
             latest[0].seen_s_ago if latest else None,
         )
         raise StepError(
             ErrorCode.PRECONDITION_FAILED,
-            f"Walkie stands by {label} but has not seen it in the last few seconds, so it "
-            "did not reach for it: it may have moved or be out of view. Call find_objects "
-            f"to look again. {ctx.arms.state().sentence()}",
+            f"Walkie stands by {label} but has not seen it in the last few seconds, so "
+            f"{checkpoint.refused}: it may have moved or be out of view. "
+            f"{checkpoint.advice('call find_objects to look again')} "
+            f"{ctx.arms.state().sentence()}",
         ) from None
     now = latest[0]
     shift = math.dist((found.x, found.y, found.z), (now.x, now.y, now.z))
-    logger.info("Object %s moved %.3f m in the memory during the drive.", found.id, shift)
+    logger.info("Object %s moved %.3f m in the memory %s.", found.id, shift, checkpoint.name)
     if shift > settings.max_target_shift_m:
         raise StepError(
             ErrorCode.PRECONDITION_FAILED,
-            f"{label.capitalize()} moved while Walkie drove up to it, so it did not reach "
-            "for it. Call pick_object again to approach it where it is now. "
+            f"{label.capitalize()} moved {checkpoint.moving}, so {checkpoint.refused}. "
+            f"{checkpoint.advice('call pick_object again to approach it where it is now')} "
             f"{ctx.arms.state().sentence()}",
         )
     return now
 
 
-def _read_again(ctx: Ctx, found: RecalledObject, label: str) -> RecalledObject:
+def _read_again(
+    ctx: Ctx, found: RecalledObject, label: str, checkpoint: _Checkpoint
+) -> RecalledObject:
     """One read of `found` from the memory, as _seen_again's refusals name it."""
+    refused = checkpoint.refused
     try:
         now = ctx.object_memory.get(found.id)
     except StepError as error:
@@ -213,31 +276,33 @@ def _read_again(ctx: Ctx, found: RecalledObject, label: str) -> RecalledObject:
             raise
         sentence = ctx.arms.state().sentence()
         if error.code is ErrorCode.NOT_FOUND:
-            logger.info("The memory no longer holds %s: %s", found.id, error)
+            logger.info("The memory no longer holds %s %s: %s", found.id, checkpoint.name, error)
             raise StepError(
                 ErrorCode.NOT_FOUND,
-                f"Walkie's memory no longer holds {label}, so it did not reach for it. Call "
-                f"find_objects to look for it again. {sentence}",
+                f"Walkie's memory no longer holds {label}, so {refused}. "
+                f"{checkpoint.advice('call find_objects to look for it again')} {sentence}",
             ) from None
-        logger.warning("Could not read %s again before the reach: %s", found.id, error)
+        logger.warning("Could not read %s again %s: %s", found.id, checkpoint.name, error)
         raise StepError(
             ErrorCode.UNAVAILABLE,
-            f"Walkie could not read its object memory after driving up to {label}, so it "
-            f"did not reach for it. Call pick_object again. {sentence}",
+            f"Walkie could not read its object memory {checkpoint.unreadable.format(label=label)}"
+            f", so {refused}. {checkpoint.advice('call pick_object again')} {sentence}",
         ) from None
     if now.state != "present":
-        logger.info("The memory holds %s as %s after the drive.", found.id, now.state)
+        logger.info("The memory holds %s as %s %s.", found.id, now.state, checkpoint.name)
         raise StepError(
             ErrorCode.PRECONDITION_FAILED,
-            f"Walkie's memory now holds {label} as {now.state}, so it did not reach for it. "
-            f"Call find_objects to look again. {ctx.arms.state().sentence()}",
+            f"Walkie's memory now holds {label} as {now.state}, so {refused}. "
+            f"{checkpoint.advice('call find_objects to look again')} "
+            f"{ctx.arms.state().sentence()}",
         )
     if now.x is None or now.y is None or now.z is None:
-        logger.info("The memory holds no full position for %s after the drive.", found.id)
+        logger.info("The memory holds no full position for %s %s.", found.id, checkpoint.name)
         raise StepError(
             ErrorCode.PRECONDITION_FAILED,
-            f"Walkie's memory no longer holds exactly where {label} is, so it did not reach "
-            f"for it. Call find_objects to look again. {ctx.arms.state().sentence()}",
+            f"Walkie's memory no longer holds exactly where {label} is, so {refused}. "
+            f"{checkpoint.advice('call find_objects to look again')} "
+            f"{ctx.arms.state().sentence()}",
         )
     return now
 
@@ -331,44 +396,53 @@ def _plan_from_here(settings: PickSettings, found: RecalledObject, here: Pose2D)
     )
 
 
-def _check_reach(
+def _plan_in_reach(
     ctx: Ctx,
     settings: PickSettings,
-    plan: PickPlan,
     found: RecalledObject,
-    here: Pose2D,
     label: str,
-) -> None:
-    """Refuse, before any arm goal, a plan outside the reach envelope (arm.pick.reach_problems).
+    checkpoint: _Checkpoint,
+) -> PickPlan:
+    """The plan from where the base stands now, refused outside the reach envelope.
 
-    The numbers go to the log only. An object too low or too high stays so from any
-    stand-off pose; any other problem may pass from a new one.
+    Before the checkpoint's next arm goal (arm.pick.reach_problems). The numbers go
+    to the log only. An object too low or too high stays so from any stand-off pose;
+    any other problem may pass from a new one.
     """
+    here = ctx.base.pose()
+    plan = _plan_from_here(settings, found, here)
     problems = reach_problems(
         settings, plan, (found.x, found.y, found.z), (here.x, here.y, here.yaw)
     )
     if not problems:
-        return
+        return plan
     logger.warning(
-        "Refused to reach for %s (object %s): %s.", label, found.id, "; ".join(problems)
+        "Refused to reach for %s (object %s) %s: %s.",
+        label,
+        found.id,
+        checkpoint.name,
+        "; ".join(problems),
     )
     sentence = ctx.arms.state().sentence()
     if not settings.min_target_z_m <= found.z <= settings.max_target_z_m:
         side = "low" if found.z < settings.min_target_z_m else "high"
+        advice = checkpoint.advice(None)
         raise StepError(
             ErrorCode.PRECONDITION_FAILED,
             f"{label.capitalize()} is too {side} for the {settings.arm} hand to pick up, so "
-            f"Walkie did not reach for it. {sentence}",
+            f"Walkie did not reach for it. {f'{advice} ' if advice else ''}{sentence}",
         )
     raise StepError(
         ErrorCode.PRECONDITION_FAILED,
         f"{label.capitalize()} is out of the {settings.arm} hand's reach from where Walkie "
-        f"stopped, so it did not reach for it. Call pick_object again to approach it "
-        f"afresh. {sentence}",
+        f"stopped, so it did not reach for it. "
+        f"{checkpoint.advice('call pick_object again to approach it afresh')} {sentence}",
     )
 
 
-def _grasp_then_touch_off(ctx: Ctx, settings: PickSettings, plan: PickPlan, label: str) -> str:
+def _grasp_then_touch_off(
+    ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str
+) -> str:
     """_grasp, then the fingers' octomap allowance turned off, however _grasp ended.
 
     The grasp turns the allowance on for the approach, the close, the lift and the
@@ -388,7 +462,7 @@ def _grasp_then_touch_off(ctx: Ctx, settings: PickSettings, plan: PickPlan, labe
     error: BaseException | None = None
     answer = ""
     try:
-        answer = _grasp(ctx, settings, plan, label)
+        answer = _grasp(ctx, settings, found, label)
     except BaseException as raised:
         error = raised
         raise
@@ -422,10 +496,15 @@ def _touch_off(ctx: Ctx, label: str, error: BaseException | None, answer: str) -
     error.add_note(note)
 
 
-def _grasp(ctx: Ctx, settings: PickSettings, plan: PickPlan, label: str) -> str:
+def _grasp(ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str) -> str:
     """Tuck the other arm, open the hand, reach, approach, close, lift and go home.
 
-    After a close that holds nothing, both arms still go home.
+    `found` is the object as the memory held it after the drive. It is read again
+    before the reach (checkpoint A), which plans the hand poses from that reading,
+    and before the approach (checkpoint B), which keeps A's plan: a straight move
+    from the pre-grasp pose must keep the hand's orientation. A refusal at either
+    sends no further goal, and the arms stay where they are. After a close that holds
+    nothing, both arms still go home.
 
     Returns the answer to the LLM.
     """
@@ -446,7 +525,14 @@ def _grasp(ctx: Ctx, settings: PickSettings, plan: PickPlan, label: str) -> str:
             f"The {arm} gripper did not open, so Walkie did not reach for {label}. "
             f"{ctx.arms.state().sentence()}",
         )
+    # The other arm's move can take half a minute, and the object can be taken or
+    # moved meanwhile.
+    seen = _seen_again(ctx, settings, found, label, _BEFORE_REACH)
+    plan = _plan_in_reach(ctx, settings, seen, label, _BEFORE_REACH)
     _reach(ctx, settings, plan.pregrasp, f"The reach toward {label} failed: ", whole_body=True)
+    # The whole-body reach can take a minute or more. The memory kept saving sightings
+    # of the Chula bottle throughout it, so a fresh one is required here too.
+    _seen_again(ctx, settings, seen, label, _BEFORE_APPROACH)
     # The fingers close on the object's octomap voxels, so from here on they may touch
     # the octomap. The allowance stays until the move of the other arm home (_go_home).
     _reach(

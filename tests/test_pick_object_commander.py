@@ -375,3 +375,29 @@ def test_an_object_taken_during_an_arm_motion_gets_no_further_goal(
     assert [group for group, _ in fake_commander.gripper_goals] == ["right_gripper"]
     assert len(fake_commander.pose_goals) == pose_goals
     assert allowance(fake_commander) is False
+
+
+def test_an_object_taken_while_the_arm_settles_gets_no_approach(
+    ctx, client, fake_commander, monkeypatch
+):
+    real_read = client.joint_states
+
+    def read(group, timeout_s=None):
+        reading = real_read(group, timeout_s)
+        # Only the settle before the straight approach reads with the allowance on.
+        if allowance(fake_commander):
+            memory = ctx.object_memory
+            memory.objects["7"] = replace(memory.objects["7"], state="held")
+        return reading
+
+    monkeypatch.setattr(client, "joint_states", read)
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert "as held" in error.message
+    assert not error.message.startswith("The approach")
+    # The whole-body pre-grasp only: no approach and no close.
+    assert len(fake_commander.pose_goals) == 1
+    assert [group for group, _ in fake_commander.gripper_goals] == ["right_gripper"]
+    assert allowance(fake_commander) is False

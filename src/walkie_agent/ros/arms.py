@@ -17,7 +17,7 @@ the constants that built it (CANCEL_OUTCOMES, PENDING_OUTCOMES).
 import logging
 import math
 import threading
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 
 from walkie_agent.arm import answers
@@ -432,6 +432,7 @@ class RosArms:
         cartesian: bool = False,
         touch: bool = False,
         timeout_s: float = 60.0,
+        ready: Callable[[], object] | None = None,
     ) -> str:
         """Move `arm`'s hand link to `pose` through the commander's /go_to_pose.
 
@@ -439,8 +440,9 @@ class RosArms:
         `whole_body`, to the arm with the lift with `cartesian`, else to its arm
         group, and waits for the longer of `timeout_s` and min_move_timeout_s.
         Before the goal, the commander's finger allowance is set to `touch` when it
-        may differ (CommanderClient.set_gripper_touch), and a straight reach waits
-        for the arm to come to rest (_wait_still). A reported success is the
+        may differ (CommanderClient.set_gripper_touch), a straight reach waits for
+        the arm to come to rest (_wait_still), and then `ready` runs, if given; its
+        error passes unchanged, and no goal is sent. A reported success is the
         commander's own check: a pose goal has no joint table to compare a reading
         with. Its plan-only status means nothing moved, so it is a failure here.
         Every message ends with the arm sentence, from a fresh read after a failure
@@ -455,6 +457,11 @@ class RosArms:
             self._set_touch(touch)
             if cartesian:
                 self._wait_still(arm)
+        except StepError as e:
+            raise self._move_error(f"Could not move the {arm} hand: ", e) from None
+        if ready is not None:
+            ready()
+        try:
             status = self._client.go_to_pose(
                 group, pose, max(timeout_s, self._min_move_timeout_s), cartesian=cartesian
             )

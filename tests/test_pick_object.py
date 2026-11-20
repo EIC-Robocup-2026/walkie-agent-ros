@@ -92,6 +92,11 @@ def reaches(robot: FakeRobot) -> list[tuple[bool, bool, bool, float]]:
     ]
 
 
+def refusals(robot: FakeRobot) -> list[str | None]:
+    """Each reach's error code; FakeRobot sends no goal for a reach whose check refused."""
+    return [call["error"] for call in robot.calls if call["verb"] == "arms.reach"]
+
+
 def at_stand_off(robot: FakeRobot, x: float, y: float) -> None:
     """The base stands at a stand-off pose of the object at (x, y), facing its heading."""
     here = robot.pose()
@@ -585,8 +590,10 @@ def test_an_object_gone_or_moved_during_the_reach_gets_no_approach(
 
     assert error.code is code
     assert error.message == f"{words} {NOT_SAFE_SENTENCE}"
-    # The pre-grasp reach only: no approach, close or any other motion after it.
-    assert reaches(robot) == [(True, False, False, 90.0)]
+    # The pre-grasp reach, then the approach refused by its check before its goal: no
+    # close or any other motion after it.
+    assert reaches(robot) == [(True, False, False, 90.0), (False, True, True, 30.0)]
+    assert refusals(robot) == [None, str(code)]
     assert verbs(robot)[-2:] == ["arms.reach", "arms.restore_touch"]
     assert robot.touch is False
 
@@ -605,7 +612,8 @@ def test_a_sighting_that_ages_past_the_limit_during_the_reach_gets_no_approach(
         "Walkie stands by the water bottle but has not seen it in the last few seconds, so "
         "it did not move the hand in to grasp it"
     )
-    assert reaches(robot) == [(True, False, False, 90.0)]
+    assert reaches(robot) == [(True, False, False, 90.0), (False, True, True, 30.0)]
+    assert refusals(robot) == [None, str(ErrorCode.PRECONDITION_FAILED)]
 
 
 def test_the_approach_keeps_the_plan_of_the_reach_when_the_object_shifts_a_little(

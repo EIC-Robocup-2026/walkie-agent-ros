@@ -599,11 +599,15 @@ class FakeRobot:
         cartesian: bool = False,
         touch: bool = False,
         timeout_s: float = 60.0,
+        ready: Callable[[], object] | None = None,
     ) -> str:
         self._require_arms()
         answers.check_reach(pose, whole_body=whole_body, cartesian=cartesian, timeout_s=timeout_s)
-        with self._arm_goal(f"the reach of the {arm} hand"):
+        with self._arm_goal("the change of the finger allowance"):
             self.touch = touch
+        if ready is not None:
+            ready()
+        with self._arm_goal(f"the reach of the {arm} hand"):
             self._arm_at[arm] = None
         return WHOLE_BODY_STATUS if whole_body else ARM_GOAL_STATUS
 

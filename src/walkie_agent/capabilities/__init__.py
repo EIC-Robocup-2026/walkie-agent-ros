@@ -13,7 +13,7 @@ capabilities.web_search. The arm records build on
 walkie_agent.arm, which imports no ROS either.
 """
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import NoReturn, Protocol
@@ -229,7 +229,10 @@ class Arms(Protocol):
     line, for the arm and the lift. These are the only motions that move
     the lift (decision PK-5). `touch` lets both grippers' fingers touch the
     sensed octomap, which a grasp needs, and stays in effect until a reach
-    or a move_to() without it, the next open or restore_touch(). The arm then
+    or a move_to() without it, the next open or restore_touch(). `ready`, when
+    given, runs right before the goal, after the allowance is set and, for a
+    straight reach, the arm has come to rest; whatever it raises ends the reach
+    unchanged, with no goal sent. The arm then
     rests in no named pose, so it is not safe for driving. It raises
     StepError REFUSED for a pose or a timeout that
     is not finite, or a whole-body straight line; SKILL_FAILED when the
@@ -282,6 +285,7 @@ class Arms(Protocol):
         cartesian: bool = False,
         touch: bool = False,
         timeout_s: float = 60.0,
+        ready: Callable[[], object] | None = None,
     ) -> str: ...
 
     def restore_touch(self) -> None: ...
@@ -338,6 +342,7 @@ class UnavailableArms:
         cartesian: bool = False,
         touch: bool = False,
         timeout_s: float = 60.0,
+        ready: Callable[[], object] | None = None,
     ) -> str:
         self._refuse()
 

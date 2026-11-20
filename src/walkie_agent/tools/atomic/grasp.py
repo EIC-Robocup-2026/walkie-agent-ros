@@ -7,7 +7,18 @@ commander's grasp band, a straight lift, a straight move to beside the base, and
 of both arms home, the picking arm with the lift. The geometry and its numbers are in
 walkie_agent.arm.pick and config/pick.toml.
 The LLM gives only the object's name and reads only the outcome: no position, pose or
-joint value reaches it (ADR-0022). Every answer ends with the arm sentence (ADR-0024).
+joint value reaches it (ADR-0022). Every answer after the drive ends with the arm
+sentence (ADR-0024).
+
+Three checks stand between the drive and the first arm goal, and each refusal sends
+none. The memory must hold the object as present, with a full position, seen at most
+max_observation_age_s ago; the atomic waits up to observation_wait_s for such a
+sighting. That position must lie within max_target_shift_m of the one the drive aimed
+at. The object and every hand pose must lie in the reach envelope around where the
+base stopped (arm.pick.reach_problems). Once the first arm goal may go, the fingers'
+octomap allowance (allow_gripper_vs_octomap) is turned off again however the pick
+ends, a stop included (_grasp_then_touch_off). That reset sends no motion, so a stop
+still ends every motion.
 
 The stand-off pose is reached with ctx.base.move_relative, a Nav2 goal like any other
 drive, after a go_to to the named place nearest the object when the object is further
@@ -27,6 +38,7 @@ from walkie_agent.arm.pick import (
     heading_from,
     load_pick_settings,
     plan_pick,
+    reach_problems,
     relative_move,
 )
 from walkie_agent.capabilities import Ctx, Pose2D, RecalledObject
@@ -61,6 +73,9 @@ _OTHER_ARM = {"left": "right", "right": "left"}
 # Where both arms end a pick, held object or not: the one offered pose that is safe
 # for driving with an object in the hand (walkie-agent-v2 carried objects in it).
 HOME_POSE = "home"
+# How often the memory is read while the atomic waits for a new sighting of the
+# object after the drive, in seconds. The memory saves a sighting about every 2 s.
+SIGHTING_POLL_S = 0.5
 
 # What the answer says when a close did not show that the hand holds the object, by
 # GripperMoved.outcome.
@@ -96,8 +111,11 @@ def pick_object(ctx: Ctx, name: str) -> str:
     found = _remembered(ctx, name)
     label = f"the {found.name}"
     _drive_to_standoff(ctx, settings, found, label)
-    found = _seen_again(ctx, found)
-    return _grasp(ctx, settings, _plan_from_here(ctx, settings, found), label)
+    found = _seen_again(ctx, settings, found, label)
+    here = ctx.base.pose()
+    plan = _plan_from_here(settings, found, here)
+    _check_reach(ctx, settings, plan, found, here, label)
+    return _grasp_then_touch_off(ctx, settings, plan, label)
 
 
 def _remembered(ctx: Ctx, name: str) -> RecalledObject:
@@ -121,33 +139,106 @@ def _remembered(ctx: Ctx, name: str) -> RecalledObject:
     )
 
 
-def _seen_again(ctx: Ctx, found: RecalledObject) -> RecalledObject:
-    """`found` as the memory holds it now, once the base stands near it.
+def _seen_again(
+    ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str
+) -> RecalledObject:
+    """`found` as the memory holds it now, freshly seen, once the base stands near it.
 
     The memory keeps updating an object's position while the camera sees it, and
     from the stand-off pose it sees the object from close by. The position read
     before the drive can be old: in the Chula simulation it was where the hand had
     lifted the bottle in an earlier pick, 6 cm above where it stood again, and the
-    hand closed on nothing. Any answer but a present object with a full
-    position keeps `found`; a stop is raised.
+    hand closed on nothing. So the reach goes only to a sighting at most
+    max_observation_age_s old, and the memory is read every SIGHTING_POLL_S for up
+    to observation_wait_s until it holds one. Walkie has no head to turn toward the
+    object, so it only waits. Every refusal comes before any arm goal:
+
+    - NOT_FOUND: the memory no longer holds the object.
+    - UNAVAILABLE: the memory could not be read (any other memory error). That never
+      means the object is gone, and the atomic may be called again.
+    - PRECONDITION_FAILED: the memory holds it in a state other than present, such as
+      held or missing, or without a full position; no fresh sighting came in time;
+      or the sighting lies more than max_target_shift_m from the position the drive
+      aimed at, when a new stand-off pose is needed.
+
+    A stop is raised as CANCELLED.
     """
+    latest: list[RecalledObject] = []
+
+    def fresh() -> bool:
+        now = _read_again(ctx, found, label)
+        latest[:] = [now]
+        return now.seen_s_ago is not None and now.seen_s_ago <= settings.max_observation_age_s
+
+    try:
+        ctx.cancel.wait_for(
+            fresh, settings.observation_wait_s, f"a new sighting of {label}",
+            poll_s=SIGHTING_POLL_S,
+        )
+    except StepError as error:
+        if error.code is not ErrorCode.TIMEOUT:
+            raise
+        logger.info(
+            "No sighting of %s at most %g s old within %g s; the last was %s s old.",
+            found.id,
+            settings.max_observation_age_s,
+            settings.observation_wait_s,
+            latest[0].seen_s_ago if latest else None,
+        )
+        raise StepError(
+            ErrorCode.PRECONDITION_FAILED,
+            f"Walkie stands by {label} but has not seen it in the last few seconds, so it "
+            "did not reach for it: it may have moved or be out of view. Call find_objects "
+            f"to look again. {ctx.arms.state().sentence()}",
+        ) from None
+    now = latest[0]
+    shift = math.dist((found.x, found.y, found.z), (now.x, now.y, now.z))
+    logger.info("Object %s moved %.3f m in the memory during the drive.", found.id, shift)
+    if shift > settings.max_target_shift_m:
+        raise StepError(
+            ErrorCode.PRECONDITION_FAILED,
+            f"{label.capitalize()} moved while Walkie drove up to it, so it did not reach "
+            "for it. Call pick_object again to approach it where it is now. "
+            f"{ctx.arms.state().sentence()}",
+        )
+    return now
+
+
+def _read_again(ctx: Ctx, found: RecalledObject, label: str) -> RecalledObject:
+    """One read of `found` from the memory, as _seen_again's refusals name it."""
     try:
         now = ctx.object_memory.get(found.id)
     except StepError as error:
         if error.code is ErrorCode.CANCELLED:
             raise
-        logger.info("Could not read %s again before the reach: %s", found.id, error)
-        return found
-    if now.state != "present" or now.x is None or now.y is None or now.z is None:
-        logger.info(
-            "The memory no longer holds a position for %s; the reach uses the old one.", found.id
+        sentence = ctx.arms.state().sentence()
+        if error.code is ErrorCode.NOT_FOUND:
+            logger.info("The memory no longer holds %s: %s", found.id, error)
+            raise StepError(
+                ErrorCode.NOT_FOUND,
+                f"Walkie's memory no longer holds {label}, so it did not reach for it. Call "
+                f"find_objects to look for it again. {sentence}",
+            ) from None
+        logger.warning("Could not read %s again before the reach: %s", found.id, error)
+        raise StepError(
+            ErrorCode.UNAVAILABLE,
+            f"Walkie could not read its object memory after driving up to {label}, so it "
+            f"did not reach for it. Call pick_object again. {sentence}",
+        ) from None
+    if now.state != "present":
+        logger.info("The memory holds %s as %s after the drive.", found.id, now.state)
+        raise StepError(
+            ErrorCode.PRECONDITION_FAILED,
+            f"Walkie's memory now holds {label} as {now.state}, so it did not reach for it. "
+            f"Call find_objects to look again. {ctx.arms.state().sentence()}",
         )
-        return found
-    logger.info(
-        "Object %s moved %.3f m in the memory during the drive.",
-        found.id,
-        math.dist((found.x, found.y, found.z), (now.x, now.y, now.z)),
-    )
+    if now.x is None or now.y is None or now.z is None:
+        logger.info("The memory holds no full position for %s after the drive.", found.id)
+        raise StepError(
+            ErrorCode.PRECONDITION_FAILED,
+            f"Walkie's memory no longer holds exactly where {label} is, so it did not reach "
+            f"for it. Call find_objects to look again. {ctx.arms.state().sentence()}",
+        )
     return now
 
 
@@ -227,18 +318,108 @@ def _plans(settings: PickSettings, found: RecalledObject, start: Pose2D) -> list
     return [plan_pick(settings, found.x, found.y, found.z, heading) for heading in headings]
 
 
-def _plan_from_here(ctx: Ctx, settings: PickSettings, found: RecalledObject) -> PickPlan:
+def _plan_from_here(settings: PickSettings, found: RecalledObject, here: Pose2D) -> PickPlan:
     """The plan for the heading the robot now faces the object along (arm.pick.heading_from).
 
-    The hand approaches along the line from where the base stopped to the object,
-    so a drive that ended a little off its goal still reaches straight at it.
+    The hand approaches along the line from where the base stopped, `here`, to the
+    object, so a drive that ended a little off its goal still reaches straight at it.
     """
-    here = ctx.base.pose()
     heading = heading_from(settings, here.x, here.y, found.x, found.y)
     approach = math.atan2(found.y - here.y, found.x - here.x)
     return plan_pick(
         settings, found.x, found.y, found.z, heading, approach, (here.x, here.y, here.yaw)
     )
+
+
+def _check_reach(
+    ctx: Ctx,
+    settings: PickSettings,
+    plan: PickPlan,
+    found: RecalledObject,
+    here: Pose2D,
+    label: str,
+) -> None:
+    """Refuse, before any arm goal, a plan outside the reach envelope (arm.pick.reach_problems).
+
+    The numbers go to the log only. An object too low or too high stays so from any
+    stand-off pose; any other problem may pass from a new one.
+    """
+    problems = reach_problems(
+        settings, plan, (found.x, found.y, found.z), (here.x, here.y, here.yaw)
+    )
+    if not problems:
+        return
+    logger.warning(
+        "Refused to reach for %s (object %s): %s.", label, found.id, "; ".join(problems)
+    )
+    sentence = ctx.arms.state().sentence()
+    if not settings.min_target_z_m <= found.z <= settings.max_target_z_m:
+        side = "low" if found.z < settings.min_target_z_m else "high"
+        raise StepError(
+            ErrorCode.PRECONDITION_FAILED,
+            f"{label.capitalize()} is too {side} for the {settings.arm} hand to pick up, so "
+            f"Walkie did not reach for it. {sentence}",
+        )
+    raise StepError(
+        ErrorCode.PRECONDITION_FAILED,
+        f"{label.capitalize()} is out of the {settings.arm} hand's reach from where Walkie "
+        f"stopped, so it did not reach for it. Call pick_object again to approach it "
+        f"afresh. {sentence}",
+    )
+
+
+def _grasp_then_touch_off(ctx: Ctx, settings: PickSettings, plan: PickPlan, label: str) -> str:
+    """_grasp, then the fingers' octomap allowance turned off, however _grasp ended.
+
+    The grasp turns the allowance on for the approach, the close, the lift and the
+    move clear, and its last move home turns it off. But a failed step, a stop, or
+    any other error ends the pick with the allowance on, and the commander keeps it
+    for every motion after, of any tool. So ctx.arms.restore_touch() runs on every
+    path out: after an answer, a StepError (CANCELLED from a stop included) or any
+    other exception. It sends no motion and goes through a stop.
+
+    If the reset fails, the pick fails too: the reset's error leads the message,
+    which still ends with the arm sentence, under the original error's code and
+    class, or, after an answer, under the reset's own code. Another exception
+    keeps its type and gets the failure as a note. ctx.arms then knows the
+    allowance's state as unknown, so its next motion first turns the allowance to
+    what that motion needs and is refused if the commander does not confirm it.
+    """
+    error: BaseException | None = None
+    answer = ""
+    try:
+        answer = _grasp(ctx, settings, plan, label)
+    except BaseException as raised:
+        error = raised
+        raise
+    finally:
+        _touch_off(ctx, label, error, answer)
+    return answer
+
+
+def _touch_off(ctx: Ctx, label: str, error: BaseException | None, answer: str) -> None:
+    """Turn the allowance off after the pick; raise if that fails (_grasp_then_touch_off)."""
+    try:
+        ctx.arms.restore_touch()
+        return
+    except Exception as failure:  # Any failure: the pick's own outcome must survive it.
+        logger.error(
+            "Could not turn off allow_gripper_vs_octomap after the pick of %s: %r", label, failure
+        )
+        if isinstance(failure, StepError):
+            code, why = failure.code, failure.message.rstrip(".")
+        else:
+            code, why = ErrorCode.INTERNAL, "the reset failed"
+    note = (
+        "Walkie could not turn off its fingers' allowance to touch what its cameras sense: "
+        f"{why}. Its next arm motion sets the allowance again first, and moves only if that "
+        "works."
+    )
+    if error is None:
+        raise StepError(code, f"{note} {answer}")
+    if isinstance(error, StepError):
+        raise type(error)(error.code, f"{note} {error.message}") from None
+    error.add_note(note)
 
 
 def _grasp(ctx: Ctx, settings: PickSettings, plan: PickPlan, label: str) -> str:

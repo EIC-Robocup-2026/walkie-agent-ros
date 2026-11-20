@@ -14,7 +14,7 @@ from walkie_agent.arm.state import NOT_SAFE_SENTENCE, SAFE_SENTENCE
 from walkie_agent.capabilities import Ctx, RecalledObject
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
-from walkie_agent.tools.atomic import pick_object
+from walkie_agent.tools.atomic import grasp, pick_object
 
 ABORTED = "Nav2 aborted the goal."
 READS = frozenset(("base.pose", "base.places"))
@@ -50,7 +50,8 @@ def remembered(
         room=room,
         on="kitchen table 3",
         state="present",
-        seen_s_ago=12.0,
+        # Seen a second ago: a sighting fresh enough to reach for after the drive.
+        seen_s_ago=1.0,
         x=x,
         y=y,
         z=z,
@@ -134,6 +135,31 @@ def fails(ctx: Ctx, name: str = "water bottle") -> StepError:
     return raised.value
 
 
+def read_again(monkeypatch, ctx: Ctx, *answers: RecalledObject | StepError) -> list[str]:
+    """Make each read of an object by its id give the next of `answers`, the last for good.
+
+    A StepError is raised. Returns the ids read, in order.
+    """
+    reads: list[str] = []
+
+    def again(object_id, **kwargs):
+        reads.append(object_id)
+        answer = answers[min(len(reads), len(answers)) - 1]
+        if isinstance(answer, StepError):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(ctx.object_memory, "get", again)
+    return reads
+
+
+def pick_settings(monkeypatch, **changes) -> None:
+    """Pick with config/pick.toml's numbers but `changes`, and read the memory often."""
+    settings = replace(load_pick_settings(PROJECT_ROOT / "config" / "pick.toml"), **changes)
+    monkeypatch.setattr(grasp, "load_pick_settings", lambda: settings)
+    monkeypatch.setattr(grasp, "SIGHTING_POLL_S", 0.01)
+
+
 # The pick
 
 
@@ -157,7 +183,9 @@ def test_a_pick_drives_to_the_stand_off_reaches_closes_and_lifts(arm_poses):
         "arms.reach",
         "arms.move_to",
         "arms.move_to",
+        "arms.restore_touch",
     ]
+    assert robot.touch is False
     # 0.65 m back from the object and 0.20 m to the left of the right hand's line to
     # it, which is the line the robot stood on.
     move = next(call for call in robot.calls if call["verb"] == "base.move_relative")
@@ -186,7 +214,8 @@ def test_a_pick_drives_to_the_stand_off_reaches_closes_and_lifts(arm_poses):
     arms = {
         call["args"]["arm"]
         for call in robot.calls
-        if call["verb"].startswith("arms.") and call["verb"] != "arms.move_to"
+        if call["verb"].startswith("arms.")
+        and call["verb"] not in ("arms.move_to", "arms.restore_touch")
     }
     assert arms == {"right"}
 
@@ -237,30 +266,187 @@ def test_the_reach_goes_to_where_the_memory_holds_the_object_after_the_drive(
     assert targets[1] == plan.grasp
 
 
+# Seeing the object again after the drive
+
+
 @pytest.mark.parametrize(
-    "answer",
+    ("answer", "code", "words"),
     [
-        StepError(ErrorCode.UNAVAILABLE, "The object memory is not connected."),
-        replace(remembered(), z=None),
-        replace(remembered(), state="held"),
+        (
+            StepError(ErrorCode.NOT_FOUND, "Walkie remembers no object 7."),
+            ErrorCode.NOT_FOUND,
+            "Walkie's memory no longer holds the water bottle, so it did not reach for it. "
+            "Call find_objects to look for it again.",
+        ),
+        (
+            replace(remembered(), state="held"),
+            ErrorCode.PRECONDITION_FAILED,
+            "Walkie's memory now holds the water bottle as held, so it did not reach for it. "
+            "Call find_objects to look again.",
+        ),
+        (
+            replace(remembered(), state="missing"),
+            ErrorCode.PRECONDITION_FAILED,
+            "Walkie's memory now holds the water bottle as missing, so it did not reach for "
+            "it. Call find_objects to look again.",
+        ),
+        (
+            replace(remembered(), z=None),
+            ErrorCode.PRECONDITION_FAILED,
+            "Walkie's memory no longer holds exactly where the water bottle is, so it did not "
+            "reach for it. Call find_objects to look again.",
+        ),
     ],
+    ids=["forgotten", "held", "missing", "no-position"],
 )
-def test_the_reach_keeps_the_first_position_when_the_memory_has_no_better_one(
-    arm_poses, monkeypatch, answer
+def test_an_object_gone_held_or_without_a_position_after_the_drive_is_not_reached_for(
+    arm_poses, monkeypatch, answer, code, words
 ):
     robot, ctx = picking(arm_poses, remembered())
+    reads = read_again(monkeypatch, ctx, answer)
 
-    def again(object_id, **kwargs):
-        if isinstance(answer, StepError):
-            raise answer
-        return answer
+    error = fails(ctx)
 
-    monkeypatch.setattr(ctx.object_memory, "get", again)
+    assert error.code is code
+    assert error.message == f"{words} {SAFE_SENTENCE}"
+    assert reads == ["7"]
+    assert verbs(robot) == ["base.move_relative"]
+    assert robot.touch is False
+
+
+@pytest.mark.parametrize("code", [ErrorCode.UNAVAILABLE, ErrorCode.TIMEOUT, ErrorCode.INTERNAL])
+def test_a_memory_that_cannot_be_read_after_the_drive_sends_no_reach_and_may_be_retried(
+    arm_poses, monkeypatch, code
+):
+    robot, ctx = picking(arm_poses, remembered())
+    reads = read_again(monkeypatch, ctx, StepError(code, "The object memory did not answer."))
+
+    error = fails(ctx)
+
+    # Never NOT_FOUND, which would say the object is gone, and never a reach at the
+    # position read before the drive.
+    assert error.code is ErrorCode.UNAVAILABLE
+    assert error.message == (
+        "Walkie could not read its object memory after driving up to the water bottle, so "
+        f"it did not reach for it. Call pick_object again. {SAFE_SENTENCE}"
+    )
+    assert reads == ["7"]
+    assert verbs(robot) == ["base.move_relative"]
+
+
+def test_a_stop_during_the_read_after_the_drive_is_raised_as_it_is(arm_poses, monkeypatch):
+    robot, ctx = picking(arm_poses, remembered())
+    stopped = StepError(ErrorCode.CANCELLED, "Cancelled the read of object 7: a stop is in effect.")
+    read_again(monkeypatch, ctx, stopped)
+
+    assert fails(ctx) is stopped
+    assert verbs(robot) == ["base.move_relative"]
+
+
+@pytest.mark.parametrize("seen_s_ago", [30.0, None], ids=["old", "unknown"])
+def test_an_object_not_seen_lately_is_waited_for_then_refused_without_a_reach(
+    arm_poses, monkeypatch, seen_s_ago
+):
+    pick_settings(monkeypatch, observation_wait_s=0.2)
+    robot, ctx = picking(arm_poses, remembered())
+    reads = read_again(monkeypatch, ctx, replace(remembered(), seen_s_ago=seen_s_ago))
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message == (
+        "Walkie stands by the water bottle but has not seen it in the last few seconds, so "
+        "it did not reach for it: it may have moved or be out of view. Call find_objects to "
+        f"look again. {SAFE_SENTENCE}"
+    )
+    assert len(reads) > 1, "the memory is read again while the atomic waits"
+    assert verbs(robot) == ["base.move_relative"]
+
+
+def test_a_new_sighting_during_the_wait_is_the_one_reached_for(arm_poses, monkeypatch):
+    pick_settings(monkeypatch, observation_wait_s=5.0)
+    robot, ctx = picking(arm_poses, remembered())
+    reads = read_again(
+        monkeypatch,
+        ctx,
+        replace(remembered(), seen_s_ago=8.0),
+        replace(remembered(), seen_s_ago=8.5),
+        # Exactly max_observation_age_s old still counts as fresh.
+        replace(remembered(), x=1.02, seen_s_ago=5.0),
+    )
     targets = hand_targets(monkeypatch, robot)
 
     pick_object(ctx, "water bottle")
 
-    assert targets[1].z == pytest.approx(0.75)
+    assert len(reads) == 3
+    here = robot.pose()
+    plan = plan_pick(
+        load_pick_settings(), 1.02, 0.0, 0.75, here.yaw, math.atan2(-here.y, 1.02 - here.x)
+    )
+    assert targets[1] == plan.grasp
+
+
+def test_an_object_that_moved_too_far_during_the_drive_asks_for_a_new_pick(
+    arm_poses, monkeypatch
+):
+    robot, ctx = picking(arm_poses, remembered())
+    # 0.16 m to the side of where the drive aimed, past max_target_shift_m.
+    read_again(monkeypatch, ctx, replace(remembered(), y=-0.16))
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message == (
+        "The water bottle moved while Walkie drove up to it, so it did not reach for it. "
+        f"Call pick_object again to approach it where it is now. {SAFE_SENTENCE}"
+    )
+    assert verbs(robot) == ["base.move_relative"]
+
+
+# The reach envelope
+
+
+def test_an_object_the_memory_lowered_below_the_envelope_is_not_reached_for(
+    arm_poses, monkeypatch
+):
+    # The drive aimed at a centre 0.60 m high; seen from close by, it is 0.48 m.
+    robot, ctx = picking(arm_poses, remembered(z=0.60))
+    read_again(monkeypatch, ctx, replace(remembered(), z=0.48))
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message == (
+        "The water bottle is too low for the right hand to pick up, so Walkie did not reach "
+        f"for it. {SAFE_SENTENCE}"
+    )
+    assert verbs(robot) == ["base.move_relative"]
+
+
+def test_an_object_too_high_from_the_start_is_driven_to_but_not_reached_for(arm_poses):
+    robot, ctx = picking(arm_poses, remembered(z=1.40))
+
+    error = fails(ctx)
+
+    assert error.message.startswith("The water bottle is too high for the right hand")
+    assert verbs(robot) == ["base.move_relative"]
+
+
+def test_an_object_the_memory_moved_out_of_reach_asks_for_a_new_pick(arm_poses, monkeypatch):
+    # An envelope that ends 0.75 m from the base; the object, 0.68 m from the stand-off
+    # pose, is seen 0.10 m further away after the drive.
+    pick_settings(monkeypatch, max_reach_m=0.75)
+    robot, ctx = picking(arm_poses, remembered())
+    read_again(monkeypatch, ctx, replace(remembered(), x=1.10))
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message == (
+        "The water bottle is out of the right hand's reach from where Walkie stopped, so it "
+        f"did not reach for it. Call pick_object again to approach it afresh. {SAFE_SENTENCE}"
+    )
+    assert verbs(robot) == ["base.move_relative"]
 
 
 def test_a_robot_already_at_the_stand_off_does_not_drive(arm_poses):
@@ -456,7 +642,7 @@ def test_a_close_on_nothing_does_not_lift_and_brings_the_arms_home(arm_poses):
         f"find_objects to look again. {SAFE_SENTENCE}"
     )
     assert len(reaches(robot)) == 2
-    assert verbs(robot)[-2:] == ["arms.move_to", "arms.move_to"]
+    assert verbs(robot)[-3:] == ["arms.move_to", "arms.move_to", "arms.restore_touch"]
 
 
 def test_a_close_on_nothing_whose_move_home_fails_says_both(arm_poses, monkeypatch):
@@ -553,6 +739,139 @@ def test_a_failed_move_clear_of_the_surface_says_the_hand_holds_the_object_and_s
     # The move home would swing the held object over the surface, so it is not tried.
     moves = [call["args"] for call in robot.calls if call["verb"] == "arms.move_to"]
     assert moves == [{"pose": "standby", "arm": "left"}]
+
+
+# The finger allowance after the pick
+
+
+@pytest.mark.parametrize(("nth", "step"), [(2, "approach"), (3, "lift"), (4, "clear")])
+def test_a_failed_step_with_the_allowance_on_turns_it_off_and_moves_nothing_after(
+    arm_poses, monkeypatch, nth, step
+):
+    robot, ctx = picking(arm_poses, remembered())
+    original = robot.reach
+
+    def fails_with_the_allowance_on(arm, pose, **kwargs):
+        if len(reaches(robot)) == nth - 1:
+            # The commander had turned the allowance on for this straight move.
+            robot.touch = True
+            raise GoalFailed(ErrorCode.SKILL_FAILED, f"It aborted. {NOT_SAFE_SENTENCE}")
+        return original(arm, pose, **kwargs)
+
+    monkeypatch.setattr(robot, "reach", fails_with_the_allowance_on)
+
+    error = fails(ctx)
+
+    assert isinstance(error, GoalFailed), step
+    assert robot.touch is False
+    assert verbs(robot)[-1] == "arms.restore_touch"
+    assert verbs(robot).count("arms.restore_touch") == 1
+
+
+def test_a_stop_mid_grasp_turns_the_allowance_off_with_no_motion_after(arm_poses, monkeypatch):
+    robot, ctx = picking(arm_poses, remembered())
+    original = robot.reach
+
+    def stopped_during_the_lift(arm, pose, **kwargs):
+        if len(reaches(robot)) == 2:
+            robot.cancel.cancel()
+        return original(arm, pose, **kwargs)
+
+    monkeypatch.setattr(robot, "reach", stopped_during_the_lift)
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.CANCELLED
+    # The approach left the allowance on; the reset goes through the stop.
+    assert robot.touch is False
+    # No move home or any other motion after the stopped lift.
+    assert verbs(robot) == [
+        "base.move_relative",
+        "arms.move_to",
+        "arms.gripper",
+        "arms.reach",
+        "arms.reach",
+        "arms.gripper",
+        "arms.reach",
+        "arms.restore_touch",
+    ]
+
+
+def test_an_unexpected_error_mid_grasp_turns_the_allowance_off_and_is_raised(
+    arm_poses, monkeypatch
+):
+    robot, ctx = picking(arm_poses, remembered())
+    fail_on_call(monkeypatch, robot, "gripper", 2, RuntimeError("the fake broke"))
+    robot.touch = True
+
+    with pytest.raises(RuntimeError, match="the fake broke"):
+        pick_object(ctx, "water bottle")
+
+    assert robot.touch is False
+    assert verbs(robot)[-1] == "arms.restore_touch"
+
+
+RESET_FAILED = StepError(
+    ErrorCode.TIMEOUT, "The commander's /bimanual_commander/set_parameters did not answer."
+)
+RESET_NOTE = (
+    "Walkie could not turn off its fingers' allowance to touch what its cameras sense: The "
+    "commander's /bimanual_commander/set_parameters did not answer. Its next arm motion sets "
+    "the allowance again first, and moves only if that works."
+)
+
+
+def test_a_failed_reset_after_a_pick_fails_the_pick_with_the_answer_kept(arm_poses):
+    robot, ctx = picking(arm_poses, remembered())
+    robot.faults["arms.restore_touch"] = RESET_FAILED
+
+    error = fails(ctx)
+
+    assert type(error) is StepError and error.code is ErrorCode.TIMEOUT
+    assert error.message == (
+        f"{RESET_NOTE} Picked up the water bottle with the right hand, lifted it and brought "
+        f"both arms home. {SAFE_SENTENCE}"
+    )
+    assert verbs(robot)[-1] == "arms.restore_touch"
+
+
+def test_a_failed_reset_after_a_failed_step_leads_its_message_and_keeps_its_code(
+    arm_poses, monkeypatch
+):
+    robot, ctx = picking(arm_poses, remembered())
+    stopped = GoalFailed(ErrorCode.SKILL_FAILED, f"The commander aborted it. {NOT_SAFE_SENTENCE}")
+    fail_on_call(monkeypatch, robot, "reach", 3, stopped)
+    robot.faults["arms.restore_touch"] = RESET_FAILED
+
+    error = fails(ctx)
+
+    assert isinstance(error, GoalFailed) and error.code is ErrorCode.SKILL_FAILED
+    assert error.message == (
+        f"{RESET_NOTE} The right hand holds the water bottle, but the lift failed: The "
+        f"commander aborted it. {NOT_SAFE_SENTENCE}"
+    )
+    assert verbs(robot)[-1] == "arms.restore_touch"
+
+
+def test_a_failed_reset_after_an_unexpected_error_is_a_note_on_it(arm_poses, monkeypatch):
+    robot, ctx = picking(arm_poses, remembered())
+    fail_on_call(monkeypatch, robot, "gripper", 2, RuntimeError("the fake broke"))
+    robot.faults["arms.restore_touch"] = RESET_FAILED
+
+    with pytest.raises(RuntimeError, match="the fake broke") as raised:
+        pick_object(ctx, "water bottle")
+
+    assert raised.value.__notes__ == [RESET_NOTE]
+
+
+def test_a_refusal_before_the_grasp_sends_no_reset(arm_poses, monkeypatch):
+    robot, ctx = picking(arm_poses, remembered())
+    read_again(monkeypatch, ctx, replace(remembered(), state="held"))
+
+    fails(ctx)
+
+    # Nothing of this pick turned the allowance on.
+    assert "arms.restore_touch" not in verbs(robot)
 
 
 # What it cannot pick

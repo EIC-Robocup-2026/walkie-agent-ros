@@ -683,6 +683,7 @@ class RosArms:
                 arm,
                 STILL_WAIT_S,
             )
+            return
         if failed:
             raise failed[0]
         if len(readings) > 2:

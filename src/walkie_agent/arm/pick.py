@@ -7,8 +7,9 @@ straight up and moves it beside the base, clear of the surface (decision PK-4). 
 module holds the numbers, read from config/pick.toml, the plain geometry that
 turns an object's centre and an approach heading into those poses, the check that
 the object and every pose lie in a sane envelope around the base before any arm goal
-is sent, and the check that the object is no wider than the open gripper. None of it
-reaches the LLM (ADR-0022), and nothing here imports ROS.
+is sent, and the checks that the object is no wider than the open gripper where the
+fingers close on it. None of it reaches the LLM (ADR-0022), and nothing here imports
+ROS.
 
 Every position is in the settings' frame, the map frame of the object memory. A
 heading is the direction the robot faces at the stand-off pose, in radians from the
@@ -214,16 +215,41 @@ def check_pick_settings(data: Mapping[str, Any], source: str = "pick.toml") -> P
 
 
 def approach_headings(
-    settings: PickSettings, robot_x: float, robot_y: float, object_x: float, object_y: float
+    settings: PickSettings,
+    robot_x: float,
+    robot_y: float,
+    object_x: float,
+    object_y: float,
+    size: tuple[float, float, float] | None = None,
+    yaw: float | None = None,
 ) -> tuple[float, ...]:
     """The headings to try, in radians wrapped to [-pi, pi], in the settings' order.
 
     Each is heading_from() the robot's position plus one of the settings' heading
     offsets, so the first one approaches the object from the side the robot is on,
     along the line the robot already stands on.
+
+    An object whose box (`size` and `yaw`, as RecalledObject holds them) is wider
+    than max_grasp_width_m along one side is approached only along that side, so the
+    fingers close across the other: the two headings whose plan_pick hand does that,
+    the one nearer the first heading above first. An object with no usable box
+    keeps the settings' headings.
     """
     start = heading_from(settings, robot_x, robot_y, object_x, object_y)
-    return tuple(_wrap(start + math.radians(offset)) for offset in settings.heading_offsets_deg)
+    sides = _sides(size)
+    if sides is None or yaw is None or max(sides) <= settings.max_grasp_width_m:
+        return tuple(
+            _wrap(start + math.radians(offset)) for offset in settings.heading_offsets_deg
+        )
+    # The hand yaw whose fingers close across the narrower side (width_across_fingers).
+    grip = yaw if sides[0] > sides[1] else yaw + math.pi / 2
+    # plan_pick's hand yaw is its heading, less the stand-off pose's turn toward the
+    # object, plus hand_yaw_offset_deg.
+    turn = math.atan2(settings.standoff_left_m, settings.standoff_m) - math.radians(
+        settings.hand_yaw_offset_deg
+    )
+    headings = (_wrap(grip + turn), _wrap(grip + math.pi + turn))
+    return tuple(sorted(headings, key=lambda heading: abs(_wrap(heading - start))))
 
 
 def heading_from(
@@ -366,19 +392,49 @@ def too_wide_to_grasp(
     """The object's width in metres when it is wider than the open gripper, else None.
 
     `size` is the object memory's upright box (RecalledObject.size): along its yaw,
-    across it, and its height. The hand grips the object from the side, so the width
-    is the narrower of the two horizontal sides, whatever the approach: the widest
-    reading that could still fit. It is too wide above max_grasp_width_m. An object
-    with no size, or with a horizontal side that is not finite or not above zero, is
-    never too wide: the memory did not measure it.
+    across it, and its height. The hand grips the object from the side, and
+    approach_headings turns it to close across the narrower horizontal side, so the
+    width is that side: no approach meets less. It is too wide above
+    max_grasp_width_m. An object with no size, or with a horizontal side that is not
+    finite or not above zero, is never too wide: the memory did not measure it.
     """
-    if size is None:
-        return None
-    sides = size[:2]
-    if not all(_finite(side) and side > 0 for side in sides):
+    sides = _sides(size)
+    if sides is None:
         return None
     width = min(sides)
     return width if width > settings.max_grasp_width_m else None
+
+
+def width_across_fingers(
+    size: tuple[float, float, float] | None, yaw: float | None, hand_yaw: float
+) -> float | None:
+    """How wide the object is across the fingers of a hand turned to `hand_yaw`, in metres.
+
+    The fingers close along the hand link's y axis, which lies level, a quarter turn
+    from the hand's yaw, at pick.toml's roll of 0. The width is that of the ellipse
+    inside the memory's box (`size` and `yaw`, as RecalledObject holds them) along
+    that axis: a side of the box when the fingers close square to it, and between
+    the two sides otherwise. The ellipse is a round object's outline, such as a
+    bottle's, whose box is square at any yaw; a box's corners would make it read
+    wider than the bottle. None when the box has no usable horizontal side or no
+    yaw: the memory did not measure which way the object lies.
+    """
+    sides = _sides(size)
+    if sides is None or yaw is None:
+        return None
+    across = hand_yaw + math.pi / 2 - yaw
+    return math.hypot(sides[0] * math.cos(across), sides[1] * math.sin(across))
+
+
+def _sides(size: tuple[float, float, float] | None) -> tuple[float, float] | None:
+    """The box's horizontal sides, along its yaw and across it; None unless both are usable.
+
+    A usable side is finite and above zero.
+    """
+    if size is None:
+        return None
+    sides = (size[0], size[1])
+    return sides if all(_finite(side) and side > 0 for side in sides) else None
 
 
 def relative_move(

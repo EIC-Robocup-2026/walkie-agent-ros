@@ -8,7 +8,13 @@ import pytest
 
 from conftest import PROJECT_ROOT
 from test_object_memory_atomics import WORLD, Remembers
-from walkie_agent.arm.pick import HandPose, heading_from, load_pick_settings, plan_pick
+from walkie_agent.arm.pick import (
+    HandPose,
+    heading_from,
+    load_pick_settings,
+    plan_pick,
+    width_across_fingers,
+)
 from walkie_agent.arm.poses import load_arm_poses
 from walkie_agent.arm.state import NOT_SAFE_SENTENCE, SAFE_SENTENCE
 from walkie_agent.capabilities import Ctx, GripperReading, RecalledObject
@@ -42,6 +48,7 @@ def remembered(
     z: float | None = 0.75,
     room: str | None = "kitchen room",
     size: tuple[float, float, float] | None = None,
+    yaw: float | None = None,
 ) -> RecalledObject:
     return RecalledObject(
         id=object_id,
@@ -57,6 +64,7 @@ def remembered(
         y=y,
         z=z,
         size=size,
+        yaw=yaw,
     )
 
 
@@ -1259,6 +1267,52 @@ def test_an_object_wider_than_the_open_hand_is_refused_before_the_drive(arm_pose
         "not try to pick it up. Tell the person it cannot pick it up."
     )
     assert robot.calls == []
+
+
+def test_a_long_object_is_approached_along_its_length_and_gripped_across_it(
+    arm_poses, monkeypatch
+):
+    # A box 0.14 m long lying along y: from the robot's own line to it, along x, the
+    # hand would close across its length.
+    size = (0.14, 0.068, 0.22)
+    robot, ctx = picking(arm_poses, remembered(size=size, yaw=math.pi / 2))
+    targets = hand_targets(monkeypatch, robot)
+
+    assert pick_object(ctx, "water bottle").startswith("Picked up the water bottle")
+
+    assert len(targets) == 4
+    for pose in targets:
+        assert width_across_fingers(size, math.pi / 2, pose.yaw) == pytest.approx(0.068)
+
+
+def test_a_drive_that_stops_where_the_fingers_meet_a_long_object_end_to_end_gets_no_reach(
+    arm_poses, monkeypatch
+):
+    # A box 0.30 m long lying along y: the fingers fit across it only within about 12
+    # degrees of square to its length. The base stops 0.20 m along x from its goal,
+    # which turns the hand's line to the object by about 16 degrees.
+    size = (0.30, 0.05, 0.10)
+    robot, ctx = picking(arm_poses, remembered(size=size, yaw=math.pi / 2))
+    drive = robot.move_relative
+
+    def aside(forward_m=0.0, left_m=0.0, turn_deg=0.0, **kwargs):
+        return drive(forward_m + 0.20, left_m, turn_deg, **kwargs)
+
+    monkeypatch.setattr(robot, "move_relative", aside)
+
+    error = fails(ctx)
+
+    here = robot.pose()
+    approach = math.atan2(0.0 - here.y, 1.0 - here.x)
+    width = width_across_fingers(size, math.pi / 2, approach + math.pi)
+    assert width > 0.078
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message == (
+        "From where Walkie stopped, the right hand would close across the water bottle "
+        f"where it is {width:.3f} m wide, wider than the hand opens, so Walkie did not "
+        f"reach for it. Call pick_object again to approach it afresh. {SAFE_SENTENCE}"
+    )
+    assert verbs(robot) == ["base.move_relative"]
 
 
 def test_unreadable_settings_stop_the_pick_before_anything_moves(arm_poses, monkeypatch, tmp_path):

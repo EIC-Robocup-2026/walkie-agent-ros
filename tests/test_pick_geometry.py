@@ -19,6 +19,7 @@ from walkie_agent.arm.pick import (
     reach_problems,
     relative_move,
     too_wide_to_grasp,
+    width_across_fingers,
 )
 
 VALID = {
@@ -445,7 +446,7 @@ def test_an_object_beside_the_base_is_too_close():
         (0.076, 0.076, 0.12),
         # A side exactly at the limit still fits.
         (0.078, 0.078, 0.10),
-        # A partial view's box can be long one way: the narrower side is the one gripped.
+        # A box long one way: the approach turns the fingers across its narrower side.
         (0.14, 0.068, 0.22),
     ],
     ids=["bottle", "can", "at-limit", "long-box"],
@@ -466,6 +467,108 @@ def test_an_object_wider_than_the_open_gripper_gives_its_narrower_side(size):
 )
 def test_an_object_with_no_usable_size_is_not_refused(size):
     assert too_wide_to_grasp(SETTINGS, size) is None
+
+
+# The width across the fingers
+
+# A box 0.14 m long along its yaw and 0.068 m across it: wider than the open gripper
+# end to end, narrow enough across.
+LONG_BOX = (0.14, 0.068, 0.22)
+
+
+def closes_along(pose: HandPose) -> tuple[float, float, float]:
+    """The hand link's +y in the frame, along which the fingers close (openarm_hand.xacro)."""
+    cr, sr = math.cos(pose.roll), math.sin(pose.roll)
+    cp, sp = math.cos(pose.pitch), math.sin(pose.pitch)
+    cy, sy = math.cos(pose.yaw), math.sin(pose.yaw)
+    return (cy * sp * sr - sy * cr, sy * sp * sr + cy * cr, cp * sr)
+
+
+@pytest.mark.parametrize("box_deg", [0.0, 25.0, -110.0])
+@pytest.mark.parametrize("hand_deg", [0.0, 30.0, 45.0, 90.0, 160.0])
+def test_a_round_object_s_square_box_is_as_wide_across_the_fingers_at_any_yaw(box_deg, hand_deg):
+    width = width_across_fingers(
+        (0.068, 0.068, 0.22), math.radians(box_deg), math.radians(hand_deg)
+    )
+
+    assert width == pytest.approx(0.068)
+
+
+@pytest.mark.parametrize(
+    ("hand_deg", "width"),
+    [
+        # Fingers along the box's yaw meet its 0.14 m side; square to it, the 0.068 m.
+        (-90.0, 0.14),
+        (90.0, 0.14),
+        (0.0, 0.068),
+        (180.0, 0.068),
+        # Between the two: the ellipse inside the box, not its corners.
+        (-45.0, math.hypot(0.14, 0.068) / math.sqrt(2.0)),
+    ],
+)
+def test_a_long_box_is_as_wide_across_the_fingers_as_the_ellipse_inside_it(hand_deg, width):
+    assert width_across_fingers(LONG_BOX, 0.0, math.radians(hand_deg)) == pytest.approx(width)
+
+
+@pytest.mark.parametrize(
+    ("size", "yaw"),
+    [(None, 0.0), (LONG_BOX, None), ((0.14, 0.0, 0.22), 0.0), ((math.nan, 0.068, 0.22), 0.0)],
+    ids=["no-size", "no-yaw", "zero-side", "nan-side"],
+)
+def test_a_box_with_no_usable_side_or_yaw_has_no_width_across_the_fingers(size, yaw):
+    assert width_across_fingers(size, yaw, 0.0) is None
+
+
+def test_a_long_box_lying_along_the_fingers_of_the_robot_s_own_line_gets_turned_headings():
+    # Codex's case: from the robot's own line to the box, the hand would close across
+    # its 0.14 m length, although its 0.068 m side passes the gate before the drive.
+    first = approach_headings(SETTINGS, 0.0, 0.0, 1.0, 0.0)[0]
+    yaw = plan_pick(SETTINGS, 1.0, 0.0, 0.8, first).grasp.yaw + math.pi / 2
+    assert too_wide_to_grasp(SETTINGS, LONG_BOX) is None
+    assert width_across_fingers(
+        LONG_BOX, yaw, plan_pick(SETTINGS, 1.0, 0.0, 0.8, first).grasp.yaw
+    ) == pytest.approx(0.14)
+
+    headings = approach_headings(SETTINGS, 0.0, 0.0, 1.0, 0.0, LONG_BOX, yaw)
+
+    assert len(headings) == 2
+    for heading in headings:
+        grasp = plan_pick(SETTINGS, 1.0, 0.0, 0.8, heading).grasp
+        assert width_across_fingers(LONG_BOX, yaw, grasp.yaw) == pytest.approx(0.068)
+
+
+@pytest.mark.parametrize("size", [LONG_BOX, (0.068, 0.14, 0.22)], ids=["along-yaw", "across-yaw"])
+@pytest.mark.parametrize("box_deg", [0.0, 37.0, 90.0, -120.0, 180.0])
+def test_a_long_box_is_approached_so_the_fingers_close_across_its_narrow_side(size, box_deg):
+    yaw = math.radians(box_deg)
+    # The narrow side's direction in the frame: along the yaw when it is the first side.
+    narrow = yaw if size[0] < size[1] else yaw + math.pi / 2
+    start = heading_from(SETTINGS, 0.0, 0.0, 1.0, 0.0)
+
+    headings = approach_headings(SETTINGS, 0.0, 0.0, 1.0, 0.0, size, yaw)
+
+    assert len(headings) == 2
+    assert abs(math.remainder(headings[0] - start, math.tau)) <= abs(
+        math.remainder(headings[1] - start, math.tau)
+    )
+    for heading in headings:
+        x, y, z = closes_along(plan_pick(SETTINGS, 1.0, 0.0, 0.8, heading).grasp)
+        assert close(abs(x * math.cos(narrow) + y * math.sin(narrow)), 1.0) and close(z, 0.0)
+
+
+@pytest.mark.parametrize(
+    "size", [(0.068, 0.068, 0.22), (0.078, 0.06, 0.1), None], ids=["round", "fits", "no-size"]
+)
+def test_an_object_that_fits_the_fingers_either_way_keeps_the_settings_headings(size):
+    assert approach_headings(SETTINGS, 0.0, 0.0, 1.0, 0.0, size, 0.7) == approach_headings(
+        SETTINGS, 0.0, 0.0, 1.0, 0.0
+    )
+
+
+def test_a_long_box_with_no_yaw_keeps_the_settings_headings():
+    assert approach_headings(SETTINGS, 0.0, 0.0, 1.0, 0.0, LONG_BOX, None) == approach_headings(
+        SETTINGS, 0.0, 0.0, 1.0, 0.0
+    )
 
 
 # Relative moves

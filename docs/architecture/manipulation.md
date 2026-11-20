@@ -150,7 +150,8 @@ commander's grasp band, and the lift runs only when it holds something. Once
 both arms are home, it reads the gripper again (`ctx.arms.read()`) and judges
 it by the same band, so an object that fell out after the close is reported
 lost, not picked. Before it drives, it refuses an object whose remembered box
-is wider across its narrower side than `max_grasp_width_m` in `pick.toml`.
+is wider across its narrower side than `max_grasp_width_m` in `pick.toml`,
+and it checks the width where the fingers close again after the drive.
 The LLM gives the name and reads the outcome, never a pose
 ([ADR-0022](decisions/0022-named-arm-poses.md)). It is bound in the `hri`
 set only with both `--arms` and `--object-memory`.
@@ -158,7 +159,12 @@ set only with both `--arms` and `--object-memory`.
 Before the drive, `pick_object` refuses an object wider than the open
 gripper: the narrower horizontal side of the memory's upright box
 (`ObjectSummary.size`) above `max_grasp_width_m`. An object the memory has
-no box for passes.
+no box for passes. An object longer than `max_grasp_width_m` one way, with
+a known yaw, is driven to from only the two headings along its length, so
+that the fingers close across its narrower side. After the drive and at
+checkpoint A, `width_across_fingers` measures the box where the fingers of
+the planned grasp would close, as the caliper width of the ellipse inside
+the box, and the pick refuses when that is wider than the open gripper.
 
 `pick_object` reads the object again at three checkpoints: after the drive,
 before its first arm goal; before the whole-body reach, once the left arm is

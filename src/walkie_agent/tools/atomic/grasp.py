@@ -1,8 +1,9 @@
 """pick_object: pick up a remembered object with one hand, by its name (decision PK-4).
 
 The atomic finds the object in the object memory, refuses it before anything moves
-when the memory's box for it is wider than the open gripper (max_grasp_width_m),
-drives to a stand-off pose facing it, raises the other arm out of the way, and
+when the memory's box for it is wider than the open gripper (max_grasp_width_m) on
+both sides, drives to a stand-off pose facing it, along its longer side when that one
+is wider than the gripper, raises the other arm out of the way, and
 reaches through ctx.arms: a whole-body
 reach to a pre-grasp pose, a straight approach, a close of the gripper judged by the
 commander's grasp band, a straight lift, a straight move to beside the base, and a move
@@ -24,7 +25,9 @@ most max_observation_age_s ago, and the atomic waits up to observation_wait_s fo
 a sighting. That position must lie within max_target_shift_m of the previous
 checkpoint's, or of the one the drive aimed at. After the drive and at A, the object
 and every hand pose must also lie in the reach envelope around where the base stands
-(arm.pick.reach_problems); A plans the hand poses afresh from its own reading. A
+(arm.pick.reach_problems), and the object must be no wider than the open gripper
+across the fingers of the planned hand (arm.pick.width_across_fingers); A plans the
+hand poses afresh from its own reading. A
 motion is never cut short for a newer reading: the checks run between motions. Once
 the first arm goal may go, the fingers' octomap allowance (allow_gripper_vs_octomap)
 is turned off again however the pick ends, a stop included (_grasp_then_touch_off).
@@ -54,6 +57,7 @@ from walkie_agent.arm.pick import (
     reach_problems,
     relative_move,
     too_wide_to_grasp,
+    width_across_fingers,
 )
 from walkie_agent.capabilities import Ctx, Pose2D, RecalledObject
 from walkie_agent.capabilities.guards import MAX_MOVE_M
@@ -419,7 +423,9 @@ def _drive_to_standoff(
 
 def _plans(settings: PickSettings, found: RecalledObject, start: Pose2D) -> list[PickPlan]:
     """One plan per approach heading, from the robot's pose `start`."""
-    headings = approach_headings(settings, start.x, start.y, found.x, found.y)
+    headings = approach_headings(
+        settings, start.x, start.y, found.x, found.y, found.size, found.yaw
+    )
     return [plan_pick(settings, found.x, found.y, found.z, heading) for heading in headings]
 
 
@@ -447,7 +453,8 @@ def _plan_in_reach(
 
     Before the checkpoint's next arm goal (arm.pick.reach_problems). The numbers go
     to the log only. An object too low or too high stays so from any stand-off pose;
-    any other problem may pass from a new one.
+    any other problem may pass from a new one. A plan in reach whose hand would close
+    across more of the object than the open gripper is refused too (_fits_fingers).
     """
     here = ctx.base.pose()
     plan = _plan_from_here(settings, found, here)
@@ -455,6 +462,7 @@ def _plan_in_reach(
         settings, plan, (found.x, found.y, found.z), (here.x, here.y, here.yaw)
     )
     if not problems:
+        _fits_fingers(ctx, settings, found, label, checkpoint, plan)
         return plan
     logger.warning(
         "Refused to reach for %s (object %s) %s: %s.",
@@ -477,6 +485,44 @@ def _plan_in_reach(
         f"{label.capitalize()} is out of the {settings.arm} hand's reach from where Walkie "
         f"stopped, so it did not reach for it. "
         f"{checkpoint.advice('call pick_object again to approach it afresh')} {sentence}",
+    )
+
+
+def _fits_fingers(
+    ctx: Ctx,
+    settings: PickSettings,
+    found: RecalledObject,
+    label: str,
+    checkpoint: _Checkpoint,
+    plan: PickPlan,
+) -> None:
+    """Refuse a plan whose hand would close across more of the object than it opens.
+
+    By the memory's box and the grasp pose's yaw (arm.pick.width_across_fingers). The
+    drive aims the hand across the narrower side of a long object, but the hand moves
+    in along the line from where the base stopped, which can turn it. An object with
+    no box or no yaw passes. The width goes to the LLM: a size, not a position
+    (ADR-0022).
+    """
+    width = width_across_fingers(found.size, found.yaw, plan.grasp.yaw)
+    if width is None or width <= settings.max_grasp_width_m:
+        return
+    logger.warning(
+        "Refused to reach for %s (object %s) %s: %.3f m across the fingers, above "
+        "max_grasp_width_m %g.",
+        label,
+        found.id,
+        checkpoint.name,
+        width,
+        settings.max_grasp_width_m,
+    )
+    raise StepError(
+        ErrorCode.PRECONDITION_FAILED,
+        f"From where Walkie stopped, the {settings.arm} hand would close across "
+        f"{label} where it is {width:.3f} m wide, wider than the hand opens, so Walkie "
+        f"did not reach for it. "
+        f"{checkpoint.advice('call pick_object again to approach it afresh')} "
+        f"{ctx.arms.state().sentence()}",
     )
 
 

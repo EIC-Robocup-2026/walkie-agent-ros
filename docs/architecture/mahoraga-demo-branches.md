@@ -94,7 +94,7 @@ pick_object(name)
   check: present, not held, sighting at most 5 s old, moved at most 0.15 m, in reach
   park the other arm, open the gripper
   check again (A), re-plan from the base pose; whole_body_right pre-grasp
-  check again (B); allowance on: straight approach, close, lift
+  allowance on, arm at rest, check again (B): straight approach, close, lift
   allowance off in a finally, read back; move clear beside the base; arms home
 ```
 

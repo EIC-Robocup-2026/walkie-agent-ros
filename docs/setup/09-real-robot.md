@@ -1349,8 +1349,9 @@ finishes its move either way.
   grasp band were tuned in simulation at most.
 - The sighting age, the 15 cm move limit and the reach envelope were derived
   from one simulated pick and the arm's reach. One end-to-end pick in the Chula
-  simulation passed them after the drive; their checks before the reach and
-  before the approach have not run in a pick, and none has run on the robot.
+  simulation passed all three checks, after the drive, before the reach and
+  before the approach, the last before PK-51 moved it after the arm's settle;
+  none has run on the robot.
   A pick that refuses a bottle in plain view points at one of them first.
 - Whether the object memory finds a "water bottle" when vision stores a
   `bottle`.

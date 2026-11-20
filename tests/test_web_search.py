@@ -22,6 +22,7 @@ from walkie_agent.capabilities.web_search import (
     SEARCH_TIMEOUT_S,
     TAVILY_URL,
     TavilySearch,
+    _run_within,
     web_search_key,
 )
 from walkie_agent.errors import ErrorCode, StepError
@@ -290,6 +291,22 @@ def test_a_stalled_summary_is_a_timeout_within_its_own_bound():
         "Walkie could not summarize the web search results within 0.2 seconds."
     )
     assert_one_sentence(error)
+
+
+def test_an_outcome_that_comes_after_the_deadline_never_reaches_the_caller():
+    released = threading.Event()
+
+    def late() -> str:
+        assert released.wait(5.0)
+        return "a late answer"
+
+    outcome = _run_within(0.05, late, "walkie-web-late")
+    (worker,) = [thread for thread in threading.enumerate() if thread.name == "walkie-web-late"]
+    released.set()
+    worker.join(5.0)
+
+    assert not worker.is_alive()
+    assert outcome == []
 
 
 def test_an_empty_summary_is_unavailable():

@@ -259,22 +259,33 @@ def _run_within(timeout_s: float, call: Callable[[], Any], name: str) -> list[An
     """Run `call` on a daemon thread and wait at most `timeout_s` for it.
 
     Returns [result], or [exception] when `call` raised, or [] when the deadline
-    passed first. A late thread finishes on its own and its outcome is dropped. The
+    passed first. Once the wait ends the answer is fixed: a late thread finishes on
+    its own and its outcome is dropped, also one that comes while this returns. The
     thread runs in a copy of the caller's context, so tracing callbacks still nest.
     """
     outcome: list[Any] = []
+    lock = threading.Lock()
+    expired = False
     context = contextvars.copy_context()
+
+    def keep(value: Any) -> None:
+        with lock:
+            if not expired:
+                outcome.append(value)
 
     def run() -> None:
         try:
-            outcome.append(context.run(call))
+            value = context.run(call)
         except Exception as exc:
-            outcome.append(exc)
+            value = exc
+        keep(value)
 
     worker = threading.Thread(target=run, name=name, daemon=True)
     worker.start()
     worker.join(timeout_s)
-    return outcome
+    with lock:
+        expired = True
+        return list(outcome)
 
 
 def _timeout(timeout_s: float) -> StepError:

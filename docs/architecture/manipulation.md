@@ -368,7 +368,10 @@ generic tool: `/navigate_to_pose`, `/set_joint_position`,
 `/list_skills`. The commander client also writes `allow_gripper_vs_octomap`
 through `/bimanual_commander/set_parameters` for `pick_object`'s grasp, sets it
 back to false after the grasp and at startup, and writes no other parameter
-([ADR-0021](decisions/0021-arm-control-through-commander.md)).
+([ADR-0021](decisions/0021-arm-control-through-commander.md)). A startup read
+or reset that fails is only logged and can leave it on; the agent then holds
+it as unknown, and the first motion of an arm or a gripper sets it before its
+goal and sends no goal unless the commander confirms the change.
 No tool uses that service.
 
 **Forbidden names** are never touched by any tool:

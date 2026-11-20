@@ -481,9 +481,11 @@ the tool log shows each as a call:
 However the grasp ends, held, failed, interrupted by an error or stopped,
 the pick then sets `allow_gripper_vs_octomap` back to false, the commander's
 default, and sends no arm motion to do it. If that reset fails, the pick's
-error says so, and the next arm motion sets the allowance again before it
-moves. At startup the agent reads the allowance and turns it off when an
-earlier run left it on, such as a run stopped mid-grasp.
+error says so, and the next motion of an arm or a gripper sets the allowance
+again before it moves, and moves only if the commander confirms it. At startup
+the agent reads the allowance and turns it off when an earlier run left it on,
+such as a run stopped mid-grasp. A startup read or reset that fails is only
+logged; the allowance then stays as it is until that first motion sets it.
 
 After a pick both arms are home, a travel-safe pose, so the robot may drive
 with the object. All the numbers are in `config/pick.toml`, which the agent

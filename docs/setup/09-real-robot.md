@@ -1198,14 +1198,21 @@ the base and brings both arms home, a pose that is safe for driving, and the
 agent brings the object back.
 
 Once the robot stands by the object, the pick reaches only for a sighting of it
-at most 5 s old, and waits up to 6 s for one. It sends no arm goal for an
+at most 5 s old, and waits up to 6 s for one. It checks again before the
+whole-body reach, with the left arm in standby, and before the straight
+approach, with the hand at the pre-grasp pose. It sends no further goal for an
 object the memory no longer holds as present, one that moved more than 15 cm
-during the drive, or one that it or any hand pose puts outside the reach
-envelope of `config/pick.toml`. However the grasp ends, stopped included, the
-pick sets the commander's `allow_gripper_vs_octomap` back to false without
-moving anything, and the agent does the same at startup if an earlier run left
-it on. So the bottle must be in view of the camera that feeds the object
-memory from the spot facing it.
+since the last check, or, after the drive and before the reach, one that it or
+any hand pose puts outside the reach envelope of `config/pick.toml`. A refusal
+leaves the arms where they are, and its answer asks the agent to bring them
+home. However the grasp ends, stopped included, the pick sets the commander's
+`allow_gripper_vs_octomap` back to false without moving anything, and the agent
+does the same at startup if an earlier run left it on. If that startup read or
+reset fails, the agent only logs it: the allowance stays as it is until the
+first motion of an arm or a gripper sets it, and that motion sends no goal
+unless the commander confirms the change. So the bottle must be in view of the
+camera that feeds the object memory from the spot facing it, during the whole
+pick.
 
 This is stage 3 of the whole-body guide (`docs/guides/whole-body-real-robot.md`
 in `walkie-ros-fullbody`), which that guide holds back. The owner accepted

@@ -36,10 +36,20 @@ parameters, `grasp_detect_min` and `grasp_detect_max`, from
 grasp band, and at startup `allow_gripper_vs_octomap`. It reads nothing else
 there. For `pick_object` only (decision PK-4), it sets one parameter through
 `/bimanual_commander/set_parameters`: `allow_gripper_vs_octomap`, which lets the
-fingers touch the sensed octomap during the straight approach and the lift, and
-which the next joint move or open of a gripper clears. The pick sets it back to
-false, the commander's default, however its grasp ends, a stop included, and the
-agent does so at startup when an earlier run left it on. It sets nothing else.
+fingers touch the sensed octomap during the straight approach, the lift and the
+move clear of the surface. It stays on through the move of the picking arm home,
+which asks for it, and the next joint move or reach without it, or the next open
+of a gripper, clears it. The pick sets it back to false, the commander's default,
+however its grasp ends, a stop included, and the agent does so at startup when
+an earlier run left it on. A startup read or reset that fails is logged, not
+raised: the commander's value stays as it is, possibly on, and the agent holds it
+as unknown, so the first motion of an arm or a gripper sets it before its goal
+(false, for a gripper) and sends no goal unless the commander confirms that. The
+agent sends every change of it through one client, one at a time under a lock of
+its own, and the reset reads the value back after it settles: a true read then,
+as from a change that reached the commander late, fails the reset and leaves the
+value unknown. The read checks the parameter, not the planning scene the
+commander builds from it. It sets nothing else.
 
 **Consequences**
 

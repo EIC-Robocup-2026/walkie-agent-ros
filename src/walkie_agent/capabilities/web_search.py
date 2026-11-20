@@ -212,13 +212,25 @@ def _check_query(query: str) -> str:
 
 
 def _result(item: object) -> dict[str, str] | None:
-    """One result's URL, title and content, trimmed, or None for an unusable one."""
+    """One result's URL, title and content, trimmed, or None for an unusable one.
+
+    Unusable: not a mapping, or a URL that is not text, does not parse, is not http
+    or https, or names no host. urlsplit raises ValueError for some URLs, such as
+    "http://[bad" (an unclosed or invalid IPv6 host) or a host with characters that
+    NFKC normalization turns into "/", "?", "#", "@" or ":"; that drops the one
+    result, never the search.
+    """
     if not isinstance(item, Mapping):
         return None
     url, title, content = item.get("url"), item.get("title"), item.get("content")
-    if not isinstance(url, str) or urlsplit(url).scheme not in ("http", "https"):
+    if not isinstance(url, str):
         return None
-    if not _site(url):
+    try:
+        usable = urlsplit(url).scheme in ("http", "https") and bool(_site(url))
+    except ValueError:
+        logger.info("A web search result's URL does not parse, so it is dropped.")
+        return None
+    if not usable:
         return None
     return {
         "url": url,

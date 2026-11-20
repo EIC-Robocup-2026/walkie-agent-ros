@@ -221,10 +221,30 @@ def test_an_answer_that_cannot_be_read_is_unavailable(response):
     assert error.message == "The web search sent an answer Walkie could not read."
 
 
+# URLs that urlsplit refuses with ValueError, and URLs with an authority but no host.
+MALFORMED_URLS = {
+    "unclosed-ipv6": "http://[bad",
+    "unclosed-ipv6-path": "https://[::1/x",
+    "bracketed-name": "http://[not-an-ip]/",
+    "stray-bracket": "http://a]b/",
+    "text-after-ipv6": "http://[::1]x/",
+    "nfkc-number-sign": "http://exa＃mple.com/",
+    "nfkc-at-sign": "http://user＠host.com/",
+    "no-host": "http:///path",
+    "only-user-info": "https://@/",
+}
+
+
 @pytest.mark.parametrize(
     "results",
-    [[], [{"title": "no url"}], [{"url": "javascript:alert(1)", "content": "x"}], ["text"]],
-    ids=["empty", "no-url", "not-http", "not-an-object"],
+    [
+        [],
+        [{"title": "no url"}],
+        [{"url": "javascript:alert(1)", "content": "x"}],
+        ["text"],
+        [{"url": url, "title": "t", "content": "c"} for url in MALFORMED_URLS.values()],
+    ],
+    ids=["empty", "no-url", "not-http", "not-an-object", "malformed-urls"],
 )
 def test_no_usable_result_is_not_found_and_skips_the_summary(results):
     search, _, model = search_with(ok(tavily_answer(results)))
@@ -232,6 +252,18 @@ def test_no_usable_result_is_not_found_and_skips_the_summary(results):
     assert error.code is ErrorCode.NOT_FOUND
     assert error.message == "The web search found nothing for 'zzqx unknown thing'."
     assert model.received == []
+
+
+@pytest.mark.parametrize("url", list(MALFORMED_URLS.values()), ids=list(MALFORMED_URLS))
+def test_a_result_whose_url_is_malformed_is_dropped_and_the_others_kept(url):
+    broken = {"title": "Broken", "url": url, "content": "Sunny."}
+    search, _, model = search_with(ok(tavily_answer([broken, *RESULTS])))
+
+    answer = search.search("Bangkok weather tomorrow")
+
+    assert answer.sources == tuple(result["url"] for result in RESULTS)
+    human = model.received[0][1].content
+    assert "Broken" not in human
 
 
 def test_a_summarizer_failure_is_unavailable():

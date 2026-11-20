@@ -310,6 +310,19 @@ def test_objects_called_the_name_come_before_those_only_an_alias_matches(databas
     assert ids(memory.search("")) == ["34", "21", "26"]
 
 
+def test_an_object_the_detector_also_called_something_else_comes_last(database, memory):
+    # The node's order: a Pringles can the detector called a bottle and a cup, then a
+    # bottle it only ever called a bottle, then a catalogued bottle with an alias.
+    database.objects = [
+        summary(176, "bottle", labels=("bottle", "cup")),
+        summary(178, "bottle", labels=("bottle",)),
+        summary(40, "bottle", labels=("bottle", "flask"), official_name="Aqua"),
+    ]
+
+    assert ids(memory.search("bottle")) == ["178", "40", "176"]
+    assert ids(memory.search("")) == ["176", "178", "40"]
+
+
 def test_an_empty_name_recalls_every_present_object_up_to_the_limit(memory):
     assert ids(memory.search("")) == ["15", "18", "4", "14", "13", "16", "6"]
     assert ids(memory.search("", limit=2)) == ["15", "18"]

@@ -191,8 +191,13 @@ class RosObjectMemory:
         batch = [match.object for match in response.matches]
         named = [summary for summary in batch if _is_named(wanted, summary)]
         # An object called `wanted` comes before one that only an alias matches, such
-        # as a bottle the detector once called a cup. The sort keeps the node's order.
-        named.sort(key=lambda summary: not _is_called(wanted, summary))
+        # as a bottle the detector once called a cup. Among those called `wanted`, one
+        # the detector also called something else comes last. The sort keeps the
+        # node's order.
+        if wanted:
+            named.sort(
+                key=lambda summary: (not _is_called(wanted, summary), _is_disputed(summary))
+            )
         return self._recalled(named[:limit], batch)
 
     def room(self, room: str, *, limit: int = 50, timeout_s: float = 10.0) -> RoomObjects:
@@ -375,6 +380,20 @@ def _is_called(wanted: str, summary: ObjectSummary) -> bool:
     """True when `wanted` matches the object's own label or its official name."""
     names = {summary.label, summary.official_name}
     return not wanted or any(matches(wanted, name) for name in names if name.strip())
+
+
+def _is_disputed(summary: ObjectSummary) -> bool:
+    """True when the detector gave an object with no official name a second label.
+
+    In the Chula simulation the detector, which has no "can" class, called a Pringles
+    can a bottle and a cup in turn. It came first among the bottles, and pick_object
+    reached for it instead of the water bottle. An official name's aliases come from
+    the catalogue, not the detector, so they never dispute it.
+    """
+    if summary.official_name.strip():
+        return False
+    own = summary.label.strip().lower()
+    return any(label.strip().lower() not in ("", own) for label in summary.labels)
 
 
 def _name(summary: ObjectSummary) -> str:

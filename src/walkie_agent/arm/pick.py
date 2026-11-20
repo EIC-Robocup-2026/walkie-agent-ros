@@ -2,16 +2,19 @@
 
 pick_object drives to a stand-off pose that faces a remembered object, reaches the
 hand to a pre-grasp pose through the commander's whole-body group, moves it straight
-in to grasp the object at its centre height, closes the gripper and lifts the hand
-straight up (decision PK-4). This module holds the numbers, read from
-config/pick.toml, and the plain geometry that turns an object's centre and an
-approach heading into those poses. None of it reaches the LLM (ADR-0022), and
+in to grasp the object at its centre height, closes the gripper, lifts the hand
+straight up and moves it beside the base, clear of the surface (decision PK-4). This
+module holds the numbers, read from config/pick.toml, and the plain geometry that
+turns an object's centre and an approach heading into those poses. None of it reaches the LLM (ADR-0022), and
 nothing here imports ROS.
 
 Every position is in the settings' frame, the map frame of the object memory. A
 heading is the direction the robot faces at the stand-off pose, in radians from the
-frame's +x. The hand approaches along it, so the object lies straight ahead of the
-hand, and ahead of the robot a little to its right, on the right hand's side.
+frame's +x. The object lies ahead of the robot and a little to its right, on the
+right hand's side. The hand approaches along the line from the base to the object,
+as walkie-ros's scripted bottle pick (sim_bottle_pick.py) does: in the Chula
+simulation, a hand approaching along the heading itself, 17 degrees off that line,
+could not follow the straight move in to the bottle.
 """
 
 import math
@@ -32,6 +35,9 @@ _FLOAT_KEYS = (
     "grasp_back_m",
     "pregrasp_back_m",
     "lift_m",
+    "clear_forward_m",
+    "clear_side_m",
+    "home_lift_m",
     "hand_roll_deg",
     "hand_pitch_deg",
     "hand_yaw_offset_deg",
@@ -40,7 +46,14 @@ _FLOAT_KEYS = (
 )
 # The keys that must be above zero; every float key must be finite.
 _POSITIVE_KEYS = frozenset(
-    ("standoff_m", "pregrasp_back_m", "lift_m", "reach_timeout_s", "cartesian_timeout_s")
+    (
+        "standoff_m",
+        "pregrasp_back_m",
+        "lift_m",
+        "home_lift_m",
+        "reach_timeout_s",
+        "cartesian_timeout_s",
+    )
 )
 _KEYS = frozenset(("arm", "frame_id", "heading_offsets_deg", *_FLOAT_KEYS))
 
@@ -84,6 +97,9 @@ class PickSettings:
     grasp_back_m: float
     pregrasp_back_m: float
     lift_m: float
+    clear_forward_m: float
+    clear_side_m: float
+    home_lift_m: float
     hand_roll_deg: float
     hand_pitch_deg: float
     hand_yaw_offset_deg: float
@@ -93,18 +109,21 @@ class PickSettings:
 
 @dataclass(frozen=True)
 class PickPlan:
-    """One approach to an object: where the base stands, and the hand's three targets.
+    """One approach to an object: where the base stands, and the hand's four targets.
 
     The stand-off pose is base_footprint's, (standoff_x, standoff_y) facing
-    `heading`. pregrasp, grasp and lift are the hand link's, in that order.
+    `heading`. pregrasp, grasp, lift and clear are the hand link's, in that order,
+    and the hand moves in along `approach`.
     """
 
     standoff_x: float
     standoff_y: float
     heading: float
+    approach: float
     pregrasp: HandPose
     grasp: HandPose
     lift: HandPose
+    clear: HandPose
 
 
 def load_pick_settings(path: str | Path = DEFAULT_PICK_PATH) -> PickSettings:
@@ -189,39 +208,70 @@ def heading_from(
 
 
 def plan_pick(
-    settings: PickSettings, x: float, y: float, z: float, heading: float
+    settings: PickSettings,
+    x: float,
+    y: float,
+    z: float,
+    heading: float,
+    approach: float | None = None,
+    base: tuple[float, float, float] | None = None,
 ) -> PickPlan:
-    """The approach along `heading` to the object whose centre is (x, y, z).
+    """The approach at `heading` to the object whose centre is (x, y, z).
 
     The stand-off pose lies standoff_m back from the centre along the heading and
-    standoff_left_m to its left, and faces along the heading. The grasp pose puts
-    the hand link grasp_back_m back from the centre along the heading; the
-    pre-grasp pose stands pregrasp_back_m further back, and the lift pose lift_m
-    above the grasp pose. All three hold the settings' roll and pitch, and the
-    heading plus hand_yaw_offset_deg as their yaw.
+    standoff_left_m to its left, and faces along the heading. The hand moves in
+    along `approach`, by default the direction from the stand-off pose to the
+    centre; pass the direction from where the base stands instead once it has
+    stopped. The grasp pose puts the hand link grasp_back_m back from the centre
+    along the approach; the pre-grasp pose stands pregrasp_back_m further back,
+    and the lift pose lift_m above the grasp pose. The clear pose is at the lift
+    pose's height, clear_forward_m ahead of the base and clear_side_m out to the
+    picking arm's side; `base` is base_footprint's (x, y, yaw) once the base has
+    stopped, by default the stand-off pose. All four hold the settings' roll and
+    pitch, and the approach plus hand_yaw_offset_deg as their yaw.
     """
     cos, sin = math.cos(heading), math.sin(heading)
-    yaw = _wrap(heading + math.radians(settings.hand_yaw_offset_deg))
+    standoff_x = x - settings.standoff_m * cos - settings.standoff_left_m * sin
+    standoff_y = y - settings.standoff_m * sin + settings.standoff_left_m * cos
+    if approach is None:
+        approach = math.atan2(y - standoff_y, x - standoff_x)
+    approach = _wrap(approach)
+    along_x, along_y = math.cos(approach), math.sin(approach)
+    yaw = _wrap(approach + math.radians(settings.hand_yaw_offset_deg))
 
-    def hand(back_m: float, up_m: float = 0.0) -> HandPose:
+    def hand(at_x: float, at_y: float, at_z: float) -> HandPose:
         return HandPose(
-            x=x - back_m * cos,
-            y=y - back_m * sin,
-            z=z + up_m,
+            x=at_x,
+            y=at_y,
+            z=at_z,
             roll=math.radians(settings.hand_roll_deg),
             pitch=math.radians(settings.hand_pitch_deg),
             yaw=yaw,
             frame_id=settings.frame_id,
         )
 
+    def back(back_m: float, up_m: float = 0.0) -> HandPose:
+        return hand(x - back_m * along_x, y - back_m * along_y, z + up_m)
+
+    base_x, base_y, base_yaw = (standoff_x, standoff_y, heading) if base is None else base
+    # Positive is to the base's left, so the right arm's side is negative.
+    left = settings.clear_side_m if settings.arm == "left" else -settings.clear_side_m
+    forward = settings.clear_forward_m
+    base_cos, base_sin = math.cos(base_yaw), math.sin(base_yaw)
     grasp_back = settings.grasp_back_m
     return PickPlan(
-        standoff_x=x - settings.standoff_m * cos - settings.standoff_left_m * sin,
-        standoff_y=y - settings.standoff_m * sin + settings.standoff_left_m * cos,
+        standoff_x=standoff_x,
+        standoff_y=standoff_y,
         heading=heading,
-        pregrasp=hand(grasp_back + settings.pregrasp_back_m),
-        grasp=hand(grasp_back),
-        lift=hand(grasp_back, settings.lift_m),
+        approach=approach,
+        pregrasp=back(grasp_back + settings.pregrasp_back_m),
+        grasp=back(grasp_back),
+        lift=back(grasp_back, settings.lift_m),
+        clear=hand(
+            base_x + forward * base_cos - left * base_sin,
+            base_y + forward * base_sin + left * base_cos,
+            z + settings.lift_m,
+        ),
     )
 
 

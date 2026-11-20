@@ -6,7 +6,8 @@
 # The robot drives to a stand-off pose facing the object's remembered centre, then
 # the hand link (openarm_right_hand) goes to a pre-grasp pose through the
 # commander's whole-body group, moves straight in to the grasp pose, the gripper
-# closes, and the hand moves straight up. The numbers below picked the Chula
+# closes, the hand moves straight up and then beside the base, and both arms go
+# home, the picking arm with the lift at home_lift_m. The numbers below picked the Chula
 # simulation's water bottle on 2026-11-20. None has been tried on the robot.
 
 # The arm that picks: "left" or "right".
@@ -18,19 +19,20 @@ frame_id = "map"
 # heading: standoff_m back from the object's centre along the heading, and
 # standoff_left_m to the left of that line (negative is to the right). Standing to
 # the left puts the object ahead of the right hand, which hangs right of the base's
-# centre. walkie-ros's scripted bottle pick (sim_bottle_pick.py) proved 0.65 and 0.20
-# in the Chula room: the arm then usually reaches with the base still. From 0.90 m
-# straight behind, the whole-body reach moved and turned the base, and the
-# collision monitor once stopped it.
+# centre. The hand then moves in along the line from where the base stopped to the
+# object, not along the heading. walkie-ros's scripted bottle pick
+# (sim_bottle_pick.py) proved 0.65 and 0.20 in the Chula room: the arm then usually
+# reaches with the base still. From 0.90 m straight behind, the whole-body reach
+# moved and turned the base, and the collision monitor once stopped it.
 standoff_m = 0.65
 standoff_left_m = 0.20
-# The approach headings to try, in degrees, in order: each is added to the bearing
-# from where the robot stands to the object. The next one is tried when Nav2 cannot
+# The approach headings to try, in degrees, in order: each is added to the heading
+# whose stand-off line the robot already stands on. The next one is tried when Nav2 cannot
 # reach the stand-off pose of the one before.
 heading_offsets_deg = [0.0, 30.0, -30.0, 60.0, -60.0]
 
 # Metres the hand link stands back from the object's centre at the grasp pose, along
-# the approach. openarm_right_hand_tcp is 0.08 m along the hand link's +z, so 0.06
+# the hand's approach. openarm_right_hand_tcp is 0.08 m along the hand link's +z, so 0.06
 # puts the tool centre point 0.02 m past the centre, the depth that walkie-ros's
 # scripted pick and its offline check_grasp.py proved for the water bottle.
 grasp_back_m = 0.06
@@ -38,11 +40,23 @@ grasp_back_m = 0.06
 pregrasp_back_m = 0.10
 # Metres the hand rises after the gripper holds the object.
 lift_m = 0.10
+# Where the hand then moves in a straight line, at the lifted height, before the arm
+# goes home: clear_forward_m ahead of base_footprint and clear_side_m out to the
+# picking arm's side. The move home swings the hand down toward the base; started
+# over the table, it dragged the Chula bottle across the table's corner and out of
+# the fingers. From 0.30 and 0.35 the bottle stayed in the hand (2026-11-20).
+clear_forward_m = 0.30
+clear_side_m = 0.35
+# The lift's height, in metres, when the picking arm goes home at the end of a pick:
+# the home state of right_arm_lift in walkie-ros's SRDF. The straight moves can lower
+# the lift by over 0.1 m, and with the lift that low the arm's home pose touches the
+# base, so the move home goes through the arm's *_lift group and raises it back.
+home_lift_m = 0.7435
 
-# The hand's orientation, in degrees. Yaw is the approach heading plus
-# hand_yaw_offset_deg. Pitch -90 with the yaw turned by 180 puts the hand link's +z,
-# the direction the fingers point, along the approach with the wrist camera bracket
-# up. With pitch 90 and no offset the fingers point the same way, but the bracket
+# The hand's orientation, in degrees. Yaw is the direction of the hand's approach,
+# from the base to the object, plus hand_yaw_offset_deg. Pitch -90 with the yaw
+# turned by 180 puts the hand link's +z, the direction the fingers point, along the
+# approach with the wrist camera bracket up. With pitch 90 and no offset the fingers point the same way, but the bracket
 # hangs 0.11 m below the hand and reaches the table top at a bottle's centre height
 # (walkie-ros sim_bottle_pick.py, hand_rpy).
 hand_roll_deg = 0.0

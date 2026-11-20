@@ -2,12 +2,13 @@
 
 import math
 import re
+from dataclasses import replace
 
 import pytest
 
 from conftest import PROJECT_ROOT
 from test_object_memory_atomics import WORLD, Remembers
-from walkie_agent.arm.pick import heading_from, load_pick_settings
+from walkie_agent.arm.pick import HandPose, heading_from, load_pick_settings, plan_pick
 from walkie_agent.arm.poses import load_arm_poses
 from walkie_agent.arm.state import NOT_SAFE_SENTENCE, SAFE_SENTENCE
 from walkie_agent.capabilities import Ctx, RecalledObject
@@ -114,6 +115,19 @@ def fail_on_call(monkeypatch, robot: FakeRobot, verb: str, nth: int, error: Step
     monkeypatch.setattr(robot, verb, flaky)
 
 
+def hand_targets(monkeypatch, robot: FakeRobot) -> list[HandPose]:
+    """The pose of every arms.reach call from now on, in order."""
+    original = robot.reach
+    poses: list[HandPose] = []
+
+    def recording(arm, pose, **kwargs):
+        poses.append(pose)
+        return original(arm, pose, **kwargs)
+
+    monkeypatch.setattr(robot, "reach", recording)
+    return poses
+
+
 def fails(ctx: Ctx, name: str = "water bottle") -> StepError:
     with pytest.raises(StepError) as raised:
         pick_object(ctx, name)
@@ -129,16 +143,20 @@ def test_a_pick_drives_to_the_stand_off_reaches_closes_and_lifts(arm_poses):
     answer = pick_object(ctx, "water bottle")
 
     assert answer == (
-        "Picked up the water bottle with the right hand and lifted it. Before you drive, "
-        f"move the right arm to a pose that is safe for driving. {NOT_SAFE_SENTENCE}"
+        "Picked up the water bottle with the right hand, lifted it and brought both arms "
+        f"home. {SAFE_SENTENCE}"
     )
     assert verbs(robot) == [
         "base.move_relative",
+        "arms.move_to",
         "arms.gripper",
         "arms.reach",
         "arms.reach",
         "arms.gripper",
         "arms.reach",
+        "arms.reach",
+        "arms.move_to",
+        "arms.move_to",
     ]
     # 0.65 m back from the object and 0.20 m to the left of the right hand's line to
     # it, which is the line the robot stood on.
@@ -148,14 +166,28 @@ def test_a_pick_drives_to_the_stand_off_reaches_closes_and_lifts(arm_poses):
     at_stand_off(robot, 1.0, 0.0)
     grippers = [call["args"]["state"] for call in robot.calls if call["verb"] == "arms.gripper"]
     assert grippers == ["open", "close"]
-    # The whole-body reach to the pre-grasp pose, then the straight approach and lift,
-    # on which the fingers may touch the octomap.
+    # The whole-body reach to the pre-grasp pose, then the straight approach, lift and
+    # move clear of the surface, on which the fingers may touch the octomap.
     assert reaches(robot) == [
         (True, False, False, 90.0),
         (False, True, True, 30.0),
         (False, True, True, 30.0),
+        (False, True, True, 30.0),
     ]
-    arms = {call["args"]["arm"] for call in robot.calls if call["verb"].startswith("arms.")}
+    # The left arm goes up out of the way once the base stands still; the right picks.
+    # Then the right arm goes home with the lift raised to its home height, keeping
+    # the fingers' allowance, and the left arm goes home, which ends it.
+    moves = [call["args"] for call in robot.calls if call["verb"] == "arms.move_to"]
+    assert moves == [
+        {"pose": "standby", "arm": "left"},
+        {"pose": "home", "arm": "right", "lift_m": 0.7435, "touch": True},
+        {"pose": "home", "arm": "left"},
+    ]
+    arms = {
+        call["args"]["arm"]
+        for call in robot.calls
+        if call["verb"].startswith("arms.") and call["verb"] != "arms.move_to"
+    }
     assert arms == {"right"}
 
 
@@ -179,7 +211,56 @@ def test_the_first_match_with_a_full_position_is_picked(arm_poses):
     move = next(call for call in robot.calls if call["verb"] == "base.move_relative")
     assert move["args"]["turn_deg"] == pytest.approx(90.0 + math.degrees(math.asin(0.20)))
     at_stand_off(robot, 0.0, 1.0)
-    assert ctx.object_memory.calls == [("search", "water bottle", 10)]
+    assert ctx.object_memory.calls == [("search", "water bottle", 10), ("get", "7")]
+
+
+def test_the_reach_goes_to_where_the_memory_holds_the_object_after_the_drive(
+    arm_poses, monkeypatch
+):
+    robot, ctx = picking(arm_poses, remembered())
+    original = ctx.object_memory.get
+
+    def moved(object_id, **kwargs):
+        # Seen again from the stand-off pose: 3 cm further and 5 cm lower.
+        found = original(object_id, **kwargs)
+        return replace(found, x=found.x + 0.03, z=found.z - 0.05)
+
+    monkeypatch.setattr(ctx.object_memory, "get", moved)
+    targets = hand_targets(monkeypatch, robot)
+
+    pick_object(ctx, "water bottle")
+
+    here = robot.pose()
+    plan = plan_pick(
+        load_pick_settings(), 1.03, 0.0, 0.70, here.yaw, math.atan2(-here.y, 1.03 - here.x)
+    )
+    assert targets[1] == plan.grasp
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        StepError(ErrorCode.UNAVAILABLE, "The object memory is not connected."),
+        replace(remembered(), z=None),
+        replace(remembered(), state="held"),
+    ],
+)
+def test_the_reach_keeps_the_first_position_when_the_memory_has_no_better_one(
+    arm_poses, monkeypatch, answer
+):
+    robot, ctx = picking(arm_poses, remembered())
+
+    def again(object_id, **kwargs):
+        if isinstance(answer, StepError):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(ctx.object_memory, "get", again)
+    targets = hand_targets(monkeypatch, robot)
+
+    pick_object(ctx, "water bottle")
+
+    assert targets[1].z == pytest.approx(0.75)
 
 
 def test_a_robot_already_at_the_stand_off_does_not_drive(arm_poses):
@@ -188,7 +269,7 @@ def test_a_robot_already_at_the_stand_off_does_not_drive(arm_poses):
     pick_object(ctx, "water bottle")
 
     assert "base.move_relative" not in verbs(robot)
-    assert verbs(robot)[0] == "arms.gripper"
+    assert verbs(robot)[:2] == ["arms.move_to", "arms.gripper"]
 
 
 def test_a_far_object_is_driven_to_by_its_nearest_place_first(arm_poses):
@@ -206,6 +287,31 @@ def test_a_far_object_is_driven_to_by_its_nearest_place_first(arm_poses):
     assert abs(move["args"]["turn_deg"]) > 150.0
     at_stand_off(robot, 9.0, 2.0)
     assert robot.pose().x > 9.0
+
+
+@pytest.mark.parametrize(("arrives", "goes_on"), [(True, True), (False, False)])
+def test_a_failed_drive_to_the_place_goes_on_only_when_it_ended_near_enough(
+    arm_poses, monkeypatch, arrives, goes_on
+):
+    robot, ctx = picking(arm_poses, remembered(x=9.0, y=2.0, room="living room"))
+    original = robot.go_to
+    aborted = GoalFailed(ErrorCode.SKILL_FAILED, ABORTED)
+
+    def short(place, **kwargs):
+        # Nav2 aborts the drive, either at the sofa or before the base moved.
+        if arrives:
+            original(place, **kwargs)
+        raise aborted
+
+    monkeypatch.setattr(robot, "go_to", short)
+
+    if goes_on:
+        pick_object(ctx, "water bottle")
+        at_stand_off(robot, 9.0, 2.0)
+    else:
+        assert fails(ctx) is aborted
+        # The stand-in drive is not logged, and nothing else moved.
+        assert verbs(robot) == []
 
 
 def test_a_far_object_with_no_place_near_it_is_not_driven_to(arm_poses):
@@ -238,6 +344,67 @@ def test_a_failed_drive_tries_the_next_heading(arm_poses, monkeypatch):
     assert move["args"]["turn_deg"] == pytest.approx(first + 30.0)
     assert math.degrees(robot.pose().yaw) == pytest.approx(first + 30.0)
     at_stand_off(robot, 1.0, 0.0)
+
+
+def test_the_hand_moves_in_along_the_line_from_where_the_base_stopped(arm_poses, monkeypatch):
+    robot, ctx = picking(arm_poses, remembered())
+    drive, reach = robot.move_relative, robot.reach
+    targets = []
+
+    def overshoot(forward_m=0.0, left_m=0.0, turn_deg=0.0, **kwargs):
+        # The base stops 0.10 m past its goal, as Nav2 did in the Chula simulation.
+        return drive(forward_m + 0.10, left_m, turn_deg, **kwargs)
+
+    def record(arm, pose, **kwargs):
+        targets.append(pose)
+        return reach(arm, pose, **kwargs)
+
+    monkeypatch.setattr(robot, "move_relative", overshoot)
+    monkeypatch.setattr(robot, "reach", record)
+
+    pick_object(ctx, "water bottle")
+
+    here = robot.pose()
+    approach = math.atan2(0.0 - here.y, 1.0 - here.x)
+    pregrasp, grasp, lift, clear = targets
+    assert grasp.x == pytest.approx(1.0 - 0.06 * math.cos(approach))
+    assert grasp.y == pytest.approx(-0.06 * math.sin(approach))
+    assert pregrasp.x == pytest.approx(1.0 - 0.16 * math.cos(approach))
+    assert pregrasp.y == pytest.approx(-0.16 * math.sin(approach))
+    for pose in targets:
+        assert pose.yaw == pytest.approx(approach + math.pi)
+    assert (lift.x, lift.y) == (grasp.x, grasp.y)
+    # 0.30 m ahead of where the base stopped and 0.35 m to its right.
+    cos, sin = math.cos(here.yaw), math.sin(here.yaw)
+    assert clear.x == pytest.approx(here.x + 0.30 * cos + 0.35 * sin)
+    assert clear.y == pytest.approx(here.y + 0.30 * sin - 0.35 * cos)
+    assert clear.z == lift.z
+
+
+@pytest.mark.parametrize(("short_m", "tries"), [(0.04, 1), (0.30, 2)], ids=["near", "far"])
+def test_a_failed_drive_that_stopped_near_its_stand_off_goes_on_from_there(
+    arm_poses, monkeypatch, short_m, tries
+):
+    robot, ctx = picking(arm_poses, remembered())
+    drive = robot.move_relative
+    calls = []
+
+    def stops_short(forward_m=0.0, left_m=0.0, turn_deg=0.0, **kwargs):
+        # The first drive stops short of its goal and Nav2 aborts it, as beside the
+        # Chula bar; any later one arrives.
+        calls.append(forward_m)
+        if len(calls) > 1:
+            return drive(forward_m, left_m, turn_deg, **kwargs)
+        scale = 1.0 - short_m / math.hypot(forward_m, left_m)
+        drive(forward_m * scale, left_m * scale, turn_deg, **kwargs)
+        raise GoalFailed(ErrorCode.SKILL_FAILED, ABORTED)
+
+    monkeypatch.setattr(robot, "move_relative", stops_short)
+
+    answer = pick_object(ctx, "water bottle")
+
+    assert answer.startswith("Picked up the water bottle")
+    assert len(calls) == tries
 
 
 def test_a_pick_that_reaches_no_stand_off_says_how_many_tries(arm_poses):
@@ -277,7 +444,7 @@ def test_a_stop_ends_the_pick_without_another_try(arm_poses):
 # The grasp
 
 
-def test_a_close_on_nothing_does_not_lift(arm_poses):
+def test_a_close_on_nothing_does_not_lift_and_brings_the_arms_home(arm_poses):
     robot, ctx = picking(arm_poses, remembered(), holds=False)
 
     error = fails(ctx)
@@ -285,10 +452,59 @@ def test_a_close_on_nothing_does_not_lift(arm_poses):
     assert error.code is ErrorCode.SKILL_FAILED
     assert error.message == (
         "Walkie reached the water bottle, but the right hand closed on nothing, so it did "
-        "not pick it up. The object may have moved: call find_objects to look again. "
-        f"{NOT_SAFE_SENTENCE}"
+        "not pick it up. It brought both arms home. The object may have moved: call "
+        f"find_objects to look again. {SAFE_SENTENCE}"
     )
     assert len(reaches(robot)) == 2
+    assert verbs(robot)[-2:] == ["arms.move_to", "arms.move_to"]
+
+
+def test_a_close_on_nothing_whose_move_home_fails_says_both(arm_poses, monkeypatch):
+    robot, ctx = picking(arm_poses, remembered(), holds=False)
+    blocked = GoalFailed(ErrorCode.SKILL_FAILED, f"MoveIt found no path. {NOT_SAFE_SENTENCE}")
+    fail_on_call(monkeypatch, robot, "move_to", 2, blocked)
+
+    error = fails(ctx)
+
+    assert isinstance(error, GoalFailed)
+    assert error.message == (
+        "Walkie reached the water bottle, but the right hand closed on nothing, so it did "
+        "not pick it up, and the move of the arms home failed: MoveIt found no path. "
+        f"{NOT_SAFE_SENTENCE}"
+    )
+
+
+def test_a_failed_move_home_after_the_lift_says_the_hand_holds_the_object(
+    arm_poses, monkeypatch
+):
+    robot, ctx = picking(arm_poses, remembered())
+    blocked = GoalFailed(ErrorCode.SKILL_FAILED, f"MoveIt found no path. {NOT_SAFE_SENTENCE}")
+    fail_on_call(monkeypatch, robot, "move_to", 3, blocked)
+
+    error = fails(ctx)
+
+    assert isinstance(error, GoalFailed)
+    assert error.message == (
+        "The right hand holds the water bottle, but the move of the arms home failed: "
+        f"MoveIt found no path. {NOT_SAFE_SENTENCE}"
+    )
+
+
+def test_a_left_arm_that_cannot_move_out_of_the_way_stops_the_pick(arm_poses):
+    robot, ctx = picking(arm_poses, remembered())
+    robot.faults["arms.move_to"] = StepError(
+        ErrorCode.SKILL_FAILED, f"MoveIt found no path. {SAFE_SENTENCE}"
+    )
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.SKILL_FAILED
+    assert error.message == (
+        "Walkie did not reach for the water bottle: it could not move the left arm out of "
+        f"the way first. MoveIt found no path. {SAFE_SENTENCE}"
+    )
+    assert reaches(robot) == []
+    assert "arms.gripper" not in verbs(robot)
 
 
 def test_a_failed_reach_says_which_step_failed_and_keeps_its_code(arm_poses):
@@ -318,6 +534,25 @@ def test_a_failed_lift_says_the_hand_holds_the_object(arm_poses, monkeypatch):
         "The right hand holds the water bottle, but the lift failed: The commander aborted "
         f"it. {NOT_SAFE_SENTENCE}"
     )
+
+
+def test_a_failed_move_clear_of_the_surface_says_the_hand_holds_the_object_and_stays(
+    arm_poses, monkeypatch
+):
+    robot, ctx = picking(arm_poses, remembered())
+    stopped = GoalFailed(ErrorCode.SKILL_FAILED, f"The commander aborted it. {NOT_SAFE_SENTENCE}")
+    fail_on_call(monkeypatch, robot, "reach", 4, stopped)
+
+    error = fails(ctx)
+
+    assert isinstance(error, GoalFailed)
+    assert error.message == (
+        "The right hand holds the water bottle, but the move clear of the surface failed: The "
+        f"commander aborted it. {NOT_SAFE_SENTENCE}"
+    )
+    # The move home would swing the held object over the surface, so it is not tried.
+    moves = [call["args"] for call in robot.calls if call["verb"] == "arms.move_to"]
+    assert moves == [{"pose": "standby", "arm": "left"}]
 
 
 # What it cannot pick

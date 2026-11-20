@@ -28,6 +28,9 @@ VALID = {
     "grasp_back_m": 0.06,
     "pregrasp_back_m": 0.10,
     "lift_m": 0.10,
+    "clear_forward_m": 0.30,
+    "clear_side_m": 0.35,
+    "home_lift_m": 0.7435,
     "hand_roll_deg": 0.0,
     "hand_pitch_deg": -90.0,
     "hand_yaw_offset_deg": 180.0,
@@ -77,6 +80,9 @@ def test_the_shipped_file_loads_with_the_numbers_the_walkie_ros_pick_proved():
         grasp_back_m=0.06,
         pregrasp_back_m=0.10,
         lift_m=0.10,
+        clear_forward_m=0.30,
+        clear_side_m=0.35,
+        home_lift_m=0.7435,
         hand_roll_deg=0.0,
         hand_pitch_deg=-90.0,
         hand_yaw_offset_deg=180.0,
@@ -222,13 +228,24 @@ def test_the_heading_from_closer_than_the_side_offset_is_the_bearing():
 # The plan
 
 
+# The line from the stand-off pose to the object turns this far right of the heading.
+STANDOFF_TURN = math.atan2(0.20, 0.65)
+
+
 def test_the_plan_stands_back_and_to_the_left_and_faces_along_the_heading():
     plan = plan_pick(SETTINGS, 2.0, 1.0, 0.75, 0.0)
 
     assert (plan.standoff_x, plan.standoff_y, plan.heading) == (2.0 - 0.65, 1.0 + 0.20, 0.0)
-    assert plan.grasp == HandPose(2.0 - 0.06, 1.0, 0.75, 0.0, -math.pi / 2, math.pi, "map")
-    assert close(plan.pregrasp.x, 2.0 - 0.16)
-    assert (plan.pregrasp.y, plan.pregrasp.z) == (1.0, 0.75)
+    # The hand moves in along the line from the stand-off pose to the object.
+    assert close(plan.approach, -STANDOFF_TURN)
+    along = (math.cos(plan.approach), math.sin(plan.approach))
+    assert close(plan.grasp.x, 2.0 - 0.06 * along[0])
+    assert close(plan.grasp.y, 1.0 - 0.06 * along[1])
+    assert (plan.grasp.z, plan.grasp.roll, plan.grasp.pitch) == (0.75, 0.0, -math.pi / 2)
+    assert close(plan.grasp.yaw, math.pi - STANDOFF_TURN)
+    assert close(plan.pregrasp.x, 2.0 - 0.16 * along[0])
+    assert close(plan.pregrasp.y, 1.0 - 0.16 * along[1])
+    assert plan.pregrasp.z == 0.75
     assert plan.lift == dataclasses.replace(plan.grasp, z=0.75 + 0.10)
 
 
@@ -237,24 +254,63 @@ def test_the_plan_turns_with_the_heading():
     plan = plan_pick(SETTINGS, 0.0, 0.0, 0.5, heading)
     back = (-math.cos(heading), -math.sin(heading))
     left = (-math.sin(heading), math.cos(heading))
+    approach = heading - STANDOFF_TURN
 
     assert close(plan.standoff_x, 0.65 * back[0] + 0.20 * left[0])
     assert close(plan.standoff_y, 0.65 * back[1] + 0.20 * left[1])
+    assert close(plan.approach, approach)
     for pose, back_m in ((plan.pregrasp, 0.16), (plan.grasp, 0.06), (plan.lift, 0.06)):
-        assert close(pose.x, back_m * back[0]) and close(pose.y, back_m * back[1])
+        assert close(pose.x, -back_m * math.cos(approach))
+        assert close(pose.y, -back_m * math.sin(approach))
         assert (pose.roll, pose.pitch, pose.frame_id) == (0.0, -math.pi / 2, "map")
-        assert close(pose.yaw, math.radians(-60.0))
+        assert close(pose.yaw, approach - math.pi)
     assert close(plan.lift.z, 0.6)
 
 
-def test_the_fingers_point_along_the_heading_and_the_tool_centre_point_passes_the_centre():
+def test_a_given_approach_moves_the_hand_and_leaves_the_stand_off():
+    default = plan_pick(SETTINGS, 1.0, -2.0, 0.8, math.radians(30.0))
+    plan = plan_pick(SETTINGS, 1.0, -2.0, 0.8, math.radians(30.0), math.radians(10.0))
+
+    assert (plan.standoff_x, plan.standoff_y, plan.heading) == (
+        default.standoff_x,
+        default.standoff_y,
+        default.heading,
+    )
+    assert close(plan.approach, math.radians(10.0))
+    assert close(plan.grasp.x, 1.0 - 0.06 * math.cos(math.radians(10.0)))
+    assert close(plan.grasp.y, -2.0 - 0.06 * math.sin(math.radians(10.0)))
+    assert close(plan.grasp.yaw, math.radians(-170.0))
+
+
+def test_the_clear_pose_is_beside_the_stand_off_pose_at_the_lifted_height():
+    plan = plan_pick(SETTINGS, 2.0, 1.0, 0.75, 0.0)
+
+    # The right arm's side is the base's right.
+    assert close(plan.clear.x, plan.standoff_x + 0.30)
+    assert close(plan.clear.y, plan.standoff_y - 0.35)
+    assert plan.clear == dataclasses.replace(plan.lift, x=plan.clear.x, y=plan.clear.y)
+
+
+def test_the_clear_pose_follows_where_the_base_stopped_and_the_picking_arm():
+    plan = plan_pick(SETTINGS, 2.0, 1.0, 0.75, 0.0, base=(1.0, 1.0, math.pi / 2))
+    left = plan_pick(
+        dataclasses.replace(SETTINGS, arm="left"), 2.0, 1.0, 0.75, 0.0, base=(1.0, 1.0, math.pi / 2)
+    )
+
+    # Facing +y, ahead is +y and the right side is +x.
+    assert close(plan.clear.x, 1.0 + 0.35) and close(plan.clear.y, 1.0 + 0.30)
+    assert close(left.clear.x, 1.0 - 0.35) and close(left.clear.y, 1.0 + 0.30)
+    assert plan.clear.z == plan.lift.z
+
+
+def test_the_fingers_point_along_the_approach_and_the_tool_centre_point_passes_the_centre():
     # Pitch -90 with the yaw turned half a turn points the hand link's +z along the
-    # heading, and the tool centre point lies TCP_OFFSET_M along it.
-    heading = math.radians(-35.0)
-    grasp = plan_pick(SETTINGS, 1.5, -2.0, 0.8, heading).grasp
+    # approach, and the tool centre point lies TCP_OFFSET_M along it.
+    approach = math.radians(-35.0)
+    grasp = plan_pick(SETTINGS, 1.5, -2.0, 0.8, 0.0, approach).grasp
     zx, zy, zz = fingers(grasp)
 
-    assert close(zx, math.cos(heading)) and close(zy, math.sin(heading)) and close(zz, 0.0)
+    assert close(zx, math.cos(approach)) and close(zy, math.sin(approach)) and close(zz, 0.0)
     past = (grasp.x + TCP_OFFSET_M * zx - 1.5) * zx + (grasp.y + TCP_OFFSET_M * zy + 2.0) * zy
     assert close(past, TCP_OFFSET_M - SETTINGS.grasp_back_m)
 

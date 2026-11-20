@@ -47,22 +47,23 @@ The Chula water bottles get contacts the gripper can hold, an offline check prov
 
 ```text
 sim_bottle_pick.py
-  gate: /clock advances, use_sim_time on the commander and bt_navigator,
-        /controller_manager mujoco_world == chula_pat14_6          else exit 2
-  snapshot allow_gripper_vs_octomap and grasp_scene_action
+  gate: /clock advances, servers ready, use_sim_time on the commander and
+        bt_navigator, /controller_manager mujoco_world == chula_pat14_6,
+        one server per action                                       else exit 2
+  commander at its defaults (allowance false, scene action none)    else exit 2
   Nav2 to the stand-off       retry only ABORTED 103/105/107/207, 3 attempts
   tuck the left arm, whole_body_right to the pre-grasp, hand within 0.05 m
   approach, close, lift 0.10 m on right_arm_lift, hold 5 s
   verdict: grasp band + head depth shows the bottle left the table  else exit 3
-  on every exit: cancel goals, restore both parameters, read them back
+  on every exit: cancel goals, write the defaults back, read them back
 ```
 
-Exit codes: 0 passed, 1 failed, 2 gate or prerequisite, 3 inconclusive, 4 cleanup failed or a goal's end unknown, 130 interrupted.
+Exit codes: 0 passed, 1 failed, 2 gate or prerequisite, 3 inconclusive, 4 cleanup failed or a goal's end unknown, 130 interrupted. Signals during a goal send are deferred, so no sent goal goes untracked.
 
 ### Evidence
 
 - **Before:** in the exported world the bottle slid out between the fingers, and `check_grasp.py` fails on that export.
-  **After:** the check passes on the lowpoly and baked worlds. Six fresh-launch runs after the review fixes: 3 passed, 1 inconclusive camera view, 1 Nav2 code 103 (now retried), 1 pre-grasp miss caught by the new hand check. With no simulation running, the script exits 2 in about 11 s and changes nothing. 90 unit tests and 236 colcon tests pass.
+  **After:** the check passes on the lowpoly and baked worlds. After two review rounds, fresh-launch runs gave 5 passes, 1 inconclusive camera view and failures that each ended with a verified cleanup. A SIGINT during the approach exits 130 with both values read back as defaults, and a changed allowance at the start exits 2. With no simulation running, the script exits 2 in about 11 s and changes nothing. 102 unit tests pass.
 
 ### Merge Danger
 
@@ -70,7 +71,7 @@ Exit codes: 0 passed, 1 failed, 2 gate or prerequisite, 3 inconclusive, 4 cleanu
 
 **Blast Radius:** simulation
 
-`robot_bringup` installs the script on the robot too; the gate keeps it off real hardware. Any other launch of the MuJoCo `ros2_control_node` must set `mujoco_world`, or the pick refuses to start.
+`robot_bringup` installs the script on the robot too. The gate tells a simulation from a real-only graph, but only a private Zenoh router and domain keep the two apart. Any other launch of the MuJoCo `ros2_control_node` must set `mujoco_world`, or the pick refuses to start.
 
 ## walkie-agent-ros: feat/mahoraga-demo
 
@@ -90,17 +91,19 @@ Exit codes: 0 passed, 1 failed, 2 gate or prerequisite, 3 inconclusive, 4 cleanu
 ```text
 pick_object(name)
   recall the object, drive to a stand-off facing it
-  wait up to 6 s for a sighting at most 5 s old, moved at most 0.15 m, in reach
-  allowance on: whole_body_right pre-grasp, straight approach, close, lift
-  allowance off in a finally; move clear beside the base; both arms home
+  check: present, not held, sighting at most 5 s old, moved at most 0.15 m, in reach
+  park the other arm, open the gripper
+  check again (A), re-plan from the base pose; whole_body_right pre-grasp
+  check again (B); allowance on: straight approach, close, lift
+  allowance off in a finally, read back; move clear beside the base; arms home
 ```
 
-A web search is bounded at 5 s for the request and 10 s for the summary, and the agent sees only the summary and the source URLs. The robot commander profile gains buttons for the whole-body stack, the object memory and this agent, each motion button in its own group.
+No arm or gripper goal runs while the allowance is unknown. A web search is bounded at 5 s for the request and 10 s for the summary, and the agent sees only the summary and the source URLs. The robot commander profile gains buttons for the whole-body stack, the object memory and this agent, each motion button in its own group.
 
 ### Evidence
 
 - **Before:** the agent had no pick and no web tool.
-  **After:** in the Chula simulation, a real-LLM run picked the water bottle in 260 s, carried it to the living room and handed it over; `allow_gripper_vs_octomap` read false afterwards. The full suite passes (3060 passed, 1 skipped), as do `lint-imports` and the strict docs build. No live Tavily call and no robot run yet.
+  **After:** in the Chula simulation, real-LLM runs after each review round picked the water bottle, carried it to the living room and handed it over; the last logged both checkpoints and `allow_gripper_vs_octomap` read false afterwards. The full suite passes (3087 passed, 1 skipped), as do `lint-imports` and the strict docs build. No live Tavily call and no robot run yet.
 
 ### Merge Danger
 

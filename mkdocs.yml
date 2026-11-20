@@ -107,6 +107,7 @@ nav:
       - The Agent: architecture/agent.md
       - Mahoraga Demo Prototype: architecture/mahoraga-demo.md
       - Mahoraga Demo Decisions: architecture/mahoraga-demo-decisions.md
+      - Mahoraga Demo Branches: architecture/mahoraga-demo-branches.md
       - See, Remember and Act (Roadmap): architecture/see-remember-act.md
       - Arm Manipulation (Proposed): architecture/manipulation.md
       - Perception (Proposed): architecture/perception.md

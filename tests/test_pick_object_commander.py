@@ -233,14 +233,61 @@ def test_a_reset_that_fails_fails_the_pick_and_no_arm_moves_until_one_works(
         "The commander did not answer."
     )
     assert allowance(fake_commander) is True
-    # The commander's parameter service is gone too: the next motion sends no goal.
-    goals = (len(fake_commander.pose_goals), len(fake_commander.joint_goals))
+    # The commander's parameter service is gone too: the next motion, of an arm or a
+    # gripper, sends no goal.
+    goals = (
+        len(fake_commander.pose_goals),
+        len(fake_commander.joint_goals),
+        len(fake_commander.gripper_goals),
+    )
     monkeypatch.setattr(client._set_parameters, "service_is_ready", lambda: False)
     monkeypatch.setattr(client, "_ready_wait_s", 0.1)
     with pytest.raises(StepError):
         ctx.arms.move_to("home", "right")
-    assert (len(fake_commander.pose_goals), len(fake_commander.joint_goals)) == goals
+    with pytest.raises(StepError):
+        ctx.arms.gripper("right", "open")
+    assert (
+        len(fake_commander.pose_goals),
+        len(fake_commander.joint_goals),
+        len(fake_commander.gripper_goals),
+    ) == goals
     assert allowance(fake_commander) is True
+
+
+@pytest.mark.parametrize("state", ["open", "half", "close"])
+def test_after_a_failed_startup_reset_no_gripper_moves_until_the_allowance_is_set_off(
+    robot, client, fake_commander, monkeypatch, state
+):
+    # An earlier run left the allowance on, and the commander's parameter service is
+    # gone when the agent starts: the reset at startup fails and is only logged.
+    fake_commander.set_parameters([Parameter(TOUCH, value=True)])
+    ready = client._set_parameters.service_is_ready
+    service = {"up": False}
+    monkeypatch.setattr(
+        client._set_parameters, "service_is_ready", lambda: service["up"] and ready()
+    )
+    monkeypatch.setattr(client, "_ready_wait_s", 0.1)
+    arms = RosArms(client, robot.cancel, sim=True)
+    arms.reset_touch_at_start()
+    assert allowance(fake_commander) is True
+
+    with pytest.raises(StepError) as raised:
+        arms.gripper("right", state)
+
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+    assert raised.value.message.startswith(
+        "Did not move the right gripper: its fingers' allowance to touch what the cameras "
+        "sense is unknown, and turning it off first failed: "
+    )
+    assert fake_commander.gripper_goals == []
+    assert (fake_commander.joint_goals, fake_commander.pose_goals) == ([], [])
+    assert allowance(fake_commander) is True
+
+    # Once the service answers, the allowance goes off before the gripper's goal.
+    service["up"] = True
+    arms.gripper("right", state)
+    assert allowance(fake_commander) is False
+    assert [group for group, _ in fake_commander.gripper_goals] == ["right_gripper"]
 
 
 # Refusals before the first arm goal

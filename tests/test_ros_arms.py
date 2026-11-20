@@ -1742,10 +1742,31 @@ def test_a_startup_check_that_fails_is_logged_and_the_first_motion_sets_the_allo
     with caplog.at_level(logging.WARNING, logger="walkie_agent.ros.arms"):
         arms.reset_touch_at_start()
 
-    assert "the first arm motion sets it first" in caplog.text
+    assert "until the first motion of an arm or a gripper sets it" in caplog.text
     arms.move_to("home", "right")
     assert sets == [False]
     assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+
+
+def test_with_the_allowance_unknown_a_gripper_sets_it_off_before_its_goal(
+    arms, client, fake_commander, monkeypatch
+):
+    sets = touches(client, monkeypatch)
+    fake_commander.set_parameters([Parameter("allow_gripper_vs_octomap", value=True)])
+    real = client.control_gripper
+
+    def checked(group, position, *args, **kwargs):
+        assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+        return real(group, position, *args, **kwargs)
+
+    monkeypatch.setattr(client, "control_gripper", checked)
+
+    arms.gripper("right", "close")
+    arms.gripper("right", "half")
+
+    # Set once: off is known after the first.
+    assert sets == [False]
+    assert len(fake_commander.gripper_goals) == 2
 
 
 def test_restore_touch_turns_the_allowance_off_during_a_stop_and_sends_no_goal(

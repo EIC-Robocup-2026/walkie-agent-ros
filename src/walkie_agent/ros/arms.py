@@ -334,10 +334,31 @@ class RosArms:
         not end as the commander allows raises, as capabilities.Arms says, with the arm
         sentence from the client's memory; an outcome that leaves whether the gripper
         holds something unknown is returned.
+
+        While the commander's finger allowance is unknown, as after a failed startup
+        reset or a failed restore_touch(), it is first set off, the safe value, and
+        no gripper goal is sent unless the commander confirms that. A known allowance
+        is kept, so the close of a pick that turned it on still closes with it.
         """
         client = self._client
         grippers = client.poses.grippers
         group = GRIPPER_GROUPS[arm]
+        if self._touch is None:
+            try:
+                self._set_touch(False)
+            except StepError as e:
+                if self._stopped(e):
+                    raise StepError(
+                        ErrorCode.CANCELLED,
+                        f"Stopped before the {arm} gripper moved: {_STOP_IN_EFFECT}. "
+                        f"{self._memory_sentence()}",
+                    ) from None
+                raise answers.with_sentence(
+                    e,
+                    f"Did not move the {arm} gripper: its fingers' allowance to touch what "
+                    "the cameras sense is unknown, and turning it off first failed: ",
+                    self._memory_sentence(),
+                ) from None
         try:
             result = client.control_gripper(group, grippers.position(state))
         except StepError as e:
@@ -439,8 +460,9 @@ class RosArms:
         """Turn the commander's finger allowance off, also during a stop; see capabilities.Arms.
 
         Through CommanderClient.restore_gripper_touch(). Raises its StepError, after
-        which the allowance is unknown, so the next motion sets the one it needs
-        before its goal and sends none when that fails.
+        which the allowance is unknown, so the next motion of an arm or a gripper
+        sets the one it needs before its goal (off, for a gripper) and sends none
+        when that fails.
         """
         self._touch = None
         self._client.restore_gripper_touch()
@@ -454,15 +476,17 @@ class RosArms:
         main calls it once, before the Runner takes a task. A pick that ended without
         its reset, as when the agent was killed mid-grasp, leaves the allowance on,
         and the commander keeps it until it restarts; that is logged and undone here.
-        When the read or the reset fails, the allowance stays unknown, so the first
-        motion sets the one it needs before its goal.
+        When the read or the reset fails, that is logged, and the commander's
+        allowance stays as it is, possibly on, until the first motion of an arm or a
+        gripper sets the one it needs before its goal; this object holds it as
+        unknown until then, and that motion sends no goal unless the set works.
         """
         try:
             allowed = self._client.gripper_touch()
         except StepError as e:
             logger.warning(
-                "Could not read the commander's finger allowance at startup; the first arm "
-                "motion sets it first: %s",
+                "Could not read the commander's finger allowance at startup; it stays as it "
+                "is, possibly on, until the first motion of an arm or a gripper sets it: %s",
                 e.message,
             )
             return
@@ -477,8 +501,8 @@ class RosArms:
             self.restore_touch()
         except StepError as e:
             logger.error(
-                "Could not turn the commander's finger allowance off at startup; the first "
-                "arm motion sets it first: %s",
+                "Could not turn the commander's finger allowance off at startup; it stays on "
+                "until the first motion of an arm or a gripper sets it: %s",
                 e.message,
             )
 
@@ -629,8 +653,8 @@ class RosArms:
 
         Only when it is not known to be off already, so an open costs no call once
         reset_touch_at_start() or a set confirmed it off. The open has already
-        happened, so a failed reset is logged, not raised, and the next reach or joint
-        move sets the allowance it needs.
+        happened, so a failed reset is logged, not raised; the allowance is then
+        unknown, and the next motion of an arm or a gripper sets the one it needs.
         """
         if self._touch is False:
             return

@@ -214,9 +214,12 @@ class Arms(Protocol):
     after a pick (decision PK-5), never the LLM. `touch` is reach()'s, and a
     move without it ends the allowance.
 
-    gripper() moves one gripper to a named position. It raises StepError
+    gripper() moves one gripper to a named position. While the allowance
+    below is unknown, it first turns it off and sends no goal unless the
+    commander confirms that; a known allowance is kept. It raises StepError
     PRECONDITION_FAILED, TIMEOUT, UNAVAILABLE, INTERNAL or CANCELLED as
-    move_to() does. Every other end is an outcome, not an error
+    move_to() does, and SKILL_FAILED when the commander refuses that
+    change. Every other end is an outcome, not an error
     (GripperMoved.outcome). Every message ends with the arm sentence.
 
     reach() moves one hand's link to a HandPose that pick_object computed
@@ -226,8 +229,9 @@ class Arms(Protocol):
     line, for the arm and the lift. These are the only motions that move
     the lift (decision PK-5). `touch` lets both grippers' fingers touch the
     sensed octomap, which a grasp needs, and stays in effect until a reach
-    without it, a move_to(), the next open or restore_touch(). The arm then rests in no named
-    pose, so it is not safe for driving. It raises StepError REFUSED for a pose or a timeout that
+    or a move_to() without it, the next open or restore_touch(). The arm then
+    rests in no named pose, so it is not safe for driving. It raises
+    StepError REFUSED for a pose or a timeout that
     is not finite, or a whole-body straight line; SKILL_FAILED when the
     commander fails the goal or only planned it; and the rest as move_to()
     does. Every message ends with the arm sentence.
@@ -237,9 +241,10 @@ class Arms(Protocol):
     pick_object ends the allowance on every path, a stop included. It raises
     StepError UNAVAILABLE, TIMEOUT or SKILL_FAILED when the commander does not
     confirm the change; the allowance is then unknown, and the next motion
-    sets the one it needs before its goal, so no arm moves until that set is
-    confirmed. Its messages carry no arm sentence. Without a commander there
-    is nothing to turn off, and it returns.
+    of an arm or a gripper sets the one it needs before its goal (off, for a
+    gripper), so nothing moves until that set is confirmed. Its messages
+    carry no arm sentence. Without a commander there is nothing to turn off,
+    and it returns.
 
     pick, place_on and hand_over pick, place and hand over, each returning
     the object's id. They raise StepError NOT_FOUND for an unknown object,

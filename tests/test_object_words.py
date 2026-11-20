@@ -70,6 +70,31 @@ def test_a_query_that_names_a_kind_of_the_label_matches_it(wanted, label, expect
     assert matches(wanted, label) is expected
 
 
+def test_a_brands_label_takes_the_name_and_category_of_its_object():
+    assert category_of(" Pringles ") == "snack"
+    assert words_for("pringles") == {"pringles", "pringles can", "snack", "snacks"}
+
+
+@pytest.mark.parametrize(
+    ("wanted", "label", "expected"),
+    [
+        ("pringles can", "pringles", True),
+        ("pringles", "pringles", True),
+        ("snacks", "pringles", True),
+        ("can", "pringles", False),
+        ("cola can", "pringles", False),
+    ],
+)
+def test_a_query_matches_the_object_a_brands_label_names(wanted, label, expected):
+    assert matches(wanted, label) is expected
+
+
+def test_the_memory_tasks_detector_could_find_a_pringles_can():
+    memory = ("cup", "bottle", "bowl", "apple", "banana", "pringles", "backpack")
+    assert looks_for("pringles can", memory)
+    assert not looks_for("pringles can", tuple(c for c in memory if c != "pringles"))
+
+
 def test_a_detector_that_looks_for_bottles_could_find_a_water_bottle():
     assert looks_for("water bottle", ("bottle", "cup"))
 

@@ -9,7 +9,8 @@ on. A label the table lacks has the category OTHER.
 A query matches an object's name, its category or the category's plural, ignoring
 case and spaces at either end, as the Vision protocol says. An object of the table
 whose name ends with the label as a word, such as "water bottle" for "bottle", names a
-kind of it and matches too. A detector looks only
+kind of it and matches too. A label in BRANDS names one object of the table by its
+brand, and takes that object's name and category. A detector looks only
 for its own classes, so `looks_for` tells a query it could never match from one
 that matched nothing in view.
 """
@@ -64,16 +65,34 @@ PLURALS: dict[str, str] = {
 }
 
 
+# Labels that name one object of the table by its brand. walkie-vision's memory task
+# finds the Chula simulation's Pringles cans with the prompt "pringles"; with "can"
+# its detector found neither (decision PK-58).
+BRANDS: dict[str, str] = {
+    "pringles": "pringles can",
+}
+
+
 def category_of(label: str) -> str:
-    """The category of the label `label`, ignoring case; OTHER for one the table lacks."""
-    return CATEGORIES.get(label.strip().lower(), OTHER)
+    """The category of the label `label`, ignoring case; OTHER for one the table lacks.
+
+    A brand's label has the category of the object it names.
+    """
+    name = label.strip().lower()
+    return CATEGORIES.get(BRANDS.get(name, name), OTHER)
 
 
 def words_for(label: str) -> frozenset[str]:
-    """What a query may say to match `label`: the label, its category and the plural, in lower case."""
+    """What a query may say to match `label`, in lower case.
+
+    The label, the name of the object a brand's label names, the category and its
+    plural.
+    """
     name = label.strip().lower()
     category = category_of(name)
     words = {name}
+    if name in BRANDS:
+        words.add(BRANDS[name])
     if category != OTHER:
         words.add(category)
         words.add(PLURALS.get(category, f"{category}s"))

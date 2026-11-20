@@ -71,7 +71,7 @@ toggle turned back on     its rows go back to the SRDF's disabled pairs, the all
 ### Evidence
 
 - **Before:** in the exported world the bottle slid out between the fingers, and `check_grasp.py` fails on that export.
-  **After:** the check passes on the lowpoly and baked worlds. After two review rounds, fresh-launch runs gave 5 passes, 1 inconclusive camera view and failures that each ended with a verified cleanup. A SIGINT during the approach exits 130 with both values read back as defaults, and a changed allowance at the start exits 2. With no simulation running, the script exits 2 in about 11 s and changes nothing. 102 unit tests pass.
+  **After:** the check passes on the lowpoly and baked worlds. After two review rounds, fresh-launch runs gave 5 passes, 1 inconclusive camera view and 4 failures, each ended with a verified cleanup: two pre-grasp misses, one lift overshoot, and one Nav2 abort that the retry rule now covers. One more launch never started a pick, because Nav2 did not activate. A SIGINT during the approach exits 130 with both values read back as defaults, and a changed allowance at the start exits 2. With no simulation running, the script exits 2 in about 11 s and changes nothing. 102 unit tests pass.
 - **Before:** a collision toggle turned off and on again left the matrix changed, and overlapping writes could undo each other.
   **After:** the toggle tests pass 4 of 4 and failed 4 of 4 before the fix. The lock tests pass 6 of 6 and fail 5 of 6 on the commander without the lock. 10 unit tests pass.
 

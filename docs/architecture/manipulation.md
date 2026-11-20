@@ -149,7 +149,9 @@ refuses a straight line for a whole-body group. The close is judged by the
 commander's grasp band, and the lift runs only when it holds something. Once
 both arms are home, it reads the gripper again (`ctx.arms.read()`) and judges
 it by the same band, so an object that fell out after the close is reported
-lost, not picked. The LLM gives the name and reads the outcome, never a pose
+lost, not picked. Before it drives, it refuses an object whose remembered box
+is wider across its narrower side than `max_grasp_width_m` in `pick.toml`.
+The LLM gives the name and reads the outcome, never a pose
 ([ADR-0022](decisions/0022-named-arm-poses.md)). It is bound in the `hri`
 set only with both `--arms` and `--object-memory`.
 

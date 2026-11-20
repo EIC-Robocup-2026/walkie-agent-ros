@@ -8,7 +8,10 @@
 # commander's whole-body group, moves straight in to the grasp pose, the gripper
 # closes, the hand moves straight up and then beside the base, and both arms go
 # home, the picking arm with the lift at home_lift_m. The numbers below picked the Chula
-# simulation's water bottle on 2026-11-20. None has been tried on the robot.
+# simulation's water bottle on 2026-11-20. The checks at the end of the file, on the
+# sighting's age, the object's shift and the reach envelope, were derived from that
+# pick and the arm's reach afterwards, and have not run in a pick yet. None of the
+# numbers has been tried on the robot.
 
 # The arm that picks: "left" or "right".
 arm = "right"
@@ -69,3 +72,38 @@ hand_yaw_offset_deg = 180.0
 # plans for the base, the lift and the arm, and each straight-line move of the arm.
 reach_timeout_s = 90.0
 cartesian_timeout_s = 30.0
+
+# After the drive, pick_object reaches only for an object the object memory saw at
+# most max_observation_age_s seconds ago. Older, it waits up to observation_wait_s
+# seconds for a newer sighting, then refuses without moving an arm. The memory saves
+# a sighting about every 2 s while the object stays in view, and the Chula
+# simulation's sightings were about 1 s old, so 5 s allows two missed saves. There
+# is no head to point at the object yet, so the stand-off pose must leave it in view.
+max_observation_age_s = 5.0
+observation_wait_s = 6.0
+# Metres the object's centre may have moved between the position pick_object drove
+# to and the sighting after the drive. Further, it refuses and asks the agent to
+# call pick_object again, which plans a new stand-off pose from the new position.
+max_target_shift_m = 0.15
+
+# The envelope every pick must fit before the first arm goal is sent; outside it,
+# pick_object refuses and moves no arm. Heights are in metres above the frame's
+# floor, where base_footprint stands.
+# The object's centre height: a table or counter top object. The Chula water
+# bottle's centre stood at 0.862 m. The hand approaches level, so it works near the
+# height of the arm's shoulder, which the lift moves between about 0.54 and 1.28 m
+# above the floor. The upper bound plus lift_m stays under that top.
+min_target_z_m = 0.55
+max_target_z_m = 1.15
+# How far across the floor the object and each hand pose (pregrasp, grasp, lift,
+# clear) may lie from base_footprint where the base stopped. With the numbers above
+# the Chula pick had the object 0.68 m away, pregrasp 0.52, grasp and lift 0.62 and
+# clear 0.46; the base stopping 0.10 m short or long moves the object to 0.58 to
+# 0.78. The arm's hand link reaches about 0.87 m from base_footprint at full stretch.
+min_reach_m = 0.35
+max_reach_m = 0.90
+# How high each hand pose may be: from just under the lowest object to just over
+# the shoulder's highest point (the Chula pick's hand poses stood 0.862 to 0.962 m
+# high).
+min_reach_z_m = 0.50
+max_reach_z_m = 1.30

@@ -4,9 +4,11 @@ pick_object drives to a stand-off pose that faces a remembered object, reaches t
 hand to a pre-grasp pose through the commander's whole-body group, moves it straight
 in to grasp the object at its centre height, closes the gripper, lifts the hand
 straight up and moves it beside the base, clear of the surface (decision PK-4). This
-module holds the numbers, read from config/pick.toml, and the plain geometry that
-turns an object's centre and an approach heading into those poses. None of it reaches the LLM (ADR-0022), and
-nothing here imports ROS.
+module holds the numbers, read from config/pick.toml, the plain geometry that
+turns an object's centre and an approach heading into those poses, and the check
+that the object and every pose lie in a sane envelope around the base before any
+arm goal is sent. None of it reaches the LLM (ADR-0022), and nothing here imports
+ROS.
 
 Every position is in the settings' frame, the map frame of the object memory. A
 heading is the direction the robot faces at the stand-off pose, in radians from the
@@ -43,6 +45,15 @@ _FLOAT_KEYS = (
     "hand_yaw_offset_deg",
     "reach_timeout_s",
     "cartesian_timeout_s",
+    "max_observation_age_s",
+    "observation_wait_s",
+    "max_target_shift_m",
+    "min_target_z_m",
+    "max_target_z_m",
+    "min_reach_m",
+    "max_reach_m",
+    "min_reach_z_m",
+    "max_reach_z_m",
 )
 # The keys that must be above zero; every float key must be finite.
 _POSITIVE_KEYS = frozenset(
@@ -53,7 +64,18 @@ _POSITIVE_KEYS = frozenset(
         "home_lift_m",
         "reach_timeout_s",
         "cartesian_timeout_s",
+        "max_observation_age_s",
+        "observation_wait_s",
+        "max_target_shift_m",
+        "min_reach_m",
+        "max_reach_m",
     )
+)
+# Each range's lower and upper key: the lower must be below the upper.
+_RANGES = (
+    ("min_target_z_m", "max_target_z_m"),
+    ("min_reach_m", "max_reach_m"),
+    ("min_reach_z_m", "max_reach_z_m"),
 )
 _KEYS = frozenset(("arm", "frame_id", "heading_offsets_deg", *_FLOAT_KEYS))
 
@@ -105,6 +127,15 @@ class PickSettings:
     hand_yaw_offset_deg: float
     reach_timeout_s: float
     cartesian_timeout_s: float
+    max_observation_age_s: float
+    observation_wait_s: float
+    max_target_shift_m: float
+    min_target_z_m: float
+    max_target_z_m: float
+    min_reach_m: float
+    max_reach_m: float
+    min_reach_z_m: float
+    max_reach_z_m: float
 
 
 @dataclass(frozen=True)
@@ -161,6 +192,9 @@ def check_pick_settings(data: Mapping[str, Any], source: str = "pick.toml") -> P
             errors.append(f"{key} must be above zero, not {value!r}.")
         else:
             numbers[key] = float(value)
+    for low, high in _RANGES:
+        if low in numbers and high in numbers and numbers[low] >= numbers[high]:
+            errors.append(f"{low} must be below {high}, not {numbers[low]!r}.")
     offsets = data.get("heading_offsets_deg")
     if "heading_offsets_deg" in data and not (
         isinstance(offsets, list) and offsets and all(_finite(value) for value in offsets)
@@ -273,6 +307,54 @@ def plan_pick(
             z + settings.lift_m,
         ),
     )
+
+
+def reach_problems(
+    settings: PickSettings,
+    plan: PickPlan,
+    target: tuple[float, float, float],
+    base: tuple[float, float, float],
+) -> list[str]:
+    """What puts the object or one of the plan's hand poses outside the settings' envelope.
+
+    `target` is the object's centre (x, y, z) and `base` is base_footprint's (x, y,
+    yaw) where the base stopped, both in the settings' frame. The object's height
+    must lie in [min_target_z_m, max_target_z_m]. The object and each hand pose
+    (pregrasp, grasp, lift, clear) must lie [min_reach_m, max_reach_m] from the base
+    across the floor, and the hand poses [min_reach_z_m, max_reach_z_m] above the
+    frame's floor, where base_footprint stands. Returns one line per problem, with
+    its numbers, for the log only (ADR-0022); empty when everything is inside.
+    """
+    problems = []
+    x, y, z = target
+    if not settings.min_target_z_m <= z <= settings.max_target_z_m:
+        problems.append(
+            f"the object's centre is {z:.3f} m high, outside"
+            f" [{settings.min_target_z_m:g}, {settings.max_target_z_m:g}]"
+        )
+    base_x, base_y = base[0], base[1]
+    points = [("the object", x, y, None)] + [
+        (f"the {name} pose", pose.x, pose.y, pose.z)
+        for name, pose in (
+            ("pregrasp", plan.pregrasp),
+            ("grasp", plan.grasp),
+            ("lift", plan.lift),
+            ("clear", plan.clear),
+        )
+    ]
+    for name, at_x, at_y, at_z in points:
+        distance = math.hypot(at_x - base_x, at_y - base_y)
+        if not settings.min_reach_m <= distance <= settings.max_reach_m:
+            problems.append(
+                f"{name} is {distance:.3f} m from the base, outside"
+                f" [{settings.min_reach_m:g}, {settings.max_reach_m:g}]"
+            )
+        if at_z is not None and not settings.min_reach_z_m <= at_z <= settings.max_reach_z_m:
+            problems.append(
+                f"{name} is {at_z:.3f} m high, outside"
+                f" [{settings.min_reach_z_m:g}, {settings.max_reach_z_m:g}]"
+            )
+    return problems
 
 
 def relative_move(

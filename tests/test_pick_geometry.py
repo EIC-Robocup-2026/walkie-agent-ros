@@ -16,6 +16,7 @@ from walkie_agent.arm.pick import (
     heading_from,
     load_pick_settings,
     plan_pick,
+    reach_problems,
     relative_move,
 )
 
@@ -36,6 +37,15 @@ VALID = {
     "hand_yaw_offset_deg": 180.0,
     "reach_timeout_s": 90.0,
     "cartesian_timeout_s": 30.0,
+    "max_observation_age_s": 5.0,
+    "observation_wait_s": 6.0,
+    "max_target_shift_m": 0.15,
+    "min_target_z_m": 0.55,
+    "max_target_z_m": 1.15,
+    "min_reach_m": 0.35,
+    "max_reach_m": 0.90,
+    "min_reach_z_m": 0.50,
+    "max_reach_z_m": 1.30,
 }
 SETTINGS = check_pick_settings(VALID)
 OFFSETS_PROBLEM = "heading_offsets_deg must be a non-empty list of finite numbers."
@@ -88,7 +98,31 @@ def test_the_shipped_file_loads_with_the_numbers_the_walkie_ros_pick_proved():
         hand_yaw_offset_deg=180.0,
         reach_timeout_s=90.0,
         cartesian_timeout_s=30.0,
+        max_observation_age_s=5.0,
+        observation_wait_s=6.0,
+        max_target_shift_m=0.15,
+        min_target_z_m=0.55,
+        max_target_z_m=1.15,
+        min_reach_m=0.35,
+        max_reach_m=0.90,
+        min_reach_z_m=0.50,
+        max_reach_z_m=1.30,
     )
+
+
+def test_the_shipped_envelope_holds_the_proven_chula_pick_with_the_base_a_little_off():
+    settings = load_pick_settings(PROJECT_ROOT / DEFAULT_PICK_PATH)
+    # The Chula water bottle's centre, which walkie-ros's scripted pick grasped.
+    bottle = (0.94, -5.57, 0.862)
+    plan = plan_pick(settings, *bottle, 0.7)
+
+    for forward in (-0.10, 0.0, 0.10):
+        base_x = plan.standoff_x + forward * math.cos(plan.heading)
+        base_y = plan.standoff_y + forward * math.sin(plan.heading)
+        approach = math.atan2(bottle[1] - base_y, bottle[0] - base_x)
+        stopped = plan_pick(settings, *bottle, 0.7, approach, (base_x, base_y, plan.heading))
+
+        assert reach_problems(settings, stopped, bottle, (base_x, base_y, plan.heading)) == []
 
 
 def test_integers_are_taken_as_floats_and_the_frame_is_trimmed():
@@ -129,10 +163,23 @@ def test_every_problem_is_listed_at_once_with_the_source():
         ({"heading_offsets_deg": []}, OFFSETS_PROBLEM),
         ({"heading_offsets_deg": 0.0}, OFFSETS_PROBLEM),
         ({"heading_offsets_deg": [0.0, math.nan]}, OFFSETS_PROBLEM),
+        ({"max_observation_age_s": 0.0}, "max_observation_age_s must be above zero, not 0.0."),
+        ({"observation_wait_s": -1.0}, "observation_wait_s must be above zero, not -1.0."),
+        ({"max_target_shift_m": 0.0}, "max_target_shift_m must be above zero, not 0.0."),
+        ({"min_reach_m": 0.0}, "min_reach_m must be above zero, not 0.0."),
+        ({"min_target_z_m": 1.15}, "min_target_z_m must be below max_target_z_m, not 1.15."),
+        ({"max_reach_m": 0.30}, "min_reach_m must be below max_reach_m, not 0.35."),
+        ({"min_reach_z_m": 1.4}, "min_reach_z_m must be below max_reach_z_m, not 1.4."),
     ],
 )
 def test_a_wrong_value_is_named(changes, problem):
     assert problems(with_(**changes)) == (problem,)
+
+
+def test_a_range_with_a_wrong_end_reports_only_that_end():
+    assert problems(with_(max_target_z_m=math.nan)) == (
+        "max_target_z_m must be a finite number, not nan.",
+    )
 
 
 def test_zero_and_negative_offsets_and_angles_are_allowed():
@@ -313,6 +360,73 @@ def test_the_fingers_point_along_the_approach_and_the_tool_centre_point_passes_t
     assert close(zx, math.cos(approach)) and close(zy, math.sin(approach)) and close(zz, 0.0)
     past = (grasp.x + TCP_OFFSET_M * zx - 1.5) * zx + (grasp.y + TCP_OFFSET_M * zy + 2.0) * zy
     assert close(past, TCP_OFFSET_M - SETTINGS.grasp_back_m)
+
+
+# The reach envelope
+
+
+def stopped_at_the_stand_off(x: float, y: float, z: float, heading: float = 0.0):
+    plan = plan_pick(SETTINGS, x, y, z, heading)
+    return plan, (plan.standoff_x, plan.standoff_y, plan.heading)
+
+
+def test_a_plan_from_its_own_stand_off_pose_is_inside_the_envelope():
+    plan, base = stopped_at_the_stand_off(2.0, 1.0, 0.86)
+
+    assert reach_problems(SETTINGS, plan, (2.0, 1.0, 0.86), base) == []
+
+
+@pytest.mark.parametrize(
+    ("z", "problems_"),
+    [
+        (
+            0.40,
+            [
+                "the object's centre is 0.400 m high, outside [0.55, 1.15]",
+                "the pregrasp pose is 0.400 m high, outside [0.5, 1.3]",
+                "the grasp pose is 0.400 m high, outside [0.5, 1.3]",
+            ],
+        ),
+        (
+            1.25,
+            [
+                "the object's centre is 1.250 m high, outside [0.55, 1.15]",
+                "the lift pose is 1.350 m high, outside [0.5, 1.3]",
+                "the clear pose is 1.350 m high, outside [0.5, 1.3]",
+            ],
+        ),
+    ],
+)
+def test_an_object_too_low_or_too_high_is_named_with_the_poses_it_moves_out(z, problems_):
+    plan, base = stopped_at_the_stand_off(2.0, 1.0, z)
+
+    assert reach_problems(SETTINGS, plan, (2.0, 1.0, z), base) == problems_
+
+
+def test_an_object_the_memory_moved_past_the_reach_is_named_pose_by_pose():
+    # The plan was made for (2.0, 1.0); the object is now 0.30 m further along +x.
+    plan, base = stopped_at_the_stand_off(2.0, 1.0, 0.86)
+    moved = plan_pick(SETTINGS, 2.3, 1.0, 0.86, 0.0, None, base)
+
+    found = reach_problems(SETTINGS, moved, (2.3, 1.0, 0.86), base)
+
+    # The pre-grasp pose, 0.16 m short of the object, still lies inside.
+    assert [line.split(" is ")[0] for line in found] == [
+        "the object",
+        "the grasp pose",
+        "the lift pose",
+    ]
+    assert found[0] == "the object is 0.971 m from the base, outside [0.35, 0.9]"
+
+
+def test_an_object_beside_the_base_is_too_close():
+    base = (2.0, 1.0, 0.0)
+    plan = plan_pick(SETTINGS, 2.1, 1.0, 0.86, 0.0, 0.0, base)
+
+    found = reach_problems(SETTINGS, plan, (2.1, 1.0, 0.86), base)
+
+    assert found[0] == "the object is 0.100 m from the base, outside [0.35, 0.9]"
+    assert "the clear pose" not in " ".join(found)
 
 
 # Relative moves

@@ -64,6 +64,9 @@
 #   SIM_SPAWN_POSE      "X Y YAW_DEG" in the map frame (default the living room place,
 #                       facing the oracle scene's two people)
 #   SIM_CPUS            when set, every process runs on these CPUs (taskset -c)
+#   SIM_WORLDS_DIR      when set, bringup loads chula_pat14_6 from this worlds directory,
+#                       such as a walkie-ros checkout's simulation/mujoco/worlds, instead
+#                       of the installed walkie_mujoco_worlds (worlds_dir:=)
 #
 # The agent reads its model keys as it always does: from the environment, or from the
 # .env at the root of this repository. The script itself needs python3, 3.9 or newer, on
@@ -90,6 +93,7 @@ SIM_DOMAIN_ID=${SIM_DOMAIN_ID:-77}
 # spawn faces south, away from both people of config/scenes/chula_living_room.toml.
 SIM_SPAWN_POSE=${SIM_SPAWN_POSE:-1.7629 -1.483 0}
 SIM_CPUS=${SIM_CPUS:-}
+SIM_WORLDS_DIR=${SIM_WORLDS_DIR:-}
 
 # Where a walkie-database message build keeps the services' type descriptions.
 DATABASE_SRV=ros2_ws/install/walkie_database_msgs/share/walkie_database_msgs/srv
@@ -585,7 +589,8 @@ up() {
         start bringup "$SIM_DIR" "${walkie_ros[@]}" \
             ros2 launch robot_bringup "$launch" "world:=$WORLD" \
             "spawn_pose:=$SIM_SPAWN_POSE" "headless:=$headless" "use_rviz:=$rviz" \
-            "${launch_args[@]}" "world_output_dir:=$SIM_DIR/worlds"
+            "${launch_args[@]}" "world_output_dir:=$SIM_DIR/worlds" \
+            ${SIM_WORLDS_DIR:+"worlds_dir:=$SIM_WORLDS_DIR"}
     fi
     echo "waiting up to ${BRINGUP_TIMEOUT_S} s for Nav2 ..."
     wait_for_log bringup "$BRINGUP_READY" "$BRINGUP_TIMEOUT_S" ||

@@ -997,6 +997,15 @@ def test_up_without_the_arms_starts_what_it_always_did(tmp_path):
     assert result.stdout.splitlines()[-1] == "up. Next: scripts/chula-sim.sh check --agent"
 
 
+def test_up_loads_the_world_from_sim_worlds_dir_when_it_is_set(tmp_path):
+    result, calls = up_with_stand_ins(
+        tmp_path, "--agent", "--", "--tool-set", "hri", setup="SIM_WORLDS_DIR=/checkout/worlds"
+    )
+    assert result.returncode == 0, result.stderr
+    bringup = router_and_bringup(tmp_path)[1]
+    assert calls[2] == (*bringup, "worlds_dir:=/checkout/worlds")
+
+
 def test_up_with_the_arms_starts_moveit_then_the_commander_once_nav2_is_up(tmp_path):
     result, calls = up_with_stand_ins(tmp_path, "--agent", "--arms", "--", "--tool-set", "hri")
     assert result.returncode == 0, result.stderr

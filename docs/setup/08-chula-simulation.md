@@ -655,7 +655,9 @@ ignores all three there. To start from an empty store, set `WALKIE_TOOLS_HOME`
 to a new folder outside any git work tree before `up`.
 
 `SIM_ZENOH_PORT`, `SIM_DOMAIN_ID` and `SIM_CPUS` (`taskset -c`) are the other
-settings. The script's header lists them.
+settings. The script's header lists them. `SIM_WORLDS_DIR` loads the world from a
+walkie-ros checkout's `simulation/mujoco/worlds` instead of the installed
+`walkie_mujoco_worlds`, so a world edit runs without a colcon build.
 
 ## What has been run
 

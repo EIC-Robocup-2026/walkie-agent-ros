@@ -226,11 +226,20 @@ class Arms(Protocol):
     line, for the arm and the lift. These are the only motions that move
     the lift (decision PK-5). `touch` lets both grippers' fingers touch the
     sensed octomap, which a grasp needs, and stays in effect until a reach
-    without it, a move_to() or the next open. The arm then rests in no named
+    without it, a move_to(), the next open or restore_touch(). The arm then rests in no named
     pose, so it is not safe for driving. It raises StepError REFUSED for a pose or a timeout that
     is not finite, or a whole-body straight line; SKILL_FAILED when the
     commander fails the goal or only planned it; and the rest as move_to()
     does. Every message ends with the arm sentence.
+
+    restore_touch() turns that allowance off, the commander's default, and
+    moves nothing. It goes through also while a stop is in effect, so
+    pick_object ends the allowance on every path, a stop included. It raises
+    StepError UNAVAILABLE, TIMEOUT or SKILL_FAILED when the commander does not
+    confirm the change; the allowance is then unknown, and the next motion
+    sets the one it needs before its goal, so no arm moves until that set is
+    confirmed. Its messages carry no arm sentence. Without a commander there
+    is nothing to turn off, and it returns.
 
     pick, place_on and hand_over pick, place and hand over, each returning
     the object's id. They raise StepError NOT_FOUND for an unknown object,
@@ -269,6 +278,8 @@ class Arms(Protocol):
         timeout_s: float = 60.0,
     ) -> str: ...
 
+    def restore_touch(self) -> None: ...
+
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str: ...
 
     def place_on(self, place: str, *, timeout_s: float = 60.0) -> str: ...
@@ -281,9 +292,10 @@ NO_ARMS = "Walkie cannot use its arms here: no arm commander is connected."
 
 
 class UnavailableArms:
-    """The ctx.arms of a robot run without --arms: every verb but state() refuses.
+    """The ctx.arms of a robot run without --arms: every verb but two refuses.
 
-    state() says the arms are unknown, since the Arms protocol says it never raises.
+    state() says the arms are unknown, since the Arms protocol says it never raises,
+    and restore_touch() returns, since no commander holds an allowance to turn off.
     """
 
     def _refuse(self) -> NoReturn:
@@ -322,6 +334,9 @@ class UnavailableArms:
         timeout_s: float = 60.0,
     ) -> str:
         self._refuse()
+
+    def restore_touch(self) -> None:
+        return None
 
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str:
         self._refuse()

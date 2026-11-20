@@ -2604,6 +2604,111 @@ def test_a_set_token_ends_the_finger_allowance_before_it_is_sent(client, fake_co
     assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
 
 
+def allowance_on(fake_commander) -> None:
+    """The commander as a pick, or a run killed mid-pick, leaves it."""
+    fake_commander.set_parameters([Parameter("allow_gripper_vs_octomap", value=True)])
+
+
+def test_the_finger_allowance_is_read_as_the_commander_holds_it_now(client, fake_commander):
+    assert client.gripper_touch() is False
+
+    allowance_on(fake_commander)
+
+    assert client.gripper_touch() is True
+
+
+def test_a_finger_allowance_the_commander_lacks_is_unavailable(client, fake_commander):
+    fake_commander.undeclare_parameter("allow_gripper_vs_octomap")
+
+    with pytest.raises(StepError) as error:
+        client.gripper_touch()
+
+    assert (error.value.code, error.value.message) == (
+        "UNAVAILABLE",
+        "The commander holds no bool allow_gripper_vs_octomap (parameter types []).",
+    )
+
+
+def test_a_set_token_ends_the_finger_allowance_read(client, token):
+    token.cancel()
+
+    with pytest.raises(StepError) as error:
+        client.gripper_touch()
+
+    assert error.value.code == "CANCELLED"
+
+
+def test_the_reset_of_the_finger_allowance_goes_through_a_stop_and_settles(
+    client, fake_commander, token, monkeypatch
+):
+    monkeypatch.setattr(commander_module, "TOUCH_SETTLE_S", 0.3)
+    allowance_on(fake_commander)
+    token.cancel()
+    start = time.monotonic()
+
+    client.restore_gripper_touch()
+
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+    # The stop does not cut the settle short, so no later plan races the change.
+    assert time.monotonic() - start >= 0.3
+
+
+def test_the_reset_of_the_finger_allowance_goes_through_a_running_goal(
+    client, fake_commander, monkeypatch
+):
+    monkeypatch.setattr(commander_module, "TOUCH_SETTLE_S", 0.0)
+    client.set_gripper_touch(True)
+    fake_commander.move_time_s = 2.0
+    hand = HandPose(0.6, -0.2, 0.8, 0.0, math.pi / 2, 0.3, "map")
+
+    reaching = Call(client.go_to_pose, "right_arm", hand, 10.0)
+    assert wait_until(lambda: accepted_handle(client) is not None)
+    client.restore_gripper_touch()
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+    reaching.result()
+
+
+def test_a_reset_of_the_finger_allowance_with_no_service_is_unavailable(client, monkeypatch):
+    monkeypatch.setattr(client, "_ready_wait_s", 0.1)
+    monkeypatch.setattr(client._set_parameters, "service_is_ready", lambda: False)
+
+    with pytest.raises(StepError) as error:
+        client.restore_gripper_touch()
+
+    assert (error.value.code, error.value.message) == (
+        "UNAVAILABLE",
+        "The commander's /bimanual_commander/set_parameters service is not available. "
+        "Is bimanual_commander running?",
+    )
+
+
+def test_a_reset_of_the_finger_allowance_never_answered_times_out(client, monkeypatch):
+    never = Future()
+    monkeypatch.setattr(client._set_parameters, "call_async", lambda request: never)
+    monkeypatch.setattr(client._set_parameters, "remove_pending_request", lambda future: None)
+
+    with pytest.raises(StepError) as error:
+        client.restore_gripper_touch(timeout_s=0.2)
+
+    assert (error.value.code, error.value.message) == (
+        "TIMEOUT",
+        "The commander's /bimanual_commander/set_parameters did not answer within 0.2 s.",
+    )
+
+
+def test_a_reset_the_commander_refuses_is_a_skill_failure(client, fake_commander, monkeypatch):
+    monkeypatch.setattr(commander_module, "TOUCH_SETTLE_S", 0.0)
+    fake_commander.undeclare_parameter("allow_gripper_vs_octomap")
+
+    with pytest.raises(StepError) as error:
+        client.restore_gripper_touch()
+
+    assert error.value.code == "SKILL_FAILED"
+    assert error.value.message.startswith(
+        "The commander refused allow_gripper_vs_octomap=False: "
+    )
+
+
 def test_a_gripper_goal_never_answered_times_out(
     client, fake_commander, monkeypatch, module_clock
 ):

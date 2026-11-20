@@ -321,7 +321,9 @@ class FakeRobot:
     move or a gripper command succeeds at once and lands exactly, and a close
     closes empty, since the fake's grippers meet no object, unless the gripper's
     arm is in `grasping`: its close then holds something. A reach succeeds at once
-    and leaves its arm in no named pose, so not travel-safe. go_to
+    and leaves its arm in no named pose, so not travel-safe. `touch` is the
+    commander's finger allowance as a reach or a move set it last, which an open and
+    restore_touch() turn off; restore_touch() goes through during a stop. go_to
     and move_relative then refuse to start, as the robot's drive check does,
     while an arm is in a pose that is not travel-safe; arm_poses lacking a table
     of ARMS_START_POSE for each arm raises ValueError. pick, place_on and
@@ -368,6 +370,8 @@ class FakeRobot:
         self._arm_at: dict[str, str | None] = dict.fromkeys(ARMS, ARMS_START_POSE)
         # The grippers whose closes meet an object and hold it (FakeRobot's docstring).
         self.grasping: set[str] = set()
+        # The commander's finger allowance as the arm verbs leave it, off at the start.
+        self.touch = False
         self._finger_m: dict[str, float] = (
             {} if arm_poses is None else dict.fromkeys(ARMS, arm_poses.grippers.open_position)
         )
@@ -541,12 +545,14 @@ class FakeRobot:
         lift_m: float | None = None,
         touch: bool = False,
     ) -> ArmsMoved:
-        # The fake has no lift and no octomap, so lift_m and touch are only recorded.
+        # The fake has no lift and no octomap: lift_m is only recorded, and touch is
+        # kept in `touch` as the commander keeps its allowance.
         if lift_m is not None and arm == BOTH:
             raise ValueError("A move with the lift takes one arm.")
         offered = self._require_arms().offered_poses(sim=True)
         found = answers.offered_pose(offered, pose, arm, self._arms_sentence)
         with self._arm_goal(f"the move to {found.name!r}"):
+            self.touch = touch
             for side in ARMS if arm == BOTH else (arm,):
                 self._arm_at[side] = found.name
         return ArmsMoved(
@@ -570,6 +576,8 @@ class FakeRobot:
             self._finger_m[arm] = position
             command = self._gripper_commands[arm]
         if state != "close":
+            if state == "open":
+                self.touch = False
             result = GripperResult(True, ARM_GOAL_STATUS, None, None, command)
             return GripperMoved(arm=arm, state=state, outcome="moved", result=result)
         if holds:
@@ -595,8 +603,15 @@ class FakeRobot:
         self._require_arms()
         answers.check_reach(pose, whole_body=whole_body, cartesian=cartesian, timeout_s=timeout_s)
         with self._arm_goal(f"the reach of the {arm} hand"):
+            self.touch = touch
             self._arm_at[arm] = None
         return WHOLE_BODY_STATUS if whole_body else ARM_GOAL_STATUS
+
+    @_verb("arms.restore_touch")
+    def restore_touch(self) -> None:
+        # Not refused during a stop, as the commander's reset is not.
+        if self._arm_poses is not None:
+            self.touch = False
 
     @_verb("arms.pick")
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str:

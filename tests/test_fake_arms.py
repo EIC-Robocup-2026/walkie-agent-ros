@@ -35,7 +35,7 @@ from walkie_agent.errors import ErrorCode, StepError
 HOME = ArmState("home", True)
 HANDS_UP = ArmState("hands_up", False)
 AT_HOME = ArmsReport(ArmsState(left=HOME, right=HOME))
-ARM_VERBS = ("poses", "state", "read", "move_to", "gripper", "reach")
+ARM_VERBS = ("poses", "state", "read", "move_to", "gripper", "reach", "restore_touch")
 # A hand target as pick_object computes it, in the map.
 HAND = HandPose(0.6, -0.2, 0.8, 0.0, math.pi / 2, 0.3, "map")
 
@@ -352,6 +352,22 @@ def test_the_grippers_and_the_held_object_are_apart(robot, arm_poses):
     assert robot.state() == AT_HOME
     assert [gripper.reads_as for gripper in robot.read().grippers] == ["open", "open"]
     assert robot.gripper("left", "close").outcome == "empty"
+
+
+def test_the_finger_allowance_is_the_last_motion_s_and_restore_turns_it_off_in_a_stop(robot):
+    assert robot.touch is False
+    robot.reach("right", HAND, cartesian=True, touch=True)
+    assert robot.touch is True
+    robot.gripper("right", "open")
+    assert robot.touch is False
+    robot.move_to("home", "right", touch=True)
+    assert robot.touch is True
+    robot.cancel.cancel()
+
+    robot.restore_touch()
+
+    assert robot.touch is False
+    assert robot.calls[-1]["verb"] == "arms.restore_touch"
 
 
 # The drive check

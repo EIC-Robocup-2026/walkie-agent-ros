@@ -140,6 +140,8 @@ class StandInCommander:
     bounds and the calls of stop, close and destroy, in order. close() calls `on_close`,
     which may change `closes` for the next close(), and returns what `closes` was when
     it was called. unresolved() gives `left` after a close() that returned False.
+    `touch` is the commander's allow_gripper_vs_octomap, which gripper_touch() reads
+    and restore_gripper_touch() turns off, and `touches` records those calls.
     """
 
     def __init__(self, connector, cancel, poses=None, **bounds):
@@ -148,6 +150,8 @@ class StandInCommander:
         self.poses = poses
         self.bounds = bounds
         self.state = ArmsState(left=HOME, right=HOME)
+        self.touch = False
+        self.touches = []
         self.log = []
         self.closes = True
         self.left = ["The move of left_arm has not ended: a cancel was sent, but no result has come."]
@@ -175,6 +179,14 @@ class StandInCommander:
     def check_for_driving(self, timeout_s=None):
         self.log.append(("check", timeout_s))
         return DriveCheck(self.state)
+
+    def gripper_touch(self, timeout_s=None):
+        self.touches.append("read")
+        return self.touch
+
+    def restore_gripper_touch(self, timeout_s=None):
+        self.touches.append("restore")
+        self.touch = False
 
     def stop(self):
         self.log.append("stop")
@@ -753,6 +765,21 @@ def test_with_arms_the_commander_shares_the_token_and_the_base_checks_the_arms(
     assert app.runner._on_stop == commander.stop
     app.runner.stop()
     assert commander.log == ["stop"]
+
+
+@pytest.mark.parametrize(("left_on", "touches"), [(True, ["read", "restore"]), (False, ["read"])])
+def test_start_turns_off_a_finger_allowance_an_earlier_run_left_on(
+    build, commanders, left_on, touches
+):
+    built = build(tool_set="hri", arm_poses=POSES)
+    [commander] = commanders
+    commander.touch = left_on
+
+    built.app.start()
+
+    assert commander.touch is False
+    assert commander.touches == touches
+    assert built.app.ctx.arms._touch is False
 
 
 def test_under_sim_time_the_commander_gets_the_sim_bounds(build, commanders):

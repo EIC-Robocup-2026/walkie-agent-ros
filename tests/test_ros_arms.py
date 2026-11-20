@@ -326,6 +326,7 @@ def test_ros_arms_has_every_verb_of_the_arms_protocol_with_its_parameters():
         "move_to",
         "gripper",
         "reach",
+        "restore_touch",
         "pick",
         "place_on",
         "hand_over",
@@ -1654,6 +1655,8 @@ def test_a_touching_reach_sets_the_allowance_and_an_open_clears_it(
     arms, client, fake_commander, monkeypatch
 ):
     sets = touches(client, monkeypatch)
+    # As main does at startup: the commander's default, off, is then known.
+    arms.reset_touch_at_start()
 
     arms.reach("right", HAND, whole_body=True, timeout_s=5.0)
     arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
@@ -1673,6 +1676,7 @@ def test_an_open_or_a_joint_move_costs_no_call_unless_the_allowance_was_set(
     arms, client, monkeypatch
 ):
     sets = touches(client, monkeypatch)
+    arms.reset_touch_at_start()
 
     arms.gripper("right", "open")
     arms.reach("right", HAND, whole_body=True, timeout_s=5.0)
@@ -1680,6 +1684,105 @@ def test_an_open_or_a_joint_move_costs_no_call_unless_the_allowance_was_set(
     arms.gripper("right", "open")
 
     assert sets == []
+
+
+def test_with_the_allowance_unknown_the_first_motion_sets_it_off_before_its_goal(
+    arms, client, fake_commander, monkeypatch
+):
+    # No startup read, or one that failed: the allowance may be on from an earlier run.
+    sets = touches(client, monkeypatch)
+    fake_commander.set_parameters([Parameter("allow_gripper_vs_octomap", value=True)])
+
+    def checked(group, pose, timeout_s, **kwargs):
+        assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+        return real(group, pose, timeout_s, **kwargs)
+
+    real = client.go_to_pose
+    monkeypatch.setattr(client, "go_to_pose", checked)
+    arms.reach("right", HAND, whole_body=True, timeout_s=5.0)
+    arms.move_to("home", "right")
+
+    assert sets == [False]
+    assert len(fake_commander.pose_goals) == 1
+
+
+def test_startup_turns_off_an_allowance_an_earlier_run_left_on_without_motion(
+    arms, client, fake_commander, monkeypatch, caplog
+):
+    sets = touches(client, monkeypatch)
+    fake_commander.set_parameters([Parameter("allow_gripper_vs_octomap", value=True)])
+
+    with caplog.at_level(logging.WARNING, logger="walkie_agent.ros.arms"):
+        arms.reset_touch_at_start()
+
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+    assert "was on at startup, left by an earlier run" in caplog.text
+    assert (fake_commander.pose_goals, fake_commander.joint_goals) == ([], [])
+    # Known off now, so a joint move costs no further call.
+    arms.move_to("home", "right")
+    assert sets == []
+
+
+@pytest.mark.parametrize("fails", ["read", "reset"])
+def test_a_startup_check_that_fails_is_logged_and_the_first_motion_sets_the_allowance(
+    arms, client, fake_commander, monkeypatch, caplog, fails
+):
+    sets = touches(client, monkeypatch)
+    fake_commander.set_parameters([Parameter("allow_gripper_vs_octomap", value=True)])
+    down = StepError(ErrorCode.UNAVAILABLE, "The commander's parameter service is not available.")
+
+    def unavailable(*args, **kwargs):
+        raise down
+
+    if fails == "read":
+        monkeypatch.setattr(client, "gripper_touch", unavailable)
+    else:
+        monkeypatch.setattr(client, "restore_gripper_touch", unavailable)
+
+    with caplog.at_level(logging.WARNING, logger="walkie_agent.ros.arms"):
+        arms.reset_touch_at_start()
+
+    assert "the first arm motion sets it first" in caplog.text
+    arms.move_to("home", "right")
+    assert sets == [False]
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+
+
+def test_restore_touch_turns_the_allowance_off_during_a_stop_and_sends_no_goal(
+    arms, client, fake_commander, token, monkeypatch
+):
+    sets = touches(client, monkeypatch)
+    arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+    goals = (len(fake_commander.pose_goals), len(fake_commander.joint_goals))
+    token.cancel()
+
+    arms.restore_touch()
+
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
+    assert (len(fake_commander.pose_goals), len(fake_commander.joint_goals)) == goals
+    # Through the reset, not set_gripper_touch, which a stop refuses.
+    assert sets == [True]
+
+
+def test_a_failed_restore_leaves_the_allowance_unknown_so_the_next_motion_sets_it(
+    arms, client, fake_commander, monkeypatch
+):
+    sets = touches(client, monkeypatch)
+    arms.reach("right", HAND, cartesian=True, touch=True, timeout_s=5.0)
+    real = client.restore_gripper_touch
+
+    def unanswered(timeout_s=None):
+        raise StepError(ErrorCode.TIMEOUT, "The commander did not answer.")
+
+    monkeypatch.setattr(client, "restore_gripper_touch", unanswered)
+    with pytest.raises(StepError):
+        arms.restore_touch()
+    monkeypatch.setattr(client, "restore_gripper_touch", real)
+    arms.gripper("right", "open")
+
+    # The open sets it off, as the allowance was no longer known to be.
+    assert sets == [True, False]
+    assert fake_commander.get_parameter("allow_gripper_vs_octomap").value is False
 
 
 def test_a_joint_move_clears_the_allowance_before_its_goal(

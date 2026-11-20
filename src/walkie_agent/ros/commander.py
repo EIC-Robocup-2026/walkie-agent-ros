@@ -4,9 +4,10 @@ The arm capability and the drive check reach the arms only through it. It uses t
 names ADR-0021 allows: /set_joint_position and /control_gripper (my_robot_interfaces
 actions), /go_to_pose for pick_object's reaches only (decision PK-4), /get_joint_states
 (a service), the commander's
-/bimanual_commander/get_parameters, read for the grasp detection band only,
-/bimanual_commander/set_parameters, written for allow_gripper_vs_octomap only, which
-pick_object's grasp needs (decision PK-4), and "stop" on /trajectory_execution_event, which stop() publishes. Each name goes through
+/bimanual_commander/get_parameters, read for the grasp detection band and for
+allow_gripper_vs_octomap only, /bimanual_commander/set_parameters, written for
+allow_gripper_vs_octomap only, which pick_object's grasp needs (decision PK-4), and
+"stop" on /trajectory_execution_event, which stop() publishes. Each name goes through
 policy.check_endpoint() when the client is made, as RosBase's does.
 
 It is created once per agent from the connector and the runtime's CancelToken: its
@@ -22,7 +23,9 @@ the arms, so two goals would fight, and its /get_joint_states calls MoveIt's
 getCurrentState(), which the commander's own comments call unsafe to run concurrently
 (ADR-0021, ADR-0024). So every goal and every read of the joints holds a lock, and one
 while a goal runs is refused at once rather than queued behind a move that can take
-30 s. grasp_band(), which reads only two of the commander's parameters, takes no lock.
+30 s. grasp_band() and gripper_touch(), which read only the commander's parameters,
+take no lock, and neither does restore_gripper_touch(), which only turns
+allow_gripper_vs_octomap off and must go through also during a stop.
 
 A goal outlives the call that sent it. It is outstanding from its send until the
 client sees its result, sees it rejected, or abandons it, and until then every other
@@ -146,7 +149,7 @@ CONTROL_GRIPPER_ACTION = "/control_gripper"
 GO_TO_POSE_ACTION = "/go_to_pose"
 GET_JOINT_STATES_SERVICE = "/get_joint_states"
 # The commander node's standard parameter service, read for its grasp
-# detection band and nothing else (ADR-0021).
+# detection band and TOUCH_PARAMETER, and nothing else (ADR-0021).
 GET_PARAMETERS_SERVICE = "/bimanual_commander/get_parameters"
 # The parameters a close's `grasped` is judged by, lowest first, in metres.
 GRASP_BAND_PARAMETERS = ("grasp_detect_min", "grasp_detect_max")
@@ -157,7 +160,8 @@ SET_PARAMETERS_SERVICE = "/bimanual_commander/set_parameters"
 # the cameras sensed, and nothing else: the fingers still avoid the robot itself and
 # explicit collision objects. A grasp needs it, since the object it closes on is
 # voxels too. The commander applies a change to MoveIt's planning scene on a timer
-# 0.2 s after it accepts it.
+# 0.2 s after it accepts it. The commander declares it false, the safe value
+# (walkie-ros commander_template.cpp), and no launch file of the pinned commit sets it.
 TOUCH_PARAMETER = "allow_gripper_vs_octomap"
 # How long set_gripper_touch() waits after the commander accepts a change, so the
 # planning scene holds it before the next plan: the commander's 0.2 s timer and its
@@ -735,28 +739,56 @@ class CommanderClient:
         parameter or holds one that is not a finite number, and TIMEOUT when it does
         not answer within `timeout_s`, by default the client's `read_timeout_s`.
         """
+        what = "the read of the commander's grasp detection band"
+        return _band(self._read_parameters(GRASP_BAND_PARAMETERS, what, timeout_s))
+
+    def gripper_touch(self, timeout_s: float | None = None) -> bool:
+        """The commander's TOUCH_PARAMETER now: whether the fingers may touch the octomap.
+
+        Read once, as grasp_band() reads, and with its errors: CANCELLED once the token
+        is set, UNAVAILABLE when the service is not discovered or the commander holds
+        no bool of that name, and TIMEOUT when it does not answer within `timeout_s`,
+        by default the client's `read_timeout_s`.
+        """
+        what = f"the read of the commander's {TOUCH_PARAMETER}"
+        return _touch(self._read_parameters((TOUCH_PARAMETER,), what, timeout_s))
+
+    def restore_gripper_touch(self, timeout_s: float | None = None) -> None:
+        """Turn TOUCH_PARAMETER off, the commander's default, even while a stop is in effect.
+
+        The end of every pick calls it, so the allowance never outlives the grasp that
+        needed it, also after a stop or a failure. Unlike set_gripper_touch(), it is
+        sent while the token is set and while a goal is outstanding, and it takes no
+        call lock: turning the allowance off never lets a plan through that it would
+        refuse otherwise, and a stopped call cannot hold it up. It then waits
+        TOUCH_SETTLE_S, which a stop does not shorten, so the planning scene holds the
+        change before any later plan. The discovery and the answer are bounded by
+        `timeout_s`, by default the client's `read_timeout_s`. Raises StepError
+        UNAVAILABLE when the service is not discovered, TIMEOUT when the commander does
+        not answer in time, and SKILL_FAILED when it refuses the value.
+        """
         timeout_s = self._read_bound(timeout_s)
         deadline = _deadline(timeout_s)
-        what = "the read of the commander's grasp detection band"
-        self._check_cancelled(what)
-        self._wait_ready(
-            self._parameters.service_is_ready, f"{self._parameters_name} service", deadline, what
-        )
-        future = self._parameters.call_async(
-            GetParameters.Request(names=list(GRASP_BAND_PARAMETERS))
-        )
-        try:
-            response = self._wait(future, deadline, what)
-        except StepError as e:
+        what = f"the reset of the commander's {TOUCH_PARAMETER}"
+        name = self._set_parameters_name
+        ready_s = max(min(deadline - time.monotonic(), self._ready_wait_s), _POLL_S)
+        if not _wait_unstoppable(self._set_parameters.service_is_ready, ready_s, what):
+            raise _NotDiscovered(
+                ErrorCode.UNAVAILABLE,
+                f"The commander's {name} service is not available. {COMMANDER_HINT}",
+            )
+        future = self._set_parameters.call_async(_touch_request(False))
+        answer_s = max(deadline - time.monotonic(), _POLL_S)
+        if not _wait_unstoppable(future.done, answer_s, what):
             # The answer would otherwise be kept for a caller that left.
-            self._parameters.remove_pending_request(future)
-            if e.code == ErrorCode.CANCELLED:
-                raise
+            self._set_parameters.remove_pending_request(future)
             raise StepError(
                 ErrorCode.TIMEOUT,
-                f"The commander's {self._parameters_name} did not answer within {timeout_s:g} s.",
-            ) from None
-        return _band(response)
+                f"The commander's {name} did not answer within {timeout_s:g} s.",
+            )
+        _check_touch_set(future.result(), False)
+        if TOUCH_SETTLE_S > 0:
+            _wait_unstoppable(_never, TOUCH_SETTLE_S, what)
 
     def set_gripper_touch(self, allow: bool, timeout_s: float | None = None) -> None:
         """Let both grippers' fingers touch the sensed octomap, or stop letting them.
@@ -782,10 +814,7 @@ class CommanderClient:
                 deadline,
                 what,
             )
-            value = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=allow)
-            future = self._set_parameters.call_async(
-                SetParameters.Request(parameters=[Parameter(name=TOUCH_PARAMETER, value=value)])
-            )
+            future = self._set_parameters.call_async(_touch_request(allow))
             try:
                 response = self._wait(future, deadline, what)
             except StepError as e:
@@ -797,13 +826,7 @@ class CommanderClient:
                     f"The commander's {self._set_parameters_name} did not answer within "
                     f"{timeout_s:g} s.",
                 ) from None
-            results = list(getattr(response, "results", ()))
-            if len(results) != 1 or not results[0].successful:
-                reason = results[0].reason if len(results) == 1 else "no result"
-                raise StepError(
-                    ErrorCode.SKILL_FAILED,
-                    f"The commander refused {TOUCH_PARAMETER}={allow}: {reason or 'no reason'}.",
-                )
+            _check_touch_set(response, allow)
             if TOUCH_SETTLE_S > 0:
                 self._wait_slice(_never, TOUCH_SETTLE_S, what)
 
@@ -1143,6 +1166,32 @@ class CommanderClient:
 
     def _read_bound(self, timeout_s: float | None) -> float:
         return self._read_timeout_s if timeout_s is None else timeout_s
+
+    def _read_parameters(self, names: Sequence[str], what: str, timeout_s: float | None) -> Any:
+        """The commander's GetParameters answer for `names`, without the call lock.
+
+        Raises StepError CANCELLED once the token is set, UNAVAILABLE when the service
+        is not discovered, and TIMEOUT when it does not answer within `timeout_s`, by
+        default the client's `read_timeout_s`.
+        """
+        timeout_s = self._read_bound(timeout_s)
+        deadline = _deadline(timeout_s)
+        self._check_cancelled(what)
+        self._wait_ready(
+            self._parameters.service_is_ready, f"{self._parameters_name} service", deadline, what
+        )
+        future = self._parameters.call_async(GetParameters.Request(names=list(names)))
+        try:
+            return self._wait(future, deadline, what)
+        except StepError as e:
+            # The answer would otherwise be kept for a caller that left.
+            self._parameters.remove_pending_request(future)
+            if e.code == ErrorCode.CANCELLED:
+                raise
+            raise StepError(
+                ErrorCode.TIMEOUT,
+                f"The commander's {self._parameters_name} did not answer within {timeout_s:g} s.",
+            ) from None
 
     @contextmanager
     def _exclusive(
@@ -2317,6 +2366,46 @@ def _band(response: Any) -> tuple[float, float]:
             )
         band.append(value.double_value)
     return band[0], band[1]
+
+
+def _touch(response: Any) -> bool:
+    """TOUCH_PARAMETER's value in a GetParameters answer, or UNAVAILABLE."""
+    values = list(response.values) if response is not None else []
+    if len(values) != 1 or values[0].type != ParameterType.PARAMETER_BOOL:
+        types = [value.type for value in values]
+        raise StepError(
+            ErrorCode.UNAVAILABLE,
+            f"The commander holds no bool {TOUCH_PARAMETER} (parameter types {types}).",
+        )
+    return bool(values[0].bool_value)
+
+
+def _touch_request(allow: bool) -> Any:
+    """The SetParameters request that sets TOUCH_PARAMETER to `allow`."""
+    value = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=allow)
+    return SetParameters.Request(parameters=[Parameter(name=TOUCH_PARAMETER, value=value)])
+
+
+def _check_touch_set(response: Any, allow: bool) -> None:
+    """Raises StepError SKILL_FAILED unless the commander accepted TOUCH_PARAMETER=`allow`."""
+    results = list(getattr(response, "results", ()))
+    if len(results) != 1 or not results[0].successful:
+        reason = results[0].reason if len(results) == 1 else "no result"
+        raise StepError(
+            ErrorCode.SKILL_FAILED,
+            f"The commander refused {TOUCH_PARAMETER}={allow}: {reason or 'no reason'}.",
+        )
+
+
+def _wait_unstoppable(done: Callable[[], bool], seconds: float, what: str) -> bool:
+    """Whether done() came true within `seconds`, in a wait that a stop does not end."""
+    try:
+        _UNSTOPPABLE.wait_for(done, seconds, what, poll_s=_POLL_S)
+    except StepError as e:
+        if e.code == ErrorCode.TIMEOUT:
+            return False
+        raise
+    return True
 
 
 def _positive(value: float, name: str) -> None:

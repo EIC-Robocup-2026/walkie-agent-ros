@@ -181,9 +181,11 @@ class RosArms:
         self._cancel = cancel
         self._sim = sim
         self._min_move_timeout_s = min_move_timeout_s
-        # The commander's allow_gripper_vs_octomap as this object last left it: False,
-        # the commander's default, at the start, and None after a set that failed.
-        self._touch: bool | None = False
+        # The commander's allow_gripper_vs_octomap as this object last confirmed it, or
+        # None while unknown: at the start, until reset_touch_at_start() reads it, and
+        # after a set that failed. A run that ended mid-pick can leave it on, so the
+        # commander's default says nothing about it.
+        self._touch: bool | None = None
 
     # -- The Arms verbs ----------------------------------------------------------
 
@@ -433,6 +435,53 @@ class RosArms:
             )
         return status
 
+    def restore_touch(self) -> None:
+        """Turn the commander's finger allowance off, also during a stop; see capabilities.Arms.
+
+        Through CommanderClient.restore_gripper_touch(). Raises its StepError, after
+        which the allowance is unknown, so the next motion sets the one it needs
+        before its goal and sends none when that fails.
+        """
+        self._touch = None
+        self._client.restore_gripper_touch()
+        self._touch = False
+
+    def reset_touch_at_start(self) -> None:
+        """Read the finger allowance before any motion, and turn it off if it is on.
+
+        It logs a StepError instead of raising it.
+
+        main calls it once, before the Runner takes a task. A pick that ended without
+        its reset, as when the agent was killed mid-grasp, leaves the allowance on,
+        and the commander keeps it until it restarts; that is logged and undone here.
+        When the read or the reset fails, the allowance stays unknown, so the first
+        motion sets the one it needs before its goal.
+        """
+        try:
+            allowed = self._client.gripper_touch()
+        except StepError as e:
+            logger.warning(
+                "Could not read the commander's finger allowance at startup; the first arm "
+                "motion sets it first: %s",
+                e.message,
+            )
+            return
+        if not allowed:
+            self._touch = False
+            return
+        logger.warning(
+            "The commander's finger allowance (allow_gripper_vs_octomap) was on at startup, "
+            "left by an earlier run; turning it off before any arm motion."
+        )
+        try:
+            self.restore_touch()
+        except StepError as e:
+            logger.error(
+                "Could not turn the commander's finger allowance off at startup; the first "
+                "arm motion sets it first: %s",
+                e.message,
+            )
+
     def pick(self, object_id: str, *, timeout_s: float = 60.0) -> str:
         """Raises StepError UNAVAILABLE: the robot has no grasp skill yet."""
         raise StepError(ErrorCode.UNAVAILABLE, NO_GRASP_SKILL)
@@ -578,10 +627,10 @@ class RosArms:
     def _release_touch(self) -> None:
         """After an open: the fingers hold nothing, so they may no longer touch the octomap.
 
-        Only when this object may have set it: the commander starts with it False, so
-        an open costs no call otherwise. The open has already happened, so a failed
-        reset is logged, not raised, and the next reach or joint move sets the
-        allowance it needs.
+        Only when it is not known to be off already, so an open costs no call once
+        reset_touch_at_start() or a set confirmed it off. The open has already
+        happened, so a failed reset is logged, not raised, and the next reach or joint
+        move sets the allowance it needs.
         """
         if self._touch is False:
             return

@@ -253,6 +253,11 @@ def test_unavailable_arms_refuse_every_verb_but_state(call):
     assert str(caught.value) == f"UNAVAILABLE: {NO_ARMS}"
 
 
+def test_unavailable_arms_have_no_allowance_to_restore():
+    # No commander, so nothing can have turned the fingers' allowance on.
+    assert UnavailableArms().restore_touch() is None
+
+
 @pytest.mark.parametrize("read", [None, True, False])
 def test_unavailable_arms_say_the_arms_are_unknown(read):
     report = UnavailableArms().state(read=read)

@@ -325,7 +325,14 @@ class Application:
         self._run_ended = True
 
     def start(self) -> None:
-        """Start the Runner, which publishes the empty list, then take input."""
+        """Start the Runner, which publishes the empty list, then take input.
+
+        With arms, the commander's finger allowance is read first and turned off if
+        an earlier run left it on (RosArms.reset_touch_at_start), before any task
+        can move an arm.
+        """
+        if isinstance(self.ctx.arms, RosArms):
+            self.ctx.arms.reset_touch_at_start()
         self.runner.start()
         self.bridge.open(self.runner)
 

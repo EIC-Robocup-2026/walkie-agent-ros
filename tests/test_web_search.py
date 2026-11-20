@@ -274,6 +274,24 @@ def test_a_summarizer_failure_is_unavailable():
     assert error.message == "Walkie could not summarize the web search results."
 
 
+def test_a_stalled_summary_is_a_timeout_within_its_own_bound():
+    released = threading.Event()
+    model = summarizer()
+    model.hooks[0] = lambda: released.wait(5.0)
+    search, _, _ = search_with(ok(), model=model, summary_timeout_s=0.2)
+    started = time.monotonic()
+    try:
+        error = failure(lambda: search.search("news today"))
+    finally:
+        released.set()
+    assert time.monotonic() - started < 2.0
+    assert error.code is ErrorCode.TIMEOUT
+    assert error.message == (
+        "Walkie could not summarize the web search results within 0.2 seconds."
+    )
+    assert_one_sentence(error)
+
+
 def test_an_empty_summary_is_unavailable():
     error = failure(lambda: search_with(ok(), model=summarizer("  "))[0].search("news"))
     assert error.code is ErrorCode.UNAVAILABLE

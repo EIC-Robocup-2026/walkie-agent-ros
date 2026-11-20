@@ -443,8 +443,17 @@ the tool log shows each as a call:
    then 120° to either side and the far side, 180°.
    A drive that Nav2 aborts within 0.10 m and 10° of its goal counts as
    arrived, and so does a `go_to` that ends close enough to the stand-off pose.
-   The pick then reads the object's position from the memory again.
-3. **Reach.** The left arm goes to `standby`, out of the way, and the right
+3. **See it again, and check the reach.** The pick reads the object from the
+   memory again and reaches only for a sighting at most 5 s old. It waits up
+   to 6 s for one, since Walkie has no head to turn toward the object. Before
+   any arm goal it refuses an object the memory no longer holds, holds as
+   `held` or `missing`, or holds without a full position, and one seen more
+   than 0.15 m from where it was before the drive, which it tells the agent
+   to pick again. It also refuses an object whose centre is not 0.55 to
+   1.15 m high, an object or hand pose of the pick outside 0.35 to 0.90 m
+   from the base, and a hand pose not 0.50 to 1.30 m high. A memory that does
+   not answer is its own error, which never means the object is gone.
+4. **Reach.** The left arm goes to `standby`, out of the way, and the right
    gripper opens. The hand goes to a pre-grasp pose 0.10 m back from the grasp
    pose through `whole_body_right`, which may move the base, the lift and the
    arm. Once the arm is at rest, the hand moves in a straight line through
@@ -453,22 +462,33 @@ the tool log shows each as a call:
    with the wrist camera bracket up. For the straight moves the agent sets the
    commander's `allow_gripper_vs_octomap`, so the fingers may touch the octomap
    voxels of the object. Without it MoveIt finds no path into the bottle.
-4. **Close and lift.** The gripper closes. Only when the commander's grasp
+5. **Close and lift.** The gripper closes. Only when the commander's grasp
    band says that it holds something does the hand rise 0.10 m in a straight
    line. A close on nothing brings both arms home and says so.
-5. **Clear and home.** The hand moves in a straight line to 0.30 m ahead of
+6. **Clear and home.** The hand moves in a straight line to 0.30 m ahead of
    the base and 0.35 m to its right, at the lifted height. Then the right arm
    goes home through `right_arm_lift`, with the lift at 0.7435 m, its SRDF home,
    and the left arm goes home, which ends the octomap allowance. Without the
    move clear, the swing home dragged the bottle across the table's corner and
    out of the fingers.
 
+However the grasp ends, held, failed, interrupted by an error or stopped,
+the pick then sets `allow_gripper_vs_octomap` back to false, the commander's
+default, and sends no arm motion to do it. If that reset fails, the pick's
+error says so, and the next arm motion sets the allowance again before it
+moves. At startup the agent reads the allowance and turns it off when an
+earlier run left it on, such as a run stopped mid-grasp.
+
 After a pick both arms are home, a travel-safe pose, so the robot may drive
 with the object. All the numbers are in `config/pick.toml`, which the agent
 checks at startup and reads again at each pick, so a change applies to the
-next pick without a restart. On 2026-11-20 the pick of the kitchen table's
+next pick without a restart. If the camera does not see the object from the
+stand-off pose, the pick refuses with "has not seen it in the last few
+seconds"; a longer `observation_wait_s` or `max_observation_age_s` in that
+file is the first thing to try. On 2026-11-20 the pick of the kitchen table's
 water bottle from the spawn point held it through the drive back to the living
-room. The memory must have a fresh position for the object: after earlier runs
+room. The checks of step 3 and the reset of the allowance came after that run,
+and no pick has run with them yet. The memory must have a fresh position for the object: after earlier runs
 the memory had merged the bottle's carried and reset positions into one 0.6 m
 object, so run `reset-memory` between runs that move objects.
 

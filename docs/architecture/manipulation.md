@@ -151,6 +151,17 @@ LLM gives the name and reads the outcome, never a pose
 ([ADR-0022](decisions/0022-named-arm-poses.md)). It is bound in the `hri`
 set only with both `--arms` and `--object-memory`.
 
+After the drive, and before its first arm goal, `pick_object` reads the object
+again and refuses unless the memory still holds it as present with a full
+position, seen within `max_observation_age_s`, no further than
+`max_target_shift_m` from where it was before the drive. It then checks the
+object's centre height and the horizontal distance and height of the object
+and of every hand pose from the base against the reach envelope in
+`config/pick.toml`. A refusal sends no arm goal. However the grasp ends, the
+tool sets `allow_gripper_vs_octomap` back to false through
+`ctx.arms.restore_touch()`, which a stop does not cut short and which moves
+nothing.
+
 Every tool except `list_skills` is an atomic of the self-evolving agent,
 and runs against a mock until its real backend lands
 ([ADR-0044](decisions/0044-mocked-arm-atomics.md)). The Effect column uses
@@ -347,8 +358,9 @@ action's `/_action/feedback` and `/_action/status` topics.
 generic tool: `/navigate_to_pose`, `/set_joint_position`,
 `/control_gripper`, `/get_joint_states`, and later `/run_skill` and
 `/list_skills`. The commander client also writes `allow_gripper_vs_octomap`
-through `/bimanual_commander/set_parameters` for `pick_object`'s grasp, and no
-other parameter ([ADR-0021](decisions/0021-arm-control-through-commander.md)).
+through `/bimanual_commander/set_parameters` for `pick_object`'s grasp, sets it
+back to false after the grasp and at startup, and writes no other parameter
+([ADR-0021](decisions/0021-arm-control-through-commander.md)).
 No tool uses that service.
 
 **Forbidden names** are never touched by any tool:

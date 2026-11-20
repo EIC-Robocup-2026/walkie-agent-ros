@@ -1197,6 +1197,16 @@ closes the gripper and lifts the object 10 cm. It then moves the hand beside
 the base and brings both arms home, a pose that is safe for driving, and the
 agent brings the object back.
 
+Once the robot stands by the object, the pick reaches only for a sighting of it
+at most 5 s old, and waits up to 6 s for one. It sends no arm goal for an
+object the memory no longer holds as present, one that moved more than 15 cm
+during the drive, or one that it or any hand pose puts outside the reach
+envelope of `config/pick.toml`. However the grasp ends, stopped included, the
+pick sets the commander's `allow_gripper_vs_octomap` back to false without
+moving anything, and the agent does the same at startup if an earlier run left
+it on. So the bottle must be in view of the camera that feeds the object
+memory from the spot facing it.
+
 This is stage 3 of the whole-body guide (`docs/guides/whole-body-real-robot.md`
 in `walkie-ros-fullbody`), which that guide holds back. The owner accepted
 running it (decision PK-5).
@@ -1326,6 +1336,10 @@ finishes its move either way.
   compared.
 - The hand's orientation for the side grasp, the stand-off distance and the
   grasp band were tuned in simulation at most.
+- The sighting age, the 15 cm move limit and the reach envelope were derived
+  from one simulated pick and the arm's reach, and have not run in a pick in
+  simulation or on the robot. A pick that refuses a bottle in plain view
+  points at one of them first.
 - Whether the object memory finds a "water bottle" when vision stores a
   `bottle`.
 

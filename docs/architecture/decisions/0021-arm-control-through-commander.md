@@ -33,11 +33,13 @@ emergency stops. The LLM never chooses joint values or coordinates.
 The demo's client (`ros/commander.py`) also reads two of the commander's
 parameters, `grasp_detect_min` and `grasp_detect_max`, from
 `/bimanual_commander/get_parameters`, to judge a close by the commander's own
-grasp band. It reads nothing else there. For `pick_object` only (decision
-PK-4), it sets one parameter through `/bimanual_commander/set_parameters`:
-`allow_gripper_vs_octomap`, which lets the fingers touch the sensed octomap
-during the straight approach and the lift, and which the next joint move or open
-of a gripper clears. It sets nothing else.
+grasp band, and at startup `allow_gripper_vs_octomap`. It reads nothing else
+there. For `pick_object` only (decision PK-4), it sets one parameter through
+`/bimanual_commander/set_parameters`: `allow_gripper_vs_octomap`, which lets the
+fingers touch the sensed octomap during the straight approach and the lift, and
+which the next joint move or open of a gripper clears. The pick sets it back to
+false, the commander's default, however its grasp ends, a stop included, and the
+agent does so at startup when an earlier run left it on. It sets nothing else.
 
 **Consequences**
 

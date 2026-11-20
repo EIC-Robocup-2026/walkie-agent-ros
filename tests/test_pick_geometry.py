@@ -143,8 +143,9 @@ FAILED_FROM = [
 
 
 def plan_from(settings, base, target):
+    heading = heading_from(settings, base[0], base[1], target[0], target[1])
     approach = math.atan2(target[1] - base[1], target[0] - base[0])
-    return plan_pick(settings, *target, base[2], approach, base)
+    return plan_pick(settings, *target, heading, approach, base)
 
 
 @pytest.mark.parametrize(("base", "target"), HELD_FROM)

@@ -48,7 +48,8 @@ grasp_back_m = 0.06
 # 0.10, for the Chula simulation's can (radius 0.038 m), the right hand's left finger
 # touched octomap voxels 0.068 to 0.077 m from the can's axis, where only the can's
 # own 0.03 m voxels stand, and MoveIt found no collision-free pose for the pre-grasp
-# in 10 of 20 picks. At 0.12, 0.14 and 0.16 it found one in every pick (decision PK-60).
+# in 10 of 20 picks. At 0.12, 0.14 and 0.16 it found one in all 19 picks that tried
+# them (decision PK-60).
 pregrasp_back_m = 0.14
 # Metres the hand rises after the gripper holds the object.
 lift_m = 0.10

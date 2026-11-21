@@ -456,7 +456,7 @@ the tool log shows each as a call:
 4. **Reach.** The left arm goes to `standby`, out of the way, and the right
    gripper opens. The pick sees the object again, with every check of step 3
    against the reading after the drive, and plans the hand poses afresh from
-   this reading. The hand goes to a pre-grasp pose 0.10 m back from the grasp
+   this reading. The hand goes to a pre-grasp pose 0.14 m back from the grasp
    pose through `whole_body_right`, which may move the base, the lift and the
    arm. Before the straight move the pick sees the object once more: present,
    with a full position, at most 5 s old and within 0.15 m of the reading

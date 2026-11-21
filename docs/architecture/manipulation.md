@@ -143,7 +143,7 @@ object's name, looks it up in walkie-database's object memory, and computes
 every pose agent-side in `walkie_agent/arm/pick.py` from the numbers in
 `config/pick.toml`. It reaches through `ctx.arms.reach`, which sends a hand
 pose to the commander's `/go_to_pose`: first the whole-body group
-`whole_body_right` to a pre-grasp pose 0.10 m back, then `right_arm` in
+`whole_body_right` to a pre-grasp pose 0.14 m back, then `right_arm` in
 straight lines for the approach and the 0.10 m lift, since the commander
 refuses a straight line for a whole-body group. The close is judged by the
 commander's grasp band, and the lift runs only when it holds something. Once

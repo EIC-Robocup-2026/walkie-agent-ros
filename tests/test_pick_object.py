@@ -796,11 +796,14 @@ def test_the_hand_moves_in_along_the_line_from_where_the_base_stopped(arm_poses,
 
     here = robot.pose()
     approach = math.atan2(0.0 - here.y, 1.0 - here.x)
+    settings = load_pick_settings()
+    grasp_back = settings.grasp_back_m
+    pregrasp_back = settings.grasp_back_m + settings.pregrasp_back_m
     pregrasp, grasp, lift, clear = targets
-    assert grasp.x == pytest.approx(1.0 - 0.06 * math.cos(approach))
-    assert grasp.y == pytest.approx(-0.06 * math.sin(approach))
-    assert pregrasp.x == pytest.approx(1.0 - 0.16 * math.cos(approach))
-    assert pregrasp.y == pytest.approx(-0.16 * math.sin(approach))
+    assert grasp.x == pytest.approx(1.0 - grasp_back * math.cos(approach))
+    assert grasp.y == pytest.approx(-grasp_back * math.sin(approach))
+    assert pregrasp.x == pytest.approx(1.0 - pregrasp_back * math.cos(approach))
+    assert pregrasp.y == pytest.approx(-pregrasp_back * math.sin(approach))
     for pose in targets:
         assert pose.yaw == pytest.approx(approach + math.pi)
     assert (lift.x, lift.y) == (grasp.x, grasp.y)

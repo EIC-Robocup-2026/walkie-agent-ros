@@ -91,7 +91,7 @@ def test_the_shipped_file_loads_with_the_numbers_the_walkie_ros_pick_proved():
         standoff_left_m=0.20,
         heading_offsets_deg=(0.0, 30.0, -30.0, 60.0, -60.0, 120.0, -120.0, 180.0),
         grasp_back_m=0.06,
-        pregrasp_back_m=0.10,
+        pregrasp_back_m=0.14,
         lift_m=0.10,
         clear_forward_m=0.30,
         clear_side_m=0.35,

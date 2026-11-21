@@ -182,7 +182,7 @@ max_reach_m = 0.82
 # below the object's centre, and the pre-grasp pose stands 0.14 m above that. The arm
 # reaches straight down exactly up to 0.62 m ahead of base_footprint, with the hand
 # 0.15 to 0.30 m to its right, so the stand-off stands 0.58 m back and 0.20 m left,
-# 0.613 m from the object. max_reach_m takes in 0.664 m, from a base 0.05 m off. These
+# 0.614 m from the object. max_reach_m takes in 0.664 m, from a base 0.05 m off. These
 # numbers are provisional until scripted top picks of the Chula apple settle them.
 [grasps.top]
 direction = "down"

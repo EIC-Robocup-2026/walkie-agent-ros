@@ -89,7 +89,12 @@ terminal above, plus Save map, the Foxglove bridge and a test task. Open
   **Forget the conversation**, its reset.
 - **Foxglove bridge** only lets clients watch. It leaves out publishing,
   parameters and service calls, so a laptop on the LAN cannot drive the robot
-  through it.
+  through it. It listens on port 8765. The layout
+  `config/foxglove/chula-memory-robot-layout.json` is the simulation's layout
+  with the robot's vision topics, `/walkie_vision/debug/...`. Its detections
+  image and vision markers come only from `vision ... viz:=true`, and its
+  object markers and cloud from the memory node of
+  [Optional B](#optional-b-the-object-memory).
 
 !!! danger "Run group, Stop All and profile load act on every button at once"
     **Run group**, in each group's header, starts every button of the group at

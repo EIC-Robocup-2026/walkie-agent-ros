@@ -347,7 +347,21 @@ def test_the_first_match_with_a_full_position_is_picked(arm_poses):
     assert move["args"]["turn_deg"] == pytest.approx(90.0 + math.degrees(math.asin(0.20)))
     at_stand_off(robot, 0.0, 1.0)
     # Read again after the drive, before the reach and before the approach.
-    assert ctx.object_memory.calls == [("search", "water bottle", 10)] + [("get", "7")] * 3
+    assert ctx.object_memory.calls == [("search", "water bottle", 10, (0.0, 0.0))] + [
+        ("get", "7")
+    ] * 3
+
+
+def test_of_two_objects_of_the_name_the_one_nearest_the_robot_is_picked(arm_poses):
+    robot, ctx = picking(
+        arm_poses,
+        remembered(object_id="3", x=4.0, y=0.0),
+        remembered(object_id="7", x=0.0, y=1.0),
+    )
+
+    pick_object(ctx, "water bottle")
+
+    at_stand_off(robot, 0.0, 1.0)
 
 
 def test_the_reach_goes_to_where_the_memory_holds_the_object_after_the_drive(
@@ -1307,7 +1321,7 @@ def test_an_object_it_does_not_remember_is_not_found(arm_poses):
     assert error.message == (
         "Walkie remembers no water bottle. Call recall_object to see what it remembers."
     )
-    assert robot.calls == []
+    assert verbs(robot) == []
 
 
 def test_an_object_with_no_height_cannot_be_reached(arm_poses):
@@ -1317,7 +1331,7 @@ def test_an_object_with_no_height_cannot_be_reached(arm_poses):
 
     assert error.code is ErrorCode.PRECONDITION_FAILED
     assert "not exactly where it is" in error.message
-    assert robot.calls == []
+    assert verbs(robot) == []
 
 
 def test_an_empty_name_is_refused(arm_poses):
@@ -1348,7 +1362,7 @@ def test_an_object_wider_than_the_open_hand_is_refused_before_the_drive(arm_pose
         "The mug is 0.082 m wide, and the right hand cannot open that wide, so Walkie did "
         "not try to pick it up. Tell the person it cannot pick it up."
     )
-    assert robot.calls == []
+    assert verbs(robot) == []
 
 
 def test_a_long_object_is_approached_along_its_length_and_gripped_across_it(

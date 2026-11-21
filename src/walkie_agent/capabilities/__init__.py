@@ -458,7 +458,8 @@ class ObjectMemory(Protocol):
     "stool".
     Objects whose own label or official name matches come first, then those that
     only another label matches, each in the memory's order, at most `limit` of
-    them. room gives the objects remembered as present in the room named `room`,
+    them. With `near`, a point (x, y) in the map frame, the objects within each of
+    those groups come nearest to it first, and those with no position last. room gives the objects remembered as present in the room named `room`,
     ignoring case, at most `limit`. get gives one object in any state, following a
     merge: the object it returns may have another id than `object_id`. No verb
     moves anything, so none waits for a stop to commit.
@@ -471,7 +472,12 @@ class ObjectMemory(Protocol):
     """
 
     def search(
-        self, name: str, *, limit: int = 10, timeout_s: float = 10.0
+        self,
+        name: str,
+        *,
+        limit: int = 10,
+        near: tuple[float, float] | None = None,
+        timeout_s: float = 10.0,
     ) -> tuple[RecalledObject, ...]: ...
 
     def room(self, room: str, *, limit: int = 50, timeout_s: float = 10.0) -> RoomObjects: ...
@@ -490,7 +496,12 @@ class UnavailableObjectMemory:
         raise StepError(ErrorCode.UNAVAILABLE, NO_OBJECT_MEMORY)
 
     def search(
-        self, name: str, *, limit: int = 10, timeout_s: float = 10.0
+        self,
+        name: str,
+        *,
+        limit: int = 10,
+        near: tuple[float, float] | None = None,
+        timeout_s: float = 10.0,
     ) -> tuple[RecalledObject, ...]:
         self._refuse()
 

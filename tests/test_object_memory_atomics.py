@@ -67,9 +67,11 @@ class Remembers:
         self.merged = merged or {}
         self.calls: list[tuple] = []
 
-    def search(self, name, *, limit=10, timeout_s=10.0):
-        self.calls.append(("search", name, limit))
+    def search(self, name, *, limit=10, near=None, timeout_s=10.0):
+        self.calls.append(("search", name, limit, near))
         found = [o for o in self.objects.values() if not name or o.name == name]
+        if near is not None:
+            found.sort(key=lambda o: _distance(o, near))
         return tuple(found[:limit])
 
     def room(self, room, *, limit=50, timeout_s=10.0):
@@ -83,6 +85,12 @@ class Remembers:
         if kept not in self.objects:
             raise StepError(ErrorCode.NOT_FOUND, f"Walkie remembers no object {kept}.")
         return self.objects[kept]
+
+
+def _distance(found: RecalledObject, near: tuple[float, float]) -> float:
+    if found.x is None or found.y is None:
+        return math.inf
+    return math.hypot(found.x - near[0], found.y - near[1])
 
 
 def remembering(*objects: RecalledObject, **options) -> tuple[FakeRobot, Ctx]:
@@ -143,7 +151,7 @@ def test_recall_object_gives_where_each_was_seen_and_never_its_position():
         "complete": True,
     }
     # One more than the list holds, to tell whether the list is all of them.
-    assert ctx.object_memory.calls == [("search", "cup", RECALL_LIMIT + 1)]
+    assert ctx.object_memory.calls == [("search", "cup", RECALL_LIMIT + 1, None)]
     # Only the object with a position reads the places, and nothing moves.
     assert base_verbs(robot) == ["base.places"]
 

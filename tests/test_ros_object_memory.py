@@ -351,6 +351,31 @@ def test_two_bottles_with_the_same_labels_keep_the_node_s_order(database, memory
     assert ids(memory.search("bottle")) == ["181", "178"]
 
 
+def test_two_bottles_with_the_same_labels_come_nearest_the_point_first(database, memory):
+    # pick_object asks with where the robot stands, so it takes the bottle in front of it.
+    # A bottle with no position in the map comes last.
+    database.objects = [
+        summary(181, "bottle", labels=("bottle",), x=5.0, y=2.0),
+        summary(179, "bottle", labels=("bottle",), geometry_valid=False),
+        summary(178, "bottle", labels=("bottle",), x=1.0, y=0.5),
+    ]
+
+    assert ids(memory.search("water bottle", near=(0.0, 0.0))) == ["178", "181", "179"]
+    assert ids(memory.search("water bottle", limit=1, near=(0.0, 0.0))) == ["178"]
+    assert ids(memory.search("water bottle", near=(6.0, 2.0))) == ["181", "178", "179"]
+
+
+def test_a_nearer_bottle_the_detector_once_disputed_still_comes_after_a_steady_one(
+    database, memory
+):
+    database.objects = [
+        summary(176, "bottle", labels=("bottle", "cup"), x=0.5, y=0.0),
+        summary(178, "bottle", labels=("bottle",), x=4.0, y=0.0),
+    ]
+
+    assert ids(memory.search("water bottle", near=(0.0, 0.0))) == ["178", "176"]
+
+
 def test_a_steady_wrong_label_comes_before_a_right_label_the_detector_once_disputed(
     database, memory
 ):

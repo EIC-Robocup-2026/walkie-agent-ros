@@ -168,7 +168,12 @@ class RosObjectMemory:
         self._get_client = node.create_client(GetObject, names["get_object"])
 
     def search(
-        self, name: str, *, limit: int = 10, timeout_s: float = 10.0
+        self,
+        name: str,
+        *,
+        limit: int = 10,
+        near: tuple[float, float] | None = None,
+        timeout_s: float = 10.0,
     ) -> tuple[RecalledObject, ...]:
         require_text(name=name)
         _require_limit(limit)
@@ -192,15 +197,20 @@ class RosObjectMemory:
             )
         batch = [match.object for match in response.matches]
         named = [summary for summary in batch if _is_named(wanted, summary)]
+        records = self._recalled(named, batch)
         # An object called `wanted` comes before one that only an alias matches, such
         # as a bottle the detector once called a cup. Among those called `wanted`, one
-        # the detector also called something else comes last. The sort keeps the
-        # node's order.
-        if wanted:
-            named.sort(
-                key=lambda summary: (not _is_called(wanted, summary), _is_disputed(summary))
-            )
-        return self._recalled(named[:limit], batch)
+        # the detector also called something else comes last. Within each group, the
+        # one nearest `near` comes first. The sort keeps the node's order otherwise.
+        order = sorted(
+            range(len(named)),
+            key=lambda i: (
+                bool(wanted) and not _is_called(wanted, named[i]),
+                bool(wanted) and _is_disputed(named[i]),
+                _distance(records[i], near),
+            ),
+        )
+        return tuple(records[i] for i in order[:limit])
 
     def room(self, room: str, *, limit: int = 50, timeout_s: float = 10.0) -> RoomObjects:
         require_text(room=room)
@@ -382,6 +392,18 @@ def _is_called(wanted: str, summary: ObjectSummary) -> bool:
     """True when `wanted` matches the object's own label or its official name."""
     names = {summary.label, summary.official_name}
     return not wanted or any(matches(wanted, name) for name in names if name.strip())
+
+
+def _distance(record: RecalledObject, near: tuple[float, float] | None) -> float:
+    """How far `record` lies from `near` in the map, seen from above; 0 without `near`.
+
+    An object with no position lies infinitely far, so it comes after those with one.
+    """
+    if near is None:
+        return 0.0
+    if record.x is None or record.y is None:
+        return math.inf
+    return math.hypot(record.x - near[0], record.y - near[1])
 
 
 def _is_disputed(summary: ObjectSummary) -> bool:

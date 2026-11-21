@@ -80,7 +80,9 @@ logger = logging.getLogger(__name__)
 NEAR_STANDOFF_M = 0.10
 NEAR_STANDOFF_DEG = 10.0
 # How many objects of the name the memory is asked for. The first with a position is
-# picked, in the memory's order, which puts the closest matches of the name first.
+# picked, in the memory's order, which puts the closest matches of the name first and,
+# among equal matches, the one nearest the robot: with two bottles in the memory, the
+# one in front of Walkie, not one it saw in another room.
 SEARCH_LIMIT = 10
 # Where the arm that does not pick goes once the base stands at the stand-off pose,
 # before the reach. The straight moves of the arm with the lift can lower the lift by
@@ -185,11 +187,15 @@ def pick_object(ctx: Ctx, name: str) -> str:
 
 
 def _remembered(ctx: Ctx, name: str) -> RecalledObject:
-    """The first object of `name` that the memory holds as present with a full position."""
+    """The first object of `name` that the memory holds as present with a full position.
+
+    Among equal matches of the name, the one nearest where the robot stands.
+    """
     asked = name.strip()
     if not asked:
         raise StepError(ErrorCode.REFUSED, "Refused: name the object to pick up.")
-    matches = ctx.object_memory.search(asked, limit=SEARCH_LIMIT)
+    here = ctx.base.pose()
+    matches = ctx.object_memory.search(asked, limit=SEARCH_LIMIT, near=(here.x, here.y))
     if not matches:
         raise StepError(
             ErrorCode.NOT_FOUND,

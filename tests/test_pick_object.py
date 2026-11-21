@@ -352,16 +352,25 @@ def test_the_first_match_with_a_full_position_is_picked(arm_poses):
     ] * 3
 
 
-def test_of_two_objects_of_the_name_the_one_nearest_the_robot_is_picked(arm_poses):
+@pytest.mark.parametrize(
+    ("forward_m", "picked"),
+    [(0.0, (0.0, 1.5)), (1.0, (2.0, 0.0))],
+    ids=["from-the-start", "after-a-move"],
+)
+def test_of_two_objects_of_the_name_the_one_nearest_the_robot_is_picked(
+    arm_poses, forward_m, picked
+):
     robot, ctx = picking(
         arm_poses,
-        remembered(object_id="3", x=4.0, y=0.0),
-        remembered(object_id="7", x=0.0, y=1.0),
+        remembered(object_id="3", x=2.0, y=0.0),
+        remembered(object_id="7", x=0.0, y=1.5),
     )
+    if forward_m:
+        robot.move_relative(forward_m=forward_m)
 
     pick_object(ctx, "water bottle")
 
-    at_stand_off(robot, 0.0, 1.0)
+    at_stand_off(robot, *picked)
 
 
 def test_the_reach_goes_to_where_the_memory_holds_the_object_after_the_drive(

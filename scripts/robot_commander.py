@@ -332,11 +332,14 @@ def runbook_commands(day: str) -> list[Command]:
         Command("P1 whole-body base parts", WHOLE_BODY, fullbody, WHOLE_BODY_BASE),
         Command("P2 MoveIt, whole body", WHOLE_BODY, fullbody, WHOLE_BODY_MOVEIT),
         Command("P3 commander, whole body", WHOLE_BODY, fullbody, WHOLE_BODY_COMMANDER),
+        # viz:=true also runs walkie_vision.debug_viz, which publishes the annotated
+        # detections and markers under /walkie_vision/debug/ for the Foxglove layout
+        # config/foxglove/chula-memory-robot-layout.json.
         Command(
             "T7 vision, memory task",
             PICK_AGENT,
             "walkie-vision",
-            "pixi run --frozen vision task:=memory respawn_max_retries:=3",
+            "pixi run --frozen vision task:=memory viz:=true respawn_max_retries:=3",
         ),
         Command("T8 database, object memory", PICK_AGENT, "walkie-database", db_memory(day)),
         Command("T11 agent, pick", PICK_AGENT, agent, agent_hri(" --arms --object-memory")),

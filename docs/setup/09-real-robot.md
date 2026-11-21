@@ -1070,9 +1070,11 @@ pixi run --frozen db-restore --seed ~/walkie-data/2026-11-19/seed.db --db ~/walk
 Stop the `hri` node with Ctrl+C, then:
 
 ```bash
-pixi run --frozen vision task:=memory respawn_max_retries:=3
+pixi run --frozen vision task:=memory viz:=true respawn_max_retries:=3
 ```
 
+- `viz:=true` also runs the debug visualizer, which draws the detections for
+  the Foxglove layout. Leave it out to save the JPEG encoding's CPU.
 - It adds depth points, object crops and CLIP vectors, and a second YOLOE.
 - Its classes are cup, bottle, bowl, apple, banana, backpack, chair, table,
   shelf, cabinet and sofa. Armchair and stool are gone, so `find_objects` sees

@@ -92,8 +92,10 @@ terminal above, plus Save map, the Foxglove bridge and a test task. Open
   through it. It listens on port 8765. The layout
   `config/foxglove/chula-memory-robot-layout.json` is the simulation's layout
   with the robot's vision topics, `/walkie_vision/debug/...`. Its detections
-  image and vision markers come only from `vision ... viz:=true`, and its
-  object markers and cloud from the memory node of
+  image comes from `vision ... viz:=true`. Its vision markers also need
+  `task:=memory`, which adds the depth points. **T7 vision, memory task** in
+  group 6 runs both, and **T7 vision** runs neither. The layout's object
+  markers and cloud come from **T8 database, object memory**, the memory node of
   [Optional B](#optional-b-the-object-memory).
 
 !!! danger "Run group, Stop All and profile load act on every button at once"
@@ -1073,14 +1075,15 @@ Stop the `hri` node with Ctrl+C, then:
 pixi run --frozen vision task:=memory viz:=true respawn_max_retries:=3
 ```
 
-- `viz:=true` also runs the debug visualizer, which draws the detections for
-  the Foxglove layout. Leave it out to save the JPEG encoding's CPU.
 - It adds depth points, object crops and CLIP vectors, and a second YOLOE.
 - Its classes are cup, bottle, bowl, apple, banana, backpack, chair, table,
   shelf, cabinet and sofa. Armchair and stool are gone, so `find_objects` sees
   different things than with `hri`.
 - Its GPU memory and rate beside the ZED's depth have never been measured. If it
   runs out of memory, go back to `task:=hri`. The memory then stores nothing.
+- `viz:=true` also runs the debug visualizer, which publishes the detections
+  image and the vision markers for the Foxglove layout. Leave it out to save the
+  JPEG encoding's CPU.
 
 ### e. Database in memory mode (T8)
 

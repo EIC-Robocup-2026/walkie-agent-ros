@@ -267,7 +267,7 @@ def test_a_pick_drives_to_the_stand_off_reaches_closes_and_lifts(arm_poses):
     assert arms == {"right"}
 
 
-def test_an_apple_is_grasped_from_above_and_a_bottle_from_the_side(arm_poses, monkeypatch):
+def test_an_apple_is_grasped_from_above(arm_poses, monkeypatch):
     # config/pick.toml lists the detector label "apple" for the top grasp.
     robot, ctx = picking(arm_poses, remembered("apple", label="apple"))
     targets = hand_targets(monkeypatch, robot)
@@ -292,6 +292,38 @@ def test_an_apple_is_grasped_from_above_and_a_bottle_from_the_side(arm_poses, mo
         assert (pose.roll, pose.pitch) == (math.pi, 0.0)
     assert (pregrasp.z, grasp_pose.z, lift.z) == pytest.approx((0.96, 0.82, 0.92))
     assert reaches(robot)[:2] == [(True, False, False, 90.0), (False, True, True, 30.0)]
+
+
+@pytest.mark.parametrize(
+    ("name", "label", "grasp_name"),
+    [
+        # The label is read as the detector gives it, whatever its case or spaces.
+        ("red fruit", " Apple ", "top"),
+        # A label pick.toml does not list takes the default grasp, whatever the name.
+        ("apple", "cup", "side"),
+    ],
+)
+def test_the_grasp_follows_the_detector_label_not_the_name(
+    arm_poses, monkeypatch, name, label, grasp_name
+):
+    robot, ctx = picking(arm_poses, remembered(name, label=label))
+    targets = hand_targets(monkeypatch, robot)
+
+    pick_object(ctx, name)
+
+    at_stand_off(robot, 1.0, 0.0, grasp_name)
+    pregrasp, grasp_pose = targets[:2]
+    if grasp_name == "top":
+        # Fingers down, moving straight down onto the object.
+        assert (pregrasp.roll, pregrasp.pitch) == (math.pi, 0.0)
+        assert (pregrasp.x, pregrasp.y) == pytest.approx((grasp_pose.x, grasp_pose.y))
+        assert pregrasp.z > grasp_pose.z
+    else:
+        # Fingers level, moving in level from the side.
+        assert (pregrasp.roll, pregrasp.pitch) == pytest.approx((0.0, -math.pi / 2))
+        assert pregrasp.z == pytest.approx(grasp_pose.z)
+        back_off = math.hypot(pregrasp.x - 1.0, pregrasp.y)
+        assert back_off > math.hypot(grasp_pose.x - 1.0, grasp_pose.y)
 
 
 def test_the_answer_holds_no_number_of_the_geometry(arm_poses):
@@ -705,6 +737,21 @@ def test_an_object_too_high_from_the_start_is_driven_to_but_not_reached_for(arm_
     error = fails(ctx)
 
     assert error.message.startswith("The water bottle is too high for the right hand")
+    assert verbs(robot) == ["base.move_relative"]
+
+
+def test_an_apple_whose_top_grasp_poses_stand_too_high_is_too_high(arm_poses):
+    # 1.12 m is inside the object heights [0.55, 1.15], but the top grasp's pre-grasp
+    # pose stands 0.21 m above it, at 1.33, over the hand's 1.30.
+    robot, ctx = picking(arm_poses, remembered("apple", label="apple", z=1.12))
+
+    error = fails(ctx, "apple")
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message.startswith(
+        "The apple is too high for the right hand to pick up, so Walkie did not reach for it."
+    )
+    assert "call pick_object again" not in error.message.lower()
     assert verbs(robot) == ["base.move_relative"]
 
 

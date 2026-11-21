@@ -1250,7 +1250,7 @@ uses all of them, with whole-body MoveIt in place of T5 and T6.
 | T4 Nav2 on $MAP | 2 map | team's walkie-ros |
 | T9 speech out | 4 agent | walkie-agent-ros |
 | P1 whole-body base parts, P2 MoveIt, whole body, P3 commander, whole body | 5 pick | walkie-ros-fullbody |
-| T7 vision, memory task, T8 database, object memory, T11 agent, pick and web search | 6 pick | each its own |
+| T7 vision, memory task, T8 database, object memory, T11 agent, pick (or T11 agent, pick and web search) | 6 pick | each its own |
 
 - **P1** is `whole_body_real.launch.py static_map_odom:=false
   collision_monitor:=false`: the base follower and the hand target. AMCL gives
@@ -1267,10 +1267,11 @@ uses all of them, with whole-body MoveIt in place of T5 and T6.
 - **T3, the joystick, keeps running** for button 0, which cancels Nav2's
   goals. Push the stick only to stop the robot: it bypasses the collision
   monitor and overrides the base follower.
-- **T11 agent, pick and web search** needs `TAVILY_API_KEY` in `.env`
-  ([Optional D](#optional-d-web-search)). Without it, the button stops at once
-  with one `walkie-agent:` line. To run without web search, type its command
-  without `--web-search` in the Shell tab.
+- **T11 agent, pick** starts the agent with the arms and the object memory.
+  **T11 agent, pick and web search** adds `--web-search`, and so needs
+  `TAVILY_API_KEY` in `.env` ([Optional D](#optional-d-web-search)). Without
+  the key, that button stops at once with one `walkie-agent:` line. Start only
+  one of the two.
 
 ### Check first
 
@@ -1313,9 +1314,10 @@ Wait for each card's ready line before the next. Never use **Run group** here.
    and acceleration scaling to 0.3, as the guide asks before the first goal.
 10. **P lift to 74 cm**, alone in group 8. Look along the whole travel first.
     Wait until the lift stops at the top.
-11. **T11 agent, pick and web search**. Ready:
-    `Walkie's agent is running, with the hri tool set.`
-12. **Ask the web (test task)**, if you set the Tavily key. It moves nothing.
+11. **T11 agent, pick**, or **T11 agent, pick and web search** if you set the
+    Tavily key. Ready: `Walkie's agent is running, with the hri tool set.`
+12. **Ask the web (test task)**, only if you started **T11 agent, pick and web
+    search**. It moves nothing.
 13. Let the robot see the bottle for a few seconds, from where it stands or
     driven with the joystick. **P check: object memory status** twice:
     `arrays_received` climbs. Then **Where did you see a bottle? (test task)**.

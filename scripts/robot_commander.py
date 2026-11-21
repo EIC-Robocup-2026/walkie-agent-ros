@@ -327,6 +327,7 @@ def runbook_commands(day: str) -> list[Command]:
             "pixi run --frozen vision task:=memory respawn_max_retries:=3",
         ),
         Command("T8 database, object memory", PICK_AGENT, "walkie-database", db_memory(day)),
+        Command("T11 agent, pick", PICK_AGENT, agent, agent_hri(" --arms --object-memory")),
         Command(
             "T11 agent, pick and web search",
             PICK_AGENT,

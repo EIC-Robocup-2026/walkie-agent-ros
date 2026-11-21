@@ -9,8 +9,10 @@ reach to a pre-grasp pose, a straight approach, a close of the gripper judged by
 commander's grasp band, a straight lift, a straight move to beside the base, and a move
 of both arms home, the picking arm with the lift. The gripper is then read again and
 judged by the same band, so an object that fell out of the hand after the close is
-reported lost, not picked. The geometry and its numbers are in walkie_agent.arm.pick
-and config/pick.toml.
+reported lost, not picked. The hand takes the object the way config/pick.toml's grasp
+table gives for the memory's detector label (arm.pick.PickSettings.grasp_for): level
+from the side, or straight down from above. The geometry and its numbers are in
+walkie_agent.arm.pick and config/pick.toml.
 The LLM gives only the object's name and reads only the outcome: no position, pose or
 joint value reaches it (ADR-0022). Every answer after the drive ends with the arm
 sentence (ADR-0024).
@@ -47,11 +49,15 @@ from dataclasses import dataclass
 
 from walkie_agent.arm import answers
 from walkie_agent.arm.pick import (
+    AT_STANDOFF_DEG,
+    AT_STANDOFF_M,
+    Grasp,
     HandPose,
     PickPlan,
     PickSettings,
     approach_headings,
     heading_from,
+    height_problem,
     load_pick_settings,
     plan_pick,
     reach_problems,
@@ -66,11 +72,6 @@ from walkie_agent.tools.atomic.navigation import APPROACH_PLACE_MAX_M, approach_
 
 logger = logging.getLogger(__name__)
 
-# How close the base must already be to a stand-off pose to skip the drive to it, in
-# metres and degrees: a relative move of nothing is refused, and Nav2 would not
-# settle closer than its own goal tolerances.
-AT_STANDOFF_M = 0.05
-AT_STANDOFF_DEG = 3.0
 # How close a drive that Nav2 failed must have left the base to its stand-off pose for
 # the pick to go on from there, in metres and degrees. Nav2 aborts a goal it cannot
 # settle on ("Failed to make progress") although the base stopped a few centimetres
@@ -175,11 +176,12 @@ def pick_object(ctx: Ctx, name: str) -> str:
         ) from None
     found = _remembered(ctx, name)
     label = f"the {found.name}"
-    _fits_hand(settings, found, label)
-    _drive_to_standoff(ctx, settings, found, label)
+    grasp = settings.grasp_for(found.label)
+    _fits_hand(settings, grasp, found, label)
+    _drive_to_standoff(ctx, settings, grasp, found, label)
     found = _seen_again(ctx, settings, found, label, _AFTER_DRIVE)
-    _plan_in_reach(ctx, settings, found, label, _AFTER_DRIVE)
-    return _grasp_then_touch_off(ctx, settings, found, label)
+    _plan_in_reach(ctx, settings, grasp, found, label, _AFTER_DRIVE)
+    return _grasp_then_touch_off(ctx, settings, grasp, found, label)
 
 
 def _remembered(ctx: Ctx, name: str) -> RecalledObject:
@@ -203,17 +205,23 @@ def _remembered(ctx: Ctx, name: str) -> RecalledObject:
     )
 
 
-def _fits_hand(settings: PickSettings, found: RecalledObject, label: str) -> None:
+def _fits_hand(
+    settings: PickSettings, grasp: Grasp, found: RecalledObject, label: str
+) -> None:
     """Refuse an object wider than the open gripper, before anything moves.
 
     By the memory's box (arm.pick.too_wide_to_grasp). An object with no box passes.
-    The width goes to the LLM: a size, not a position (ADR-0022). The box is logged
-    for every pick, since nothing yet checks the memory's boxes against the objects.
+    The width goes to the LLM: a size, not a position (ADR-0022). The box and the
+    grasp are logged for every pick, since nothing yet checks the memory's boxes
+    against the objects.
     """
     logger.info(
-        "Picking %s (object %s): the memory's box is %s m, yaw %s rad.",
+        "Picking %s (object %s) with the %s grasp for label %r: the memory's box is %s m, "
+        "yaw %s rad.",
         label,
         found.id,
+        grasp.name,
+        found.label,
         "none" if found.size is None else "x".join(f"{side:.3f}" for side in found.size),
         "none" if found.yaw is None else f"{found.yaw:.2f}",
     )
@@ -352,9 +360,9 @@ def _read_again(
 
 
 def _drive_to_standoff(
-    ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str
+    ctx: Ctx, settings: PickSettings, grasp: Grasp, found: RecalledObject, label: str
 ) -> None:
-    """Drive to a stand-off pose facing `found`, trying each approach heading in turn.
+    """Drive to a stand-off pose of `grasp` facing `found`, trying each approach heading in turn.
 
     A first go_to to the named place nearest the object comes when the first
     stand-off is further than one relative move allows. The headings are taken
@@ -363,7 +371,7 @@ def _drive_to_standoff(
     stand-off pose (_near); any other error is raised as it is.
     """
     start = ctx.base.pose()
-    plans = _plans(settings, found, start)
+    plans = _plans(settings, grasp, found, start)
     if _distance(start, plans[0]) > MAX_MOVE_M:
         place = approach_place(ctx, found)
         if place is None:
@@ -380,11 +388,11 @@ def _drive_to_standoff(
             if error.code is not ErrorCode.SKILL_FAILED:
                 raise
             start = ctx.base.pose()
-            if _distance(start, _plans(settings, found, start)[0]) > MAX_MOVE_M:
+            if _distance(start, _plans(settings, grasp, found, start)[0]) > MAX_MOVE_M:
                 raise
             logger.info("The drive to %s failed close enough to go on: %s", place.name, error)
         start = ctx.base.pose()
-        plans = _plans(settings, found, start)
+        plans = _plans(settings, grasp, found, start)
     failures: list[str] = []
     for plan in plans:
         here = ctx.base.pose()
@@ -421,30 +429,37 @@ def _drive_to_standoff(
     )
 
 
-def _plans(settings: PickSettings, found: RecalledObject, start: Pose2D) -> list[PickPlan]:
+def _plans(
+    settings: PickSettings, grasp: Grasp, found: RecalledObject, start: Pose2D
+) -> list[PickPlan]:
     """One plan per approach heading, from the robot's pose `start`."""
     headings = approach_headings(
-        settings, start.x, start.y, found.x, found.y, found.size, found.yaw
+        settings, grasp, start.x, start.y, found.x, found.y, found.size, found.yaw
     )
-    return [plan_pick(settings, found.x, found.y, found.z, heading) for heading in headings]
+    return [
+        plan_pick(settings, grasp, found.x, found.y, found.z, heading) for heading in headings
+    ]
 
 
-def _plan_from_here(settings: PickSettings, found: RecalledObject, here: Pose2D) -> PickPlan:
+def _plan_from_here(
+    settings: PickSettings, grasp: Grasp, found: RecalledObject, here: Pose2D
+) -> PickPlan:
     """The plan for the heading the robot now faces the object along (arm.pick.heading_from).
 
     The hand approaches along the line from where the base stopped, `here`, to the
     object, so a drive that ended a little off its goal still reaches straight at it.
     """
-    heading = heading_from(settings, here.x, here.y, found.x, found.y)
+    heading = heading_from(grasp, here.x, here.y, found.x, found.y)
     approach = math.atan2(found.y - here.y, found.x - here.x)
     return plan_pick(
-        settings, found.x, found.y, found.z, heading, approach, (here.x, here.y, here.yaw)
+        settings, grasp, found.x, found.y, found.z, heading, approach, (here.x, here.y, here.yaw)
     )
 
 
 def _plan_in_reach(
     ctx: Ctx,
     settings: PickSettings,
+    grasp: Grasp,
     found: RecalledObject,
     label: str,
     checkpoint: _Checkpoint,
@@ -452,14 +467,16 @@ def _plan_in_reach(
     """The plan from where the base stands now, refused outside the reach envelope.
 
     Before the checkpoint's next arm goal (arm.pick.reach_problems). The numbers go
-    to the log only. An object too low or too high stays so from any stand-off pose;
-    any other problem may pass from a new one. A plan in reach whose hand would close
-    across more of the object than the open gripper is refused too (_fits_fingers).
+    to the log only. An object too low or too high, or one the grasp would take with
+    the hand too low or too high, stays so from any stand-off pose
+    (arm.pick.height_problem); any other problem may pass from a new one. A plan in
+    reach whose hand would close across more of the object than the open gripper is
+    refused too (_fits_fingers).
     """
     here = ctx.base.pose()
-    plan = _plan_from_here(settings, found, here)
+    plan = _plan_from_here(settings, grasp, found, here)
     problems = reach_problems(
-        settings, plan, (found.x, found.y, found.z), (here.x, here.y, here.yaw)
+        settings, grasp, plan, (found.x, found.y, found.z), (here.x, here.y, here.yaw)
     )
     if not problems:
         _fits_fingers(ctx, settings, found, label, checkpoint, plan)
@@ -472,8 +489,8 @@ def _plan_in_reach(
         "; ".join(problems),
     )
     sentence = ctx.arms.state().sentence()
-    if not settings.min_target_z_m <= found.z <= settings.max_target_z_m:
-        side = "low" if found.z < settings.min_target_z_m else "high"
+    side = height_problem(settings, plan, found.z)
+    if side is not None:
         advice = checkpoint.advice(None)
         raise StepError(
             ErrorCode.PRECONDITION_FAILED,
@@ -527,7 +544,7 @@ def _fits_fingers(
 
 
 def _grasp_then_touch_off(
-    ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str
+    ctx: Ctx, settings: PickSettings, grasp: Grasp, found: RecalledObject, label: str
 ) -> str:
     """_grasp, then the fingers' octomap allowance turned off, however _grasp ended.
 
@@ -548,7 +565,7 @@ def _grasp_then_touch_off(
     error: BaseException | None = None
     answer = ""
     try:
-        answer = _grasp(ctx, settings, found, label)
+        answer = _grasp(ctx, settings, grasp, found, label)
     except BaseException as raised:
         error = raised
         raise
@@ -582,7 +599,9 @@ def _touch_off(ctx: Ctx, label: str, error: BaseException | None, answer: str) -
     error.add_note(note)
 
 
-def _grasp(ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str) -> str:
+def _grasp(
+    ctx: Ctx, settings: PickSettings, grasp: Grasp, found: RecalledObject, label: str
+) -> str:
     """Tuck the other arm, open the hand, reach, approach, close, lift and go home.
 
     `found` is the object as the memory held it after the drive. It is read again
@@ -617,7 +636,7 @@ def _grasp(ctx: Ctx, settings: PickSettings, found: RecalledObject, label: str) 
     # The other arm's move can take half a minute, and the object can be taken or
     # moved meanwhile.
     seen = _seen_again(ctx, settings, found, label, _BEFORE_REACH)
-    plan = _plan_in_reach(ctx, settings, seen, label, _BEFORE_REACH)
+    plan = _plan_in_reach(ctx, settings, grasp, seen, label, _BEFORE_REACH)
     _reach(ctx, settings, plan.pregrasp, f"The reach toward {label} failed: ", whole_body=True)
     # The fingers close on the object's octomap voxels, so from here on they may touch
     # the octomap. The allowance stays until the move of the other arm home (_go_home).

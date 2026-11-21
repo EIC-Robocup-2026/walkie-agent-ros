@@ -3,6 +3,7 @@
 import math
 import re
 from dataclasses import replace
+from types import MappingProxyType
 
 import pytest
 
@@ -49,11 +50,12 @@ def remembered(
     room: str | None = "kitchen room",
     size: tuple[float, float, float] | None = None,
     yaw: float | None = None,
+    label: str = "bottle",
 ) -> RecalledObject:
     return RecalledObject(
         id=object_id,
         name=name,
-        label="bottle",
+        label=label,
         category="drink",
         room=room,
         on="kitchen table 3",
@@ -107,13 +109,19 @@ def refusals(robot: FakeRobot) -> list[str | None]:
     return [call["error"] for call in robot.calls if call["verb"] == "arms.reach"]
 
 
-def at_stand_off(robot: FakeRobot, x: float, y: float) -> None:
-    """The base stands at a stand-off pose of the object at (x, y), facing its heading."""
+def at_stand_off(robot: FakeRobot, x: float, y: float, grasp_name: str = "side") -> None:
+    """The base stands at the grasp's stand-off pose of the object at (x, y), facing its heading."""
     here = robot.pose()
-    settings = load_pick_settings()
-    distance = math.hypot(settings.standoff_m, settings.standoff_left_m)
+    grasp = load_pick_settings().grasps[grasp_name]
+    distance = math.hypot(grasp.standoff_m, grasp.standoff_left_m)
     assert math.hypot(x - here.x, y - here.y) == pytest.approx(distance)
-    assert heading_from(settings, here.x, here.y, x, y) == pytest.approx(here.yaw)
+    assert heading_from(grasp, here.x, here.y, x, y) == pytest.approx(here.yaw)
+
+
+def side_plan(x: float, y: float, z: float, heading: float, approach: float):
+    """The plan pick_object makes for a bottle, which takes the side grasp."""
+    settings = load_pick_settings()
+    return plan_pick(settings, settings.grasp_for("bottle"), x, y, z, heading, approach)
 
 
 def fail_on_call(monkeypatch, robot: FakeRobot, verb: str, nth: int, error: StepError) -> None:
@@ -184,9 +192,14 @@ def after_call(monkeypatch, robot: FakeRobot, verb: str, nth: int, then) -> None
     monkeypatch.setattr(robot, verb, changing)
 
 
-def pick_settings(monkeypatch, **changes) -> None:
-    """Pick with config/pick.toml's numbers but `changes`, and read the memory often."""
-    settings = replace(load_pick_settings(PROJECT_ROOT / "config" / "pick.toml"), **changes)
+def pick_settings(monkeypatch, side: dict | None = None, **changes) -> None:
+    """Pick with config/pick.toml's numbers but `changes`, `side` in the side grasp, and
+    read the memory often."""
+    settings = load_pick_settings(PROJECT_ROOT / "config" / "pick.toml")
+    if side:
+        grasps = {**settings.grasps, "side": replace(settings.grasps["side"], **side)}
+        changes["grasps"] = MappingProxyType(grasps)
+    settings = replace(settings, **changes)
     monkeypatch.setattr(grasp, "load_pick_settings", lambda: settings)
     monkeypatch.setattr(grasp, "SIGHTING_POLL_S", 0.01)
 
@@ -254,6 +267,33 @@ def test_a_pick_drives_to_the_stand_off_reaches_closes_and_lifts(arm_poses):
     assert arms == {"right"}
 
 
+def test_an_apple_is_grasped_from_above_and_a_bottle_from_the_side(arm_poses, monkeypatch):
+    # config/pick.toml lists the detector label "apple" for the top grasp.
+    robot, ctx = picking(arm_poses, remembered("apple", label="apple"))
+    targets = hand_targets(monkeypatch, robot)
+
+    answer = pick_object(ctx, "apple")
+
+    assert answer == (
+        "Picked up the apple with the right hand, lifted it and brought both arms home. "
+        f"{SAFE_SENTENCE}"
+    )
+    at_stand_off(robot, 1.0, 0.0, "top")
+    here = robot.pose()
+    settings = load_pick_settings()
+    approach = math.atan2(-here.y, 1.0 - here.x)
+    plan = plan_pick(settings, settings.grasps["top"], 1.0, 0.0, 0.75, here.yaw, approach)
+    assert targets == list(dict(plan.hand_poses()).values())
+    # The hand stands over the centre with the fingers down, and moves straight down
+    # onto it: 0.07 m above the centre at the grasp, 0.14 m higher before it.
+    pregrasp, grasp_pose, lift, _ = targets
+    for pose in (pregrasp, grasp_pose, lift):
+        assert (pose.x, pose.y) == pytest.approx((1.0, 0.0))
+        assert (pose.roll, pose.pitch) == (math.pi, 0.0)
+    assert (pregrasp.z, grasp_pose.z, lift.z) == pytest.approx((0.96, 0.82, 0.92))
+    assert reaches(robot)[:2] == [(True, False, False, 90.0), (False, True, True, 30.0)]
+
+
 def test_the_answer_holds_no_number_of_the_geometry(arm_poses):
     _, ctx = picking(arm_poses, remembered(x=2.37, y=-1.21, z=0.83))
 
@@ -295,9 +335,7 @@ def test_the_reach_goes_to_where_the_memory_holds_the_object_after_the_drive(
     pick_object(ctx, "water bottle")
 
     here = robot.pose()
-    plan = plan_pick(
-        load_pick_settings(), 1.03, 0.0, 0.70, here.yaw, math.atan2(-here.y, 1.03 - here.x)
-    )
+    plan = side_plan(1.03, 0.0, 0.70, here.yaw, math.atan2(-here.y, 1.03 - here.x))
     assert targets[1] == plan.grasp
 
 
@@ -416,9 +454,7 @@ def test_a_new_sighting_during_the_wait_is_the_one_reached_for(arm_poses, monkey
     # Three reads after the drive, then one before the reach and one before the approach.
     assert len(reads) == 5
     here = robot.pose()
-    plan = plan_pick(
-        load_pick_settings(), 1.02, 0.0, 0.75, here.yaw, math.atan2(-here.y, 1.02 - here.x)
-    )
+    plan = side_plan(1.02, 0.0, 0.75, here.yaw, math.atan2(-here.y, 1.02 - here.x))
     assert targets[1] == plan.grasp
 
 
@@ -538,9 +574,7 @@ def test_a_sighting_during_the_wait_before_the_reach_is_reached_for(arm_poses, m
     # One read after the drive, two before the reach and one before the approach.
     assert len(reads) == 4
     here = robot.pose()
-    plan = plan_pick(
-        load_pick_settings(), 1.04, 0.0, 0.75, here.yaw, math.atan2(-here.y, 1.04 - here.x)
-    )
+    plan = side_plan(1.04, 0.0, 0.75, here.yaw, math.atan2(-here.y, 1.04 - here.x))
     assert targets[:2] == [plan.pregrasp, plan.grasp]
 
 
@@ -641,9 +675,7 @@ def test_the_approach_keeps_the_plan_of_the_reach_when_the_object_shifts_a_littl
 
     # The straight approach goes from the pre-grasp pose along the reach's own line.
     here = robot.pose()
-    plan = plan_pick(
-        load_pick_settings(), 1.0, 0.0, 0.75, here.yaw, math.atan2(-here.y, 1.0 - here.x)
-    )
+    plan = side_plan(1.0, 0.0, 0.75, here.yaw, math.atan2(-here.y, 1.0 - here.x))
     assert targets[:2] == [plan.pregrasp, plan.grasp]
 
 
@@ -679,7 +711,7 @@ def test_an_object_too_high_from_the_start_is_driven_to_but_not_reached_for(arm_
 def test_an_object_the_memory_moved_out_of_reach_asks_for_a_new_pick(arm_poses, monkeypatch):
     # An envelope that ends 0.75 m from the base; the object, 0.68 m from the stand-off
     # pose, is seen 0.10 m further away after the drive.
-    pick_settings(monkeypatch, max_reach_m=0.75)
+    pick_settings(monkeypatch, side={"max_reach_m": 0.75})
     robot, ctx = picking(arm_poses, remembered())
     read_again(monkeypatch, ctx, replace(remembered(), x=1.10))
 
@@ -796,9 +828,9 @@ def test_the_hand_moves_in_along_the_line_from_where_the_base_stopped(arm_poses,
 
     here = robot.pose()
     approach = math.atan2(0.0 - here.y, 1.0 - here.x)
-    settings = load_pick_settings()
-    grasp_back = settings.grasp_back_m
-    pregrasp_back = settings.grasp_back_m + settings.pregrasp_back_m
+    side = load_pick_settings().grasps["side"]
+    grasp_back = side.grasp_back_m
+    pregrasp_back = side.grasp_back_m + side.pregrasp_back_m
     pregrasp, grasp, lift, clear = targets
     assert grasp.x == pytest.approx(1.0 - grasp_back * math.cos(approach))
     assert grasp.y == pytest.approx(-grasp_back * math.sin(approach))

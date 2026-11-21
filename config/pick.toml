@@ -7,31 +7,22 @@
 # the hand link (openarm_right_hand) goes to a pre-grasp pose through the
 # commander's whole-body group, moves straight in to the grasp pose, the gripper
 # closes, the hand moves straight up and then beside the base, and both arms go
-# home, the picking arm with the lift at home_lift_m. The numbers below picked the Chula
-# simulation's water bottle on 2026-11-20. The checks at the end of the file, on the
-# sighting's age, the object's shift and the reach envelope, were derived from that
-# pick and the arm's reach afterwards. Later end-to-end picks in the Chula simulation
-# the same day ran them after the drive, before the whole-body reach and right before
-# the straight approach, and held the bottle. On 2026-11-21 scripted picks set the
-# envelope's furthest reach (decision PK-57). None of the numbers has been tried on
-# the robot.
+# home, the picking arm with the lift at home_lift_m. How the hand moves in, and where
+# the base stands for it, is a grasp of the [grasps] tables at the end of the file,
+# chosen by the object memory's detector label ([grasp_labels]). The numbers of the
+# side grasp picked the Chula simulation's water bottle on 2026-11-20. The checks
+# below, on the sighting's age, the object's shift and the reach envelope, were
+# derived from that pick and the arm's reach afterwards. Later end-to-end picks in the
+# Chula simulation the same day ran them after the drive, before the whole-body reach
+# and right before the straight approach, and held the bottle. On 2026-11-21 scripted
+# picks set the side grasp's furthest reach (decision PK-57). None of the numbers has
+# been tried on the robot.
 
 # The arm that picks: "left" or "right".
 arm = "right"
 # The frame of every hand target. The object memory keeps positions in it.
 frame_id = "map"
 
-# Where base_footprint stands at the stand-off pose, which faces along the approach
-# heading: standoff_m back from the object's centre along the heading, and
-# standoff_left_m to the left of that line (negative is to the right). Standing to
-# the left puts the object ahead of the right hand, which hangs right of the base's
-# centre. The hand then moves in along the line from where the base stopped to the
-# object, not along the heading. walkie-ros's scripted bottle pick
-# (sim_bottle_pick.py) proved 0.65 and 0.20 in the Chula room: the arm then usually
-# reaches with the base still. From 0.90 m straight behind, the whole-body reach
-# moved and turned the base, and the collision monitor once stopped it.
-standoff_m = 0.65
-standoff_left_m = 0.20
 # The approach headings to try, in degrees, in order: each is added to the heading
 # whose stand-off line the robot already stands on. The next one is tried when Nav2 cannot
 # reach the stand-off pose of the one before. The last three come from the far side:
@@ -39,19 +30,7 @@ standoff_left_m = 0.20
 # 60 degrees of the water bottle at its south-west corner lay on the table.
 heading_offsets_deg = [0.0, 30.0, -30.0, 60.0, -60.0, 120.0, -120.0, 180.0]
 
-# Metres the hand link stands back from the object's centre at the grasp pose, along
-# the hand's approach. openarm_right_hand_tcp is 0.08 m along the hand link's +z, so 0.06
-# puts the tool centre point 0.02 m past the centre, the depth that walkie-ros's
-# scripted pick and its offline check_grasp.py proved for the water bottle.
-grasp_back_m = 0.06
-# Metres the pre-grasp pose stands back from the grasp pose, along the approach. At
-# 0.10, for the Chula simulation's can (radius 0.038 m), the right hand's left finger
-# touched octomap voxels 0.068 to 0.077 m from the can's axis, where only the can's
-# own 0.03 m voxels stand, and MoveIt found no collision-free pose for the pre-grasp
-# in 10 of 20 picks. At 0.12, 0.14 and 0.16 it found one in all 19 picks that tried
-# them (decision PK-60).
-pregrasp_back_m = 0.14
-# Metres the hand rises after the gripper holds the object.
+# Metres the hand rises from the grasp pose after the gripper holds the object.
 lift_m = 0.10
 # Where the hand then moves in a straight line, at the lifted height, before the arm
 # goes home: clear_forward_m ahead of base_footprint and clear_side_m out to the
@@ -65,16 +44,6 @@ clear_side_m = 0.35
 # the lift by over 0.1 m, and with the lift that low the arm's home pose touches the
 # base, so the move home goes through the arm's *_lift group and raises it back.
 home_lift_m = 0.7435
-
-# The hand's orientation, in degrees. Yaw is the direction of the hand's approach,
-# from the base to the object, plus hand_yaw_offset_deg. Pitch -90 with the yaw
-# turned by 180 puts the hand link's +z, the direction the fingers point, along the
-# approach with the wrist camera bracket up. With pitch 90 and no offset the fingers point the same way, but the bracket
-# hangs 0.11 m below the hand and reaches the table top at a bottle's centre height
-# (walkie-ros sim_bottle_pick.py, hand_rpy).
-hand_roll_deg = 0.0
-hand_pitch_deg = -90.0
-hand_yaw_offset_deg = 180.0
 
 # Seconds each motion may take: the whole-body reach to the pre-grasp pose, which
 # plans for the base, the lift and the arm, and each straight-line move of the arm.
@@ -102,25 +71,17 @@ max_target_shift_m = 0.15
 # further arm goal. Heights are in metres above the frame's floor, where
 # base_footprint stands.
 # The object's centre height: a table or counter top object. The Chula water
-# bottle's centre stood at 0.862 m. The hand approaches level, so it works near the
-# height of the arm's shoulder, which the lift moves between about 0.54 and 1.28 m
-# above the floor. The upper bound plus lift_m stays under that top.
+# bottle's centre stood at 0.862 m. The side grasp's hand moves in level, so it works
+# near the height of the arm's shoulder, which the lift moves between about 0.54 and
+# 1.28 m above the floor. The upper bound plus lift_m stays under that top. The top
+# grasp's hand poses stand higher than the object, and the hand-pose heights below
+# refuse an object too high for them.
 min_target_z_m = 0.55
 max_target_z_m = 1.15
 # How far across the floor the object and each hand pose (pregrasp, grasp, lift,
-# clear) may lie from base_footprint where the base stopped. The Chula pick had the
-# object 0.68 m away, grasp and lift 0.62 and clear 0.46, and its pregrasp, at 0.10
-# back, 0.52; at the 0.14 above it is 0.48. The base stopping 0.10 m short or long
-# moves the object to 0.58 to 0.78. The upper bound comes from 23 scripted picks of
-# the Chula bottle and can on 2026-11-21, with the base fixed for the straight
-# approach (decision PK-57). Of the 20 with the object up to 0.814 m away, 19 made
-# the straight approach and closed on the object (the camera saw 16 hold it and could
-# not see the other 3), and 1 caught the table on the way to the pre-grasp pose. No
-# straight approach could be planned with the object 0.845 or 0.846 m away, and the
-# pick at 0.848 m also caught the table. The object is the furthest point of a pick,
-# 0.06 m past the grasp pose.
+# clear) must lie at least from base_footprint where the base stopped. Each grasp
+# sets how far they may lie at most (max_reach_m).
 min_reach_m = 0.35
-max_reach_m = 0.82
 # How high each hand pose may be: from just under the lowest object to just over
 # the shoulder's highest point (the Chula pick's hand poses stood 0.862 to 0.962 m
 # high).
@@ -140,3 +101,96 @@ max_reach_z_m = 1.30
 # body at 0.082 m does not. A box from a partial view can read narrower than the
 # object, so a wide object may still pass.
 max_grasp_width_m = 0.078
+
+# The grasp for an object whose detector label grasp_labels does not list.
+default_grasp = "side"
+
+# The grasp for each listed detector label, the memory's stored label
+# (RecalledObject.label), compared stripped and lower-cased. The LLM never picks it.
+[grasp_labels]
+apple = "top"
+
+# Each grasp: how the hand moves in to the object, and where the base stands for it.
+#
+# direction: "level", along the line from where the base stopped to the object, or
+# "down", straight down onto the object from above.
+#
+# standoff_m and standoff_left_m: where base_footprint stands at the stand-off pose,
+# which faces along the approach heading: standoff_m back from the object's centre
+# along the heading, and standoff_left_m to the left of that line (negative is to the
+# right). Standing to the left puts the object ahead of the right hand, which hangs
+# right of the base's centre.
+#
+# grasp_back_m: metres the hand link stands back from the object's centre at the
+# grasp pose, against the hand's move in. openarm_right_hand_tcp is 0.08 m along the
+# hand link's +z.
+#
+# pregrasp_back_m: metres the pre-grasp pose stands back from the grasp pose, against
+# the move in.
+#
+# hand_roll_deg, hand_pitch_deg, hand_yaw_offset_deg: the hand's orientation, in
+# degrees. Yaw is the direction from the base to the object plus hand_yaw_offset_deg.
+# The fingers close along the hand link's y axis, which both grasps keep level.
+#
+# max_reach_m: how far across the floor the object and each hand pose may lie from
+# base_footprint where the base stopped. It must take in the object from a base that
+# stopped 0.05 m off the stand-off pose, where pick_object skips the drive.
+
+# Level from the side, at the object's centre height. walkie-ros's scripted bottle
+# pick (sim_bottle_pick.py) proved the stand-off of 0.65 and 0.20 in the Chula room:
+# the arm then usually reaches with the base still. From 0.90 m straight behind, the
+# whole-body reach moved and turned the base, and the collision monitor once stopped
+# it. A grasp_back_m of 0.06 puts the tool centre point 0.02 m past the centre, the
+# depth that walkie-ros's scripted pick and its offline check_grasp.py proved for the
+# water bottle. At a pregrasp_back_m of 0.10, for the Chula simulation's can (radius
+# 0.038 m), the right hand's left finger touched octomap voxels 0.068 to 0.077 m from
+# the can's axis, where only the can's own 0.03 m voxels stand, and MoveIt found no
+# collision-free pose for the pre-grasp in 10 of 20 picks. At 0.12, 0.14 and 0.16 it
+# found one in all 19 picks that tried them (decision PK-60). Pitch -90 with the yaw
+# turned by 180 puts the hand link's +z, the direction the fingers point, along the
+# approach with the wrist camera bracket up. With pitch 90 and no offset the fingers
+# point the same way, but the bracket hangs 0.11 m below the hand and reaches the
+# table top at a bottle's centre height (walkie-ros sim_bottle_pick.py, hand_rpy).
+#
+# The Chula pick had the object 0.68 m away, grasp and lift 0.62 and clear 0.46, and
+# its pregrasp, at 0.10 back, 0.52; at 0.14 it is 0.48. The base stopping 0.10 m short
+# or long moves the object to 0.58 to 0.78. max_reach_m comes from 23 scripted picks
+# of the Chula bottle and can on 2026-11-21, with the base fixed for the straight
+# approach (decision PK-57). Of the 20 with the object up to 0.814 m away, 19 made
+# the straight approach and closed on the object (the camera saw 16 hold it and could
+# not see the other 3), and 1 caught the table on the way to the pre-grasp pose. No
+# straight approach could be planned with the object 0.845 or 0.846 m away, and the
+# pick at 0.848 m also caught the table. The object is the furthest point of a pick,
+# 0.06 m past the grasp pose.
+[grasps.side]
+direction = "level"
+standoff_m = 0.65
+standoff_left_m = 0.20
+grasp_back_m = 0.06
+pregrasp_back_m = 0.14
+hand_roll_deg = 0.0
+hand_pitch_deg = -90.0
+hand_yaw_offset_deg = 180.0
+max_reach_m = 0.82
+
+# Straight down from above, for a small object whose centre stands close to the
+# surface, such as the Chula simulation's apple (radius 0.036 m, its centre 0.04 m
+# above the table). From walkie-ros's scripted
+# top pick (sim_bottle_pick.py --top): roll 180 points the hand link's +z, the
+# fingers, straight down, with its +x, the wrist camera bracket, along the line from
+# the base to the object. A grasp_back_m of 0.07 puts the tool centre point 0.01 m
+# below the object's centre, and the pre-grasp pose stands 0.14 m above that. The arm
+# reaches straight down exactly up to 0.62 m ahead of base_footprint, with the hand
+# 0.15 to 0.30 m to its right, so the stand-off stands 0.58 m back and 0.20 m left,
+# 0.613 m from the object. max_reach_m takes in 0.664 m, from a base 0.05 m off. These
+# numbers are provisional until scripted top picks of the Chula apple settle them.
+[grasps.top]
+direction = "down"
+standoff_m = 0.58
+standoff_left_m = 0.20
+grasp_back_m = 0.07
+pregrasp_back_m = 0.14
+hand_roll_deg = 180.0
+hand_pitch_deg = 0.0
+hand_yaw_offset_deg = 0.0
+max_reach_m = 0.67

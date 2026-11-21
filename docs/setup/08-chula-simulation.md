@@ -443,6 +443,12 @@ the tool log shows each as a call:
    then 120° to either side and the far side, 180°.
    A drive that Nav2 aborts within 0.10 m and 10° of its goal counts as
    arrived, and so does a `go_to` that ends close enough to the stand-off pose.
+   No chair or stool may stand in the stand-off pose's footprint, about 0.34
+   to 0.96 m back from the object and from 0.06 m right to 0.46 m left of the
+   approach line. Nav2 reports a drive reached even when a stool there keeps
+   the base 0.11 to 0.19 m off, and the reach beside the stool then mostly
+   fails. In this world `chula_stool_2` stands in the footprint for the can
+   on the kitchen table's north side (decision PK-61).
 3. **See it again, and check the reach.** The pick reads the object from the
    memory again and reaches only for a sighting at most 5 s old. It waits up
    to 6 s for one, since Walkie has no head to turn toward the object. Before

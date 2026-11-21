@@ -435,6 +435,25 @@ def test_a_limit_out_of_range_is_refused_before_anything_is_sent(database, memor
     assert sent(database) == 0
 
 
+@pytest.mark.parametrize(
+    ("near", "message"),
+    [
+        ((math.nan, 0.0), "Refused: near_x must be a finite number."),
+        ((0.0, math.inf), "Refused: near_y must be a finite number."),
+        ((True, 0.0), "Refused: near_x must be a finite number."),
+        ((1.0,), "Refused: near must be a point (x, y) in the map."),
+        ([1.0, 2.0], "Refused: near must be a point (x, y) in the map."),
+    ],
+)
+def test_a_near_that_is_not_a_point_is_refused_before_anything_is_sent(
+    database, memory, near, message
+):
+    error = fails(memory.search, "cup", near=near)
+
+    assert (error.code, error.message) == (ErrorCode.REFUSED, message)
+    assert sent(database) == 0
+
+
 # -- What a record says -------------------------------------------------------------------
 
 

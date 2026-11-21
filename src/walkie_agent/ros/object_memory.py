@@ -81,7 +81,12 @@ from walkie_database_msgs.msg import ObjectQuery, ObjectSummary, OperationStatus
 from walkie_database_msgs.srv import GetObject, GetRoomContents, ListRooms, SearchObjects
 
 from walkie_agent.capabilities import RecalledObject, RoomObjects
-from walkie_agent.capabilities.guards import CancelToken, require_text, require_timeout
+from walkie_agent.capabilities.guards import (
+    CancelToken,
+    require_finite,
+    require_text,
+    require_timeout,
+)
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.perception.object_words import category_of, matches
 from walkie_agent.ros.base import MAP_FRAME
@@ -177,6 +182,7 @@ class RosObjectMemory:
     ) -> tuple[RecalledObject, ...]:
         require_text(name=name)
         _require_limit(limit)
+        _require_near(near)
         wanted = name.strip().lower()
         what = f"recalling {wanted}" if wanted else "recalling objects"
         deadline = _deadline(timeout_s)
@@ -374,6 +380,15 @@ def _require_limit(limit: int) -> None:
         raise StepError(
             ErrorCode.REFUSED, f"Refused: limit must be a whole number from 1 to {MAX_RESULTS}."
         )
+
+
+def _require_near(near: tuple[float, float] | None) -> None:
+    """Refuse a `near` that is not a point (x, y) of finite numbers. None is no point."""
+    if near is None:
+        return
+    if not isinstance(near, tuple) or len(near) != 2:
+        raise StepError(ErrorCode.REFUSED, "Refused: near must be a point (x, y) in the map.")
+    require_finite(near_x=near[0], near_y=near[1])
 
 
 def _room_request(room: str, limit: int) -> GetRoomContents.Request:

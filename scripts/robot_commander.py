@@ -91,7 +91,7 @@ PRESETS = [
 ]
 
 BASE, MAP, ARMS, AGENT = "1 base", "2 map", "3 arms", "4 agent"
-STOP = "0 stop the task"
+STOP = "0 stop and reset"
 WHOLE_BODY = "5 pick: whole body, one at a time"
 PICK_AGENT = "6 pick: memory and agent, one at a time"
 PICK_CHECKS = "7 pick: checks and settings"
@@ -250,10 +250,11 @@ def say_to_agent(text: str) -> str:
     )
 
 
-# The runbook's step 8 reset: the agent ends its task, stops the base, and forgets
-# the conversation and the people remembered in the task. The object memory keeps
-# what it saw. The wait ends as say_to_agent's does, so a click while no agent runs
-# cannot reset one that starts minutes later.
+# The runbook's step 8 reset: the agent ends its task, stops the base and, with
+# --arms, the arms, and forgets the conversation and the people remembered in the
+# task, without a word. The object memory keeps what it saw. The wait ends as
+# say_to_agent's does, so a click while no agent runs cannot reset one that starts
+# minutes later. Group 0's "Run group" sends the stop and the reset together.
 RESET_AGENT = (
     "pixi run --frozen ros2 topic pub -w 1 --once --max-wait-time-secs 10 /walkie/reset"
     " std_msgs/msg/Empty"

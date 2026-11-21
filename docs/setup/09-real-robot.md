@@ -85,7 +85,8 @@ terminal above, plus Save map, the Foxglove bridge and a test task. Open
   again.
 - Groups **5** to **10** are the pick test
   ([Optional E](#optional-e-pick-up-a-remembered-object)). Group **0** holds
-  **Stop the task**, the typed stop of [step 8](#8-stop-and-reset).
+  **Stop the task**, the typed stop of [step 8](#8-stop-and-reset), and
+  **Forget the conversation**, its reset.
 - **Foxglove bridge** only lets clients watch. It leaves out publishing,
   parameters and service calls, so a laptop on the LAN cannot drive the robot
   through it.
@@ -1376,7 +1377,8 @@ pixi run --frozen ros2 topic pub -w 1 --once /from_human rai_interfaces/msg/HRIM
 task. Keep this command typed in a terminal, ready to send.
 
 **Reset.** This also forgets the conversation and the people remembered in the
-task:
+task. The object memory keeps what it saw. **Forget the conversation** in
+group 0 sends it:
 
 ```bash
 pixi run --frozen ros2 topic pub -w 1 --once /walkie/reset std_msgs/msg/Empty

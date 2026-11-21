@@ -250,6 +250,16 @@ def say_to_agent(text: str) -> str:
     )
 
 
+# The runbook's step 8 reset: the agent ends its task, stops the base, and forgets
+# the conversation and the people remembered in the task. The object memory keeps
+# what it saw. The wait ends as say_to_agent's does, so a click while no agent runs
+# cannot reset one that starts minutes later.
+RESET_AGENT = (
+    "pixi run --frozen ros2 topic pub -w 1 --once --max-wait-time-secs 10 /walkie/reset"
+    " std_msgs/msg/Empty"
+)
+
+
 def runbook_commands(day: str) -> list[Command]:
     """The runbook's commands, in click order. day names the people database's folder."""
     data = f"$HOME/walkie-data/{day}"
@@ -317,6 +327,7 @@ def runbook_commands(day: str) -> list[Command]:
         # Optional E, the pick: whole-body MoveIt from walkie-ros-fullbody on the
         # team's graph, beside T1, T2 (with the arms), T3, T4 Nav2 and T9.
         Command("Stop the task", STOP, agent, say_to_agent("stop")),
+        Command("Forget the conversation", STOP, agent, RESET_AGENT),
         Command("P1 whole-body base parts", WHOLE_BODY, fullbody, WHOLE_BODY_BASE),
         Command("P2 MoveIt, whole body", WHOLE_BODY, fullbody, WHOLE_BODY_MOVEIT),
         Command("P3 commander, whole body", WHOLE_BODY, fullbody, WHOLE_BODY_COMMANDER),

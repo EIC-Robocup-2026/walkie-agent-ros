@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from rai_interfaces.msg import AudioMessage, HRIMessage
+from rcl_interfaces.msg import Log
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, ReliabilityPolicy
 from ros_fakes import WATCHDOG_S, Background, FakeConnector, FakeNode, bounded
 from runtime_harness import (
@@ -410,10 +411,15 @@ def test_console_reply_is_hri_message():
 
 def test_custom_topics_are_used(serve):
     bridge, connector = bridge_only(
-        output_topic="/c", todos_topic="/t", input_topic="/i", task_topic="/k", reset_topic="/r"
+        output_topic="/c",
+        todos_topic="/t",
+        input_topic="/i",
+        task_topic="/k",
+        reset_topic="/r",
+        reasoning_topic="/m",
     )
     bridge.open(SimpleNamespace())
-    assert {p.topic for p in connector.node.publishers} == {"/c", "/t"}
+    assert {p.topic for p in connector.node.publishers} == {"/c", "/t", "/m"}
     assert {s.topic for s in connector.node.subscriptions} == {"/i", "/k", "/r"}
 
 
@@ -514,8 +520,47 @@ def test_a_destroy_failure_does_not_stop_the_rest(caplog):
     connector.node.destroy_error = RuntimeError("already gone")
     with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.operator_topics"):
         bridge.close()
-    assert len(connector.node.destroyed) == 5
+    assert len(connector.node.destroyed) == 6
     assert "Could not destroy a bridge endpoint" in caplog.text
+
+
+def test_each_step_of_a_run_is_a_latched_log_line_named_by_its_kind():
+    bridge, connector = bridge_only()
+    bridge.on_trace("call", 'go_to({"place": "sofa"})', False)
+    bridge.on_trace("result", "go_to: There is no attic.", True)
+
+    reasoning = publisher(connector, "/walkie/reasoning")
+    assert reasoning.msg_type is Log
+    assert reasoning.qos.reliability == ReliabilityPolicy.RELIABLE
+    assert reasoning.qos.durability == DurabilityPolicy.TRANSIENT_LOCAL
+    assert reasoning.qos.history == HistoryPolicy.KEEP_LAST
+    assert reasoning.qos.depth == 100
+    assert [(m.name, m.msg, m.level) for m in reasoning.published] == [
+        ("call", 'go_to({"place": "sofa"})', Log.INFO),
+        ("result", "go_to: There is no attic.", Log.WARN),
+    ]
+    assert reasoning.published[0].stamp == connector.node.clock.now().to_msg()
+
+
+def test_a_step_that_cannot_be_published_is_logged_and_lost(caplog):
+    bridge, connector = bridge_only()
+
+    def broken(_message):
+        raise RuntimeError("publisher is gone")
+
+    publisher(connector, "/walkie/reasoning").on_publish = broken
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.ros.operator_topics"):
+        bridge.on_trace("model", "Going.", False)
+    assert "Could not publish on /walkie/reasoning" in caplog.text
+
+
+def test_no_step_is_published_after_close():
+    bridge, connector = bridge_only()
+    reasoning = publisher(connector, "/walkie/reasoning")
+    bridge.close()
+    bridge.on_trace("model", "Too late.", False)
+    assert reasoning in connector.node.destroyed
+    assert reasoning.published == []
 
 
 def test_progress_callbacks_accept_loop_and_worker_threads():

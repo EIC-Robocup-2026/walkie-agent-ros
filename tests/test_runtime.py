@@ -145,8 +145,10 @@ from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.prompts import SYSTEM_PROMPT
 from walkie_agent.runtime import ToolLog, build_agent, build_middleware
 from walkie_agent.runtime.middleware import (
+    AFTER_STOP,
     EMPTY_REPLY,
     INTERRUPTED,
+    TRACE_LIMIT,
     UNREADABLE_ARGUMENTS,
     RepairHistory,
 )
@@ -185,8 +187,13 @@ def test_the_whole_middleware_list_is_pinned(tmp_path):
         "Deadline",
         "ToolErrorMiddleware",
     ]
-    assert names(fallback=ScriptedModel(), tool_log=ToolLog(tmp_path / "log.jsonl")) == [
+    assert names(
+        fallback=ScriptedModel(),
+        tool_log=ToolLog(tmp_path / "log.jsonl"),
+        on_trace=lambda *line: None,
+    ) == [
         "ToolLog",
+        "ReasoningTrace",
         "StopLatch",
         "SerialGuard",
         "AnswerEmptyReply",
@@ -779,6 +786,113 @@ def test_a_log_failure_does_not_lose_the_tool_result(tmp_path, caplog):
     assert stack.answer("ok").status == "success"
     assert stack.state["ledger"][0]["ok"] is True
     assert any("Could not write to the tool log" in message for message in caplog.messages)
+
+
+# -- The reasoning trace ----------------------------------------------------------
+
+
+def traced(*script, **build):
+    """A stack whose trace lines land in the returned list as (kind, text, failed)."""
+    lines: list[tuple[str, str, bool]] = []
+    stack = make_stack(*script, on_trace=lambda *line: lines.append(line), **build)
+    return stack, lines
+
+
+def test_the_trace_reports_the_task_the_model_and_each_tool_answer_in_order():
+    thought = AIMessage(
+        content=[
+            {"type": "reasoning", "reasoning": "The sofa is the nearest place."},
+            {"type": "text", "text": "Going to the sofa."},
+        ],
+        tool_calls=[drive("ok")],
+    )
+    stack, lines = traced(thought, ai(drive("bad", "attic")), DONE)
+    stack.run("Go to the sofa.")
+
+    assert lines == [
+        ("human", "Go to the sofa.", False),
+        ("thinking", "The sofa is the nearest place.", False),
+        ("model", "Going to the sofa.", False),
+        ("call", 'go_to({"place": "sofa"})', False),
+        ("result", f"go_to: {stack.answer('ok').text}", False),
+        ("call", 'go_to({"place": "attic"})', False),
+        ("result", f"go_to: {stack.answer('bad').text}", True),
+        ("model", "Done.", False),
+    ]
+
+
+def test_a_call_whose_arguments_did_not_parse_is_reported_as_failed():
+    stack, lines = traced(ai(invalid=[bad_call("bad")]), DONE)
+    stack.run()
+    assert ("call", 'go_to({"place": )', True) in lines
+
+
+def test_a_failed_model_call_is_reported_and_still_raised():
+    stack, lines = traced(RuntimeError("provider down"))
+    with pytest.raises(RuntimeError, match="provider down"):
+        stack.run("Go.")
+    assert lines == [
+        ("human", "Go.", False),
+        ("model", "The model call failed: RuntimeError('provider down')", True),
+    ]
+
+
+def test_a_reply_from_the_fallback_is_reported_and_the_failure_it_covered_is_not():
+    fallback = ScriptedModel(script=[AIMessage("Fallback here.")])
+    stack, lines = traced(RuntimeError("primary down"), fallback=fallback)
+    stack.run("Go.")
+    assert lines == [("human", "Go.", False), ("model", "Fallback here.", False)]
+
+
+def test_empty_blocks_and_arguments_json_cannot_hold_still_finish_the_run():
+    # Some gateways send hidden reasoning as None.
+    reply = AIMessage(
+        content=[{"type": "reasoning", "reasoning": None}, {"type": "text", "text": None}],
+        tool_calls=[call("go_to", {"place": {"sofa"}}, "odd")],
+    )
+    stack, lines = traced(reply, DONE)
+    stack.run("Go.")
+
+    assert stack.messages[-1].text == "Done."
+    assert lines[:2] == [
+        ("human", "Go.", False),
+        ("call", "go_to({\"place\": \"{'sofa'}\"})", False),
+    ]
+    assert not [line for line in lines if line[0] == "thinking"]
+
+
+def test_calls_refused_after_a_stop_are_reported_as_failed_results():
+    robot = FakeRobot()
+
+    def reply_while_stopping(messages):
+        robot.ctx.cancel.cancel()
+        return ai(drive("late"))
+
+    stack, lines = traced(reply_while_stopping, then=DONE, robot=robot)
+    stack.run("Go.")
+
+    assert lines[-2:] == [
+        ("call", 'go_to({"place": "sofa"})', False),
+        ("result", f"go_to: {AFTER_STOP}", True),
+    ]
+
+
+def test_a_long_text_is_cut_to_the_trace_limit():
+    stack, lines = traced(AIMessage("x" * (TRACE_LIMIT + 50)))
+    stack.run()
+    assert lines[-1] == ("model", "x" * TRACE_LIMIT + " [cut]", False)
+
+
+def test_a_listener_that_raises_costs_the_run_nothing(caplog):
+    def broken(*_line):
+        raise OSError("the viewer is gone")
+
+    stack = make_stack(ai(drive("ok")), DONE, on_trace=broken)
+    with caplog.at_level(logging.ERROR, logger="walkie_agent.runtime.middleware"):
+        stack.run()
+    assert stack.answer("ok").status == "success"
+    assert stack.messages[-1].text == "Done."
+    assert any("Could not report a result line" in message for message in caplog.messages)
 
 
 # -- The system prompt and the tool count -----------------------------------------

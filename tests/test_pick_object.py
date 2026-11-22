@@ -11,6 +11,7 @@ from conftest import PROJECT_ROOT
 from test_object_memory_atomics import WORLD, Remembers
 from walkie_agent.arm.pick import (
     HandPose,
+    PickPlan,
     heading_from,
     load_pick_settings,
     plan_pick,
@@ -18,7 +19,7 @@ from walkie_agent.arm.pick import (
 )
 from walkie_agent.arm.poses import load_arm_poses
 from walkie_agent.arm.state import NOT_SAFE_SENTENCE, SAFE_SENTENCE
-from walkie_agent.capabilities import Ctx, GripperReading, RecalledObject
+from walkie_agent.capabilities import Ctx, GripperReading, NoDisplay, RecalledObject
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.tools.atomic import grasp, pick_object
@@ -265,6 +266,64 @@ def test_a_pick_drives_to_the_stand_off_reaches_closes_and_lifts(arm_poses):
         and call["verb"] not in ("arms.move_to", "arms.read", "arms.restore_touch")
     }
     assert arms == {"right"}
+
+
+class Drawings:
+    """A ctx.display that keeps each drawing with the verbs the robot had run before it."""
+
+    def __init__(self, robot: FakeRobot) -> None:
+        self.robot = robot
+        self.shown: list[tuple[str, PickPlan, RecalledObject, list[str]]] = []
+
+    def show_pick(self, plan: PickPlan, target: RecalledObject, stage: str) -> None:
+        self.shown.append((stage, plan, target, verbs(self.robot)))
+
+
+def test_each_plan_is_drawn_before_the_move_it_plans(arm_poses, monkeypatch):
+    robot, ctx = picking(arm_poses, remembered())
+    drawings = Drawings(robot)
+    ctx = replace(ctx, display=drawings)
+    targets = hand_targets(monkeypatch, robot)
+
+    pick_object(ctx, "water bottle")
+
+    stages = [stage for stage, *_ in drawings.shown]
+    assert stages == [
+        "driving to the stand-off",
+        "planned after the drive",
+        "planned before the reach",
+    ]
+    assert all(target == remembered() for _, _, target, _ in drawings.shown)
+    drive, after, reach = drawings.shown
+    _, drive_plan, _, before_drive = drive
+    after_drive = after[3]
+    _, reach_plan, _, before_reach = reach
+    # The stand-off goes up before the base moves, and the base stops on it.
+    assert before_drive == []
+    here = robot.pose()
+    assert (drive_plan.standoff_x, drive_plan.standoff_y, drive_plan.heading) == pytest.approx(
+        (here.x, here.y, here.yaw)
+    )
+    assert after_drive == ["base.move_relative"]
+    # The last drawing is the plan whose hand poses the arm then takes.
+    assert "arms.reach" not in before_reach
+    assert targets == list(dict(reach_plan.hand_poses()).values())
+
+
+def test_a_plan_refused_as_out_of_reach_is_still_drawn(arm_poses):
+    robot, ctx = picking(arm_poses, remembered(z=1.40))
+    drawings = Drawings(robot)
+
+    fails(replace(ctx, display=drawings))
+
+    assert [stage for stage, *_ in drawings.shown] == [
+        "driving to the stand-off",
+        "planned after the drive",
+    ]
+
+
+def test_a_ctx_draws_nothing_unless_given_a_display():
+    assert isinstance(Ctx(cancel=None, base=None, speech=None, vision=None).display, NoDisplay)
 
 
 def test_an_apple_is_grasped_from_above(arm_poses, monkeypatch):

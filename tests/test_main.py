@@ -31,6 +31,7 @@ from runtime_harness import ScriptedModel, ai, call, wait_until
 from std_msgs.msg import Bool, Empty
 from test_ros_vision import CAMERA_FRAME, person, with_vectors
 from test_scene_file import camera_info
+from visualization_msgs.msg import MarkerArray
 from walkie_vision_msgs.msg import PersonDetectionArray
 
 import walkie_agent.main as main
@@ -39,6 +40,7 @@ from walkie_agent.arm.poses import ArmPoses, load_arm_poses
 from walkie_agent.arm.results import ClientSnapshot, DriveCheck
 from walkie_agent.arm.state import ArmsState, ArmState
 from walkie_agent.capabilities import (
+    NoDisplay,
     Team,
     UnavailableArms,
     UnavailableFacts,
@@ -58,6 +60,7 @@ from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
 from walkie_agent.ros.arms import RosArms
 from walkie_agent.ros.base import RosBase
 from walkie_agent.ros.commander import READ_TIMEOUT_S, CommanderClient
+from walkie_agent.ros.display import PICK_MARKERS_TOPIC, RosDisplay
 from walkie_agent.ros.speech import RosSpeech
 from walkie_agent.ros.vision import RosVision
 from walkie_agent.runtime import Runner, ToolLog
@@ -300,8 +303,17 @@ def test_assemble_uses_runtime_and_one_shared_token(build, monkeypatch):
     assert app.runner._callbacks == [callback]
     assert app.runner._tool_log is tool_log
 
+    assert built_with["on_trace"] == app.bridge.on_trace
+    # Without --arms nothing draws picks.
+    assert isinstance(app.ctx.display, NoDisplay)
+
     # The publishers exist before the Runner starts, and the input opens only after it.
-    assert topics(node.publishers) == {"/to_human", "/walkie/console", "/walkie/todos"}
+    assert topics(node.publishers) == {
+        "/to_human",
+        "/walkie/console",
+        "/walkie/todos",
+        "/walkie/reasoning",
+    }
     assert topics(node.subscriptions) == {"/voice_commands"}
     app.start()
     assert topics(node.subscriptions) == {
@@ -769,6 +781,17 @@ def test_with_arms_the_commander_shares_the_token_and_the_base_checks_the_arms(
     assert app.runner._on_stop == commander.stop
     app.runner.stop()
     assert commander.log == ["stop"]
+
+
+def test_with_arms_picks_are_drawn_on_a_latched_topic_that_close_destroys(build, commanders):
+    built = build(tool_set="hri", arm_poses=POSES)
+    app, node = built.app, built.node
+
+    assert isinstance(app.ctx.display, RosDisplay)
+    [markers] = [p for p in node.publishers if p.topic == PICK_MARKERS_TOPIC]
+    assert markers.msg_type is MarkerArray
+    assert app.close(WATCHDOG_S)
+    assert markers in node.destroyed
 
 
 @pytest.mark.parametrize(("left_on", "touches"), [(True, ["read", "restore"]), (False, ["read"])])
@@ -2020,6 +2043,7 @@ def test_shutdown_orders_runner_goal_drain_connector_context(cli, monkeypatch):
         "destroy /from_human",
         "destroy /walkie/console",
         "destroy /walkie/todos",
+        "destroy /walkie/reasoning",
         "connector.shutdown",
         "try_shutdown",
     ]
@@ -2040,6 +2064,9 @@ def test_partial_start_failure_with_no_connector_still_shuts_the_context(cli, mo
     assert "no middleware" in caplog.text
 
 
+BRIDGE_PUBLISHERS = ("/walkie/console", "/walkie/todos", "/walkie/reasoning")
+
+
 def raise_in(monkeypatch, name):
     def fails(*_args, **_kwargs):
         raise RuntimeError(f"{name} failed")
@@ -2053,8 +2080,8 @@ def raise_in(monkeypatch, name):
         ("RosBase", set()),
         ("RosSpeech", set()),
         ("RosBridge", {"/to_human", "/voice_commands"}),
-        ("build_agent", {"/to_human", "/voice_commands", "/walkie/console", "/walkie/todos"}),
-        ("Runner", {"/to_human", "/voice_commands", "/walkie/console", "/walkie/todos"}),
+        ("build_agent", {"/to_human", "/voice_commands", *BRIDGE_PUBLISHERS}),
+        ("Runner", {"/to_human", "/voice_commands", *BRIDGE_PUBLISHERS}),
     ],
 )
 def test_partial_start_failure_cleans_up(cli, monkeypatch, stage, built_before_it):

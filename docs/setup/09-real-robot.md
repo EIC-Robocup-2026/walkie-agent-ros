@@ -96,7 +96,16 @@ terminal above, plus Save map, the Foxglove bridge and a test task. Open
   `task:=memory`, which adds the depth points. **T7 vision, memory task** in
   group 6 runs both, and **T7 vision** runs neither. The layout's object
   markers and cloud come from **T8 database, object memory**, the memory node of
-  [Optional B](#optional-b-the-object-memory).
+  [Optional B](#optional-b-the-object-memory). Its **Agent reasoning** panel
+  shows `/walkie/reasoning`, one line per step of each run: the request, the
+  model's text, each tool call and each answer, with failures as warnings. It
+  shows the model's hidden reasoning only when the provider returns it with the
+  reply; `ChatOpenAI` over OpenRouter does not. With `--arms`, the 3D panel also
+  draws `/walkie_agent/pick/markers`: the object's box with its name and the
+  pick's stage, the stand-off pose as a blue arrow, each hand pose as axes
+  (x red, y green, z blue), and an orange line through them in order. Both
+  topics are latched, so a client that connects late still gets the last plan
+  and the last 100 steps. After pulling a new layout file, import it again.
 
 !!! danger "Run group, Stop All and profile load act on every button at once"
     **Run group**, in each group's header, starts every button of the group at

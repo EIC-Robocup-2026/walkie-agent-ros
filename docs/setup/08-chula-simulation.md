@@ -559,13 +559,19 @@ or Lichtblick, which reads the same layout file:
 2. Import the layout `config/foxglove/chula-memory-layout.json` (Layouts,
    then Import from file).
 
-The layout has three panels:
+The layout has four panels:
 
 | Panel | What it shows |
 | --- | --- |
-| Map, robot and objects (3D, display frame `map`) | `/map`, the robot model from `/robot_description`, Nav2's `/plan`, the visualizer's markers, and walkie-database's `/walkie_database/objects/markers` and `/walkie_database/objects/cloud` once its memory node runs |
+| Map, robot and objects (3D, display frame `map`) | `/map`, the robot model from `/robot_description`, Nav2's `/plan`, the visualizer's markers, walkie-database's `/walkie_database/objects/markers` and `/walkie_database/objects/cloud` once its memory node runs, and the agent's pick plan on `/walkie_agent/pick/markers` when it runs with `--arms` |
 | Detections (annotated) | `/walkie_vision/sim/debug/objects_image/compressed` |
+| Agent reasoning | `/walkie/reasoning`: the request, the model's text, each tool call and each answer of a run, failures as warnings |
 | Logs | `/rosout`, at Info and above |
+
+The pick plan shows the object's box with its name and the pick's stage, the
+stand-off pose as a blue arrow, each hand pose as axes (x red, y green, z blue)
+and an orange line through the hand poses in order. Each new plan replaces the
+last.
 
 The layout does not subscribe to the raw camera image, which is about 0.7 MB
 a frame in the simulation. The 3D panel needs the whole TF chain from `map` to

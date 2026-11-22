@@ -101,6 +101,7 @@ from walkie_agent.capabilities import (
     Ctx,
     Facts,
     Memory,
+    NoDisplay,
     ObjectMemory,
     UnavailableArms,
     UnavailableFacts,
@@ -122,6 +123,7 @@ from walkie_agent.prompts import build_system_prompt
 from walkie_agent.ros.arms import RosArms
 from walkie_agent.ros.base import RosBase
 from walkie_agent.ros.commander import CommanderClient
+from walkie_agent.ros.display import RosDisplay
 from walkie_agent.ros.object_memory import RosObjectMemory
 from walkie_agent.ros.operator_topics import (
     CONSOLE_TOPIC,
@@ -301,6 +303,7 @@ class Application:
     The connector and the ROS context belong to the caller, and outlive `close`.
     `commander` is the arm commander client of a run with --arms, else None.
     `scripts` is run_script's sandbox of a run with --scripts, else None.
+    `display` draws pick_object's plans in a run with --arms, else None.
     """
 
     def __init__(
@@ -313,6 +316,7 @@ class Application:
         vision: RosVision | None = None,
         commander: CommanderClient | None = None,
         scripts: AgentScripts | None = None,
+        display: RosDisplay | None = None,
     ) -> None:
         self.ctx = ctx
         self.runner = runner
@@ -322,6 +326,7 @@ class Application:
         self._vision = vision
         self._commander = commander
         self._scripts = scripts
+        self._display = display
         self._run_ended = True
 
     def start(self) -> None:
@@ -375,6 +380,8 @@ class Application:
         self._speech.close()
         if self._vision is not None:
             self._vision.close()
+        if self._display is not None:
+            self._display.close()
         self.bridge.close()
         return self._scripts is None or self._scripts.close(timeout_s)
 
@@ -486,7 +493,11 @@ def assemble(
         commander: CommanderClient | None = None
         ctx_arms: Arms = UnavailableArms()
         arms_check: Callable[[str, float], None] | None = None
+        display: RosDisplay | None = None
         if arm_poses is not None:
+            # It draws pick_object's plans, which need the arms.
+            display = RosDisplay(connector)
+            built.append(display.close)
             bounds = dict(SIM_ARM_BOUNDS) if use_sim_time else {}
             min_move_timeout_s = bounds.pop("min_move_timeout_s", 0.0)
             # The same token as the RosBase and the Runner, so a stop or a reset ends
@@ -535,6 +546,7 @@ def assemble(
             arms=ctx_arms,
             object_memory=objects,
             web=web_search or UnavailableWebSearch(),
+            display=display or NoDisplay(),
         )
         bridge = RosBridge(
             connector,
@@ -558,6 +570,7 @@ def assemble(
             on_todos=bridge.on_todos,
             fallback=fallback,
             tool_log=tool_log,
+            on_trace=bridge.on_trace,
             system_prompt=prompt,
             **agent_settings(config),
         )
@@ -578,7 +591,7 @@ def assemble(
         for close in reversed(built):
             close()
         raise
-    return Application(ctx, runner, bridge, base, speech, live, commander, scripts)
+    return Application(ctx, runner, bridge, base, speech, live, commander, scripts, display)
 
 
 class _Signals:

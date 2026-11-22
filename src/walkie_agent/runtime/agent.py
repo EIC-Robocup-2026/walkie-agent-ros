@@ -22,10 +22,12 @@ from walkie_agent.runtime.middleware import (
     AnswerEmptyReply,
     Deadline,
     EndAfterQuestion,
+    ReasoningTrace,
     RepairHistory,
     SerialGuard,
     StopLatch,
     ToolLog,
+    TraceListener,
 )
 from walkie_agent.runtime.todos import TODO_TOOL_COUNT, WalkieTodos
 from walkie_agent.tools.adapter import as_tools, tool_error_middleware
@@ -45,8 +47,11 @@ def build_middleware(
     on_todos: Callable[[list[dict[str, Any]], list[dict[str, Any]]], None] | None = None,
     fallback: BaseChatModel | None = None,
     tool_log: ToolLog | None = None,
+    on_trace: TraceListener | None = None,
 ) -> list[AgentMiddleware]:
     """The stack, in the one order that works. tests/test_runtime.py pins it.
+
+    `on_trace` adds a ReasoningTrace that reports the run's steps to it.
 
     create_agent runs before_agent and before_model hooks in list order, after_model
     hooks in reverse, and makes the first wrapper the outermost. So:
@@ -55,15 +60,17 @@ def build_middleware(
       there (AnswerEmptyReply, the WalkieTodos gate, RepairHistory), so it sees every
       call first. A jump skips the after_model hooks earlier in the list, so
       AnswerEmptyReply goes before WalkieTodos, and the todo gate wins when both apply.
-    - Around a tool call: the log sees every answer. The stop and order refusals come
-      next, outside the ledger, so a call that never ran cannot poison completion.
-      ToolErrorMiddleware is innermost, so the ledger sees errors as results.
-    - Around a model call: the reminder goes on once, and each attempt of a fallback
-      chain gets its own Deadline. ModelFallbackMiddleware's constructor needs a model,
+    - Around a tool call: the log and the trace see every answer. The stop and order
+      refusals come next, outside the ledger, so a call that never ran cannot poison
+      completion. ToolErrorMiddleware is innermost, so the ledger sees errors as results.
+    - Around a model call: the trace is outermost, so it reports the reply that the
+      fallback chain settled on. The reminder goes on once, and each attempt of a
+      fallback chain gets its own Deadline. ModelFallbackMiddleware's constructor needs a model,
       so with none configured it is left out, and a TimeoutError reaches the Runner.
     """
     return [
         *([tool_log] if tool_log else []),
+        *([ReasoningTrace(on_trace)] if on_trace else []),
         StopLatch(ctx.cancel),
         SerialGuard(),
         AnswerEmptyReply(ctx.cancel),
@@ -88,6 +95,7 @@ def build_agent(
     on_todos: Callable[[list[dict[str, Any]], list[dict[str, Any]]], None] | None = None,
     fallback: BaseChatModel | None = None,
     tool_log: ToolLog | None = None,
+    on_trace: TraceListener | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     system_prompt: str = SYSTEM_PROMPT,
 ) -> CompiledStateGraph:
@@ -117,6 +125,7 @@ def build_agent(
         on_todos=on_todos,
         fallback=fallback,
         tool_log=tool_log,
+        on_trace=on_trace,
     )
     # With two tools of one name, the graph would silently run only the last one. The
     # attribute is optional on a middleware, so this reads it as create_agent does.

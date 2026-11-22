@@ -101,6 +101,7 @@ source_modules = [
     "walkie_agent.ros.arms",
     "walkie_agent.ros.base",
     "walkie_agent.ros.commander",
+    "walkie_agent.ros.display",
     "walkie_agent.ros.object_memory",
     "walkie_agent.ros.people_memory",
     "walkie_agent.ros.policy",

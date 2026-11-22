@@ -374,7 +374,8 @@ def _drive_to_standoff(
     stand-off is further than one relative move allows. The headings are taken
     from where the robot stands then. A heading whose drive Nav2 fails
     (SKILL_FAILED) gives way to the next, unless the base stopped near its
-    stand-off pose (_near); any other error is raised as it is.
+    stand-off pose (_near); any other error is raised as it is. Each heading's plan
+    goes to ctx.display before its drive.
     """
     start = ctx.base.pose()
     plans = _plans(settings, grasp, found, start)
@@ -410,6 +411,7 @@ def _drive_to_standoff(
         )
         if math.hypot(forward, left) <= AT_STANDOFF_M and abs(turn) <= AT_STANDOFF_DEG:
             return
+        ctx.display.show_pick(plan, found, "driving to the stand-off")
         try:
             ctx.base.move_relative(forward, left, turn)
         except StepError as error:
@@ -477,10 +479,11 @@ def _plan_in_reach(
     the hand too low or too high, stays so from any stand-off pose
     (arm.pick.height_problem); any other problem may pass from a new one. A plan in
     reach whose hand would close across more of the object than the open gripper is
-    refused too (_fits_fingers).
+    refused too (_fits_fingers). The plan goes to ctx.display first, refused or not.
     """
     here = ctx.base.pose()
     plan = _plan_from_here(settings, grasp, found, here)
+    ctx.display.show_pick(plan, found, f"planned {checkpoint.name}")
     problems = reach_problems(
         settings, grasp, plan, (found.x, found.y, found.z), (here.x, here.y, here.yaw)
     )

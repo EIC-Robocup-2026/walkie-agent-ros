@@ -1,4 +1,5 @@
-"""The robot's capabilities on ctx: base, speech, vision, arms, facts, memory, object memory and web.
+"""The robot's capabilities on ctx: base, speech, vision, arms, facts, memory, object memory, web
+and display.
 
 Each capability is a Protocol here. An atomic calls its verbs as
 ctx.base.go_to("shelf") and never sees a topic or an action. A failure is a
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import NoReturn, Protocol
 
-from walkie_agent.arm.pick import HandPose
+from walkie_agent.arm.pick import HandPose, PickPlan
 from walkie_agent.arm.poses import ArmPose
 from walkie_agent.arm.state import ArmsState
 from walkie_agent.capabilities.guards import CancelToken, begin_lookup
@@ -537,6 +538,25 @@ class UnavailableWebSearch:
         raise StepError(ErrorCode.UNAVAILABLE, NO_WEB_SEARCH)
 
 
+class Display(Protocol):
+    """ctx.display: drawings of what an atomic plans, for the operator's 3D viewer.
+
+    show_pick draws `plan`, the pick of `target`, in place of the last drawing: the
+    object's box, the base's stand-off pose and the hand poses. `stage` says which
+    step planned it, such as "planned before the reach". It never raises and never
+    waits, so a missing or broken viewer cannot fail a pick, and it moves nothing.
+    """
+
+    def show_pick(self, plan: PickPlan, target: RecalledObject, stage: str) -> None: ...
+
+
+class NoDisplay:
+    """The ctx.display of a run without a viewer: draws nothing."""
+
+    def show_pick(self, plan: PickPlan, target: RecalledObject, stage: str) -> None:
+        return None
+
+
 @dataclass(frozen=True)
 class Ctx:
     """What an atomic runs against. Verbs hold the same `cancel` they are built with."""
@@ -550,3 +570,4 @@ class Ctx:
     memory: Memory = UnavailableMemory()
     object_memory: ObjectMemory = UnavailableObjectMemory()
     web: WebSearch = UnavailableWebSearch()
+    display: Display = NoDisplay()

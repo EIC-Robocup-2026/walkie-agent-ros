@@ -30,6 +30,7 @@
         },
         "/walkie_vision/debug/objects_markers": { "visible": true },
         "/walkie_database/objects/markers": { "visible": true },
+        "/walkie_agent/pick/markers": { "visible": true },
         "/walkie_database/objects/cloud": {
           "visible": true,
           "pointSize": 3,
@@ -79,9 +80,18 @@
       "topics": {},
       "layers": {}
     },
+    "RosOut!reasoning": {
+      "foxglovePanelTitle": "Agent reasoning",
+      "lichtblickPanelTitle": "Agent reasoning",
+      "topicToRender": "/walkie/reasoning",
+      "searchTerms": [],
+      "minLogLevel": 2,
+      "nameFilter": {}
+    },
     "RosOut!log": {
       "foxglovePanelTitle": "Logs",
       "lichtblickPanelTitle": "Logs",
+      "topicToRender": "/rosout",
       "searchTerms": [],
       "minLogLevel": 2,
       "nameFilter": {}
@@ -96,9 +106,14 @@
     "second": {
       "direction": "column",
       "first": "Image!annotated",
-      "second": "RosOut!log",
-      "splitPercentage": 65
+      "second": {
+        "direction": "column",
+        "first": "RosOut!reasoning",
+        "second": "RosOut!log",
+        "splitPercentage": 65
+      },
+      "splitPercentage": 40
     },
-    "splitPercentage": 60
+    "splitPercentage": 55
   }
 }

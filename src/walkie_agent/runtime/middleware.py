@@ -110,6 +110,86 @@ class ToolLog(AgentMiddleware):
         return result
 
 
+# emit(kind, text, failed). The kinds are ReasoningTrace's.
+TraceListener = Callable[[str, str, bool], None]
+# Longer texts are cut, so one tool answer cannot flood the operator's viewer.
+TRACE_LIMIT = 2000
+
+
+class ReasoningTrace(AgentMiddleware):
+    """Reports each step of a run to `emit(kind, text, failed)`, for the operator's viewer.
+
+    The kinds are "human" for the request a run starts from, "thinking" for reasoning
+    the provider returns with a reply, "model" for the reply's text, "call" for each
+    tool call the reply makes, and "result" for the answer each call gets, refusals
+    included. `failed` is True for an error answer, a call whose arguments did not
+    parse, and a model call that raised, which is reported as a "model" line before the
+    error goes on. Each text is cut to TRACE_LIMIT characters.
+
+    emit runs on the event loop, so it must not block. An error it raises is logged and
+    never reaches the run. Goes first in the stack, beside ToolLog: its model wrapper is
+    then the outermost, so it sees the reply after any fallback, and its tool wrapper
+    sees every answer.
+    """
+
+    def __init__(self, emit: TraceListener) -> None:
+        super().__init__()
+        self._emit = emit
+
+    def before_agent(self, state: AgentState, runtime: Any) -> None:
+        asked = next((m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)), None)
+        if asked is not None:
+            self._send("human", asked.text)
+
+    async def awrap_model_call(
+        self, request: ModelRequest, handler: Callable[[ModelRequest], Awaitable[ModelResponse]]
+    ) -> ModelResponse:
+        try:
+            response = await handler(request)
+        except Exception as error:
+            self._send("model", f"The model call failed: {error!r}", failed=True)
+            raise
+        for message in response.result:
+            if isinstance(message, AIMessage):
+                # The run already has its reply, and no trace line is worth losing it.
+                try:
+                    self._report(message)
+                except Exception:
+                    logger.exception("Could not report the model's reply.")
+        return response
+
+    async def awrap_tool_call(self, request: ToolCallRequest, handler: ToolHandler) -> ToolResult:
+        call = request.tool_call
+        result = await handler(request)
+        message = tool_result(result, call["id"])
+        text = message.text if message else "no answer"
+        failed = message is None or message.status == "error"
+        self._send("result", f"{call['name']}: {text}", failed=failed)
+        return result
+
+    def _report(self, message: AIMessage) -> None:
+        # Some providers send a block's text as None, for reasoning they hide.
+        for block in message.content_blocks:
+            kind = block.get("type")
+            field = {"reasoning": "reasoning", "text": "text"}.get(kind)
+            text = block.get(field) if field else None
+            if isinstance(text, str) and text.strip():
+                self._send("thinking" if kind == "reasoning" else "model", text)
+        for call in message.tool_calls:
+            args = json.dumps(call["args"], default=str, ensure_ascii=False)
+            self._send("call", f"{call['name']}({args})")
+        for bad in message.invalid_tool_calls:
+            self._send("call", f"{bad.get('name')}({bad.get('args')})", failed=True)
+
+    def _send(self, kind: str, text: str, *, failed: bool = False) -> None:
+        if len(text) > TRACE_LIMIT:
+            text = text[:TRACE_LIMIT] + " [cut]"
+        try:
+            self._emit(kind, text, failed)
+        except Exception:
+            logger.exception("Could not report a %s line of the run.", kind)
+
+
 class StopLatch(AgentMiddleware):
     """Ends the run once a stop has set the token: no more model calls, and no more tools.
 

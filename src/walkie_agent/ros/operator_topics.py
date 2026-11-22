@@ -7,10 +7,11 @@ verdict's callback records the operator's judgement of the last task, a few smal
 file writes at most, and puts its answer on the console. A bad message is logged and
 dropped, and no callback lets an exception reach the executor.
 
-Output side: `on_todos` and `on_reply` are the listeners of build_agent and the Runner.
-Both are safe from any thread, and a failed publish only logs. Replies and status
-lines go to the console topic, never to the speaker: only `say`, `wait_for_person` and
-the stop line reach /to_human.
+Output side: `on_todos` and `on_reply` are the listeners of build_agent and the Runner,
+and `on_trace` is build_agent's ReasoningTrace listener. All are safe from any thread,
+and a failed publish only logs. Replies and status lines go to the console topic, never
+to the speaker: only `say`, `wait_for_person` and the stop line reach /to_human. The
+trace goes to /walkie/reasoning as rcl_interfaces/Log, which Foxglove's Log panel shows.
 
 Input is text only. A message with an image or audio payload is refused, because
 acting on its text alone would silently drop part of what was asked.
@@ -24,6 +25,7 @@ from collections.abc import Callable, Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from rai_interfaces.msg import HRIMessage
+from rcl_interfaces.msg import Log
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool, Empty, String
 
@@ -46,6 +48,8 @@ TASK_TOPIC = "/walkie/task"
 TODOS_TOPIC = "/walkie/todos"
 # The operator's judgement of the task that ended last, with --scripts.
 VERDICT_TOPIC = "/walkie/verdict"
+# The agent's steps, one Log per ReasoningTrace line, named by its kind.
+REASONING_TOPIC = "/walkie/reasoning"
 
 QUEUED_QOS = QoSProfile(
     reliability=ReliabilityPolicy.RELIABLE, history=HistoryPolicy.KEEP_LAST, depth=10
@@ -56,6 +60,13 @@ LATCHED_QOS = QoSProfile(
     history=HistoryPolicy.KEEP_LAST,
     durability=DurabilityPolicy.TRANSIENT_LOCAL,
     depth=1,
+)
+# A viewer that joins late still gets the last steps of the run.
+REASONING_QOS = QoSProfile(
+    reliability=ReliabilityPolicy.RELIABLE,
+    history=HistoryPolicy.KEEP_LAST,
+    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    depth=100,
 )
 
 
@@ -81,6 +92,7 @@ class RosBridge:
         task_topic: str = TASK_TOPIC,
         todos_topic: str = TODOS_TOPIC,
         verdict_topic: str = VERDICT_TOPIC,
+        reasoning_topic: str = REASONING_TOPIC,
         on_verdict: Callable[[bool], str] | None = None,
     ) -> None:
         self._node = connector.node
@@ -91,7 +103,7 @@ class RosBridge:
         self._templates = dict(templates)
         self._input_topic, self._reset_topic = input_topic, reset_topic
         self._task_topic, self._output_topic = task_topic, output_topic
-        self._todos_topic = todos_topic
+        self._todos_topic, self._reasoning_topic = todos_topic, reasoning_topic
         self._verdict_topic, self._on_verdict_call = verdict_topic, on_verdict
         self._runner: Runner | None = None
         # Guards the entity lists and orders a publish against close. It is never held
@@ -102,6 +114,7 @@ class RosBridge:
         self._subscriptions: list[Any] = []
         self._console = self._node.create_publisher(HRIMessage, output_topic, QUEUED_QOS)
         self._todos = self._node.create_publisher(String, todos_topic, LATCHED_QOS)
+        self._reasoning = self._node.create_publisher(Log, reasoning_topic, REASONING_QOS)
 
     # -- Lifecycle -------------------------------------------------------------
 
@@ -138,7 +151,9 @@ class RosBridge:
             self._closed = True
             subscriptions, self._subscriptions = self._subscriptions, []
         self._destroy(self._node.destroy_subscription, subscriptions)
-        self._destroy(self._node.destroy_publisher, (self._console, self._todos))
+        self._destroy(
+            self._node.destroy_publisher, (self._console, self._todos, self._reasoning)
+        )
 
     @staticmethod
     def _destroy(destroy: Callable[[Any], Any], entities: Iterable[Any]) -> None:
@@ -219,6 +234,15 @@ class RosBridge:
             self._publish(self._console, message, self._output_topic)
         except Exception:
             logger.exception("Could not publish a console line.")
+
+    def on_trace(self, kind: str, text: str, failed: bool) -> None:
+        """Publish one step of the run as a Log named `kind`, at WARN when it `failed`."""
+        try:
+            message = Log(level=Log.WARN if failed else Log.INFO, name=kind, msg=text)
+            message.stamp = self._node.get_clock().now().to_msg()
+            self._publish(self._reasoning, message, self._reasoning_topic)
+        except Exception:
+            logger.exception("Could not publish a step of the run.")
 
     def _publish(self, publisher: Any, message: Any, topic: str) -> None:
         with self._lock:

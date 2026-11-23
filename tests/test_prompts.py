@@ -92,6 +92,23 @@ def test_only_a_prompt_with_the_arm_tools_says_how_to_hand_an_object_over():
     assert "give it to me" not in without
 
 
+def test_only_a_prompt_with_the_arm_tools_says_to_give_a_held_object():
+    with_arms = build_system_prompt("hri", PLACES, ROBOT, arms=True, object_memory=True)
+    held = "One with held true is in your hand, so give it, never go to it."
+
+    # The line closes the recall rule, before the rule that follows it.
+    flat = " ".join(with_arms.split())
+    assert flat.count(held) == 1
+    assert flat.index("`recall_object`") < flat.index(held) < flat.index("`pick_object`")
+    # HRI without --arms, and DEFAULT, which never binds the arm tools, have no hand.
+    for without in (
+        build_system_prompt("hri", PLACES, ROBOT, object_memory=True),
+        build_system_prompt("default", PLACES, ROBOT, arms=True, object_memory=True),
+    ):
+        assert "`recall_object`" in without
+        assert "held true" not in without
+
+
 def test_the_shipped_robot_description_claims_only_what_is_connected():
     text = (PROJECT_ROOT / "robot.md").read_text(encoding="utf-8")
     assert "Chulalongkorn" in text and "cheerful, playful and brief" in text

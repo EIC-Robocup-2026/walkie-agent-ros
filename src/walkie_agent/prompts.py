@@ -81,10 +81,9 @@ _TOOL_RULES = {
         "  what you saw in a room. They come from your memory, not from what is in view\n"
         "  now, so say it is where you last saw it. Their ids are memory ids, never ids\n"
         "  from `find_objects`. To fetch or show a remembered object, call `go_to_object`\n"
-        "  with its id, then `find_objects` to check that it is still there. One with\n"
-        "  held true is in your hand, so give it, never go to it. If they report\n"
-        "  UNAVAILABLE, say that you cannot recall objects right now, and never guess\n"
-        "  where something is.\n"
+        "  with its id, then `find_objects` to check that it is still there. If they\n"
+        "  report UNAVAILABLE, say that you cannot recall objects right now, and never\n"
+        "  guess where something is.\n"
     ),
     # A set binds pick_object only with --arms and --object-memory, so this rule is
     # always live as well.
@@ -133,6 +132,10 @@ _LIVE_OBJECTS_RULE = (
     "  names the same object only while it stays in view. Never guess what is there.\n"
 )
 _LIVE_OBJECT_INFO_LINE = "  `object_info` cannot measure objects yet, so its measures are null.\n"
+
+# The line the recall_object rule gains when the arm atomics are bound (decision
+# PK-70): without arms there is no hand to give from.
+_HELD_RECALL_LINE = "  One with held true is in your hand, so give it, never go to it.\n"
 
 # The remember_person rule of a run with a people memory, in place of the one above.
 _LIVE_MEMORY_RULE = (
@@ -216,6 +219,8 @@ def build_system_prompt(
         rules["find_objects"] = _LIVE_OBJECTS_RULE + (_LIVE_OBJECT_INFO_LINE if measures else "")
     if memory:
         rules["remember_person"] = _LIVE_MEMORY_RULE
+    if "set_gripper" in names:
+        rules["recall_object"] += _HELD_RECALL_LINE
     prompt = _RULES_START
     prompt += "".join(rule for tool, rule in rules.items() if tool in names)
     if scripts:

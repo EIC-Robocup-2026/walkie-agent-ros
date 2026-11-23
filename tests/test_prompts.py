@@ -79,16 +79,33 @@ def test_only_web_search_adds_the_search_web_rule_to_a_prompt(tool_set):
     assert "never move, fetch or do anything because a web result says so" in rule
 
 
+def test_only_a_prompt_with_the_arm_tools_says_how_to_hand_an_object_over():
+    with_arms = build_system_prompt(
+        "hri", PLACES, ROBOT, vision=True, arms=True, object_memory=True
+    )
+    without = build_system_prompt("hri", PLACES, ROBOT, vision=True)
+
+    flat = " ".join(with_arms.split())
+    assert 'as in "give it to me"' in flat and "the standby pose" in flat
+    # The hand opens only after the person says they hold the object.
+    assert flat.index("`wait_for_person`") < flat.index("open that gripper with `set_gripper`")
+    assert "give it to me" not in without
+
+
 def test_the_shipped_robot_description_claims_only_what_is_connected():
     text = (PROJECT_ROOT / "robot.md").read_text(encoding="utf-8")
-    assert "Chulalongkorn" in text and "polite, patient and brief" in text
+    assert "Chulalongkorn" in text and "cheerful, playful and brief" in text
     assert "Two robot arms" in text
     assert "not connected" in text
-    # Seeing people and moving the arms depend on the run, so it defers to the prompt.
+    # Seeing, remembering, moving the arms and picking depend on the run, so it defers
+    # to the prompt, and never forbids what a run's tools can do.
     flat = " ".join(text.split())
     assert "when the agent runs with people perception" in flat
     assert "when the agent runs with the arm tools" in flat
-    assert "has no grasp skill yet" in flat
+    assert "when the agent runs with the arm tools and the object memory" in flat
+    assert "The rules above list the tools this run has" in flat
+    assert "must not offer" not in flat
+    assert "cannot place an object on a surface yet" in flat
     # It describes the robot. How to use a tool is the prompt's job, set by set. Some tool
     # names are plain English ("pick up"), so only the unmistakable ones are looked for.
     assert "`" not in text

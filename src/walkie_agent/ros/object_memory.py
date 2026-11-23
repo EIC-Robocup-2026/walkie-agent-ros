@@ -283,7 +283,7 @@ class RosObjectMemory:
         object_id: str,
         operation: str,
         *,
-        gripper_frame: str = "",
+        gripper_frame: str,
         timeout_s: float = 10.0,
     ) -> RecalledObject:
         require_text(object_id=object_id, operation=operation, gripper_frame=gripper_frame)
@@ -293,6 +293,9 @@ class RosObjectMemory:
                 ErrorCode.REFUSED,
                 f"Refused: operation must be one of {', '.join(STATE_OPERATIONS)}.",
             )
+        frame = gripper_frame.strip()
+        if not frame:
+            raise StepError(ErrorCode.REFUSED, "Refused: gripper_frame must name a hand's frame.")
         what = f"recording {operation} for object {number}"
         deadline = _deadline(timeout_s)
         answered = _ANSWERED | {OperationStatus.CONFLICT}
@@ -312,7 +315,7 @@ class RosObjectMemory:
                 object_id=stored.id,
                 expected_revision=stored.revision,
                 operation=operation,
-                gripper_frame=gripper_frame,
+                gripper_frame=frame,
                 has_pose=False,
             )
             response = self._call(

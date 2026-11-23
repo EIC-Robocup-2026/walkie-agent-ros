@@ -467,16 +467,16 @@ class ObjectMemory(Protocol):
     ignoring case, at most `limit`. get gives one object in any state, following a
     merge: the object it returns may have another id than `object_id`.
 
-    set_state records what a skill did to an object, one of STATE_OPERATIONS:
-    "grasp_succeeded" once a hand holds it, which makes it "held" in the hand whose
-    tool frame `gripper_frame` names; "grip_lost" when that hand turns out empty,
-    and "place_succeeded" when the hand let go of it anywhere but in a handover,
+    set_state records what the hand whose tool frame `gripper_frame` names did to
+    an object, one of STATE_OPERATIONS: "grasp_succeeded" once the hand holds it,
+    which makes it "held" in that hand; "grip_lost" when the hand turns out empty,
+    and "place_succeeded" when it let go of the object anywhere but in a handover,
     which both make it "missing" until the camera sees it again; and
     "hand_over_succeeded" when a person took it, which makes it "handed_over". A
     held object keeps the position it was picked from, which is not where it is.
-    With a `gripper_frame`, an operation on a held
-    object applies only if it is that hand's. set_state returns the object as the
-    memory then holds it. No verb moves anything, so none waits for a stop to commit.
+    An operation on a held object applies only if it is that hand's. set_state
+    returns the object as the memory then holds it. No verb moves anything, so none
+    waits for a stop to commit.
 
     Every verb raises StepError REFUSED for an argument outside its range, such as
     an id that is not a memory id; NOT_FOUND for an object or a room the memory does
@@ -506,7 +506,7 @@ class ObjectMemory(Protocol):
         object_id: str,
         operation: str,
         *,
-        gripper_frame: str = "",
+        gripper_frame: str,
         timeout_s: float = 10.0,
     ) -> RecalledObject: ...
 
@@ -558,7 +558,7 @@ class UnavailableObjectMemory:
         object_id: str,
         operation: str,
         *,
-        gripper_frame: str = "",
+        gripper_frame: str,
         timeout_s: float = 10.0,
     ) -> RecalledObject:
         self._refuse()

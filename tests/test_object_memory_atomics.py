@@ -104,7 +104,7 @@ class Remembers:
             raise StepError(ErrorCode.NOT_FOUND, f"Walkie remembers no object {kept}.")
         return self.objects[kept]
 
-    def set_state(self, object_id, operation, *, gripper_frame="", timeout_s=10.0):
+    def set_state(self, object_id, operation, *, gripper_frame, timeout_s=10.0):
         self.calls.append(("set_state", object_id, operation, gripper_frame))
         if self.set_error is not None:
             raise self.set_error

@@ -909,13 +909,51 @@ def test_a_memory_that_does_not_record_states_is_unavailable_at_once(database, m
     assert len(database.requests["set_object_state"]) == 1
 
 
+@pytest.mark.parametrize("code", [OperationStatus.NOT_FOUND, OperationStatus.WRONG_MAP])
 @pytest.mark.parametrize("service", ["get_object", "set_object_state"])
-def test_a_record_for_an_object_the_map_does_not_hold_is_not_found(database, memory, service):
-    database.status_next[service] = [(OperationStatus.WRONG_MAP, "Another map.")]
+def test_a_record_for_an_object_the_map_does_not_hold_is_not_found(
+    database, memory, service, code
+):
+    database.status_next[service] = [(code, "Not on this map.")]
 
     error = fails(memory.set_state, "18", "grip_lost", gripper_frame=RIGHT_HAND)
 
     assert (error.code, error.message) == (ErrorCode.NOT_FOUND, "Walkie remembers no object 18.")
+    assert stored(database, 18).state == "present"
+
+
+def test_a_record_for_a_merged_object_lands_on_the_object_that_kept_it(database, memory):
+    database.merged[5] = 18
+    stored(database, 18).revision = 7
+
+    held = memory.set_state("5", "grasp_succeeded", gripper_frame=RIGHT_HAND)
+
+    assert (held.id, held.state) == ("18", "held")
+    [record] = database.requests["set_object_state"]
+    assert (record.object_id, record.expected_revision) == (18, 7)
+
+
+@pytest.mark.parametrize("frame", ["", "   "])
+def test_a_record_that_names_no_hand_is_refused_before_anything_is_sent(
+    database, memory, frame
+):
+    error = fails(memory.set_state, "18", "grip_lost", gripper_frame=frame)
+
+    assert (error.code, error.message) == (
+        ErrorCode.REFUSED,
+        "Refused: gripper_frame must name a hand's frame.",
+    )
+    assert sent(database) == 0
+
+
+def test_a_record_during_a_stop_sends_nothing(database, memory, cancel):
+    assert memory._get_client.wait_for_service(timeout_sec=5.0)
+    cancel.cancel()
+
+    error = fails(memory.set_state, "18", "grasp_succeeded", gripper_frame=RIGHT_HAND)
+
+    assert error.code is ErrorCode.CANCELLED
+    assert sent(database) == 0
 
 
 def test_a_record_the_memory_refuses_is_internal(database, memory):

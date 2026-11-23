@@ -90,7 +90,9 @@ max_reach_z_m = 1.30
 
 # The widest object the open gripper can close around, in metres. Before the drive,
 # pick_object refuses an object whose narrower horizontal side, in the object memory's
-# upright box, is wider than this. An object longer than this one way is approached
+# upright box, is wider than this, when the memory saw the object at most
+# max_observation_age_s ago; an older box waits for the check after the drive
+# (decision PK-67). An object longer than this one way is approached
 # along its length, so that the fingers close across the narrower side. After the
 # drive and at checkpoint A, the width where the fingers close is checked again, from
 # the hand yaw of the planned grasp (decision PK-56). An object the memory has no box

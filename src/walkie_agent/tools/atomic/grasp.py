@@ -1,8 +1,9 @@
 """pick_object: pick up a remembered object with one hand, by its name (decision PK-4).
 
-The atomic finds the object in the object memory, refuses it before anything moves
-when the memory's box for it is wider than the open gripper (max_grasp_width_m) on
-both sides, drives to a stand-off pose facing it, along its longer side when that one
+The atomic finds the object in the object memory, one the camera sees now first,
+refuses it before anything moves when the memory's fresh box for it is wider than the
+open gripper (max_grasp_width_m) on both sides, drives to a stand-off pose facing it,
+along its longer side when that one
 is wider than the gripper, raises the other arm out of the way, and
 reaches through ctx.arms: a whole-body
 reach to a pre-grasp pose, a straight approach, a close of the gripper judged by the
@@ -80,9 +81,12 @@ logger = logging.getLogger(__name__)
 NEAR_STANDOFF_M = 0.10
 NEAR_STANDOFF_DEG = 10.0
 # How many objects of the name the memory is asked for. The first with a position is
-# picked, in the memory's order, which puts the closest matches of the name first and,
-# among equal matches, the one nearest the robot: with two bottles in the memory, the
-# one in front of Walkie, not one it saw in another room.
+# picked, those seen at most max_observation_age_s ago first, then in the memory's
+# order, which puts the closest matches of the name first and, among equal matches,
+# the one nearest the robot: with two bottles in the memory, the one in front of
+# Walkie, not one it saw in another room. The memory can hold stale tracks of an
+# object it no longer sees there, such as one that followed a bottle into the hand
+# during a pick, so a track the camera sees now goes before them (decision PK-67).
 SEARCH_LIMIT = 10
 # Where the arm that does not pick goes once the base stands at the stand-off pose,
 # before the reach. The straight moves of the arm with the lift can lower the lift by
@@ -176,7 +180,7 @@ def pick_object(ctx: Ctx, name: str) -> str:
         raise StepError(
             ErrorCode.INTERNAL, "Walkie's pick settings cannot be read, so it cannot pick."
         ) from None
-    found = _remembered(ctx, name)
+    found = _remembered(ctx, settings, name)
     label = f"the {found.name}"
     grasp = settings.grasp_for(found.label)
     _fits_hand(settings, grasp, found, label)
@@ -186,10 +190,11 @@ def pick_object(ctx: Ctx, name: str) -> str:
     return _grasp_then_touch_off(ctx, settings, grasp, found, label)
 
 
-def _remembered(ctx: Ctx, name: str) -> RecalledObject:
+def _remembered(ctx: Ctx, settings: PickSettings, name: str) -> RecalledObject:
     """The first object of `name` that the memory holds as present with a full position.
 
-    Among equal matches of the name, the one nearest where the robot stands.
+    One seen at most max_observation_age_s ago comes first (_is_fresh); otherwise, and
+    among equal matches of the name, the one nearest where the robot stands.
     """
     asked = name.strip()
     if not asked:
@@ -201,9 +206,14 @@ def _remembered(ctx: Ctx, name: str) -> RecalledObject:
             ErrorCode.NOT_FOUND,
             f"Walkie remembers no {asked}. Call recall_object to see what it remembers.",
         )
-    for found in matches:
-        if found.x is not None and found.y is not None and found.z is not None:
-            return found
+    placed = [
+        found
+        for found in matches
+        if found.x is not None and found.y is not None and found.z is not None
+    ]
+    if placed:
+        # sorted() is stable, so the memory's order holds inside each group.
+        return sorted(placed, key=lambda found: not _is_fresh(settings, found))[0]
     raise StepError(
         ErrorCode.PRECONDITION_FAILED,
         f"Walkie remembers a {asked}, but not exactly where it is, so it cannot reach for "
@@ -216,10 +226,13 @@ def _fits_hand(
 ) -> None:
     """Refuse an object wider than the open gripper, before anything moves.
 
-    By the memory's box (arm.pick.too_wide_to_grasp). An object with no box passes.
-    The width goes to the LLM: a size, not a position (ADR-0022). The box and the
-    grasp are logged for every pick, since nothing yet checks the memory's boxes
-    against the objects.
+    By the memory's box (arm.pick.too_wide_to_grasp), and only when the camera saw the
+    object at most max_observation_age_s ago (_is_fresh). An older box can belong to a
+    stale track or an earlier view, and the robot then drives up, and the check after
+    the drive measures the width on a fresh sighting (_fits_fingers). An object with
+    no box passes. The width goes to the LLM: a size, not a position (ADR-0022). The
+    box and the grasp are logged for every pick, since nothing yet checks the memory's
+    boxes against the objects.
     """
     logger.info(
         "Picking %s (object %s) with the %s grasp for label %r: the memory's box is %s m, "
@@ -234,6 +247,17 @@ def _fits_hand(
     width = too_wide_to_grasp(settings, found.size)
     if width is None:
         return
+    if not _is_fresh(settings, found):
+        logger.info(
+            "%s (object %s) reads %.3f m wide, above max_grasp_width_m %g, but was last "
+            "seen %s s ago; the width is checked again after the drive.",
+            label.capitalize(),
+            found.id,
+            width,
+            settings.max_grasp_width_m,
+            found.seen_s_ago,
+        )
+        return
     logger.info(
         "Refused to pick %s (object %s): %.3f m wide, above max_grasp_width_m %g.",
         label,
@@ -246,6 +270,11 @@ def _fits_hand(
         f"{label.capitalize()} is {width:.3f} m wide, and the {settings.arm} hand cannot open "
         "that wide, so Walkie did not try to pick it up. Tell the person it cannot pick it up.",
     )
+
+
+def _is_fresh(settings: PickSettings, found: RecalledObject) -> bool:
+    """True when the memory saw `found` at most max_observation_age_s ago."""
+    return found.seen_s_ago is not None and found.seen_s_ago <= settings.max_observation_age_s
 
 
 def _seen_again(
@@ -284,7 +313,7 @@ def _seen_again(
     def fresh() -> bool:
         now = _read_again(ctx, found, label, checkpoint)
         latest[:] = [now]
-        return now.seen_s_ago is not None and now.seen_s_ago <= settings.max_observation_age_s
+        return _is_fresh(settings, now)
 
     try:
         ctx.cancel.wait_for(

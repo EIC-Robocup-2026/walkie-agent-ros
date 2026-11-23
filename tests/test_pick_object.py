@@ -52,6 +52,8 @@ def remembered(
     size: tuple[float, float, float] | None = None,
     yaw: float | None = None,
     label: str = "bottle",
+    # Seen a second ago by default: a sighting fresh enough to reach for after the drive.
+    seen_s_ago: float | None = 1.0,
 ) -> RecalledObject:
     return RecalledObject(
         id=object_id,
@@ -61,8 +63,7 @@ def remembered(
         room=room,
         on="kitchen table 3",
         state="present",
-        # Seen a second ago: a sighting fresh enough to reach for after the drive.
-        seen_s_ago=1.0,
+        seen_s_ago=seen_s_ago,
         x=x,
         y=y,
         z=z,
@@ -430,6 +431,39 @@ def test_of_two_objects_of_the_name_the_one_nearest_the_robot_is_picked(
     pick_object(ctx, "water bottle")
 
     at_stand_off(robot, *picked)
+
+
+def test_an_object_seen_lately_is_picked_before_a_nearer_one_not_seen_lately(arm_poses):
+    # The memory last saw the nearer bottle 40 s ago: a track left behind, such as one
+    # that followed a bottle into the hand during an earlier pick.
+    robot, ctx = picking(
+        arm_poses,
+        remembered(object_id="3", x=0.0, y=1.5, seen_s_ago=40.0),
+        remembered(object_id="7", x=2.0, y=0.0),
+    )
+
+    pick_object(ctx, "water bottle")
+
+    at_stand_off(robot, 2.0, 0.0)
+    assert ("get", "3") not in ctx.object_memory.calls
+
+
+def test_of_objects_none_seen_lately_the_nearest_is_driven_to(arm_poses, monkeypatch):
+    pick_settings(monkeypatch, observation_wait_s=0.2)
+    robot, ctx = picking(
+        arm_poses,
+        remembered(object_id="3", x=2.0, y=0.0, seen_s_ago=40.0),
+        remembered(object_id="7", x=0.0, y=1.5, seen_s_ago=None),
+    )
+
+    error = fails(ctx)
+
+    # Driven to, then refused for want of a new sighting before any arm goal.
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert "has not seen it in the last few seconds" in error.message
+    at_stand_off(robot, 0.0, 1.5)
+    assert ("get", "3") not in ctx.object_memory.calls
+    assert verbs(robot) == ["base.move_relative"]
 
 
 def test_the_reach_goes_to_where_the_memory_holds_the_object_after_the_drive(
@@ -1431,6 +1465,34 @@ def test_an_object_wider_than_the_open_hand_is_refused_before_the_drive(arm_pose
         "not try to pick it up. Tell the person it cannot pick it up."
     )
     assert verbs(robot) == []
+
+
+@pytest.mark.parametrize(
+    ("size", "picked"),
+    [((0.065, 0.060, 0.20), True), ((0.137, 0.137, 0.20), False)],
+    ids=["narrow-when-seen-again", "still-wide"],
+)
+def test_a_wide_box_not_seen_lately_is_measured_again_after_the_drive(
+    arm_poses, monkeypatch, size, picked
+):
+    # The box was measured 40 s ago, perhaps with the fingers in view, so it waits
+    # for the fresh sighting after the drive.
+    stale = remembered(size=(0.137, 0.137, 0.20), yaw=0.0, seen_s_ago=40.0)
+    robot, ctx = picking(arm_poses, stale)
+    read_again(monkeypatch, ctx, replace(stale, size=size, seen_s_ago=1.0))
+
+    if picked:
+        assert pick_object(ctx, "water bottle").startswith("Picked up the water bottle")
+        return
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message == (
+        "From where Walkie stopped, the right hand would close across the water bottle "
+        "where it is 0.137 m wide, wider than the hand opens, so Walkie did not reach for "
+        f"it. Call pick_object again to approach it afresh. {SAFE_SENTENCE}"
+    )
+    assert verbs(robot) == ["base.move_relative"]
 
 
 def test_a_long_object_is_approached_along_its_length_and_gripped_across_it(

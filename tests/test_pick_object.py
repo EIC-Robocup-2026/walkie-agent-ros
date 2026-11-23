@@ -1467,17 +1467,18 @@ def test_an_object_wider_than_the_open_hand_is_refused_before_the_drive(arm_pose
     assert verbs(robot) == []
 
 
+@pytest.mark.parametrize("yaw", [0.0, None], ids=["with-yaw", "no-yaw"])
 @pytest.mark.parametrize(
     ("size", "picked"),
-    [((0.065, 0.060, 0.20), True), ((0.137, 0.137, 0.20), False)],
+    [((0.065, 0.060, 0.20), True), ((0.137, 0.120, 0.20), False)],
     ids=["narrow-when-seen-again", "still-wide"],
 )
 def test_a_wide_box_not_seen_lately_is_measured_again_after_the_drive(
-    arm_poses, monkeypatch, size, picked
+    arm_poses, monkeypatch, size, picked, yaw
 ):
     # The box was measured 40 s ago, perhaps with the fingers in view, so it waits
     # for the fresh sighting after the drive.
-    stale = remembered(size=(0.137, 0.137, 0.20), yaw=0.0, seen_s_ago=40.0)
+    stale = remembered(size=(0.137, 0.120, 0.20), yaw=yaw, seen_s_ago=40.0)
     robot, ctx = picking(arm_poses, stale)
     read_again(monkeypatch, ctx, replace(stale, size=size, seen_s_ago=1.0))
 
@@ -1486,13 +1487,29 @@ def test_a_wide_box_not_seen_lately_is_measured_again_after_the_drive(
         return
     error = fails(ctx)
 
+    # Wider than the open hand both ways, with a yaw or not: no other try would fit it.
     assert error.code is ErrorCode.PRECONDITION_FAILED
     assert error.message == (
-        "From where Walkie stopped, the right hand would close across the water bottle "
-        "where it is 0.137 m wide, wider than the hand opens, so Walkie did not reach for "
-        f"it. Call pick_object again to approach it afresh. {SAFE_SENTENCE}"
+        "The water bottle is 0.120 m wide, and the right hand cannot open that wide, so "
+        f"Walkie did not reach for it. {SAFE_SENTENCE}"
     )
     assert verbs(robot) == ["base.move_relative"]
+
+
+def test_a_stale_box_wide_both_ways_is_driven_to_as_if_it_had_no_box(arm_poses, monkeypatch):
+    # No heading fits a box this wide, so the drive keeps the robot's own line to it,
+    # as for an object with no box, rather than only the two headings across a side.
+    pick_settings(monkeypatch, observation_wait_s=0.2)
+    drives = []
+    for size in (None, (0.137, 0.120, 0.20)):
+        robot, ctx = picking(arm_poses, remembered(size=size, yaw=0.0, seen_s_ago=40.0))
+        # Not seen again after the drive, so each pick ends there.
+        assert "has not seen it in the last few seconds" in fails(ctx).message
+        drives.append(
+            [call["args"] for call in robot.calls if call["verb"] == "base.move_relative"]
+        )
+
+    assert drives[1] == drives[0]
 
 
 def test_a_long_object_is_approached_along_its_length_and_gripped_across_it(

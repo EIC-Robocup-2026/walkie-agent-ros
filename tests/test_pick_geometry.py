@@ -855,6 +855,17 @@ def test_an_object_that_fits_the_fingers_either_way_keeps_the_settings_headings(
     )
 
 
+def test_a_box_wider_than_the_fingers_both_ways_keeps_the_settings_headings():
+    # A stale box, such as one measured with the fingers in view: no heading fits it,
+    # and pick_object only drives up to measure it again.
+    wide = (0.137, 0.120, 0.20)
+    assert too_wide_to_grasp(SETTINGS, wide) == pytest.approx(0.120)
+
+    assert approach_headings(SETTINGS, SIDE, 0.0, 0.0, 1.0, 0.0, wide, 0.0) == approach_headings(
+        SETTINGS, SIDE, 0.0, 0.0, 1.0, 0.0
+    )
+
+
 @pytest.mark.parametrize("yaw", [None, math.nan, math.inf], ids=["none", "nan", "inf"])
 def test_a_long_box_with_no_finite_yaw_keeps_the_settings_headings(yaw):
     assert approach_headings(

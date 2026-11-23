@@ -400,7 +400,9 @@ def approach_headings(
     than max_grasp_width_m along one side is approached only along that side, so the
     fingers close across the other: the two headings whose plan_pick hand does that,
     the one nearer the first heading above first. An object with no usable box
-    keeps the settings' headings.
+    keeps the settings' headings, and so does one wider than max_grasp_width_m both
+    ways: no heading fits it, and pick_object drives up to such a box only when the
+    memory has not seen it lately, to measure it again (decision PK-67).
     """
     start = heading_from(grasp, robot_x, robot_y, object_x, object_y)
     sides = _sides(size)
@@ -409,6 +411,7 @@ def approach_headings(
         or yaw is None
         or not math.isfinite(yaw)
         or max(sides) <= settings.max_grasp_width_m
+        or min(sides) > settings.max_grasp_width_m
     ):
         return tuple(
             _wrap(start + math.radians(offset)) for offset in settings.heading_offsets_deg

@@ -94,10 +94,10 @@ max_reach_z_m = 1.30
 # max_observation_age_s ago; an older box waits for the check after the drive
 # (decision PK-67). An object longer than this one way is approached
 # along its length, so that the fingers close across the narrower side. After the
-# drive and at checkpoint A, the width where the fingers close is checked again, from
-# the hand yaw of the planned grasp (decision PK-56). An object the memory has no box
-# for is never refused, and one with no yaw passes the checks after the drive and at
-# checkpoint A. The open fingertips stand about 0.0845 m
+# drive and at checkpoint A, the narrower side is checked again on the fresh box, and
+# then the width where the fingers close, from the hand yaw of the planned grasp
+# (decision PK-56). An object the memory has no box for is never refused, and one
+# with no yaw skips only that last check. The open fingertips stand about 0.0845 m
 # apart (twice the open position, 0.044 m, less 0.0035 m), and this leaves about
 # 3 mm each side. A water bottle at 0.068 m and a soda can at 0.076 m fit; a mug's
 # body at 0.082 m does not. A box from a partial view can read narrower than the

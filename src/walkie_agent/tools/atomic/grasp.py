@@ -553,12 +553,33 @@ def _fits_fingers(
 ) -> None:
     """Refuse a plan whose hand would close across more of the object than it opens.
 
-    By the memory's box and the grasp pose's yaw (arm.pick.width_across_fingers). The
-    drive aims the hand across the narrower side of a long object, but the hand moves
-    in along the line from where the base stopped, which can turn it. An object with
-    no box or no yaw passes. The width goes to the LLM: a size, not a position
-    (ADR-0022).
+    First by the narrower side of the memory's box (arm.pick.too_wide_to_grasp), which
+    needs no yaw: an object wider than the open gripper both ways fits from no
+    heading, so the answer does not ask for another try. A box seen long ago is let
+    through the gate before the drive and stops here instead (_fits_hand). Then by
+    the box and the grasp pose's yaw (arm.pick.width_across_fingers). The drive aims
+    the hand across the narrower side of a long object, but the hand moves in along
+    the line from where the base stopped, which can turn it. An object with no box
+    passes, and one with no yaw passes the second check. The width goes to the LLM: a
+    size, not a position (ADR-0022).
     """
+    narrower = too_wide_to_grasp(settings, found.size)
+    if narrower is not None:
+        logger.warning(
+            "Refused to reach for %s (object %s) %s: %.3f m wide, above max_grasp_width_m %g.",
+            label,
+            found.id,
+            checkpoint.name,
+            narrower,
+            settings.max_grasp_width_m,
+        )
+        advice = checkpoint.advice(None)
+        raise StepError(
+            ErrorCode.PRECONDITION_FAILED,
+            f"{label.capitalize()} is {narrower:.3f} m wide, and the {settings.arm} hand "
+            "cannot open that wide, so Walkie did not reach for it. "
+            f"{f'{advice} ' if advice else ''}{ctx.arms.state().sentence()}",
+        )
     width = width_across_fingers(found.size, found.yaw, plan.grasp.yaw)
     if width is None or width <= settings.max_grasp_width_m:
         return

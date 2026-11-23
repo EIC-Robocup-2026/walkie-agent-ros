@@ -41,6 +41,16 @@ drive, after a go_to to the named place nearest the object when the object is fu
 than one relative move allows. walkie-ros's /navigate_to_object computes a stand-off
 of its own, but it is in walkie-ros's navigation submodule, whose interfaces the agent's
 workspace does not build, and its pose would not match the hand's approach here.
+
+The object memory also records what the hand holds (tools.atomic.held, decision
+PK-70). Once the close holds the object, and before the lift, it is recorded held in
+the picking hand, so the memory stops matching the hand's sightings of it to the
+table; a hand found empty after the move home records it lost. Before anything
+moves, a pick while the memory holds an object in a hand reads the picking gripper:
+an empty one records the object lost and the pick goes on, and one that holds
+something, or cannot be read, refuses the pick with PRECONDITION_FAILED, since
+opening the hand would drop the object. Every record is best-effort and never ends
+a pick.
 """
 
 import logging
@@ -69,6 +79,8 @@ from walkie_agent.arm.pick import (
 from walkie_agent.capabilities import Ctx, Pose2D, RecalledObject
 from walkie_agent.capabilities.guards import MAX_MOVE_M
 from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.perception.object_words import matches
+from walkie_agent.tools.atomic.held import held_objects, record
 from walkie_agent.tools.atomic.navigation import APPROACH_PLACE_MAX_M, approach_place
 
 logger = logging.getLogger(__name__)
@@ -180,6 +192,7 @@ def pick_object(ctx: Ctx, name: str) -> str:
         raise StepError(
             ErrorCode.INTERNAL, "Walkie's pick settings cannot be read, so it cannot pick."
         ) from None
+    _hand_is_free(ctx, settings, name)
     found = _remembered(ctx, settings, name)
     label = f"the {found.name}"
     grasp = settings.grasp_for(found.label)
@@ -188,6 +201,57 @@ def pick_object(ctx: Ctx, name: str) -> str:
     found = _seen_again(ctx, settings, found, label, _AFTER_DRIVE)
     _plan_in_reach(ctx, settings, grasp, found, label, _AFTER_DRIVE)
     return _grasp_then_touch_off(ctx, settings, grasp, found, label)
+
+
+def _hand_is_free(ctx: Ctx, settings: PickSettings, name: str) -> None:
+    """Refuse when the memory holds an object in a hand and the picking hand holds one.
+
+    The pick opens the hand first, which would drop what it holds. The memory's word
+    is checked against the gripper (_hand_holds): a hand that the read finds empty
+    lost the object unnoticed, so the object is recorded lost and the pick goes on.
+    A gripper that cannot be read is taken to hold what the memory says.
+    """
+    held = held_objects(ctx)
+    if not held:
+        return
+    arm = settings.arm
+    if _hand_holds(ctx, arm) is False:
+        for found in held:
+            record(ctx, found.id, "grip_lost", arm)
+        return
+    asked = name.strip().lower()
+    wanted = next(
+        (found for found in held if matches(asked, found.name) or matches(asked, found.label)),
+        None,
+    )
+    handover = (
+        f"To give it to a person, move the {arm} arm to the standby pose and open the gripper "
+        "once they hold it."
+    )
+    if asked and wanted is not None:
+        raise StepError(
+            ErrorCode.PRECONDITION_FAILED,
+            f"Walkie is already holding the {wanted.name} in its {arm} hand. {handover}",
+        )
+    names = " and the ".join(found.name for found in held)
+    raise StepError(
+        ErrorCode.PRECONDITION_FAILED,
+        f"Walkie's {arm} hand already holds the {names}, and opening it to pick up "
+        f"{f'the {asked}' if asked else 'something else'} would drop it. {handover}",
+    )
+
+
+def _hand_holds(ctx: Ctx, arm: str) -> bool | None:
+    """Whether the `arm` gripper holds something by its grasp band; None when unread."""
+    try:
+        reading = ctx.arms.read()
+    except StepError as error:
+        if error.code is ErrorCode.CANCELLED:
+            raise
+        logger.warning("Could not read the %s gripper before the pick: %s", arm, error.message)
+        return None
+    gripper = next((found for found in reading.grippers if found.arm == arm), None)
+    return None if gripper is None else gripper.in_grasp_band
 
 
 def _remembered(ctx: Ctx, settings: PickSettings, name: str) -> RecalledObject:
@@ -717,6 +781,9 @@ def _grasp(
             f"{missed}. It brought both arms home. The object may have moved: call "
             f"find_objects to look again. {ctx.arms.state().sentence()}",
         )
+    # Before the lift: from here on the camera sees the object move with the hand, and
+    # the memory must stop matching those sightings to the place it was picked from.
+    record(ctx, seen.id, "grasp_succeeded", arm)
     _reach(
         ctx, settings, plan.lift, f"The {arm} hand holds {label}, but the lift failed: ",
         cartesian=True,
@@ -732,23 +799,24 @@ def _grasp(
         touch=True,
     )
     _go_home(ctx, settings, f"The {arm} hand holds {label}, but the move of the arms home failed: ")
-    _still_holds(ctx, arm, label)
+    _still_holds(ctx, arm, label, seen.id)
     return (
         f"Picked up {label} with the {arm} hand, lifted it and brought both arms home. "
         f"{ctx.arms.state().sentence()}"
     )
 
 
-def _still_holds(ctx: Ctx, arm: str, label: str) -> None:
+def _still_holds(ctx: Ctx, arm: str, label: str, object_id: str) -> None:
     """Raise unless the `arm` hand still holds the object once both arms are home.
 
     The close was judged before the lift, and the lift, the move clear and the move
     home can each shake the object out of the fingers. So the gripper is read again
     through ctx.arms.read(), whose GripperReading.in_grasp_band applies the band the
     close was judged by. A hand found empty is SKILL_FAILED: the object was lost
-    after the lift. A read that fails keeps its code and class, and a gripper that
-    could not be read is SKILL_FAILED; both say that the object may be lost. A stop
-    during the read is raised as it is.
+    after the lift, and the memory records `object_id` lost, so it places the object
+    nowhere until the camera sees it again. A read that fails keeps its code and
+    class, and a gripper that could not be read is SKILL_FAILED; both say that the
+    object may be lost. A stop during the read is raised as it is.
     """
     unsure = (
         f"Walkie lifted {label} with the {arm} hand and brought both arms home, but could not "
@@ -780,6 +848,7 @@ def _still_holds(ctx: Ctx, arm: str, label: str) -> None:
             label,
             gripper.finger_m,
         )
+        record(ctx, object_id, "grip_lost", arm)
         raise StepError(
             ErrorCode.SKILL_FAILED,
             f"Walkie lifted {label} with the {arm} hand, but the hand was empty once both arms "

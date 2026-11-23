@@ -13,6 +13,9 @@ from walkie_agent.tools.atomic.navigation import approach_place
 # How many objects one recall_object or list_room_objects answer lists at most.
 RECALL_LIMIT = 10
 ROOM_LIMIT = 50
+# The states recall_object lists: where an object stands, or that a hand holds it
+# (decision PK-70). list_room_objects lists only objects that stand somewhere.
+RECALL_STATES = ("present", "held")
 
 
 def remember_person(
@@ -71,13 +74,14 @@ def recall_object(ctx: Ctx, name: str) -> dict[str, Any]:
     It tells where objects were when Walkie last saw them, not what is in view
     now, so one may have moved since. Returns an object with the keys objects and
     complete: objects is a list of at most 10 objects with the keys id, name,
-    category, room, on, near_place and last_seen_s_ago, and complete is false
-    when Walkie remembers more such objects than the list holds. In each object,
-    on names the object it stood on, such as "table 15", near_place the named
-    place nearest it, and last_seen_s_ago how many seconds ago Walkie last saw
-    it. Any of room, on, near_place and last_seen_s_ago is null when unknown. An
-    empty list means Walkie remembers no such object. The ids are memory ids for
-    go_to_object, not ids from find_objects.
+    category, room, on, near_place, last_seen_s_ago and held, and complete is
+    false when Walkie remembers more such objects than the list holds. In each
+    object, on names the object it stood on, such as "table 15", near_place the
+    named place nearest it, last_seen_s_ago how many seconds ago Walkie last saw
+    it, and held is true when Walkie holds it in a hand, where room, on and
+    near_place are null. Any of room, on, near_place and last_seen_s_ago is null
+    when unknown. An empty list means Walkie remembers no such object. The ids
+    are memory ids for go_to_object, not ids from find_objects.
 
     Args:
         name: What to recall: a name such as "cup", or a category such as
@@ -85,7 +89,7 @@ def recall_object(ctx: Ctx, name: str) -> dict[str, Any]:
             list_room_objects lists a whole room.
     """
     # One more than the list holds tells whether the list is all of them.
-    found = ctx.object_memory.search(name, limit=RECALL_LIMIT + 1)
+    found = ctx.object_memory.search(name, limit=RECALL_LIMIT + 1, states=RECALL_STATES)
     return {
         "objects": [_remembered(ctx, recalled) for recalled in found[:RECALL_LIMIT]],
         "complete": len(found) <= RECALL_LIMIT,
@@ -112,15 +116,21 @@ def list_room_objects(ctx: Ctx, room: str) -> dict[str, Any]:
 
 
 def _remembered(ctx: Ctx, recalled: RecalledObject) -> dict[str, Any]:
-    """One recalled object as the LLM reads it. Its position never leaves (ADR-0010)."""
-    place = approach_place(ctx, recalled)
+    """One recalled object as the LLM reads it. Its position never leaves (ADR-0010).
+
+    A held object is where the hand is, so the room, support and place the memory
+    last gave it are not where it is now.
+    """
     seen = recalled.seen_s_ago
+    held = recalled.state == "held"
+    place = None if held else approach_place(ctx, recalled)
     return {
         "id": recalled.id,
         "name": recalled.name,
         "category": recalled.category,
-        "room": recalled.room,
-        "on": recalled.on,
+        "room": None if held else recalled.room,
+        "on": None if held else recalled.on,
         "near_place": None if place is None else place.name,
         "last_seen_s_ago": None if seen is None else round(seen),
+        "held": held,
     }

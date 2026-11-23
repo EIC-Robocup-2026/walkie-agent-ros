@@ -2,6 +2,7 @@
 
 import json
 import math
+from dataclasses import replace
 
 import pytest
 
@@ -60,16 +61,33 @@ def recalled(
 
 
 class Remembers:
-    """An ObjectMemory over fixed records. `merged` maps an asked id to the id that kept it."""
+    """An ObjectMemory over fixed records. `merged` maps an asked id to the id that kept it.
 
-    def __init__(self, *objects: RecalledObject, merged: dict[str, str] | None = None) -> None:
+    set_state moves a record as walkie-database's SetObjectState does for the four
+    operations the agent sends, and refuses one on an object that the other hand holds.
+    `holders` maps a held object's id to its gripper frame; `set_error`, when set, is
+    raised by every set_state instead.
+    """
+
+    def __init__(
+        self,
+        *objects: RecalledObject,
+        merged: dict[str, str] | None = None,
+        holders: dict[str, str] | None = None,
+    ) -> None:
         self.objects = {found.id: found for found in objects}
         self.merged = merged or {}
+        self.holders = dict(holders or {})
+        self.set_error: StepError | None = None
         self.calls: list[tuple] = []
 
-    def search(self, name, *, limit=10, near=None, timeout_s=10.0):
-        self.calls.append(("search", name, limit, near))
-        found = [o for o in self.objects.values() if not name or o.name == name]
+    def search(self, name, *, limit=10, near=None, states=("present",), timeout_s=10.0):
+        self.calls.append(("search", name, limit, near, states))
+        found = [
+            o
+            for o in self.objects.values()
+            if o.state in states and (not name or o.name == name)
+        ]
         if near is not None:
             found.sort(key=lambda o: _distance(o, near))
         return tuple(found[:limit])
@@ -85,6 +103,35 @@ class Remembers:
         if kept not in self.objects:
             raise StepError(ErrorCode.NOT_FOUND, f"Walkie remembers no object {kept}.")
         return self.objects[kept]
+
+    def set_state(self, object_id, operation, *, gripper_frame="", timeout_s=10.0):
+        self.calls.append(("set_state", object_id, operation, gripper_frame))
+        if self.set_error is not None:
+            raise self.set_error
+        if object_id not in self.objects:
+            raise StepError(ErrorCode.NOT_FOUND, f"Walkie remembers no object {object_id}.")
+        found = self.objects[object_id]
+        holder = self.holders.get(object_id)
+        if found.state == "held" and holder not in (None, gripper_frame):
+            raise StepError(
+                ErrorCode.INTERNAL, "Object memory answered INVALID: held by another gripper."
+            )
+        state = _STATE_AFTER[operation]
+        if state == "held":
+            self.holders[object_id] = gripper_frame
+        else:
+            self.holders.pop(object_id, None)
+        self.objects[object_id] = replace(found, state=state)
+        return self.objects[object_id]
+
+
+# The state each operation the agent sends leaves an object in.
+_STATE_AFTER = {
+    "grasp_succeeded": "held",
+    "grip_lost": "missing",
+    "place_succeeded": "missing",
+    "hand_over_succeeded": "handed_over",
+}
 
 
 def _distance(found: RecalledObject, near: tuple[float, float]) -> float:
@@ -137,6 +184,7 @@ def test_recall_object_gives_where_each_was_seen_and_never_its_position():
                 "on": "table 15",
                 "near_place": "kitchen table",
                 "last_seen_s_ago": 42,
+                "held": False,
             },
             {
                 "id": "6",
@@ -146,14 +194,41 @@ def test_recall_object_gives_where_each_was_seen_and_never_its_position():
                 "on": None,
                 "near_place": None,
                 "last_seen_s_ago": None,
+                "held": False,
             },
         ],
         "complete": True,
     }
     # One more than the list holds, to tell whether the list is all of them.
-    assert ctx.object_memory.calls == [("search", "cup", RECALL_LIMIT + 1, None)]
+    assert ctx.object_memory.calls == [
+        ("search", "cup", RECALL_LIMIT + 1, None, ("present", "held"))
+    ]
     # Only the object with a position reads the places, and nothing moves.
     assert base_verbs(robot) == ["base.places"]
+
+
+def test_recall_object_says_which_objects_a_hand_holds_and_gives_them_no_place():
+    robot, ctx = remembering(
+        recalled("18", state="held", seen_s_ago=0.6), recalled("6", state="missing")
+    )
+
+    assert recall_object(ctx, "cup") == {
+        "objects": [
+            {
+                "id": "18",
+                "name": "cup",
+                "category": "dish",
+                "room": None,
+                "on": None,
+                "near_place": None,
+                "last_seen_s_ago": 1,
+                "held": True,
+            }
+        ],
+        "complete": True,
+    }
+    # Where the hand is says nothing about a place, so the places are not read.
+    assert base_verbs(robot) == []
 
 
 @pytest.mark.parametrize(("count", "complete"), [(RECALL_LIMIT, True), (RECALL_LIMIT + 1, False)])
@@ -184,6 +259,7 @@ def test_list_room_objects_gives_the_room_its_objects_and_whether_that_is_all():
                 "on": None,
                 "near_place": "sofa",
                 "last_seen_s_ago": 42,
+                "held": False,
             }
         ],
         "complete": True,

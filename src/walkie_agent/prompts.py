@@ -81,9 +81,10 @@ _TOOL_RULES = {
         "  what you saw in a room. They come from your memory, not from what is in view\n"
         "  now, so say it is where you last saw it. Their ids are memory ids, never ids\n"
         "  from `find_objects`. To fetch or show a remembered object, call `go_to_object`\n"
-        "  with its id, then `find_objects` to check that it is still there. If they\n"
-        "  report UNAVAILABLE, say that you cannot recall objects right now, and never\n"
-        "  guess where something is.\n"
+        "  with its id, then `find_objects` to check that it is still there. One with\n"
+        "  held true is in your hand, so give it, never go to it. If they report\n"
+        "  UNAVAILABLE, say that you cannot recall objects right now, and never guess\n"
+        "  where something is.\n"
     ),
     # A set binds pick_object only with --arms and --object-memory, so this rule is
     # always live as well.

@@ -9,6 +9,11 @@ Ported from experiment/hri-agent at 61d30e8, without the gaze loop it coordinate
 (decision S6-5). An error that ctx.arms raises reaches the LLM as it came, since its
 message already ends with the arm sentence; set_gripper and get_arm_state add what
 they did or found before it.
+
+An open or a half open that the commander reports done also tells the object memory
+that the hand let go of what it held (tools.atomic.held, decision PK-70): a handover
+when that arm rests in the standby pose, else a place somewhere the memory does not
+know. The record is best-effort and changes no answer.
 """
 
 from walkie_agent.arm import answers
@@ -17,6 +22,7 @@ from walkie_agent.arm.results import Recovery
 from walkie_agent.arm.state import UNKNOWN_SENTENCE, ArmsState
 from walkie_agent.capabilities import Arm, ArmsReport, Ctx, GripperReading, GripperState
 from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.tools.atomic.held import release
 
 # The pose a guest hands the robot an object in, and how long a close there waits
 # before its goal is sent. The close follows a spoken cue such as "I will close my hand
@@ -119,6 +125,9 @@ def set_gripper(ctx: Ctx, arm: Arm, state: GripperState) -> str:
             raise type(error)(error.code, " ".join([*done, error.message])) from None
         if moved.outcome == "moved":
             done.append(_moved(state, f"the {side} gripper"))
+            if state != "close":
+                # The hand let go of what the memory holds in it (decision PK-70).
+                release(ctx, side)
         elif moved.outcome == "not_reached":
             # The other gripper is still moved, as asked.
             done.append(

@@ -15,6 +15,7 @@ import pydantic
 import pytest
 
 from conftest import PROJECT_ROOT
+from test_object_memory_atomics import Remembers
 from walkie_agent.arm import answers
 from walkie_agent.arm.poses import load_arm_poses
 from walkie_agent.arm.results import GripperResult, Recovery
@@ -34,6 +35,7 @@ from walkie_agent.capabilities import (
     Ctx,
     GripperMoved,
     GripperReading,
+    RecalledObject,
 )
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
@@ -389,6 +391,84 @@ def test_a_gripper_answer_ends_with_where_the_arms_are(robot):
     move_arm_to_pose(robot.ctx, "hands_up")
 
     assert set_gripper(robot.ctx, "left", "open") == f"Opened the left gripper. {NOT_SAFE_SENTENCE}"
+
+
+# set_gripper: what the object memory records when a hand opens (decision PK-70)
+
+RIGHT_HAND = "openarm_right_hand_tcp"
+HELD_CUP = RecalledObject(
+    id="9",
+    name="cup",
+    label="cup",
+    category="dish",
+    room=None,
+    on=None,
+    state="held",
+    seen_s_ago=0.5,
+    x=None,
+    y=None,
+)
+
+
+def remembering_a_cup_in_the_right_hand(robot: FakeRobot) -> tuple[Ctx, Remembers]:
+    memory = Remembers(HELD_CUP, holders={"9": RIGHT_HAND})
+    return dataclasses.replace(robot.ctx, object_memory=memory), memory
+
+
+@pytest.mark.parametrize(
+    ("pose", "operation", "after"),
+    [("standby", "hand_over_succeeded", "handed_over"), ("home", "place_succeeded", "missing")],
+    ids=["handover", "place"],
+)
+@pytest.mark.parametrize(
+    ("state", "said"),
+    [("open", "Opened the right gripper."), ("half", "Set the right gripper half open.")],
+)
+def test_opening_a_hand_records_that_it_let_go_of_what_it_held(
+    robot, pose, operation, after, state, said
+):
+    ctx, memory = remembering_a_cup_in_the_right_hand(robot)
+    move_arm_to_pose(ctx, pose, "right")
+
+    answer = set_gripper(ctx, "right", state)
+
+    # The answer is the one without a memory: the record is bookkeeping only.
+    assert answer == f"{said} {ctx.arms.state().sentence()}"
+    assert memory.calls[-1] == ("set_state", "9", operation, RIGHT_HAND)
+    assert memory.objects["9"].state == after
+
+
+def test_opening_both_hands_records_the_release_only_for_the_hand_that_held_it(robot):
+    ctx, memory = remembering_a_cup_in_the_right_hand(robot)
+    move_arm_to_pose(ctx, "standby", "right")
+
+    set_gripper(ctx, "both", "open")
+
+    # The left arm is home, so its open reads as a place, and the memory refuses that
+    # record, since the right hand held the cup.
+    records = [call for call in memory.calls if call[0] == "set_state"]
+    assert records == [
+        ("set_state", "9", "place_succeeded", "openarm_left_hand_tcp"),
+        ("set_state", "9", "hand_over_succeeded", RIGHT_HAND),
+    ]
+    assert memory.objects["9"].state == "handed_over"
+
+
+def test_a_close_records_nothing(robot):
+    ctx, memory = remembering_a_cup_in_the_right_hand(robot)
+
+    set_gripper(ctx, "right", "close")
+
+    assert memory.calls == []
+    assert memory.objects["9"].state == "held"
+
+
+def test_a_memory_that_cannot_record_the_release_changes_no_answer(robot):
+    ctx, memory = remembering_a_cup_in_the_right_hand(robot)
+    memory.set_error = StepError(ErrorCode.TIMEOUT, "The object memory did not answer in time.")
+
+    assert set_gripper(ctx, "right", "open") == f"Opened the right gripper. {SAFE_SENTENCE}"
+    assert memory.objects["9"].state == "held"
 
 
 # set_gripper: each outcome, through the stub

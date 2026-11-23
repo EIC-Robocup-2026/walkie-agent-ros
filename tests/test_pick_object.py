@@ -20,7 +20,7 @@ from walkie_agent.arm.pick import (
 from walkie_agent.arm.poses import load_arm_poses
 from walkie_agent.arm.state import NOT_SAFE_SENTENCE, SAFE_SENTENCE
 from walkie_agent.capabilities import Ctx, GripperReading, NoDisplay, RecalledObject
-from walkie_agent.capabilities.fake import FakeRobot
+from walkie_agent.capabilities.fake import HELD_FINGER_M, FakeRobot
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.tools.atomic import grasp, pick_object
 
@@ -407,9 +407,15 @@ def test_the_first_match_with_a_full_position_is_picked(arm_poses):
     assert move["args"]["turn_deg"] == pytest.approx(90.0 + math.degrees(math.asin(0.20)))
     at_stand_off(robot, 0.0, 1.0)
     # Read again after the drive, before the reach and before the approach.
-    assert ctx.object_memory.calls == [("search", "water bottle", 10, (0.0, 0.0))] + [
-        ("get", "7")
-    ] * 3
+    # First whether a hand holds something, then the object by its name.
+    assert ctx.object_memory.calls[:2] == [
+        ("search", "", 10, None, ("held",)),
+        ("search", "water bottle", 10, (0.0, 0.0), ("present",)),
+    ]
+    assert ctx.object_memory.calls[2:5] == [("get", "7")] * 3
+    assert ctx.object_memory.calls[5:] == [
+        ("set_state", "7", "grasp_succeeded", "openarm_right_hand_tcp")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -1567,3 +1573,157 @@ def test_unreadable_settings_stop_the_pick_before_anything_moves(arm_poses, monk
     assert error.code is ErrorCode.INTERNAL
     assert error.message == "Walkie's pick settings cannot be read, so it cannot pick."
     assert robot.calls == []
+
+
+# -- What the hand holds, as the object memory records it (decision PK-70) -------------
+
+RIGHT_HAND = "openarm_right_hand_tcp"
+HANDOVER = (
+    "To give it to a person, move the right arm to the standby pose and open the gripper "
+    "once they hold it."
+)
+
+
+def holding(arm_poses, held: RecalledObject, *, in_hand: bool = True):
+    """A pick of the water bottle while the memory holds `held` in the right hand.
+
+    With `in_hand` the right fingers rest where a close on an object stops them.
+    """
+    robot, ctx = picking(arm_poses, remembered(), replace(held, state="held"))
+    ctx.object_memory.holders[held.id] = RIGHT_HAND
+    if in_hand:
+        robot._finger_m["right"] = HELD_FINGER_M
+    return robot, ctx
+
+
+CUP = remembered("cup", object_id="9", label="cup")
+
+
+def test_a_pick_while_the_hand_holds_another_object_is_refused_before_anything_moves(
+    arm_poses,
+):
+    robot, ctx = holding(arm_poses, CUP)
+
+    error = fails(ctx)
+
+    assert type(error) is StepError and error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message == (
+        "Walkie's right hand already holds the cup, and opening it to pick up the water "
+        f"bottle would drop it. {HANDOVER}"
+    )
+    # Only the gripper was read, and the memory still holds the cup in the hand.
+    assert verbs(robot) == ["arms.read"]
+    assert [call[0] for call in ctx.object_memory.calls] == ["search"]
+    assert ctx.object_memory.objects["9"].state == "held"
+
+
+def test_a_pick_of_the_object_already_in_the_hand_says_how_to_hand_it_over(arm_poses):
+    robot, ctx = holding(arm_poses, remembered(object_id="12"))
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message == (
+        f"Walkie is already holding the water bottle in its right hand. {HANDOVER}"
+    )
+    assert verbs(robot) == ["arms.read"]
+
+
+def test_a_gripper_that_cannot_be_read_with_an_object_held_refuses_the_pick(arm_poses):
+    robot, ctx = holding(arm_poses, CUP)
+    robot.faults["arms.read"] = StepError(
+        ErrorCode.TIMEOUT, "The commander did not answer the read of both_arms."
+    )
+
+    error = fails(ctx)
+
+    # Opening a hand that may hold the cup could drop it.
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message.startswith("Walkie's right hand already holds the cup")
+    assert ctx.object_memory.objects["9"].state == "held"
+
+
+def test_a_stop_during_the_gripper_read_ends_the_pick(arm_poses):
+    robot, ctx = holding(arm_poses, CUP)
+    robot.faults["arms.read"] = StepError(
+        ErrorCode.CANCELLED, "Cancelled the read of the arms: a stop is in effect."
+    )
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.CANCELLED
+    assert verbs(robot) == ["arms.read"]
+
+
+def test_an_object_held_in_an_empty_hand_is_recorded_lost_and_the_pick_goes_on(arm_poses):
+    robot, ctx = holding(arm_poses, CUP, in_hand=False)
+
+    answer = pick_object(ctx, "water bottle")
+
+    assert answer.startswith("Picked up the water bottle with the right hand")
+    memory = ctx.object_memory
+    assert memory.calls[:3] == [
+        ("search", "", 10, None, ("held",)),
+        ("set_state", "9", "grip_lost", RIGHT_HAND),
+        ("search", "water bottle", 10, (0.0, 0.0), ("present",)),
+    ]
+    assert memory.objects["9"].state == "missing"
+    assert memory.objects["7"].state == "held"
+
+
+def test_the_memory_records_the_object_held_after_the_close_and_before_the_lift(
+    arm_poses, monkeypatch
+):
+    robot, ctx = picking(arm_poses, remembered())
+    memory = ctx.object_memory
+    record = memory.set_state
+    before: list[list[str]] = []
+
+    def recording(*args, **kwargs):
+        before.append(verbs(robot))
+        return record(*args, **kwargs)
+
+    monkeypatch.setattr(memory, "set_state", recording)
+
+    pick_object(ctx, "water bottle")
+
+    [moved] = before
+    # The close is the last motion before the record, and the lift the next one after.
+    assert moved[-1] == "arms.gripper"
+    assert verbs(robot)[len(moved)] == "arms.reach"
+    assert memory.calls[-1] == ("set_state", "7", "grasp_succeeded", RIGHT_HAND)
+    assert memory.objects["7"].state == "held"
+    assert memory.holders["7"] == RIGHT_HAND
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        StepError(ErrorCode.UNAVAILABLE, "Object memory is unavailable: no such operation."),
+        StepError(ErrorCode.INTERNAL, "Object memory answered INVALID: bad revision."),
+        StepError(ErrorCode.TIMEOUT, "The object memory did not answer in time."),
+    ],
+    ids=["unavailable", "internal", "timeout"],
+)
+def test_a_memory_that_cannot_record_the_grasp_does_not_stop_the_pick(arm_poses, error):
+    robot, ctx = picking(arm_poses, remembered())
+    ctx.object_memory.set_error = error
+
+    answer = pick_object(ctx, "water bottle")
+
+    assert answer.startswith("Picked up the water bottle with the right hand")
+    assert ctx.object_memory.objects["7"].state == "present"
+
+
+def test_an_object_dropped_after_the_lift_is_recorded_lost(arm_poses, monkeypatch):
+    robot, ctx = picking(arm_poses, remembered())
+    after_call(monkeypatch, robot, "move_to", 2, lambda: drop(robot))
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.SKILL_FAILED
+    assert ctx.object_memory.calls[-2:] == [
+        ("set_state", "7", "grasp_succeeded", RIGHT_HAND),
+        ("set_state", "7", "grip_lost", RIGHT_HAND),
+    ]
+    assert ctx.object_memory.objects["7"].state == "missing"

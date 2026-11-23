@@ -185,6 +185,9 @@ def pick_object(ctx: Ctx, name: str) -> str:
     Args:
         name: What the object is called, such as "water bottle" or "cup".
     """
+    asked = name.strip()
+    if not asked:
+        raise StepError(ErrorCode.REFUSED, "Refused: name the object to pick up.")
     try:
         settings = load_pick_settings()
     except (OSError, ValueError) as error:
@@ -192,8 +195,8 @@ def pick_object(ctx: Ctx, name: str) -> str:
         raise StepError(
             ErrorCode.INTERNAL, "Walkie's pick settings cannot be read, so it cannot pick."
         ) from None
-    _hand_is_free(ctx, settings, name)
-    found = _remembered(ctx, settings, name)
+    _hand_is_free(ctx, settings, asked)
+    found = _remembered(ctx, settings, asked)
     label = f"the {found.name}"
     grasp = settings.grasp_for(found.label)
     _fits_hand(settings, grasp, found, label)
@@ -210,6 +213,10 @@ def _hand_is_free(ctx: Ctx, settings: PickSettings, name: str) -> None:
     is checked against the gripper (_hand_holds): a hand that the read finds empty
     lost the object unnoticed, so the object is recorded lost and the pick goes on.
     A gripper that cannot be read is taken to hold what the memory says.
+
+    The memory does not say which hand holds an object, so every object it holds is
+    taken to be in the picking hand. The record for an object in the other hand is
+    refused by the memory, which leaves it held.
     """
     held = held_objects(ctx)
     if not held:
@@ -219,7 +226,7 @@ def _hand_is_free(ctx: Ctx, settings: PickSettings, name: str) -> None:
         for found in held:
             record(ctx, found.id, "grip_lost", arm)
         return
-    asked = name.strip().lower()
+    asked = name.lower()
     wanted = next(
         (found for found in held if matches(asked, found.name) or matches(asked, found.label)),
         None,
@@ -228,7 +235,7 @@ def _hand_is_free(ctx: Ctx, settings: PickSettings, name: str) -> None:
         f"To give it to a person, move the {arm} arm to the standby pose and open the gripper "
         "once they hold it."
     )
-    if asked and wanted is not None:
+    if wanted is not None:
         raise StepError(
             ErrorCode.PRECONDITION_FAILED,
             f"Walkie is already holding the {wanted.name} in its {arm} hand. {handover}",
@@ -236,8 +243,8 @@ def _hand_is_free(ctx: Ctx, settings: PickSettings, name: str) -> None:
     names = " and the ".join(found.name for found in held)
     raise StepError(
         ErrorCode.PRECONDITION_FAILED,
-        f"Walkie's {arm} hand already holds the {names}, and opening it to pick up "
-        f"{f'the {asked}' if asked else 'something else'} would drop it. {handover}",
+        f"Walkie's {arm} hand already holds the {names}, and opening it to pick up the "
+        f"{asked} would drop it. {handover}",
     )
 
 
@@ -260,15 +267,12 @@ def _remembered(ctx: Ctx, settings: PickSettings, name: str) -> RecalledObject:
     One seen at most max_observation_age_s ago comes first (_is_fresh); otherwise, and
     among equal matches of the name, the one nearest where the robot stands.
     """
-    asked = name.strip()
-    if not asked:
-        raise StepError(ErrorCode.REFUSED, "Refused: name the object to pick up.")
     here = ctx.base.pose()
-    matches = ctx.object_memory.search(asked, limit=SEARCH_LIMIT, near=(here.x, here.y))
+    matches = ctx.object_memory.search(name, limit=SEARCH_LIMIT, near=(here.x, here.y))
     if not matches:
         raise StepError(
             ErrorCode.NOT_FOUND,
-            f"Walkie remembers no {asked}. Call recall_object to see what it remembers.",
+            f"Walkie remembers no {name}. Call recall_object to see what it remembers.",
         )
     placed = [
         found
@@ -280,7 +284,7 @@ def _remembered(ctx: Ctx, settings: PickSettings, name: str) -> RecalledObject:
         return sorted(placed, key=lambda found: not _is_fresh(settings, found))[0]
     raise StepError(
         ErrorCode.PRECONDITION_FAILED,
-        f"Walkie remembers a {asked}, but not exactly where it is, so it cannot reach for "
+        f"Walkie remembers a {name}, but not exactly where it is, so it cannot reach for "
         "it. Go to it and call find_objects to look again.",
     )
 

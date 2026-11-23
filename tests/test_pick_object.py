@@ -1643,6 +1643,55 @@ def test_a_gripper_that_cannot_be_read_with_an_object_held_refuses_the_pick(arm_
     assert ctx.object_memory.objects["9"].state == "held"
 
 
+def test_a_gripper_whose_finger_cannot_be_read_with_an_object_held_refuses_the_pick(
+    arm_poses, monkeypatch
+):
+    robot, ctx = holding(arm_poses, CUP, in_hand=False)
+    read = robot.read
+
+    def unread_fingers():
+        # As RosArms reports a gripper joint missing from the reading.
+        reading = read()
+        grippers = tuple(replace(g, in_grasp_band=None) for g in reading.grippers)
+        return replace(reading, grippers=grippers)
+
+    monkeypatch.setattr(robot, "read", unread_fingers)
+
+    error = fails(ctx)
+
+    assert error.code is ErrorCode.PRECONDITION_FAILED
+    assert error.message.startswith("Walkie's right hand already holds the cup")
+    assert ctx.object_memory.objects["9"].state == "held"
+
+
+def test_a_blank_name_is_refused_before_the_hand_is_checked(arm_poses):
+    robot, ctx = holding(arm_poses, CUP)
+
+    error = fails(ctx, "   ")
+
+    assert (error.code, error.message) == (
+        ErrorCode.REFUSED,
+        "Refused: name the object to pick up.",
+    )
+    assert verbs(robot) == []
+    assert ctx.object_memory.calls == []
+
+
+def test_an_object_held_in_the_other_hand_stays_held_and_the_pick_goes_on(arm_poses):
+    robot, ctx = holding(arm_poses, CUP, in_hand=False)
+    ctx.object_memory.holders["9"] = "openarm_left_hand_tcp"
+
+    answer = pick_object(ctx, "water bottle")
+
+    # The memory refuses the right hand's record for the left hand's cup.
+    assert answer.startswith("Picked up the water bottle with the right hand")
+    memory = ctx.object_memory
+    assert memory.calls[1] == ("set_state", "9", "grip_lost", RIGHT_HAND)
+    assert memory.objects["9"].state == "held"
+    assert memory.holders["9"] == "openarm_left_hand_tcp"
+    assert memory.objects["7"].state == "held"
+
+
 def test_a_stop_during_the_gripper_read_ends_the_pick(arm_poses):
     robot, ctx = holding(arm_poses, CUP)
     robot.faults["arms.read"] = StepError(

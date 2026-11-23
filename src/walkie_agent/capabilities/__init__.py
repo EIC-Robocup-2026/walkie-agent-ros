@@ -50,6 +50,8 @@ __all__ = [
     "NO_ARMS",
     "NO_OBJECT_MEMORY",
     "NO_WEB_SEARCH",
+    "OBJECT_STATES",
+    "STATE_OPERATIONS",
     "Arm",
     "ArmPose",
     "Arms",
@@ -449,7 +451,8 @@ class ObjectMemory(Protocol):
     """ctx.object_memory: the objects Walkie saw before, as an object memory keeps them.
 
     An object's id here is the memory's own, a decimal number such as "18", never a
-    live id from find_objects. search gives the objects remembered as present whose
+    live id from find_objects. search gives the objects remembered in one of `states`,
+    "present" alone by default, whose
     label, another label the detector gave them or official name matches `name` as
     find_objects matches a label (perception.object_words.matches): the label, its
     category or the category's plural, ignoring case and spaces at either end, or an
@@ -462,14 +465,26 @@ class ObjectMemory(Protocol):
     them. With `near`, a point (x, y) in the map frame, the objects within each of
     those groups come nearest to it first, and those with no position last. room gives the objects remembered as present in the room named `room`,
     ignoring case, at most `limit`. get gives one object in any state, following a
-    merge: the object it returns may have another id than `object_id`. No verb
-    moves anything, so none waits for a stop to commit.
+    merge: the object it returns may have another id than `object_id`.
+
+    set_state records what a skill did to an object, one of STATE_OPERATIONS:
+    "grasp_succeeded" once a hand holds it, which makes it "held" in the hand whose
+    tool frame `gripper_frame` names; "grip_lost" when that hand turns out empty,
+    and "place_succeeded" when the hand let go of it anywhere but in a handover,
+    which both make it "missing" until the camera sees it again; and
+    "hand_over_succeeded" when a person took it, which makes it "handed_over". A
+    held object keeps the position it was picked from, which is not where it is.
+    With a `gripper_frame`, an operation on a held
+    object applies only if it is that hand's. set_state returns the object as the
+    memory then holds it. No verb moves anything, so none waits for a stop to commit.
 
     Every verb raises StepError REFUSED for an argument outside its range, such as
     an id that is not a memory id; NOT_FOUND for an object or a room the memory does
     not know; UNAVAILABLE without a memory, or when it is not ready or failed in a
     way that may pass, so the same call may work later; TIMEOUT when it did not
-    answer within `timeout_s`; and CANCELLED on a stop.
+    answer within `timeout_s`; and CANCELLED on a stop. set_state is UNAVAILABLE at
+    once from a memory that does not record states, and INTERNAL when the object's
+    state does not allow the operation or it is in the other hand.
     """
 
     def search(
@@ -478,12 +493,37 @@ class ObjectMemory(Protocol):
         *,
         limit: int = 10,
         near: tuple[float, float] | None = None,
+        states: tuple[str, ...] = ("present",),
         timeout_s: float = 10.0,
     ) -> tuple[RecalledObject, ...]: ...
 
     def room(self, room: str, *, limit: int = 50, timeout_s: float = 10.0) -> RoomObjects: ...
 
     def get(self, object_id: str, *, timeout_s: float = 10.0) -> RecalledObject: ...
+
+    def set_state(
+        self,
+        object_id: str,
+        operation: str,
+        *,
+        gripper_frame: str = "",
+        timeout_s: float = 10.0,
+    ) -> RecalledObject: ...
+
+
+# The states an object memory holds an object in (walkie-database ObjectSummary.state).
+OBJECT_STATES = (
+    "candidate",
+    "present",
+    "grasping",
+    "held",
+    "missing",
+    "handed_over",
+    "discarded",
+    "merged",
+)
+# The operations ObjectMemory.set_state records, each the outcome of a skill.
+STATE_OPERATIONS = ("grasp_succeeded", "grip_lost", "place_succeeded", "hand_over_succeeded")
 
 
 # What UnavailableObjectMemory says, kept here so the atomics' tests can match it.
@@ -502,6 +542,7 @@ class UnavailableObjectMemory:
         *,
         limit: int = 10,
         near: tuple[float, float] | None = None,
+        states: tuple[str, ...] = ("present",),
         timeout_s: float = 10.0,
     ) -> tuple[RecalledObject, ...]:
         self._refuse()
@@ -510,6 +551,16 @@ class UnavailableObjectMemory:
         self._refuse()
 
     def get(self, object_id: str, *, timeout_s: float = 10.0) -> RecalledObject:
+        self._refuse()
+
+    def set_state(
+        self,
+        object_id: str,
+        operation: str,
+        *,
+        gripper_frame: str = "",
+        timeout_s: float = 10.0,
+    ) -> RecalledObject:
         self._refuse()
 
 

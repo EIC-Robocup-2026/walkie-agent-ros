@@ -1,6 +1,6 @@
 """RosObjectMemory against a fake walkie-database node over Fast DDS (no LLM).
 
-Each test's fake serves the four object services under a node name of its own, so a
+Each test's fake serves the five object services under a node name of its own, so a
 fake torn down in one test never still looks discovered in the next. The fake spins on
 one thread of its own, so it answers one request at a time, in the order they came.
 """
@@ -21,7 +21,13 @@ from rclpy.node import Node
 from ros_fakes import WATCHDOG_S, Background
 from test_ros_people_memory import fails, spy_on_requests, unique_name, wait_until
 from walkie_database_msgs.msg import ObjectMatch, ObjectSummary, OperationStatus, RoomSummary
-from walkie_database_msgs.srv import GetObject, GetRoomContents, ListRooms, SearchObjects
+from walkie_database_msgs.srv import (
+    GetObject,
+    GetRoomContents,
+    ListRooms,
+    SearchObjects,
+    SetObjectState,
+)
 
 from walkie_agent.capabilities import RecalledObject, RoomObjects
 from walkie_agent.capabilities.guards import CancelToken
@@ -35,7 +41,17 @@ SERVICES = {
     "get_room_contents": GetRoomContents,
     "list_rooms": ListRooms,
     "get_object": GetObject,
+    "set_object_state": SetObjectState,
 }
+# The state each operation the agent sends leaves an object in, as walkie-database's
+# SetObjectState moves it.
+STATE_AFTER = {
+    "grasp_succeeded": "held",
+    "grip_lost": "missing",
+    "place_succeeded": "missing",
+    "hand_over_succeeded": "handed_over",
+}
+RIGHT_HAND = "openarm_right_hand_tcp"
 DATABASE_FAILURE = "The database could not search objects: database is locked"
 NOT_READY = "The object memory is not ready: no clock yet."
 # A cup's box as the memory stores it: along its yaw, across it, and its height, in metres.
@@ -119,10 +135,14 @@ def store() -> list[ObjectSummary]:
 
 
 class FakeObjectDatabase(Node):
-    """Serves ~/search_objects, ~/get_room_contents, ~/list_rooms and ~/get_object.
+    """Serves ~/search_objects, ~/get_room_contents, ~/list_rooms, ~/get_object and
+    ~/set_object_state.
 
     serving() spins it on one thread, so it answers one request at a time, in the
-    order they came.
+    order they came. set_object_state answers CONFLICT unless the request carries the
+    object's revision, and each record bumps it; `saves_before_set` bumps it that many
+    more times, once per set_object_state request, before the check, as the node's
+    save of a fresh sighting does between a read and a record.
     """
 
     def __init__(self, name: str):
@@ -141,11 +161,13 @@ class FakeObjectDatabase(Node):
         self.status: dict[str, tuple[int, str]] = {}
         # By service: the (code, message) of the next answers, in order.
         self.status_next: dict[str, list[tuple[int, str]]] = {}
+        self.saves_before_set = 0
         answers = {
             "search_objects": self._search,
             "get_room_contents": self._room,
             "list_rooms": self._rooms,
             "get_object": self._get,
+            "set_object_state": self._set_state,
         }
         for service, srv_type in SERVICES.items():
             self.create_service(srv_type, f"~/{service}", self._serve(service, answers[service]))
@@ -199,6 +221,27 @@ class FakeObjectDatabase(Node):
             return
         response.requested_id = request.object_id
         response.merged = kept != request.object_id
+        response.object = found
+
+    def _set_state(self, request, response):
+        found = next((o for o in self.objects if o.id == request.object_id), None)
+        if found is None:
+            response.status = OperationStatus(
+                code=OperationStatus.NOT_FOUND, message=f"No object {request.object_id}."
+            )
+            return
+        if self.saves_before_set:
+            self.saves_before_set -= 1
+            found.revision += 1
+        if request.expected_revision != found.revision:
+            response.status = OperationStatus(
+                code=OperationStatus.CONFLICT,
+                message=f"Object {found.id} is at revision {found.revision}.",
+            )
+            response.object = found
+            return
+        found.state = STATE_AFTER[request.operation]
+        found.revision += 1
         response.object = found
 
 
@@ -451,6 +494,25 @@ def test_a_near_that_is_not_a_point_is_refused_before_anything_is_sent(
     error = fails(memory.search, "cup", near=near)
 
     assert (error.code, error.message) == (ErrorCode.REFUSED, message)
+    assert sent(database) == 0
+
+
+def test_search_asks_for_the_states_it_is_given(database, memory):
+    assert ids(memory.search("cup", states=("present", "held"))) == ["18", "6", "9"]
+    assert ids(memory.search("", states=("held",))) == ["9"]
+
+    asked = [list(r.query.states) for r in database.requests["search_objects"]]
+    assert asked == [["present", "held"], ["held"]]
+
+
+@pytest.mark.parametrize("states", [(), ("flying",), ("present", "lost"), ["present"], "held"])
+def test_states_the_memory_does_not_know_are_refused_before_anything_is_sent(
+    database, memory, states
+):
+    error = fails(memory.search, "cup", states=states)
+
+    assert error.code is ErrorCode.REFUSED
+    assert error.message.startswith("Refused: states must name some of candidate, present,")
     assert sent(database) == 0
 
 
@@ -782,6 +844,105 @@ def test_an_id_that_is_not_a_memory_id_is_refused_before_anything_is_sent(
 
 def test_memory_id_takes_the_largest_int64():
     assert memory_id(str(2**63 - 1)) == 2**63 - 1
+
+
+# -- set_state ----------------------------------------------------------------------------
+
+
+def stored(database: FakeObjectDatabase, object_id: int) -> ObjectSummary:
+    return next(o for o in database.objects if o.id == object_id)
+
+
+def test_set_state_records_the_operation_at_the_objects_current_revision(database, memory):
+    cup = stored(database, 18)
+    cup.map_id, cup.revision = "chula_pat14_6", 3
+
+    held = memory.set_state("18", "grasp_succeeded", gripper_frame=RIGHT_HAND)
+
+    assert (held.id, held.state) == ("18", "held")
+    [read] = database.requests["get_object"]
+    assert (read.object_id, read.include_cloud) == (18, False)
+    [record] = database.requests["set_object_state"]
+    assert (record.map_id, record.object_id, record.expected_revision) == ("chula_pat14_6", 18, 3)
+    assert (record.operation, record.gripper_frame) == ("grasp_succeeded", RIGHT_HAND)
+    assert record.has_pose is False
+    assert record.cause == "walkie-agent"
+    assert len(record.request_id) == 32
+    assert cup.revision == 4
+
+
+def test_a_revision_that_changed_before_the_record_is_read_again_once(database, memory):
+    database.saves_before_set = 1
+
+    assert memory.set_state("18", "grip_lost", gripper_frame=RIGHT_HAND).state == "missing"
+
+    records = database.requests["set_object_state"]
+    assert [r.expected_revision for r in records] == [0, 1]
+    assert len(database.requests["get_object"]) == 2
+    # Each try is a request of its own.
+    assert records[0].request_id != records[1].request_id
+
+
+def test_a_revision_that_changes_again_is_internal_after_the_second_try(database, memory):
+    database.saves_before_set = 2
+
+    error = fails(memory.set_state, "18", "place_succeeded", gripper_frame=RIGHT_HAND)
+
+    assert (error.code, error.message) == (
+        ErrorCode.INTERNAL,
+        "Object memory answered CONFLICT: Object 18 is at revision 2.",
+    )
+    assert len(database.requests["set_object_state"]) == 2
+    assert stored(database, 18).state == "present"
+
+
+def test_a_memory_that_does_not_record_states_is_unavailable_at_once(database, memory):
+    database.status["set_object_state"] = (OperationStatus.NOT_READY, "Not implemented yet.")
+
+    error = fails(memory.set_state, "18", "grasp_succeeded", gripper_frame=RIGHT_HAND)
+
+    assert (error.code, error.message) == (
+        ErrorCode.UNAVAILABLE,
+        "Object memory is unavailable: Not implemented yet.",
+    )
+    # Asked once: a pick holding an object in the air does not wait for it.
+    assert len(database.requests["set_object_state"]) == 1
+
+
+@pytest.mark.parametrize("service", ["get_object", "set_object_state"])
+def test_a_record_for_an_object_the_map_does_not_hold_is_not_found(database, memory, service):
+    database.status_next[service] = [(OperationStatus.WRONG_MAP, "Another map.")]
+
+    error = fails(memory.set_state, "18", "grip_lost", gripper_frame=RIGHT_HAND)
+
+    assert (error.code, error.message) == (ErrorCode.NOT_FOUND, "Walkie remembers no object 18.")
+
+
+def test_a_record_the_memory_refuses_is_internal(database, memory):
+    refused = "Object 9 is held by openarm_left_hand_tcp."
+    database.status["set_object_state"] = (OperationStatus.INVALID, refused)
+
+    error = fails(memory.set_state, "9", "hand_over_succeeded", gripper_frame=RIGHT_HAND)
+
+    assert (error.code, error.message) == (
+        ErrorCode.INTERNAL,
+        f"Object memory answered INVALID: {refused}",
+    )
+    assert len(database.requests["set_object_state"]) == 1
+
+
+@pytest.mark.parametrize("operation", ["begin_grasp", "grasp_failed", "prepare_place", "held"])
+def test_an_operation_the_agent_does_not_send_is_refused_before_anything_is_sent(
+    database, memory, operation
+):
+    error = fails(memory.set_state, "18", operation, gripper_frame=RIGHT_HAND)
+
+    assert error.code is ErrorCode.REFUSED
+    assert error.message == (
+        "Refused: operation must be one of grasp_succeeded, grip_lost, place_succeeded, "
+        "hand_over_succeeded."
+    )
+    assert sent(database) == 0
 
 
 # -- Answers asked again ------------------------------------------------------------------

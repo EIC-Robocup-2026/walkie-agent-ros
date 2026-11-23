@@ -2,15 +2,17 @@
 
 It answers recall_object, list_room_objects and go_to_object (decisions SG-16 to
 SG-21) from the node's /walkie_database/search_objects, get_room_contents,
-list_rooms and get_object (walkie-database feat/scene-graph-prep). main creates it
+list_rooms and get_object (walkie-database feat/scene-graph-prep), and records what
+pick_object and set_gripper did to an object with set_object_state. main creates it
 once from the connector, with --object-memory. Its clients are made here, once, on
 the connector's node, and its methods block the calling thread, never the
 executor's. The Runner runs one tool call at a time, so it holds no lock.
 
 What each verb asks:
 
-- search: SearchObjects for every object in the state "present", with no thing, no
-  text and no vector, up to MAX_RESULTS, then keeps those whose label, an alias or the
+- search: SearchObjects for every object in the asked states, "present" by default,
+  with no thing, no text and no vector, up to MAX_RESULTS, then keeps those whose
+  label, an alias or the
   official name matches `name` as find_objects matches a label. The node's own match
   only folds case, so "cups" or "dishes" would find nothing there (decision SG-17).
   An answer that the node truncated is logged, since objects past it are never
@@ -20,6 +22,11 @@ What each verb asks:
   by its stored name; NOT_FOUND then lists the rooms the memory knows.
 - get: GetObject without the cloud. The node follows a merge, so the object may come
   back with another id.
+- set_state: GetObject for the object's current revision, then SetObjectState with
+  it, a new request id and no pose. The node saves a seen object every 2 s or so, and
+  each save bumps its revision, so a CONFLICT is asked again once with a fresh
+  revision. NOT_READY is not asked again: the node answers it for an operation it
+  does not record, and a pick holding an object in the air must not wait on it.
 
 A record's `name` is the object's official name, such as "coffee table", when the
 memory has one, else its label, such as "table" (decision SG-27). Its `label` is the
@@ -60,8 +67,8 @@ Errors, as StepError codes:
   call's `timeout_s`, and only then are UNAVAILABLE with the node's message.
 - TIMEOUT: no answer in time. The request is dropped, never sent again, and
   STALE_PIN_HINT is logged.
-- NOT_FOUND: get() of an id the memory does not know on its map (NOT_FOUND or
-  WRONG_MAP), or room() of a room it does not know.
+- NOT_FOUND: get() or set_state() of an id the memory does not know on its map
+  (NOT_FOUND or WRONG_MAP), or room() of a room it does not know.
 - REFUSED: an argument outside its range, before anything is sent.
 - INTERNAL: any other answer, as "Object memory answered <CODE>: <message>". It
   means a bug on one side or the other, such as a node on another map.
@@ -73,14 +80,26 @@ import logging
 import math
 import re
 import time
+import uuid
 from collections.abc import Callable, Iterable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from rclpy.client import Client
 from walkie_database_msgs.msg import ObjectQuery, ObjectSummary, OperationStatus
-from walkie_database_msgs.srv import GetObject, GetRoomContents, ListRooms, SearchObjects
+from walkie_database_msgs.srv import (
+    GetObject,
+    GetRoomContents,
+    ListRooms,
+    SearchObjects,
+    SetObjectState,
+)
 
-from walkie_agent.capabilities import RecalledObject, RoomObjects
+from walkie_agent.capabilities import (
+    OBJECT_STATES,
+    STATE_OPERATIONS,
+    RecalledObject,
+    RoomObjects,
+)
 from walkie_agent.capabilities.guards import (
     CancelToken,
     require_finite,
@@ -106,8 +125,8 @@ logger = logging.getLogger(__name__)
 
 # The node's cap on max_results (walkie-database queries.py MAX_RESULTS).
 MAX_RESULTS = 100
-# The states search and room ask for. "held" is left out: an object in a hand is
-# not where Walkie last saw it.
+# The states search asks for by default, and room always. "held" is left out: an
+# object in a hand is not where Walkie last saw it.
 STATES = ("present",)
 # The pause before a NOT_READY or a database failure is asked again, and how long
 # after the first such answer it may still be asked.
@@ -117,7 +136,7 @@ RETRY_BUDGET_S = 2.0
 _ID = re.compile(r"[1-9][0-9]{0,18}")
 _MAX_ID = 2**63 - 1
 _POLL_S = 0.02
-_SERVICES = ("search_objects", "get_room_contents", "list_rooms", "get_object")
+_SERVICES = ("search_objects", "get_room_contents", "list_rooms", "get_object", "set_object_state")
 _CODE_NAMES = {
     getattr(OperationStatus, name): name
     for name in (
@@ -171,6 +190,7 @@ class RosObjectMemory:
         self._room_client = node.create_client(GetRoomContents, names["get_room_contents"])
         self._rooms_client = node.create_client(ListRooms, names["list_rooms"])
         self._get_client = node.create_client(GetObject, names["get_object"])
+        self._set_client = node.create_client(SetObjectState, names["set_object_state"])
 
     def search(
         self,
@@ -178,16 +198,18 @@ class RosObjectMemory:
         *,
         limit: int = 10,
         near: tuple[float, float] | None = None,
+        states: tuple[str, ...] = STATES,
         timeout_s: float = 10.0,
     ) -> tuple[RecalledObject, ...]:
         require_text(name=name)
         _require_limit(limit)
         _require_near(near)
+        _require_states(states)
         wanted = name.strip().lower()
         what = f"recalling {wanted}" if wanted else "recalling objects"
         deadline = _deadline(timeout_s)
         request = SearchObjects.Request(
-            query=ObjectQuery(states=list(STATES)),
+            query=ObjectQuery(states=list(states)),
             use_embedding=False,
             max_results=MAX_RESULTS,
         )
@@ -195,9 +217,10 @@ class RosObjectMemory:
         _expect_ok(response.status)
         if response.truncated:
             logger.warning(
-                "The object memory holds more than %d present objects; %s looked at the "
+                "The object memory holds more than %d %s objects; %s looked at the "
                 "first %d only.",
                 MAX_RESULTS,
+                " or ".join(states),
                 what,
                 MAX_RESULTS,
             )
@@ -252,9 +275,53 @@ class RosObjectMemory:
         deadline = _deadline(timeout_s)
         request = GetObject.Request(object_id=number, include_cloud=False)
         response = self._call(self._get_client, request, deadline, what)
-        if response.status.code in (OperationStatus.NOT_FOUND, OperationStatus.WRONG_MAP):
-            raise StepError(ErrorCode.NOT_FOUND, f"Walkie remembers no object {number}.")
-        _expect_ok(response.status)
+        _expect_known(response.status, number)
+        return self._recalled([response.object], [response.object])[0]
+
+    def set_state(
+        self,
+        object_id: str,
+        operation: str,
+        *,
+        gripper_frame: str = "",
+        timeout_s: float = 10.0,
+    ) -> RecalledObject:
+        require_text(object_id=object_id, operation=operation, gripper_frame=gripper_frame)
+        number = memory_id(object_id)
+        if operation not in STATE_OPERATIONS:
+            raise StepError(
+                ErrorCode.REFUSED,
+                f"Refused: operation must be one of {', '.join(STATE_OPERATIONS)}.",
+            )
+        what = f"recording {operation} for object {number}"
+        deadline = _deadline(timeout_s)
+        answered = _ANSWERED | {OperationStatus.CONFLICT}
+        for attempt in range(2):
+            current = self._call(
+                self._get_client,
+                GetObject.Request(object_id=number, include_cloud=False),
+                deadline,
+                what,
+            )
+            _expect_known(current.status, number)
+            stored = current.object
+            request = SetObjectState.Request(
+                request_id=uuid.uuid4().hex,
+                cause="walkie-agent",
+                map_id=stored.map_id,
+                object_id=stored.id,
+                expected_revision=stored.revision,
+                operation=operation,
+                gripper_frame=gripper_frame,
+                has_pose=False,
+            )
+            response = self._call(
+                self._set_client, request, deadline, what, answered=answered, retry=False
+            )
+            if response.status.code != OperationStatus.CONFLICT or attempt == 1:
+                break
+            logger.debug("%s: the revision changed; asking again.", what)
+        _expect_known(response.status, number)
         return self._recalled([response.object], [response.object])[0]
 
     # -- Answers ----------------------------------------------------------------------
@@ -283,19 +350,33 @@ class RosObjectMemory:
 
     # -- Calls ------------------------------------------------------------------------
 
-    def _call(self, client: Client, request: Any, deadline: float, what: str) -> Any:
-        """The node's answer with status OK, NOT_FOUND or WRONG_MAP; see the module docstring.
+    def _call(
+        self,
+        client: Client,
+        request: Any,
+        deadline: float,
+        what: str,
+        *,
+        answered: frozenset[int] = _ANSWERED,
+        retry: bool = True,
+    ) -> Any:
+        """The node's answer with a status in `answered`; see the module docstring.
 
-        NOT_READY and a database failure are asked again; any other status is INTERNAL.
+        With `retry`, NOT_READY and a database failure are asked again; without it,
+        they are UNAVAILABLE at once. Any other status is INTERNAL.
         """
         retry_until: float | None = None
         while True:
             response = self._answer(client, request, deadline, what)
             status = response.status
-            if status.code in _ANSWERED:
+            if status.code in answered:
                 return response
             if not _may_pass(status):
                 _expect_ok(status)
+            if not retry:
+                raise StepError(
+                    ErrorCode.UNAVAILABLE, f"Object memory is unavailable: {status.message}"
+                )
             now = time.monotonic()
             if retry_until is None:
                 retry_until = min(now + RETRY_BUDGET_S, deadline)
@@ -389,6 +470,25 @@ def _require_near(near: tuple[float, float] | None) -> None:
     if not isinstance(near, tuple) or len(near) != 2:
         raise StepError(ErrorCode.REFUSED, "Refused: near must be a point (x, y) in the map.")
     require_finite(near_x=near[0], near_y=near[1])
+
+
+def _require_states(states: tuple[str, ...]) -> None:
+    """Refuse `states` unless it is a non-empty tuple of the memory's state names."""
+    if (
+        not isinstance(states, tuple)
+        or not states
+        or any(state not in OBJECT_STATES for state in states)
+    ):
+        raise StepError(
+            ErrorCode.REFUSED, f"Refused: states must name some of {', '.join(OBJECT_STATES)}."
+        )
+
+
+def _expect_known(status: OperationStatus, number: int) -> None:
+    """NOT_FOUND for an object the memory does not know on its map, else _expect_ok."""
+    if status.code in (OperationStatus.NOT_FOUND, OperationStatus.WRONG_MAP):
+        raise StepError(ErrorCode.NOT_FOUND, f"Walkie remembers no object {number}.")
+    _expect_ok(status)
 
 
 def _room_request(room: str, limit: int) -> GetRoomContents.Request:

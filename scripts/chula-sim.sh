@@ -481,7 +481,7 @@ print(", ".join(
     name for name in names
     if (found := hash_of(agent, name)) is None or found != hash_of(memory, name)
 ))
-' "$REPO/$DATABASE_SRV" "$1" SearchObjects GetRoomContents ListRooms GetObject) ||
+' "$REPO/$DATABASE_SRV" "$1" SearchObjects GetRoomContents ListRooms GetObject SetObjectState) ||
         fail "could not compare the object services' type hashes"
     [[ -z $differ ]] ||
         fail "the object tools would never reach the memory node: $differ differ between the agent's walkie_database_msgs and the memory node's in $1, or are missing. Build both from the walkie-database commit ros2_ws.repos pins: pixi run build-msgs in WALKIE_DATABASE and pixi run build-ros2 here, and stop a memory node that runs from another build"

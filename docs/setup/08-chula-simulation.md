@@ -358,8 +358,9 @@ version of a service finds it but is never answered
 ([ADR-0035](../architecture/decisions/0035-memory-through-walkie-database.md)):
 each object tool call would time out after 7 s as if the memory were busy, and
 only a warning in the agent's log would hint at the stale build. So
-`up --object-tools` compares the type hashes of the four services the tools
-call and refuses to start when they differ. For a memory node that `up` started
+`up --object-tools` compares the type hashes of the five services the tools
+call (`set_object_state` records what a hand picked up and let go of, decision
+PK-70) and refuses to start when they differ. For a memory node that `up` started
 and that still runs, it compares against the copy of the services `up` recorded
 when it started that node, and refuses one that an `up` from before this check
 started; stop that one with `down` first. `up` and `down` see only the parts
@@ -545,7 +546,7 @@ its default), saves the result in `SIM_MEMORY_DB`, and publishes:
 
 Both are latched, so a client that connects later still gets the last one. The
 memory also serves `/walkie_database/search_objects`, `get_object`,
-`find_objects`, `get_room_contents` and `list_rooms`. It saves once more as it
+`find_objects`, `get_room_contents`, `list_rooms` and `set_object_state`. It saves once more as it
 stops, and `down` stops it before `vision`.
 
 **`--foxglove`** runs `foxglove_bridge` on sim time, from walkie-ros's

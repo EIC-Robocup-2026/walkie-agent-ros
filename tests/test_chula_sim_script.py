@@ -494,7 +494,7 @@ def test_reset_memory_fails_when_db_restore_refuses(tmp_path):
 # The services the object tools call, by name: their type hashes.
 OBJECT_SERVICES = {
     name: f"RIHS01_{name.lower()}"
-    for name in ("SearchObjects", "GetRoomContents", "ListRooms", "GetObject")
+    for name in ("SearchObjects", "GetRoomContents", "ListRooms", "GetObject", "SetObjectState")
 }
 
 

@@ -471,6 +471,52 @@ def test_a_memory_that_cannot_record_the_release_changes_no_answer(robot):
     assert memory.objects["9"].state == "held"
 
 
+def holding_the_cup(ctx: Ctx) -> tuple[Ctx, Remembers]:
+    memory = Remembers(HELD_CUP, holders={"9": RIGHT_HAND})
+    return dataclasses.replace(ctx, object_memory=memory), memory
+
+
+@pytest.mark.parametrize(
+    ("known", "operation"),
+    [(ArmState("standby", False), "hand_over_succeeded"), (HOME, "place_succeeded")],
+    ids=["standby", "home"],
+)
+def test_a_release_before_the_arm_was_read_reads_it_for_its_pose(ctx, stub, known, operation):
+    # As after a restart with the cup still in the hand: the backend knows no pose yet.
+    stub.report = lambda read: ArmsReport(ArmsState(left=HOME, right=known if read else None))
+    stub.grippers["right"] = moved("right", "open", "moved")
+    ctx, memory = holding_the_cup(ctx)
+
+    set_gripper(ctx, "right", "open")
+
+    assert memory.calls[-1] == ("set_state", "9", operation, RIGHT_HAND)
+    # The release reads the arms once; the answer's own state() comes after it.
+    assert stub.states == [False, True, None]
+
+
+def test_a_release_while_the_arms_are_unverified_reads_nothing_and_records_a_place(ctx, stub):
+    stub.report = ArmsReport(ArmsState(), unverified=ABANDONED, unverified_count=1)
+    stub.grippers["right"] = moved("right", "open", "moved")
+    ctx, memory = holding_the_cup(ctx)
+
+    set_gripper(ctx, "right", "open")
+
+    # A read would recover the arms, which only get_arm_state and the drive check do.
+    assert True not in stub.states
+    assert memory.calls[-1] == ("set_state", "9", "place_succeeded", RIGHT_HAND)
+
+
+@pytest.mark.parametrize("state", ["open", "half"])
+def test_a_hand_that_did_not_open_records_nothing(ctx, stub, state):
+    stub.grippers["right"] = moved("right", state, "not_reached", success=False, status="Failed")
+    ctx, memory = holding_the_cup(ctx)
+
+    raised(set_gripper, ctx, "right", state)
+
+    assert memory.calls == []
+    assert memory.objects["9"].state == "held"
+
+
 # set_gripper: each outcome, through the stub
 
 

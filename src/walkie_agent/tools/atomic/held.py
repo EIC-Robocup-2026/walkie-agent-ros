@@ -57,13 +57,19 @@ def record(ctx: Ctx, object_id: str, operation: str, arm: str) -> bool:
 def release(ctx: Ctx, arm: str) -> None:
     """Record that `arm`'s hand let go of whatever the memory holds in it.
 
-    The memory refuses the record for an object held in the other hand, which is
-    logged and left held.
+    The arm's pose decides between a handover and a place. The arms are read when
+    the backend does not know that pose yet and they are verified, as after a
+    restart with an object still in the hand; a pose still unknown is a place. The
+    memory refuses the record for an object held in the other hand, which is logged
+    and left held.
     """
     held = held_objects(ctx)
     if not held:
         return
-    state = ctx.arms.state(read=False).arms.arm(arm)
+    report = ctx.arms.state(read=False)
+    if report.unverified is None and report.arms.arm(arm) is None:
+        report = ctx.arms.state(read=True)
+    state = report.arms.arm(arm)
     handed = state is not None and state.pose == HANDOVER_POSE
     operation = "hand_over_succeeded" if handed else "place_succeeded"
     for found in held:

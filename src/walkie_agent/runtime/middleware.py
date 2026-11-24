@@ -98,8 +98,12 @@ class ToolLog(AgentMiddleware):
         call, started = request.tool_call, time.monotonic()
         result = await handler(request)
         message = tool_result(result, call["id"])
+        config = request.runtime.config
         self.write(
-            session=request.runtime.config.get("configurable", {}).get("thread_id"),
+            # The conversation, which Session.config names as the Langfuse session and a
+            # compaction keeps. A config without it, as in a test, names the thread.
+            session=config.get("metadata", {}).get("langfuse_session_id")
+            or config.get("configurable", {}).get("thread_id"),
             tool=call["name"],
             call_id=call["id"],
             args=call["args"],

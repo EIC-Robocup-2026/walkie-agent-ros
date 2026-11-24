@@ -64,6 +64,7 @@ from walkie_agent.ros.display import PICK_MARKERS_TOPIC, RosDisplay
 from walkie_agent.ros.speech import RosSpeech
 from walkie_agent.ros.vision import RosVision
 from walkie_agent.runtime import Runner, ToolLog
+from walkie_agent.runtime.compaction import Compactor
 from walkie_agent.runtime.task_templates import TaskTemplate
 from walkie_agent.scripting import agent_tool
 from walkie_agent.scripting.agent_tool import AgentScripts
@@ -277,7 +278,7 @@ def test_assemble_uses_runtime_and_one_shared_token(build, monkeypatch):
     monkeypatch.setattr(main, "build_agent", recording_build_agent)
     callback, tool_log, fallback = BaseCallbackHandler(), ToolLog(os.devnull), ScriptedModel(then=DONE)
     built = build(
-        config={"agent": {"run_limit": 3, "deadline_s": 7.0}},
+        config={"agent": {"run_limit": 3, "deadline_s": 7.0, "compact_keep_tokens": 500}},
         callbacks=[callback],
         tool_log=tool_log,
         fallback=fallback,
@@ -302,6 +303,10 @@ def test_assemble_uses_runtime_and_one_shared_token(build, monkeypatch):
     assert built_with["on_todos"] == app.bridge.on_todos
     assert app.runner._callbacks == [callback]
     assert app.runner._tool_log is tool_log
+    # The agent's own model summarizes, with the default threshold and the chosen keep.
+    compactor = app.runner._compactor
+    assert compactor.model is built.model
+    assert (compactor.after_tokens, compactor.keep_tokens) == (12_000, 500)
 
     assert built_with["on_trace"] == app.bridge.on_trace
     # Without --arms nothing draws picks.
@@ -398,6 +403,12 @@ def guest_array(node, track_id=1):
     array.header.frame_id = CAMERA_FRAME
     array.header.stamp = node.clock.now().to_msg()
     return array
+
+
+def test_compact_after_tokens_0_turns_compaction_off(build):
+    assert isinstance(build().app.runner._compactor, Compactor)
+    built = build(config={"agent": {"compact_after_tokens": 0}})
+    assert built.app.runner._compactor is None
 
 
 def test_without_a_people_memory_the_memory_tools_are_unavailable_and_the_prompt_says_so(build):

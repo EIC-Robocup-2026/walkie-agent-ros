@@ -11,18 +11,22 @@ import logging
 import secrets
 import threading
 from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, TypeVar
 
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.graph.state import CompiledStateGraph
 
 from walkie_agent.capabilities import Ctx
+from walkie_agent.runtime.compaction import Compactor
 from walkie_agent.runtime.middleware import ToolLog
 from walkie_agent.runtime.todos import parse_seed
+
+T = TypeVar("T")
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +46,22 @@ def _new_thread_id() -> str:
 
 @dataclass(frozen=True)
 class Session:
-    """One conversation: one checkpointer thread, and one Langfuse session."""
+    """One conversation: one Langfuse session, on one checkpointer thread at a time.
+
+    A compaction moves the conversation to a new thread. `id` stays the first
+    thread's, so Langfuse and the tool log still see one session.
+    """
 
     thread_id: str = field(default_factory=_new_thread_id)
+    first_thread_id: str | None = None
+
+    @property
+    def id(self) -> str:
+        return self.first_thread_id or self.thread_id
+
+    def moved(self) -> "Session":
+        """The same conversation on a new thread."""
+        return Session(first_thread_id=self.id)
 
     def config(self, callbacks: Iterable[BaseCallbackHandler] = ()) -> dict[str, Any]:
         """The config for ainvoke. max_concurrency=1 runs one message's calls in order.
@@ -55,7 +72,7 @@ class Session:
         return {
             "configurable": {"thread_id": self.thread_id},
             "max_concurrency": 1,
-            "metadata": {"langfuse_session_id": self.thread_id},
+            "metadata": {"langfuse_session_id": self.id},
             "callbacks": list(callbacks),
         }
 
@@ -104,6 +121,9 @@ class Runner:
     run, the end also after a failed or stopped one and before on_reply. main passes
     the run_script record's begin() and end() with --scripts. They must not block,
     and an exception they raise is logged.
+
+    `compactor` shortens a long history while the queue is empty (PK-74). None keeps
+    every message for the whole session, as before.
     """
 
     def __init__(
@@ -119,10 +139,15 @@ class Runner:
         on_stop: Callable[[], None] | None = None,
         on_task_start: Callable[[], None] | None = None,
         on_task_end: Callable[[], None] | None = None,
+        compactor: Compactor | None = None,
     ) -> None:
         self.agent = agent
         self.ctx = ctx
         self.session = Session()
+        self._compactor = compactor
+        # A compaction's summary and kept turns, which the next item's input carries
+        # into the new thread.
+        self._carry: list[BaseMessage] = []
         self._on_todos = on_todos
         self._on_reply = on_reply
         self._on_reset = on_reset
@@ -183,7 +208,7 @@ class Runner:
             self._queue = deque(item for item in self._queue if isinstance(item, _Reset))
             self._enqueue(_Stop(text))
             # The session is read now: a queued reset can replace it before the line ends.
-            self._loop.call_soon_threadsafe(self._speak_stop_line, text, self.session.thread_id)
+            self._loop.call_soon_threadsafe(self._speak_stop_line, text, self.session.id)
 
     def reset(self) -> None:
         """Forget everything: cancel, drop the queue, then a new session after the active run.
@@ -288,6 +313,7 @@ class Runner:
                     logger.exception("The task %r failed.", getattr(item, "text", item))
                     self._call(self._on_reply, FAILURE_LINE)
             await self._speech_done()
+            await self._compact()
             with self._lock:
                 if not self._queue:
                     self._idle.set()
@@ -299,6 +325,7 @@ class Runner:
     async def _handle(self, item: Any) -> None:
         config = self.session.config(self._callbacks)
         if isinstance(item, _Reset):
+            self._carry = []
             await self.agent.checkpointer.adelete_thread(self.session.thread_id)
             self.session = Session()
             self._call(self._on_todos, [], [])
@@ -306,10 +333,11 @@ class Runner:
         elif isinstance(item, _Stop):
             # The history shows the stop and its answer, and the list shows what was
             # stopped. before_agent ends this pass, so it cannot call the model or drive.
-            messages = [HumanMessage(item.text), AIMessage(STOP_LINE)]
+            messages = [*self._take_carry(), HumanMessage(item.text), AIMessage(STOP_LINE)]
             await self.agent.ainvoke({"messages": messages, "stopping": True}, config)
         else:
-            payload = {"messages": [HumanMessage(item.text)], "todo_seed": item.seed}
+            messages = [*self._take_carry(), HumanMessage(item.text)]
+            payload = {"messages": messages, "todo_seed": item.seed}
             self._call(self._on_task_start)
             try:
                 result = await self.agent.ainvoke(payload, config)
@@ -318,6 +346,75 @@ class Runner:
             last = result["messages"][-1]
             if isinstance(last, AIMessage) and not last.tool_calls and last.content:
                 self._call(self._on_reply, last.text)
+
+    def _take_carry(self) -> list[BaseMessage]:
+        carry, self._carry = self._carry, []
+        return carry
+
+    async def _compact(self) -> None:
+        """Swap an old history for its summary and newest turns, while nothing is queued.
+
+        Any new item cancels it, so nobody waits for it, and the history stays as it
+        was until the next quiet moment. The summary and the kept turns ride in the
+        next item's input on a new thread. Deleting the old thread is what frees the
+        checkpointer's copies of it. A pending question keeps the thread, since its
+        checkpoint holds the question. A failure keeps the history, and is logged.
+        """
+        if self._compactor is None:
+            return
+        with self._lock:
+            if self._queue:
+                return
+            self._wake.clear()  # left set by items this batch has already taken
+        try:
+            await self._compact_now(self._compactor)
+        except Exception:
+            logger.warning("The compaction failed, so the history stays.", exc_info=True)
+
+    async def _compact_now(self, compactor: Compactor) -> None:
+        config = self.session.config(self._callbacks)
+        state = (await self.agent.aget_state(config)).values
+        messages = state.get("messages", [])
+        if not messages:
+            return
+        # The sizes real runs reach, which the provisional thresholds wait for.
+        logger.info(
+            "The history holds %d messages, about %d tokens.",
+            len(messages),
+            count_tokens_approximately(messages),
+        )
+        cut = 0 if state.get("question") else compactor.split(messages)
+        if not cut:
+            return
+        older = messages[:cut]
+        named = {**config, "run_name": "compaction"}  # its name in the session's Langfuse traces
+        summary = await self._unless_woken(compactor.summarize(older, named))
+        if summary is None:
+            logger.info("New input came in, so the history stays uncompacted for now.")
+            return
+        old = self.session
+        self._carry = [summary, *messages[cut:]]
+        self.session = old.moved()
+        await self.agent.checkpointer.adelete_thread(old.thread_id)
+        logger.info(
+            "Summarized %d older messages and kept %d, now on thread %s.",
+            cut,
+            len(messages) - cut,
+            self.session.thread_id,
+        )
+
+    async def _unless_woken(self, work: Coroutine[Any, Any, T]) -> T | None:
+        """The result of `work`, or None if an item is queued first, which cancels it."""
+        job = asyncio.ensure_future(work)
+        woken = asyncio.ensure_future(self._wake.wait())
+        await asyncio.wait({job, woken}, return_when=asyncio.FIRST_COMPLETED)
+        woken.cancel()
+        if job.done():
+            return job.result()
+        job.cancel()
+        # Nobody awaits it, so its end is read here, and never reported as unretrieved.
+        job.add_done_callback(lambda done: done.cancelled() or done.exception())
+        return None
 
     async def _end_task(self) -> None:
         """Run on_reset in a worker thread, since it may block. A failure is logged."""

@@ -13,6 +13,7 @@ import pytest
 from walkie_agent.config import load_config
 from walkie_agent.locations import Location
 from walkie_agent.prompts import _SCRIPTS_RULE, _TOOL_RULES, build_system_prompt
+from walkie_agent.runtime.compaction import SUMMARY_PREFIX
 from walkie_agent.tools.sets import (
     ARM_TOOLS,
     ARMS,
@@ -116,6 +117,15 @@ def test_every_prompt_asks_for_a_short_line_before_a_slow_call(tool_set):
     # The line goes first in the message of the slow call, so it costs no model call.
     assert 'call `say` with a very short line such as "Just a moment" first' in flat
     assert "in the same message as that call" in flat
+
+
+@pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri", "arms"])
+def test_every_prompt_says_how_to_read_a_summary(tool_set):
+    flat = " ".join(build_system_prompt(tool_set, PLACES, ROBOT).split())
+
+    # The Runner's compaction (PK-74) puts the older turns into one such message.
+    assert f"A message that starts with {SUMMARY_PREFIX} is the system's short account" in flat
+    assert "not something the person said" in flat
 
 
 def test_the_shipped_robot_description_claims_only_what_is_connected():

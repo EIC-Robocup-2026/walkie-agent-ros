@@ -14,6 +14,11 @@
 # No fallback model is selected. To use one, set both fallback_vendor and
 # fallback_model in an [agent] table; that choice is the team's.
 #
+# Between tasks the agent summarizes the older part of a long history with its
+# own complex_model. compact_after_tokens (default 12000, 0 turns it off) and
+# compact_keep_tokens (default 3000) in an [agent] table change when and how
+# much stays word for word.
+#
 # The `openai` vendor works with any OpenAI-compatible endpoint. Here it points
 # at OpenRouter (same provider walkie-agent-v2 used); set OPENAI_API_KEY to an
 # OpenRouter key. For a local server (vLLM, llama.cpp), change base_url.

@@ -114,7 +114,7 @@ from walkie_agent.capabilities import (
 from walkie_agent.capabilities.facts import facts_from_config
 from walkie_agent.capabilities.web_search import TavilySearch, web_search_key
 from walkie_agent.chat_models import build_callbacks, build_fallback, build_model
-from walkie_agent.config import agent_settings, load_config
+from walkie_agent.config import agent_settings, compaction_settings, load_config
 from walkie_agent.locations import Location, load_locations
 from walkie_agent.people_memory.store import InMemoryPeopleMemory, PeopleMemory
 from walkie_agent.people_memory.track_memory import TrackMemory
@@ -137,6 +137,7 @@ from walkie_agent.ros.people_memory import RosPeopleMemory
 from walkie_agent.ros.speech import RosSpeech
 from walkie_agent.ros.vision import RosVision
 from walkie_agent.runtime import Runner, ToolLog, build_agent
+from walkie_agent.runtime.compaction import Compactor
 from walkie_agent.runtime.task_templates import (
     TaskTemplate,
     check_required_tools,
@@ -458,6 +459,9 @@ def assemble(
     `web_search`, the TavilySearch that main() builds for --web-search, is ctx.web, and
     adds search_web to the set and its rule to the prompt. Without it, ctx.web is
     UnavailableWebSearch and no set binds search_web. The caller owns and closes it.
+
+    The Runner compacts a long history between tasks, with `model` as the summarizer
+    and the thresholds of `config`'s [agent] table (compaction_settings, PK-74).
     """
     arms = arm_poses is not None
     searches = web_search is not None
@@ -574,6 +578,7 @@ def assemble(
             system_prompt=prompt,
             **agent_settings(config),
         )
+        compaction = compaction_settings(config)
         runner = Runner(
             agent,
             ctx,
@@ -586,6 +591,7 @@ def assemble(
             on_stop=None if commander is None else commander.stop,
             on_task_start=None if scripts is None else scripts.begin,
             on_task_end=None if scripts is None else scripts.end,
+            compactor=Compactor(model, **compaction) if compaction["after_tokens"] else None,
         )
     except BaseException:
         for close in reversed(built):

@@ -58,12 +58,11 @@ def transcript(messages: Sequence[BaseMessage]) -> str:
     """The plain transcript the summarizer reads: who said what, and what each tool did.
 
     The runtime's notes are left out, and so are the successful answers of say and
-    wait_for_person, which only repeat the line. A line whose call failed, or was not
-    run after an earlier failure, reads as tried, so the summary never claims it.
+    wait_for_person, which only repeat the line. A line whose call failed, was not run
+    after an earlier failure, or has no answer at all reads as tried, so the summary
+    never claims it.
     """
-    failed = {
-        m.tool_call_id for m in messages if isinstance(m, ToolMessage) and m.status == "error"
-    }
+    ran = {m.tool_call_id for m in messages if isinstance(m, ToolMessage) and m.status != "error"}
     lines = []
     for message in messages:
         if is_summary(message):
@@ -73,7 +72,7 @@ def transcript(messages: Sequence[BaseMessage]) -> str:
         elif isinstance(message, AIMessage):
             if message.text.strip():
                 lines.append(f"Walkie said: {message.text.strip()}")
-            lines.extend(_call_line(call, call.get("id") in failed) for call in message.tool_calls)
+            lines.extend(_call_line(call, call.get("id") in ran) for call in message.tool_calls)
         elif isinstance(message, ToolMessage):
             if message.status == "error":
                 lines.append(f"  {message.name} failed: {_clip(message.text)}")
@@ -89,11 +88,11 @@ _SPOKEN = {
 }
 
 
-def _call_line(call: dict[str, Any], failed: bool) -> str:
+def _call_line(call: dict[str, Any], ran: bool) -> str:
     args = call["args"]
     if call["name"] in _SPOKEN:
         key, done, tried = _SPOKEN[call["name"]]
-        return f"Walkie {tried if failed else done}: {args.get(key, '')}"
+        return f"Walkie {done if ran else tried}: {args.get(key, '')}"
     return f"Walkie called {call['name']} with {json.dumps(args, ensure_ascii=False, default=str)}"
 
 

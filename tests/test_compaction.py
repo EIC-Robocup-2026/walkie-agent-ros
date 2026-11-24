@@ -130,6 +130,9 @@ def test_the_transcript_says_who_said_what_and_leaves_out_the_runtimes_notes():
         ToolMessage("Asked: Which mug?", tool_call_id="q1", name="wait_for_person"),
         HumanMessage("The blue one."),
         AIMessage("Here it is."),
+        # A stop that ended the run before the call was answered.
+        ai(call("say", {"text": "Coming."}, "s3")),
+        HumanMessage("stop"),
     ]
     assert transcript(history).splitlines() == [
         "Earlier summary: Ann owns the blue mug.",
@@ -143,6 +146,8 @@ def test_the_transcript_says_who_said_what_and_leaves_out_the_runtimes_notes():
         "Walkie asked: Which mug?",
         "Person: The blue one.",
         "Walkie said: Here it is.",
+        "Walkie tried to say: Coming.",
+        "Person: stop",
     ]
 
 

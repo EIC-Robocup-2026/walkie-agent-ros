@@ -309,18 +309,18 @@ class AnswerEmptyReply(AgentMiddleware):
 
 
 def _answered(run: list[AnyMessage]) -> bool:
-    """Whether a speaking tool succeeded after the run's last other tool answer.
+    """Whether the run's last speaking tool succeeded, after its last other tool answer.
 
     A line said before a later call, such as "Just a moment" before `go_to` (PK-73),
-    does not report that call's result. `update_todos` reports nothing to the person,
-    so it leaves the answer standing.
+    does not report that call's result, and a failed line may have been the one that
+    did. `update_todos` reports nothing to the person, so it leaves the answer standing.
     """
     answered = False
     for message in run:
         if not isinstance(message, ToolMessage) or message.name == "update_todos":
             continue
         if message.name in SPEAKING_TOOLS:
-            answered = answered or message.status != "error"
+            answered = message.status != "error"
         else:
             answered = False
     return answered

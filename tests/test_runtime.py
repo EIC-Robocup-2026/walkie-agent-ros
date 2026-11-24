@@ -403,6 +403,26 @@ def test_a_failed_say_does_not_count_as_speaking():
     assert asked_for_a_reply(stack) == [2]
 
 
+def test_a_failed_say_after_a_spoken_line_leaves_the_task_unanswered():
+    robot = FakeRobot()
+
+    def second_line_hangs(messages):
+        robot.faults["speech.say"] = StepError(ErrorCode.TIMEOUT, "The speaker hung.")
+        return ai(call("say", {"text": "The red one."}, "second"))
+
+    stack = make_stack(
+        ai(call("say", {"text": "It is on the table."}, "first")),
+        second_line_hangs,
+        ai(),
+        AIMessage("Could not speak."),
+        robot=robot,
+    )
+    stack.run()
+    assert stack.answer("first").status != "error"
+    assert stack.answer("second").status == "error"
+    assert asked_for_a_reply(stack) == [3]
+
+
 def test_speaking_in_an_earlier_task_does_not_excuse_an_empty_reply():
     stack = make_stack(
         ai(call("say", {"text": "Hi."}, "spoke")), DONE, ai(), AIMessage("Second answer.")

@@ -86,7 +86,7 @@ def test_only_a_prompt_with_the_arm_tools_says_how_to_hand_an_object_over():
     without = build_system_prompt("hri", PLACES, ROBOT, vision=True)
 
     flat = " ".join(with_arms.split())
-    assert 'as in "give it to me"' in flat and "the standby pose" in flat
+    assert 'as in "give it to me"' in flat and "the hands_up pose" in flat
     # The hand opens only after the person says they hold the object.
     assert flat.index("`wait_for_person`") < flat.index("open that gripper with `set_gripper`")
     assert "give it to me" not in without
@@ -107,6 +107,15 @@ def test_only_a_prompt_with_the_arm_tools_says_to_give_a_held_object():
     ):
         assert "`recall_object`" in without
         assert "held true" not in without
+
+
+@pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri", "arms"])
+def test_every_prompt_asks_for_a_short_line_before_a_slow_call(tool_set):
+    flat = " ".join(build_system_prompt(tool_set, PLACES, ROBOT).split())
+
+    # The line goes first in the message of the slow call, so it costs no model call.
+    assert 'call `say` with a very short line such as "Just a moment" first' in flat
+    assert "in the same message as that call" in flat
 
 
 def test_the_shipped_robot_description_claims_only_what_is_connected():

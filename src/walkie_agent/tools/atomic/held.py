@@ -2,7 +2,7 @@
 
 pick_object records an object as held once the close holds it, and as lost when the
 hand turns out empty after the move home. set_gripper records a release when it opens
-a hand: a handover with the arm in the standby pose, else a place somewhere unknown.
+a hand: a handover with the arm in the hands_up pose, else a place somewhere unknown.
 While an object is held, the memory stops matching the camera's sightings of it to
 the place it was picked from, where they made new tracks follow the hand (PK-67), and
 once it is released the memory waits to see it again before it gives it a place.
@@ -20,8 +20,8 @@ from walkie_agent.errors import ErrorCode, StepError
 
 logger = logging.getLogger(__name__)
 
-# The pose a person takes a held object from the robot's hand in (prompts.py, PK-68).
-HANDOVER_POSE = "standby"
+# The pose a person takes a held object from the robot's hand in (prompts.py, PK-72).
+HANDOVER_POSE = "hands_up"
 # How long each read or record of the memory may take, in seconds. The memory answers
 # in milliseconds; the cap keeps a stuck memory from holding an arm still.
 RECORD_TIMEOUT_S = 3.0

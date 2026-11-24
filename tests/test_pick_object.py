@@ -1579,7 +1579,7 @@ def test_unreadable_settings_stop_the_pick_before_anything_moves(arm_poses, monk
 
 RIGHT_HAND = "openarm_right_hand_tcp"
 HANDOVER = (
-    "To give it to a person, move the right arm to the standby pose and open the gripper "
+    "To give it to a person, move the right arm to the hands_up pose and open the gripper "
     "once they hold it."
 )
 

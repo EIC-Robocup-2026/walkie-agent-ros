@@ -12,7 +12,7 @@ they did or found before it.
 
 An open or a half open that the commander reports done also tells the object memory
 that the hand let go of what it held (tools.atomic.held, decision PK-70): a handover
-when that arm rests in the standby pose, else a place somewhere the memory does not
+when that arm rests in the hands_up pose, else a place somewhere the memory does not
 know. The record is best-effort and changes no answer.
 """
 

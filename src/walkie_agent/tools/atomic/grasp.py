@@ -232,8 +232,8 @@ def _hand_is_free(ctx: Ctx, settings: PickSettings, name: str) -> None:
         None,
     )
     handover = (
-        f"To give it to a person, move the {arm} arm to the standby pose and open the gripper "
-        "once they hold it."
+        f"To give it to a person, move the {arm} arm to the hands_up pose and open the "
+        "gripper once they hold it."
     )
     if wanted is not None:
         raise StepError(

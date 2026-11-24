@@ -417,8 +417,12 @@ def remembering_a_cup_in_the_right_hand(robot: FakeRobot) -> tuple[Ctx, Remember
 
 @pytest.mark.parametrize(
     ("pose", "operation", "after"),
-    [("standby", "hand_over_succeeded", "handed_over"), ("home", "place_succeeded", "missing")],
-    ids=["handover", "place"],
+    [
+        ("hands_up", "hand_over_succeeded", "handed_over"),
+        ("standby", "place_succeeded", "missing"),
+        ("home", "place_succeeded", "missing"),
+    ],
+    ids=["handover", "standby", "place"],
 )
 @pytest.mark.parametrize(
     ("state", "said"),
@@ -440,7 +444,7 @@ def test_opening_a_hand_records_that_it_let_go_of_what_it_held(
 
 def test_opening_both_hands_records_the_release_only_for_the_hand_that_held_it(robot):
     ctx, memory = remembering_a_cup_in_the_right_hand(robot)
-    move_arm_to_pose(ctx, "standby", "right")
+    move_arm_to_pose(ctx, "hands_up", "right")
 
     set_gripper(ctx, "both", "open")
 
@@ -478,8 +482,8 @@ def holding_the_cup(ctx: Ctx) -> tuple[Ctx, Remembers]:
 
 @pytest.mark.parametrize(
     ("known", "operation"),
-    [(ArmState("standby", False), "hand_over_succeeded"), (HOME, "place_succeeded")],
-    ids=["standby", "home"],
+    [(HANDS_UP, "hand_over_succeeded"), (HOME, "place_succeeded")],
+    ids=["hands_up", "home"],
 )
 def test_a_release_before_the_arm_was_read_reads_it_for_its_pose(ctx, stub, known, operation):
     # As after a restart with the cup still in the hand: the backend knows no pose yet.

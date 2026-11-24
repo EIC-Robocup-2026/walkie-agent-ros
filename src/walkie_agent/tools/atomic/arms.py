@@ -11,7 +11,7 @@ message already ends with the arm sentence; set_gripper and get_arm_state add wh
 they did or found before it.
 
 An open or a half open that the commander reports done also tells the object memory
-that the hand let go of what it held (tools.atomic.held, decision PK-70): a handover
+that the hand let go of what it held (tools.atomic.held, decisions PK-70, PK-72): a handover
 when that arm rests in the hands_up pose, else a place somewhere the memory does not
 know. The record is best-effort and changes no answer.
 """

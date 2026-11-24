@@ -112,16 +112,20 @@ def test_only_a_prompt_with_the_arm_tools_says_to_give_a_held_object():
 
 @pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri", "arms"])
 def test_every_prompt_asks_for_a_short_line_before_a_slow_call(tool_set):
-    flat = " ".join(build_system_prompt(tool_set, PLACES, ROBOT).split())
+    prompt = build_system_prompt(tool_set, PLACES, ROBOT, arms=tool_set == "arms")
+    flat = " ".join(prompt.split())
 
     # The line goes first in the message of the slow call, so it costs no model call.
     assert 'call `say` with a very short line such as "Just a moment" first' in flat
     assert "in the same message as that call" in flat
+    # A line said last message covers the next call, so the person hears no second one.
+    assert "neither does a call right after a line you said in your last message" in flat
 
 
 @pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri", "arms"])
 def test_every_prompt_says_how_to_read_a_summary(tool_set):
-    flat = " ".join(build_system_prompt(tool_set, PLACES, ROBOT).split())
+    prompt = build_system_prompt(tool_set, PLACES, ROBOT, arms=tool_set == "arms")
+    flat = " ".join(prompt.split())
 
     # The Runner's compaction (PK-74) puts the older turns into one such message.
     assert f"A message that starts with {SUMMARY_PREFIX} is the system's short account" in flat

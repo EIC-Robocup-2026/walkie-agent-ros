@@ -368,6 +368,30 @@ def test_an_empty_reply_after_the_robot_spoke_ends_the_task_quietly():
     assert asked_for_a_reply(stack) == []
 
 
+def test_a_line_said_before_a_call_does_not_answer_its_result():
+    # PK-73's "Just a moment" goes before a slow call, so the call's result still needs a line.
+    stack = make_stack(
+        ai(
+            call("say", {"text": "Just a moment."}, "ack"),
+            call("list_places", {}, "places"),
+        ),
+        ai(),
+        ai(call("say", {"text": "I can go to the kitchen."}, "spoke")),
+        ai(),
+    )
+    stack.run()
+    assert len(stack.model.received) == 4
+    assert asked_for_a_reply(stack) == [2, 3]
+    # A todo update after the spoken result leaves the answer standing.
+    stack = make_stack(
+        ai(call("say", {"text": "It is on the table."}, "spoke")),
+        ai(todo_call(update("t1", status="completed"), call_id="done")),
+        ai(),
+    )
+    stack.run(todos=["Tell them where it is"])
+    assert asked_for_a_reply(stack) == []
+
+
 def test_a_failed_say_does_not_count_as_speaking():
     robot = FakeRobot()
     robot.faults["speech.say"] = StepError(ErrorCode.TIMEOUT, "The speaker hung.")

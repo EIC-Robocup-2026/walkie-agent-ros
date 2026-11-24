@@ -262,10 +262,11 @@ class AnswerEmptyReply(AgentMiddleware):
     no answer at all. The empty message is dropped and EMPTY_REPLY asks for one.
 
     A run starts at the message the Runner sent in, which before_agent marks, so the
-    todo gate's message or a tool's image does not start a new one. It asks only when
-    nothing in this run spoke to the person: an empty message after a successful `say`
-    ends the task quietly, as before, so the robot does not repeat itself. A `say` made
-    inside a `run_script` script is not seen. When this run has asked already and still
+    todo gate's message or a tool's image does not start a new one. It asks unless a
+    `say` or `wait_for_person` succeeded after the run's last other tool answer: an
+    empty message after a spoken result ends the task quietly, as before, so the robot
+    does not repeat itself, but a "Just a moment" said before `go_to` leaves the
+    drive's result unreported. A `say` made inside a `run_script` script is not seen. When this run has asked already and still
     nothing spoke, another empty message ends the task, with a warning in the log. A
     stop that lands during the call ends the run on the empty message, so the history
     holds no request to answer something the person stopped.
@@ -296,7 +297,7 @@ class AnswerEmptyReply(AgentMiddleware):
         # A start that is gone counts the whole history, which can only ask less often.
         start = state.get("reply_from")
         run = messages[next((i for i, m in enumerate(messages) if m.id == start), 0) :]
-        if any(_spoke(m) for m in run):
+        if _answered(run):
             return None
         if any(isinstance(m, HumanMessage) and m.content == EMPTY_REPLY for m in run):
             logger.warning("The model's reply was empty again, so the person gets no answer.")
@@ -307,12 +308,22 @@ class AnswerEmptyReply(AgentMiddleware):
         }
 
 
-def _spoke(message: AnyMessage) -> bool:
-    return (
-        isinstance(message, ToolMessage)
-        and message.name in SPEAKING_TOOLS
-        and message.status != "error"
-    )
+def _answered(run: list[AnyMessage]) -> bool:
+    """Whether a speaking tool succeeded after the run's last other tool answer.
+
+    A line said before a later call, such as "Just a moment" before `go_to` (PK-73),
+    does not report that call's result. `update_todos` reports nothing to the person,
+    so it leaves the answer standing.
+    """
+    answered = False
+    for message in run:
+        if not isinstance(message, ToolMessage) or message.name == "update_todos":
+            continue
+        if message.name in SPEAKING_TOOLS:
+            answered = answered or message.status != "error"
+        else:
+            answered = False
+    return answered
 
 
 class EndAfterQuestion(AgentMiddleware):

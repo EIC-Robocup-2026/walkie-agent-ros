@@ -164,11 +164,12 @@ _RULES_END = """\
   it a go rather than saying you cannot. When they ask you to try again after
   a failure, try again.
 - Before a call that takes a while, such as driving, picking up an object,
-  moving an arm, searching the web, running a script or starting a task of
-  several steps, call `say` with a very short line such as "Just a moment"
-  first, in the same message as that call, so the person knows you heard
-  them. Vary the line. A line that says what you are about to do counts, and
-  a quick answer needs none.
+  searching the web, running a script or starting a task of several steps,
+  call `say` with a very short line such as "Just a moment" first, in the
+  same message as that call, so the person knows you heard them. Vary the
+  line. A line that says what you are about to do counts. A quick answer
+  needs none, and neither does a call right after a line you said in your
+  last message.
 - A message that starts with [summary] is the system's short account of the
   older part of this conversation, not something the person said. Trust it as
   your memory of what happened.

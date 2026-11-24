@@ -932,6 +932,12 @@ def test_the_system_prompt_names_only_tools_the_default_set_binds():
     assert not {"speak", "list_locations", "navigate_to_location", "get_todos"} & named
 
 
+def test_the_system_prompt_first_says_the_person_hears_only_say():
+    rules = " ".join(SYSTEM_PROMPT.split()).split("Rules: ", 1)[1]
+    assert rules.startswith("- The person in the room hears only what you pass to `say`")
+    assert "so a reply without `say` is never heard" in rules
+
+
 def noop_tools(count: int) -> list:
     def make(n: int):
         def noop(ctx) -> str:

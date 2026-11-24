@@ -111,6 +111,16 @@ def test_only_a_prompt_with_the_arm_tools_says_to_give_a_held_object():
 
 
 @pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri", "arms"])
+def test_every_prompt_first_says_the_person_hears_only_say(tool_set):
+    prompt = build_system_prompt(tool_set, PLACES, ROBOT, arms=tool_set == "arms")
+    rules = " ".join(prompt.split()).split("Rules: ", 1)[1]
+
+    # A plain-text reply reaches only the console topic, so it is the first rule.
+    assert rules.startswith("- The person in the room hears only what you pass to `say`")
+    assert "so a reply without `say` is never heard" in rules
+
+
+@pytest.mark.parametrize("tool_set", ["default", "gpsr", "hri", "arms"])
 def test_every_prompt_asks_for_a_short_line_before_a_slow_call(tool_set):
     prompt = build_system_prompt(tool_set, PLACES, ROBOT, arms=tool_set == "arms")
     flat = " ".join(prompt.split())

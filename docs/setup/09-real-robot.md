@@ -980,7 +980,7 @@ Leave `db-node` running in T8 until step e.
 
 ```bash
 cd ~/Project/robocup_experiments/walkie-database
-pixi run --frozen python -c "from walkie_database.map_config import digest_map_files; from walkie_map_id import make_map_id; print(make_map_id('lab', '2026-11-19', digest_map_files('$MAP/map.yaml')))"
+pixi run --frozen python -c "from walkie_database.maps import digest_map_files; from walkie_map_id import make_map_id; print(make_map_id('lab', '2026-11-19', digest_map_files('$MAP/map.yaml')))"
 ```
 
 It prints the map ID, such as `lab-2026-11-19-714b087d`. The first part,

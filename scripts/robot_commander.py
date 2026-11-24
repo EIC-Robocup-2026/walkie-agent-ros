@@ -226,7 +226,7 @@ def db_memory(day: str) -> str:
         f'D="{data}"\n'
         '[ -f "$D/memory.db" ] || { echo "No $D/memory.db. Build the seed and the store first'
         ' (Optional B, steps a to c)."; exit 1; }\n'
-        'MAP_ID=$(pixi run --frozen python -c "from walkie_database.map_config import digest_map_files;'
+        'MAP_ID=$(pixi run --frozen python -c "from walkie_database.maps import digest_map_files;'
         " from walkie_map_id import make_map_id;"
         f" print(make_map_id('lab', '{day}', digest_map_files('$MAP/map.yaml')))\" | tail -n 1)\n"
         '[ -n "$MAP_ID" ] || { echo "Could not make the map ID from $MAP."; exit 1; }\n'

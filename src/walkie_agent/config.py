@@ -32,9 +32,19 @@ def agent_settings(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def compaction_settings(config: dict[str, Any]) -> dict[str, int]:
-    """The `after_tokens` and `keep_tokens` of a Compactor. after_tokens 0 turns it off."""
+    """The `after_tokens` and `keep_tokens` of a Compactor. after_tokens 0 turns it off.
+
+    A threshold that is not a whole number, an after_tokens below 0 or a keep_tokens
+    below 1 is a ValueError that names the key.
+    """
     agent = config.get("agent", {})
-    return {
-        "after_tokens": agent.get("compact_after_tokens", DEFAULT_COMPACT_AFTER_TOKENS),
-        "keep_tokens": agent.get("compact_keep_tokens", DEFAULT_COMPACT_KEEP_TOKENS),
-    }
+    settings = {}
+    for name, key, default, least in (
+        ("after_tokens", "compact_after_tokens", DEFAULT_COMPACT_AFTER_TOKENS, 0),
+        ("keep_tokens", "compact_keep_tokens", DEFAULT_COMPACT_KEEP_TOKENS, 1),
+    ):
+        value = agent.get(key, default)
+        if isinstance(value, bool) or not isinstance(value, int) or value < least:
+            raise ValueError(f"[agent] {key} must be a whole number of at least {least}.")
+        settings[name] = value
+    return settings

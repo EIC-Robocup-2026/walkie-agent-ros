@@ -17,7 +17,7 @@ from datetime import datetime
 from typing import Any, TypeVar
 
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.graph.state import CompiledStateGraph
 
@@ -145,9 +145,10 @@ class Runner:
         self.ctx = ctx
         self.session = Session()
         self._compactor = compactor
-        # A compaction's summary and kept turns, which the next item's input carries
-        # into the new thread.
-        self._carry: list[BaseMessage] = []
+        # A compaction's summary and kept turns, and the todo list, which the next item's
+        # input carries into the new thread. The list lets that item's before_agent
+        # clear or cancel what the latched todos topic still shows.
+        self._carry: dict[str, Any] = {}
         self._on_todos = on_todos
         self._on_reply = on_reply
         self._on_reset = on_reset
@@ -325,7 +326,7 @@ class Runner:
     async def _handle(self, item: Any) -> None:
         config = self.session.config(self._callbacks)
         if isinstance(item, _Reset):
-            self._carry = []
+            self._carry = {}
             await self.agent.checkpointer.adelete_thread(self.session.thread_id)
             self.session = Session()
             self._call(self._on_todos, [], [])
@@ -333,11 +334,13 @@ class Runner:
         elif isinstance(item, _Stop):
             # The history shows the stop and its answer, and the list shows what was
             # stopped. before_agent ends this pass, so it cannot call the model or drive.
-            messages = [*self._take_carry(), HumanMessage(item.text), AIMessage(STOP_LINE)]
-            await self.agent.ainvoke({"messages": messages, "stopping": True}, config)
+            carry = self._take_carry()
+            messages = [*carry.get("messages", []), HumanMessage(item.text), AIMessage(STOP_LINE)]
+            await self.agent.ainvoke({**carry, "messages": messages, "stopping": True}, config)
         else:
-            messages = [*self._take_carry(), HumanMessage(item.text)]
-            payload = {"messages": messages, "todo_seed": item.seed}
+            carry = self._take_carry()
+            messages = [*carry.get("messages", []), HumanMessage(item.text)]
+            payload = {**carry, "messages": messages, "todo_seed": item.seed}
             self._call(self._on_task_start)
             try:
                 result = await self.agent.ainvoke(payload, config)
@@ -347,8 +350,8 @@ class Runner:
             if isinstance(last, AIMessage) and not last.tool_calls and last.content:
                 self._call(self._on_reply, last.text)
 
-    def _take_carry(self) -> list[BaseMessage]:
-        carry, self._carry = self._carry, []
+    def _take_carry(self) -> dict[str, Any]:
+        carry, self._carry = self._carry, {}
         return carry
 
     async def _compact(self) -> None:
@@ -393,7 +396,7 @@ class Runner:
             logger.info("New input came in, so the history stays uncompacted for now.")
             return
         old = self.session
-        self._carry = [summary, *messages[cut:]]
+        self._carry = {"messages": [summary, *messages[cut:]], "todos": state.get("todos") or []}
         self.session = old.moved()
         await self.agent.checkpointer.adelete_thread(old.thread_id)
         logger.info(
@@ -405,16 +408,17 @@ class Runner:
 
     async def _unless_woken(self, work: Coroutine[Any, Any, T]) -> T | None:
         """The result of `work`, or None if an item is queued first, which cancels it."""
+        if self._wake.is_set():  # an item came in while the state was read
+            work.close()
+            return None
         job = asyncio.ensure_future(work)
         woken = asyncio.ensure_future(self._wake.wait())
         await asyncio.wait({job, woken}, return_when=asyncio.FIRST_COMPLETED)
         woken.cancel()
-        if job.done():
-            return job.result()
-        job.cancel()
-        # Nobody awaits it, so its end is read here, and never reported as unretrieved.
-        job.add_done_callback(lambda done: done.cancelled() or done.exception())
-        return None
+        job.cancel()  # does nothing to a job that has ended
+        # Both have ended when this returns, so a shutdown never closes the loop on them.
+        await asyncio.gather(job, woken, return_exceptions=True)
+        return None if job.cancelled() else job.result()
 
     async def _end_task(self) -> None:
         """Run on_reset in a worker thread, since it may block. A failure is logged."""

@@ -854,6 +854,8 @@ def main(argv: list[str] | None = None) -> int:
     # line. A failure once ROS has started, in _run, keeps its traceback.
     try:
         config = load_config(args.config)
+        # assemble reads them again. Checked here, so a bad threshold stops the agent in one line.
+        compaction_settings(config)
         locations = load_locations(args.locations)
         templates = load_task_templates(args.task_templates)
         check_templates(

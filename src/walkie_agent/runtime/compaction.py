@@ -57,9 +57,13 @@ def starts_turn(message: BaseMessage) -> bool:
 def transcript(messages: Sequence[BaseMessage]) -> str:
     """The plain transcript the summarizer reads: who said what, and what each tool did.
 
-    The runtime's notes are left out, and so are the answers of say and
-    wait_for_person, which only repeat the line.
+    The runtime's notes are left out, and so are the successful answers of say and
+    wait_for_person, which only repeat the line. A line whose call failed, or was not
+    run after an earlier failure, reads as tried, so the summary never claims it.
     """
+    failed = {
+        m.tool_call_id for m in messages if isinstance(m, ToolMessage) and m.status == "error"
+    }
     lines = []
     for message in messages:
         if is_summary(message):
@@ -69,19 +73,27 @@ def transcript(messages: Sequence[BaseMessage]) -> str:
         elif isinstance(message, AIMessage):
             if message.text.strip():
                 lines.append(f"Walkie said: {message.text.strip()}")
-            lines.extend(_call_line(call) for call in message.tool_calls)
-        elif isinstance(message, ToolMessage) and message.name not in ("say", "wait_for_person"):
-            outcome = "failed" if message.status == "error" else "answered"
-            lines.append(f"  {message.name} {outcome}: {_clip(message.text)}")
+            lines.extend(_call_line(call, call.get("id") in failed) for call in message.tool_calls)
+        elif isinstance(message, ToolMessage):
+            if message.status == "error":
+                lines.append(f"  {message.name} failed: {_clip(message.text)}")
+            elif message.name not in _SPOKEN:
+                lines.append(f"  {message.name} answered: {_clip(message.text)}")
     return "\n".join(lines)
 
 
-def _call_line(call: dict[str, Any]) -> str:
+# A speaking tool's argument, and how its line reads when it ran and when it failed.
+_SPOKEN = {
+    "say": ("text", "said", "tried to say"),
+    "wait_for_person": ("question", "asked", "tried to ask"),
+}
+
+
+def _call_line(call: dict[str, Any], failed: bool) -> str:
     args = call["args"]
-    if call["name"] == "say":
-        return f"Walkie said: {args.get('text', '')}"
-    if call["name"] == "wait_for_person":
-        return f"Walkie asked: {args.get('question', '')}"
+    if call["name"] in _SPOKEN:
+        key, done, tried = _SPOKEN[call["name"]]
+        return f"Walkie {tried if failed else done}: {args.get(key, '')}"
     return f"Walkie called {call['name']} with {json.dumps(args, ensure_ascii=False, default=str)}"
 
 

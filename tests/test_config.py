@@ -1,5 +1,7 @@
 """Reading config.toml and the agent's settings from it."""
 
+import tomllib
+
 import pytest
 
 from walkie_agent.config import (
@@ -25,6 +27,20 @@ def test_compaction_has_defaults_that_the_agent_table_overrides(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text("[agent]\ncompact_after_tokens = 0\ncompact_keep_tokens = 500\n")
     assert compaction_settings(load_config(path)) == {"after_tokens": 0, "keep_tokens": 500}
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "compact_keep_tokens = 0",  # would leave no turn to cut at
+        "compact_after_tokens = -1",  # would compact after every task
+        "compact_after_tokens = 1.5",
+        "compact_keep_tokens = true",
+    ],
+)
+def test_a_compaction_threshold_out_of_range_is_refused_with_its_key(line):
+    with pytest.raises(ValueError, match=rf"\[agent\] {line.split()[0]} must be a whole number"):
+        compaction_settings({"agent": tomllib.loads(line)})
 
 
 def test_a_config_that_is_not_toml_is_refused_with_its_path(tmp_path):

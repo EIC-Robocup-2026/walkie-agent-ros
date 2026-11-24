@@ -124,6 +124,8 @@ def test_the_transcript_says_who_said_what_and_leaves_out_the_runtimes_notes():
         ToolMessage("Said: Just a moment.", tool_call_id="s1", name="say"),
         ToolMessage("x" * 400, tool_call_id="g1", name="go_to", status="error"),
         HumanMessage("[todo] Open items: t1."),
+        ai(call("say", {"text": "I am in the kitchen."}, "s2")),
+        ToolMessage("The speaker hung.", tool_call_id="s2", name="say", status="error"),
         ai(call("wait_for_person", {"question": "Which mug?"}, "q1")),
         ToolMessage("Asked: Which mug?", tool_call_id="q1", name="wait_for_person"),
         HumanMessage("The blue one."),
@@ -135,6 +137,9 @@ def test_the_transcript_says_who_said_what_and_leaves_out_the_runtimes_notes():
         "Walkie said: Just a moment.",
         'Walkie called go_to with {"place": "kitchen"}',
         f"  go_to failed: {'x' * ANSWER_CHARS} [cut]",
+        # A line that never played is not claimed as said.
+        "Walkie tried to say: I am in the kitchen.",
+        "  say failed: The speaker hung.",
         "Walkie asked: Which mug?",
         "Person: The blue one.",
         "Walkie said: Here it is.",
@@ -236,6 +241,42 @@ def test_new_input_cancels_a_summary_and_the_history_stays(serve, caplog):
     assert any("New input came in" in m for m in caplog.messages)
     assert len(summarizer.received) == 2
     assert stack.runner.session.thread_id != first
+
+
+def test_a_shutdown_during_a_summary_waits_for_it_to_end(serve):
+    started, ended = threading.Event(), threading.Event()
+
+    async def slow(messages):
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            await asyncio.sleep(0.2)  # cleanup that outlasts one loop step, like a connection
+            ended.set()
+
+    stack = serve(summarizer=ScriptedModel(script=[slow]))
+    stack.runner.submit(MUG)
+    stack.runner.submit(PLATE)
+    assert started.wait(10)
+    assert stack.runner.shutdown(10)
+    assert ended.is_set()
+
+
+def test_the_todo_list_moves_with_the_history_so_a_stop_and_a_task_still_update_it(serve):
+    stack = serve(summarizer=ScriptedModel(then=SUMMARY))
+    run(stack, MUG)
+    first = stack.runner.session.thread_id
+    # The model never works the step, so the gate gives up and leaves it open.
+    stack.runner.submit(PLATE, todos=["Fetch the plate"])
+    assert stack.runner.wait_idle(10)
+    assert stack.runner.session.thread_id != first
+    assert [item["status"] for item in stack.published[-1][0]] == ["pending"]
+
+    stack.runner.stop("stop")
+    assert stack.runner.wait_idle(10)
+    assert [item["status"] for item in stack.published[-1][0]] == ["cancelled"]
+    run(stack, "Which one is mine?")
+    assert stack.published[-1] == ([], [])
 
 
 def test_a_failed_summary_keeps_the_history(serve, caplog):

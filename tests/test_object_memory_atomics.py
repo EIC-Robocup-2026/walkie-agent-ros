@@ -593,6 +593,13 @@ def test_a_failed_drive_back_with_no_named_place_near_says_the_drive_failed():
     assert base_verbs(robot) == ["base.pose_at", "base.go_to_pose", "base.places"]
 
 
+def test_a_failed_drive_back_says_it_failed_even_with_no_reason_given():
+    robot, ctx = seen_earlier(x=5.0, y=-1.5)
+    robot.faults["base.go_to_pose"] = GoalFailed(ErrorCode.SKILL_FAILED, "")
+
+    assert fails(go_to_object, ctx, "18").code is ErrorCode.SKILL_FAILED
+
+
 @pytest.mark.parametrize(
     "code",
     [

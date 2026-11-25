@@ -153,7 +153,7 @@ def go_to_object(ctx: Ctx, object_id: str) -> str:
     # Where Walkie stood when it last saw the object had a line of sight to it, which a
     # named place near it need not have (decision PK-79).
     viewpoint = seen_from(ctx, found)
-    failed = ""
+    failed: GoalFailed | None = None
     if viewpoint is not None:
         try:
             ctx.base.go_to_pose(viewpoint)
@@ -166,15 +166,16 @@ def go_to_object(ctx: Ctx, object_id: str) -> str:
                 label,
                 error,
             )
-            failed = error.message.rstrip(".")
+            failed = error
         else:
             facing = _face_point(ctx, found.x, found.y, label)
             return f"{renamed}Drove back to where Walkie last saw {label}, {facing}.{after}"
     place = approach_place(ctx, found)
-    if place is None and failed:
+    if place is None and failed is not None:
         raise StepError(
             ErrorCode.SKILL_FAILED,
-            f"{renamed}Walkie could not drive back to where it last saw {label} ({failed}), "
+            f"{renamed}Walkie could not drive back to where it last saw {label} "
+            f"({failed.message.rstrip('.')}), "
             f"and knows no named place within {APPROACH_PLACE_MAX_M:g} m of it to try "
             f"instead.{room}",
         )

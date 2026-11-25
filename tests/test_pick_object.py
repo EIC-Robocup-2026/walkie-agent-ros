@@ -2,6 +2,7 @@
 
 import math
 import re
+from collections.abc import Callable
 from dataclasses import replace
 from types import MappingProxyType
 
@@ -129,19 +130,41 @@ def side_plan(x: float, y: float, z: float, heading: float, approach: float):
     return plan_pick(settings, settings.grasp_for("bottle"), x, y, z, heading, approach)
 
 
-def fail_on_call(monkeypatch, robot: FakeRobot, verb: str, nth: int, error: StepError) -> None:
-    """Make the nth call of robot.<verb> raise `error`; every other call runs as before."""
+def fail_on_call(
+    monkeypatch,
+    robot: FakeRobot,
+    verb: str,
+    nth: int,
+    error: StepError,
+    *,
+    after_running: bool = False,
+) -> Callable[[], list[str]]:
+    """Make the nth call of robot.<verb> raise `error`; every other call runs as before.
+
+    The failing call raises before it runs, or, with `after_running`, once it has run.
+    Returns a function that gives every verb logged after that call raised, the base's
+    reads included.
+    """
     original = getattr(robot, verb)
     count = 0
+    raised_at: int | None = None
 
     def flaky(*args, **kwargs):
-        nonlocal count
+        nonlocal count, raised_at
         count += 1
         if count == nth:
+            if after_running:
+                original(*args, **kwargs)
+            raised_at = len(robot.calls)
             raise error
         return original(*args, **kwargs)
 
+    def logged_since() -> list[str]:
+        assert raised_at is not None, f"robot.{verb} was not called {nth} times"
+        return [call["verb"] for call in robot.calls[raised_at:]]
+
     monkeypatch.setattr(robot, verb, flaky)
+    return logged_since
 
 
 def hand_targets(monkeypatch, robot: FakeRobot) -> list[HandPose]:
@@ -1085,10 +1108,26 @@ def test_a_drive_back_whose_state_is_unknown_is_raised_and_nothing_else_drives(
     # The base may still be driving, so neither its pose nor a next goal is any use.
     robot, ctx = seen_from_side(arm_poses, 9.0, 2.0, Pose2D(9.0, 3.5, 0.0), room="living room")
     unknown = StepError(ErrorCode.SKILL_FAILED, "Lost track of the drive back.")
-    fail_on_call(monkeypatch, robot, "go_to_pose", 1, unknown)
+    since = fail_on_call(monkeypatch, robot, "go_to_pose", 1, unknown, after_running=True)
 
     assert fails(ctx) is unknown
-    assert verbs(robot) == []
+    assert since() == []
+    assert verbs(robot) == ["base.go_to_pose"]
+
+
+def test_a_drive_to_the_nearest_place_whose_state_is_unknown_is_raised_and_nothing_else_drives(
+    arm_poses, monkeypatch
+):
+    # The base reached the sofa, one move from the stand-off, but that is not known.
+    robot, ctx = seen_from_side(
+        arm_poses, 9.0, 2.0, Pose2D(9.0, 2.0 + VIEWPOINT_MAX_M + 0.5, 0.0), room="living room"
+    )
+    unknown = StepError(ErrorCode.SKILL_FAILED, "Lost track of the drive to the sofa.")
+    since = fail_on_call(monkeypatch, robot, "go_to", 1, unknown, after_running=True)
+
+    assert fails(ctx) is unknown
+    assert since() == []
+    assert verbs(robot) == ["base.go_to"]
 
 
 def test_a_glance_from_further_than_viewpoint_max_m_drives_to_the_nearest_place(arm_poses):
@@ -1149,10 +1188,11 @@ def test_a_drive_to_a_stand_off_whose_state_is_unknown_is_raised_and_no_next_hea
 ):
     robot, ctx = picking(arm_poses, remembered())
     unknown = StepError(ErrorCode.SKILL_FAILED, "Lost track of the drive.")
-    fail_on_call(monkeypatch, robot, "move_relative", 1, unknown)
+    since = fail_on_call(monkeypatch, robot, "move_relative", 1, unknown, after_running=True)
 
     assert fails(ctx) is unknown
-    assert "base.move_relative" not in verbs(robot)
+    assert since() == []
+    assert verbs(robot).count("base.move_relative") == 1
 
 
 def test_the_hand_moves_in_along_the_line_from_where_the_base_stopped(arm_poses, monkeypatch):

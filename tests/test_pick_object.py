@@ -8,7 +8,7 @@ from types import MappingProxyType
 import pytest
 
 from conftest import PROJECT_ROOT
-from test_object_memory_atomics import WORLD, Remembers
+from test_object_memory_atomics import WORLD, Clock, Remembers, stood_at
 from walkie_agent.arm.pick import (
     HandPose,
     PickPlan,
@@ -19,13 +19,13 @@ from walkie_agent.arm.pick import (
 )
 from walkie_agent.arm.poses import load_arm_poses
 from walkie_agent.arm.state import NOT_SAFE_SENTENCE, SAFE_SENTENCE
-from walkie_agent.capabilities import Ctx, GripperReading, NoDisplay, RecalledObject
+from walkie_agent.capabilities import Ctx, GripperReading, NoDisplay, Pose2D, RecalledObject
 from walkie_agent.capabilities.fake import HELD_FINGER_M, FakeRobot
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.tools.atomic import grasp, pick_object
 
 ABORTED = "Nav2 aborted the goal."
-READS = frozenset(("base.pose", "base.places"))
+READS = frozenset(("base.pose", "base.places", "base.pose_at"))
 
 
 @pytest.fixture(autouse=True)
@@ -54,6 +54,7 @@ def remembered(
     label: str = "bottle",
     # Seen a second ago by default: a sighting fresh enough to reach for after the drive.
     seen_s_ago: float | None = 1.0,
+    seen_at: float | None = None,
 ) -> RecalledObject:
     return RecalledObject(
         id=object_id,
@@ -69,12 +70,13 @@ def remembered(
         z=z,
         size=size,
         yaw=yaw,
+        seen_at=seen_at,
     )
 
 
-def picking(arm_poses, *objects: RecalledObject, holds: bool = True):
+def picking(arm_poses, *objects: RecalledObject, holds: bool = True, clock: Clock | None = None):
     """A FakeRobot at the kitchen room's (0, 0), facing +x, and a ctx with every capability."""
-    robot = FakeRobot(WORLD, arm_poses=arm_poses)
+    robot = FakeRobot(WORLD, arm_poses=arm_poses, clock=clock or Clock())
     if holds:
         robot.grasping.add("right")
     ctx = Ctx(
@@ -956,6 +958,98 @@ def test_a_far_object_with_no_place_near_it_is_not_driven_to(arm_poses):
         "to drive to first."
     )
     assert verbs(robot) == []
+
+
+# Where Walkie last saw the object (decision PK-79)
+
+
+def seen_from_side(arm_poses, x: float, y: float, viewpoint: Pose2D, **options):
+    """A pick of a bottle at (x, y) that Walkie last saw from `viewpoint`, at 111 s.
+
+    The robot stood at the viewpoint from 110 s, then drove back to the kitchen room's
+    (0, 0), facing +x.
+    """
+    clock = Clock()
+    robot, ctx = picking(arm_poses, remembered(x=x, y=y, seen_at=111.0, **options), clock=clock)
+    stood_at(robot, clock, viewpoint, at_s=110.0, then="kitchen room")
+    return robot, ctx
+
+
+def spy_on_go_to_pose(monkeypatch, robot: FakeRobot) -> list[Pose2D]:
+    """The goal of each go_to_pose, which the call log keeps only as text."""
+    drive = robot.go_to_pose
+    goals: list[Pose2D] = []
+
+    def spy(pose, **kwargs):
+        goals.append(pose)
+        return drive(pose, **kwargs)
+
+    monkeypatch.setattr(robot, "go_to_pose", spy)
+    return goals
+
+
+def test_the_stand_off_is_on_the_side_walkie_last_saw_the_object_from(arm_poses):
+    # The robot stands on the bottle's -x side; Walkie saw it from its +x side.
+    robot, ctx = seen_from_side(arm_poses, 1.0, 0.0, Pose2D(2.2, 0.0, math.pi))
+
+    pick_object(ctx, "water bottle")
+
+    assert verbs(robot)[0] == "base.move_relative"
+    assert not {"base.go_to", "base.go_to_pose"} & set(verbs(robot))
+    at_stand_off(robot, 1.0, 0.0)
+    assert robot.pose().x > 1.0
+
+
+def test_a_far_object_is_driven_to_where_walkie_last_saw_it_first(arm_poses, monkeypatch):
+    # The bottle is 1 m behind the sofa, which faces +x; Walkie saw it from 1.5 m to
+    # its +y side.
+    robot, ctx = seen_from_side(arm_poses, 9.0, 2.0, Pose2D(9.0, 3.5, 0.0), room="living room")
+    goals = spy_on_go_to_pose(monkeypatch, robot)
+
+    pick_object(ctx, "water bottle")
+
+    assert verbs(robot)[:2] == ["base.go_to_pose", "base.move_relative"]
+    assert goals == [Pose2D(9.0, 3.5, -math.pi / 2)]
+    assert "base.go_to" not in verbs(robot)
+    assert "base.places" not in [call["verb"] for call in robot.calls]
+    at_stand_off(robot, 9.0, 2.0)
+    assert robot.pose().y > 2.0
+
+
+def test_a_far_object_with_no_place_near_it_is_driven_to_where_walkie_last_saw_it(arm_poses):
+    robot, ctx = seen_from_side(arm_poses, 20.0, 20.0, Pose2D(20.0, 21.5, 0.0), room=None)
+
+    pick_object(ctx, "water bottle")
+
+    assert verbs(robot)[:2] == ["base.go_to_pose", "base.move_relative"]
+    at_stand_off(robot, 20.0, 20.0)
+    assert robot.pose().y > 20.0
+
+
+@pytest.mark.parametrize(("arrives", "goes_on"), [(True, True), (False, False)])
+def test_a_failed_drive_back_goes_on_only_when_it_ended_near_enough(
+    arm_poses, monkeypatch, arrives, goes_on
+):
+    robot, ctx = seen_from_side(arm_poses, 9.0, 2.0, Pose2D(9.0, 3.5, 0.0), room="living room")
+    original = robot.go_to_pose
+    aborted = GoalFailed(ErrorCode.SKILL_FAILED, ABORTED)
+
+    def short(pose, **kwargs):
+        # Nav2 aborts the drive, either at the viewpoint or before the base moved.
+        if arrives:
+            original(pose, **kwargs)
+        raise aborted
+
+    monkeypatch.setattr(robot, "go_to_pose", short)
+
+    if goes_on:
+        pick_object(ctx, "water bottle")
+        at_stand_off(robot, 9.0, 2.0)
+        assert robot.pose().y > 2.0
+    else:
+        assert fails(ctx) is aborted
+        # The stand-in drive is not logged, and nothing else moved.
+        assert verbs(robot) == []
 
 
 # Driving to the stand-off

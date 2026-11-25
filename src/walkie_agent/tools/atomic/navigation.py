@@ -22,6 +22,9 @@ FACE_TOLERANCE_DEG = 10.0
 # In the Chula simulation every object the memory kept was 0.47 to 1.41 m from its
 # nearest place.
 APPROACH_PLACE_MAX_M = 2.0
+# A pose this close to an object, seen from above, is no viewpoint on it: no heading
+# faces the object from there (seen_from).
+VIEWPOINT_MIN_M = 0.05
 # The states in which a remembered object is no longer where Walkie saw it.
 _MOVED_STATES = frozenset({"grasping", "held", "handed_over", "discarded"})
 
@@ -106,13 +109,14 @@ def face_person(ctx: Ctx, person_id: str) -> str:
 
 
 def go_to_object(ctx: Ctx, object_id: str) -> str:
-    """Drive to the named place nearest an object Walkie remembers, and turn to face it.
+    """Drive to an object Walkie remembers, and turn to face it.
 
     Use it to fetch or show an object that recall_object or list_room_objects
-    found. Walkie has not looked for the object when it arrives, and it may have
-    moved since, so call find_objects next to see whether it is still there.
-    Returns a sentence that says where Walkie arrived and whether it faces the
-    object.
+    found. It drives to where Walkie last saw the object when it knows that spot,
+    otherwise to the named place nearest it. Walkie has not looked for the object
+    when it arrives, and it may have moved since, so call find_objects next to see
+    whether it is still there. Returns a sentence that says where Walkie arrived
+    and whether it faces the object.
 
     Args:
         object_id: The id of a remembered object, as recall_object or
@@ -135,6 +139,29 @@ def go_to_object(ctx: Ctx, object_id: str) -> str:
         raise StepError(
             ErrorCode.PRECONDITION_FAILED, f"{renamed}Walkie does not know where {label} is.{room}"
         )
+    state = "" if found.state == "present" else f" Walkie remembers it as {found.state}."
+    after = (
+        f"{state} Walkie has not looked for it yet: call find_objects to see whether it "
+        f"is still there.{word}"
+    )
+    # Where Walkie stood when it last saw the object had a line of sight to it, which a
+    # named place near it need not have (decision PK-79).
+    viewpoint = seen_from(ctx, found)
+    if viewpoint is not None:
+        try:
+            ctx.base.go_to_pose(viewpoint)
+        except StepError as error:
+            if error.code is not ErrorCode.SKILL_FAILED:
+                raise
+            logger.warning(
+                "Could not drive back to where Walkie last saw %s, so driving to the named "
+                "place nearest it: %s",
+                label,
+                error,
+            )
+        else:
+            facing = _face_point(ctx, found.x, found.y, label)
+            return f"{renamed}Drove back to where Walkie last saw {label}, {facing}.{after}"
     place = approach_place(ctx, found)
     if place is None:
         raise StepError(
@@ -144,12 +171,7 @@ def go_to_object(ctx: Ctx, object_id: str) -> str:
         )
     ctx.base.go_to(place.name)
     facing = _face_point(ctx, found.x, found.y, label)
-    state = "" if found.state == "present" else f" Walkie remembers it as {found.state}."
-    return (
-        f"{renamed}Arrived at {place.name}, the named place nearest {label}, {facing}."
-        f"{state} Walkie has not looked for it yet: call find_objects to see whether it "
-        f"is still there.{word}"
-    )
+    return f"{renamed}Arrived at {place.name}, the named place nearest {label}, {facing}.{after}"
 
 
 def _camera_word(found: RecalledObject) -> str:
@@ -179,6 +201,33 @@ def approach_place(ctx: Ctx, found: RecalledObject) -> Location | None:
         max_m=APPROACH_PLACE_MAX_M,
         room=found.room,
     )
+
+
+def seen_from(ctx: Ctx, found: RecalledObject) -> Pose2D | None:
+    """Where Walkie stood when it last saw `found`, facing it, or None when unknown.
+
+    The position is ctx.base.pose_at at the memory's last sighting, and the yaw faces
+    the object's centre from there. That pose had a line of sight to the object, so
+    go_to_object and pick_object drive back to it before a named place. None when the
+    sighting's time or the object's position is unknown, when the base kept no pose
+    for that time, or when the pose lies within VIEWPOINT_MIN_M of the object. A
+    failed lookup is logged and counts as unknown; a stop is raised, since nothing
+    more may run under it.
+    """
+    if found.seen_at is None or found.x is None or found.y is None:
+        return None
+    try:
+        pose = ctx.base.pose_at(found.seen_at)
+    except StepError as error:
+        if error.code is ErrorCode.CANCELLED:
+            raise
+        logger.warning(
+            "Could not look up where Walkie stood when it last saw object %s: %s", found.id, error
+        )
+        return None
+    if pose is None or math.hypot(found.x - pose.x, found.y - pose.y) <= VIEWPOINT_MIN_M:
+        return None
+    return Pose2D(pose.x, pose.y, math.atan2(found.y - pose.y, found.x - pose.x))
 
 
 def _face_point(ctx: Ctx, x: float, y: float, label: str) -> str:

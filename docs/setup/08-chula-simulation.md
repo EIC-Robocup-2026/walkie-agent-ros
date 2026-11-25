@@ -400,16 +400,21 @@ round the rooms first. Then ask:
   coffee table reads `table 2`.
 - "What is in the living room?" `list_room_objects` lists what the memory
   holds there. A room name in any case works.
-- "Take me to the cup on the table." `go_to_object` drives to the named place
-  nearest the cup, within 2 m, and turns to face it. The agent then calls
+- "Take me to the cup on the table." `go_to_object` drives back to where the
+  robot stood when it last saw the cup, when the base still holds its pose
+  from then, else to the named place nearest the cup, within 2 m, and turns to
+  face it (PK-79). A drive back that Nav2 fails falls back to the named
+  place. The base keeps its pose for the last 30 minutes of the agent's run,
+  so a cup not seen in that time goes by the named place. The agent then calls
   `find_objects` to check that the cup is still there. When an object's name
   is not a word the detector uses, such as a seeded `stool`, the reply names
   the label to look for instead, `chair`.
 
 The ids these tools give are the memory's, numbers such as `18`; they are not
 the ids `find_objects` gives for objects in view. An object more than 2 m from
-every place in `config/locations.chula_pat14_6.toml` cannot be driven to, and
-the agent is told to go to its room and look instead. Without `--object-tools`
+every place in `config/locations.chula_pat14_6.toml` cannot be driven to
+unless the base still holds where the robot saw it from, and the agent is told
+to go to its room and look instead. Without `--object-tools`
 the agent has none of these tools, and its prompt is the one it had before
 them.
 
@@ -438,12 +443,18 @@ the tool log shows each as a call:
 2. **Drive to a stand-off pose.** 0.65 m back from the object's centre along
    the approach, and 0.20 m to the left of it, so the object is ahead of the
    right hand, through `move_relative`. The first approach is the one whose
-   line the robot already stands on. When that pose is more than 3 m away, a
-   `go_to` to the named place within 2 m of the object comes first. If Nav2
+   line runs through where the robot stood when it last saw the object, when
+   the base still holds its pose from then (PK-79), else the one whose line
+   the robot already stands on. That spot had a line of sight to the object,
+   while a stand-off on the far side of a table can sit under a tabletop the
+   lidar-only global costmap does not see. When the first stand-off pose is
+   more than 3 m away, a drive comes first: back to that spot, else a `go_to`
+   to the named place within 2 m of the object. If Nav2
    cannot reach it, the headings 30° and 60° to either side are tried in turn,
    then 120° to either side and the far side, 180°.
    A drive that Nav2 aborts within 0.10 m and 10° of its goal counts as
-   arrived, and so does a `go_to` that ends close enough to the stand-off pose.
+   arrived, and so does a first drive that ends close enough to the stand-off
+   pose.
    No chair or stool may stand in the stand-off pose's footprint, about 0.33
    to 0.96 m back from the object along the heading the base faces there, and
    from 0.06 m right to 0.46 m left of the line through the object along that

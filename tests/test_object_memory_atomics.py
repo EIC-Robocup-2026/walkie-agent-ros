@@ -9,15 +9,20 @@ import pytest
 from walkie_agent.capabilities import (
     NO_OBJECT_MEMORY,
     Ctx,
+    Pose2D,
     RecalledObject,
     RoomObjects,
     UnavailableObjectMemory,
 )
 from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.tools.atomic import go_to_object, list_room_objects, recall_object
 from walkie_agent.tools.atomic.memory import RECALL_LIMIT, ROOM_LIMIT
-from walkie_agent.tools.atomic.navigation import APPROACH_PLACE_MAX_M
+from walkie_agent.tools.atomic.navigation import (
+    APPROACH_PLACE_MAX_M,
+    VIEWPOINT_MIN_M,
+    seen_from,
+)
 
 WORLD = {
     "places": {
@@ -45,6 +50,7 @@ def recalled(
     seen_s_ago: float | None = 42.4,
     x: float | None = 4.0,
     y: float | None = 0.0,
+    seen_at: float | None = None,
 ) -> RecalledObject:
     return RecalledObject(
         id=object_id,
@@ -57,7 +63,31 @@ def recalled(
         seen_s_ago=seen_s_ago,
         x=x,
         y=y,
+        seen_at=seen_at,
     )
+
+
+class Clock:
+    """FakeRobot's clock, which a test moves by hand, in seconds."""
+
+    def __init__(self, now: float = 100.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def stood_at(robot: FakeRobot, clock: Clock, pose: Pose2D, *, at_s: float, then: str) -> None:
+    """Have the robot stand at `pose` from `at_s`, then drive to the place `then` 10 s later.
+
+    The calls of the setup are left out of robot.calls.
+    """
+    clock.now = at_s
+    robot.go_to_pose(pose)
+    clock.now = at_s + 10.0
+    robot.go_to(then)
+    clock.now = at_s + 20.0
+    robot.calls.clear()
 
 
 class Remembers:
@@ -140,8 +170,10 @@ def _distance(found: RecalledObject, near: tuple[float, float]) -> float:
     return math.hypot(found.x - near[0], found.y - near[1])
 
 
-def remembering(*objects: RecalledObject, **options) -> tuple[FakeRobot, Ctx]:
-    robot = FakeRobot(WORLD)
+def remembering(
+    *objects: RecalledObject, clock: Clock | None = None, **options
+) -> tuple[FakeRobot, Ctx]:
+    robot = FakeRobot(WORLD, clock=clock or Clock())
     memory = Remembers(*objects, **options)
     ctx = Ctx(
         cancel=robot.cancel, base=robot, speech=robot, vision=robot, object_memory=memory
@@ -437,6 +469,131 @@ def test_an_id_the_memory_does_not_know_is_not_found():
 
     assert (error.code, error.message) == (ErrorCode.NOT_FOUND, "Walkie remembers no object 99.")
     assert base_verbs(robot) == []
+
+
+# -- Where Walkie last saw it -------------------------------------------------------------
+
+# Walkie saw the cup at (4, 0) from (5, 1) at 110 s, then drove back to the kitchen room.
+SEEN_AT_S = 110.0
+VIEWPOINT = Pose2D(5.0, 1.0, 0.0)
+FACING_THE_CUP = math.atan2(0.0 - 1.0, 4.0 - 5.0)
+
+
+def seen_earlier(**options) -> tuple[FakeRobot, Ctx]:
+    """A memory that last saw the cup 1 s after Walkie stood at VIEWPOINT."""
+    clock = Clock()
+    options = {"x": 4.0, "y": 0.0, "seen_at": SEEN_AT_S + 1.0} | options
+    robot, ctx = remembering(recalled("18", **options), clock=clock)
+    stood_at(robot, clock, VIEWPOINT, at_s=SEEN_AT_S, then="kitchen room")
+    return robot, ctx
+
+
+def test_seen_from_is_where_walkie_stood_at_the_sighting_facing_the_object():
+    robot, ctx = seen_earlier()
+
+    assert seen_from(ctx, ctx.object_memory.get("18")) == Pose2D(5.0, 1.0, FACING_THE_CUP)
+    assert base_verbs(robot) == ["base.pose_at"]
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"seen_at": None},
+        {"x": None},
+        {"y": None},
+        # Before the base kept any pose.
+        {"seen_at": 50.0},
+        # Walkie stood on the object, as near as the base can tell.
+        {"x": 5.0, "y": 1.0 + VIEWPOINT_MIN_M / 2},
+    ],
+)
+def test_seen_from_is_none_without_a_sighting_a_position_or_a_kept_pose(options):
+    robot, ctx = seen_earlier()
+    found = replace(ctx.object_memory.get("18"), **options)
+    robot.calls.clear()
+
+    assert seen_from(ctx, found) is None
+
+
+def test_seen_from_logs_a_failed_lookup_as_unknown_and_raises_a_stop(caplog):
+    robot, ctx = seen_earlier()
+    found = ctx.object_memory.get("18")
+    robot.faults["base.pose_at"] = StepError(ErrorCode.UNAVAILABLE, "Navigation has shut down.")
+
+    assert seen_from(ctx, found) is None
+    assert "Navigation has shut down." in caplog.text
+
+    stop = StepError(ErrorCode.CANCELLED, "Cancelled looking up where Walkie stood.")
+    robot.faults["base.pose_at"] = stop
+    assert fails(seen_from, ctx, found) is stop
+
+
+def test_go_to_object_drives_back_to_where_walkie_last_saw_it():
+    robot, ctx = seen_earlier()
+
+    assert go_to_object(ctx, "18") == (
+        "Drove back to where Walkie last saw the cup 18, and it is straight ahead. Walkie "
+        "has not looked for it yet: call find_objects to see whether it is still there."
+    )
+    assert base_verbs(robot) == ["base.pose_at", "base.go_to_pose", "base.pose"]
+    assert robot.pose() == Pose2D(5.0, 1.0, FACING_THE_CUP)
+
+
+def test_go_to_object_keeps_its_other_sentences_when_it_drives_back():
+    robot, ctx = seen_earlier(name="stool", label="chair", state="missing")
+    ctx.object_memory.merged["5"] = "18"
+
+    assert go_to_object(ctx, "5") == (
+        "Object 5 is now remembered as 18. Drove back to where Walkie last saw the stool "
+        "18, and it is straight ahead. Walkie remembers it as missing. Walkie has not "
+        "looked for it yet: call find_objects to see whether it is still there. The camera "
+        'calls it "chair", so call find_objects("chair").'
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        GoalFailed(ErrorCode.SKILL_FAILED, "Nav2 aborted the goal."),
+        StepError(ErrorCode.SKILL_FAILED, "Nav2 finished the drive, but the pose is unknown."),
+    ],
+)
+def test_a_failed_drive_back_goes_to_the_named_place_nearest_instead(failure, caplog):
+    robot, ctx = seen_earlier()
+    robot.faults["base.go_to_pose"] = failure
+
+    assert go_to_object(ctx, "18").startswith(
+        "Arrived at kitchen table, the named place nearest the cup 18, and it is straight ahead."
+    )
+    assert base_verbs(robot) == [
+        "base.pose_at",
+        "base.go_to_pose",
+        "base.places",
+        "base.go_to",
+        "base.pose",
+    ]
+    assert failure.message in caplog.text
+
+
+@pytest.mark.parametrize(
+    "code", [ErrorCode.CANCELLED, ErrorCode.PRECONDITION_FAILED, ErrorCode.TIMEOUT]
+)
+def test_any_other_failure_of_the_drive_back_is_raised(code):
+    robot, ctx = seen_earlier()
+    failure = StepError(code, "Not starting the drive.")
+    robot.faults["base.go_to_pose"] = failure
+
+    assert fails(go_to_object, ctx, "18") is failure
+    assert base_verbs(robot) == ["base.pose_at", "base.go_to_pose"]
+
+
+def test_without_a_kept_pose_go_to_object_drives_to_the_named_place_as_before():
+    robot, ctx = seen_earlier(seen_at=50.0)
+
+    assert go_to_object(ctx, "18").startswith(
+        "Arrived at kitchen table, the named place nearest the cup 18, and it is straight ahead."
+    )
+    assert base_verbs(robot) == ["base.pose_at", "base.places", "base.go_to", "base.pose"]
 
 
 # -- Without an object memory -------------------------------------------------------------

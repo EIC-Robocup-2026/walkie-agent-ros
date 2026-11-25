@@ -691,7 +691,7 @@ footer p + p { margin-top: 6px; }
       "tools": ["recall_object", "list_room_objects", "go_to_object"],
       "flags": ["--vision", "--object-memory"],
       "proof": { "fake": "tests", "sim": "2026-11-12", "robot": false },
-      "note": "Built (S9) on walkie-database's object memory, which walkie-vision fills. `recall_object` searches by label words, with no vectors, and gives each object's memory id, room, the anchor it stands on, the named place nearest it and how long ago it was seen. `go_to_object` drives to the named place within 2 m of the object and turns to face it. In the Chula sim with `scripts/chula-sim.sh up --agent --vision --memory --object-tools`, the real model recalled cups, listed the living room, and drove to the bar for cup 26, where `find_objects` on the detector's topic saw it. Once it answered in plain text instead of with `say`.",
+      "note": "Built (S9) on walkie-database's object memory, which walkie-vision fills. `recall_object` searches by label words, with no vectors, and gives each object's memory id, room, the anchor it stands on, the named place nearest it and how long ago it was seen. `go_to_object` drives back to where the robot stood when it last saw the object, when the base still holds that pose (PK-79), else to the named place within 2 m of it, and turns to face it. In the Chula sim with `scripts/chula-sim.sh up --agent --vision --memory --object-tools`, the real model recalled cups, listed the living room, and drove to the bar for cup 26, where `find_objects` on the detector's topic saw it. Once it answered in plain text instead of with `say`.",
       "evidence": "S9, SG-16 to SG-23, 08 What has been run"
     },
     {

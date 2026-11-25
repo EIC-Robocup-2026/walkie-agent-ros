@@ -297,9 +297,11 @@ class RosBase:
         The position is interpolated between the two samples, and the yaw turns
         the shorter way between theirs. A time past either end of the history, up
         to POSE_MATCH_S, takes that end's pose, since the newest sample can lag a
-        sighting by a timer period; the pose is not extrapolated. None when the
-        nearest sample is further than POSE_MATCH_S from `stamp_s`, which covers
-        a time outside the history and one inside a gap in it. A clock that moved
+        sighting by a timer period; the pose is not extrapolated. Two samples
+        further apart than POSE_MATCH_S are a gap, and each side of it is held
+        the same way, never interpolated across. None when the nearest sample is
+        further than POSE_MATCH_S from `stamp_s`, which covers a time outside the
+        history and one inside a gap in it. A clock that moved
         backwards since the history last looked clears it first. It raises
         REFUSED for a `stamp_s` that is not finite, CANCELLED on a stop, and
         UNAVAILABLE after close().
@@ -824,8 +826,12 @@ def _interpolate(history: deque[tuple[float, Pose2D]], stamp_s: float) -> Pose2D
     index = bisect.bisect_left(history, stamp_s, key=lambda sample: sample[0])
     after_s, after = history[index]
     before_s, before = history[index - 1]
-    if min(stamp_s - before_s, after_s - stamp_s) > POSE_MATCH_S:
-        return None
+    if after_s - before_s > POSE_MATCH_S:
+        # A gap in the history: the robot need not have driven the straight line
+        # between its two sides, so each side is held as an end of the history is.
+        if stamp_s - before_s <= after_s - stamp_s:
+            return before if stamp_s - before_s <= POSE_MATCH_S else None
+        return after if after_s - stamp_s <= POSE_MATCH_S else None
     share = (stamp_s - before_s) / (after_s - before_s)
     turn = math.remainder(after.yaw - before.yaw, math.tau)
     return Pose2D(

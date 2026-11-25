@@ -623,8 +623,20 @@ def test_pose_at_answers_none_inside_a_gap_in_the_history():
 
     assert rig.base.pose_at(1001.5) is None
     assert rig.base.pose_at(1000.0 + POSE_MATCH_S + 0.01) is None
-    assert astuple(rig.base.pose_at(1000.0 + POSE_MATCH_S)) == pytest.approx((1.0, 0.0, 0.0))
-    assert astuple(rig.base.pose_at(1003.0 - POSE_MATCH_S)) == pytest.approx((2.0, 0.0, 0.0))
+    # Each side is held, not a point on the straight line between them that the
+    # robot may never have passed.
+    assert astuple(rig.base.pose_at(1000.0 + POSE_MATCH_S)) == pytest.approx((0.0, 0.0, 0.0))
+    assert astuple(rig.base.pose_at(1003.0 - POSE_MATCH_S)) == pytest.approx((3.0, 0.0, 0.0))
+
+
+def test_pose_at_holds_the_nearer_side_of_a_short_gap():
+    rig = Rig()
+    tick(rig, 0.0, 0.0, 0.0, at_s=1000.0)
+    # Under two POSE_MATCH_S apart, so no time in the gap is far from both sides.
+    tick(rig, 1.5, 0.0, 0.0, at_s=1000.0 + 1.5 * POSE_MATCH_S)
+
+    assert astuple(rig.base.pose_at(1000.0 + 0.7 * POSE_MATCH_S)) == pytest.approx((0.0, 0.0, 0.0))
+    assert astuple(rig.base.pose_at(1000.0 + 0.8 * POSE_MATCH_S)) == pytest.approx((1.5, 0.0, 0.0))
 
 
 def test_a_clock_that_moves_backwards_clears_the_history():

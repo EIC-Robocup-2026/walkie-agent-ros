@@ -4,16 +4,17 @@
 # - The agent (walkie_agent.config and walkie_agent.chat_models): complex_model
 #   and base_url of the vendor that [vendor] names, [agent] if present, and
 #   [tracing.langfuse].
-# - The agent's describe_objects tool, with --vision: describe_model, a model that
-#   reads pictures, or simple_model when [vendor] names no describe_model.
+# - The agent's describe_objects tool, with --vision: describe_vendor and
+#   describe_model in [agent], a model that reads pictures, or [vendor]'s
+#   simple_model without them.
 # - The agent's get_facts tool (walkie_agent.capabilities.facts): [team]. The
 #   agent does not start without it.
 # - The voice entry points (walkie_agent.voice), through rai_s2s: [asr] and [tts].
 # - Nothing in this repository reads embeddings_model, [tracing]'s project or
 #   [tracing.langsmith]. They stay so the file keeps the shape of RAI's own config
-#   (https://robotecai.github.io/rai/setup/vendors/). RAI's own loader,
-#   load_config in rai.initialization.model_initialization, no longer accepts the
-#   file, since its [vendor] takes no describe_model; nothing here calls it.
+#   (https://robotecai.github.io/rai/setup/vendors/). RAI's loader refuses keys it
+#   does not know in [vendor] and the vendor tables, so the agent's own keys go in
+#   [agent].
 #
 # No fallback model is selected. To use one, set both fallback_vendor and
 # fallback_model in an [agent] table; that choice is the team's.
@@ -31,14 +32,18 @@
 simple_model = "openai"
 complex_model = "openai"
 embeddings_model = "openai"
-describe_model = "openai"
 
 [openai]
 simple_model = "qwen/qwen3.8-27b:nitro"
 complex_model = "deepseek/deepseek-v4.1-flash:nitro"
 embeddings_model = "openai/text-embedding-3-small"
-describe_model = "qwen/qwen3.8-27b:nitro"
 base_url = "https://openrouter.ai/api/v1"
+
+# The model that describes the camera's pictures of objects (describe_objects, with
+# --vision). It must take images.
+[agent]
+describe_vendor = "openai"
+describe_model = "qwen/qwen3.8-27b:nitro"
 
 # Local models served by Ollama. Used only when a [vendor] entry is "ollama".
 [ollama]

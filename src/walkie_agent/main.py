@@ -22,8 +22,9 @@ With --vision, `find_people` reads walkie-vision's people on /walkie_vision/peop
 oracle_perception publishes too. --objects-topic reads the objects elsewhere, such as
 walkie-vision's own detector on the simulation's images. Without --vision, both report
 UNAVAILABLE and the prompt says so. With --vision, `describe_objects` also sends the
-camera's pictures of objects in view to config.toml's describe_model, or its
-simple_model without one (decision PK-76); without --vision it reports UNAVAILABLE.
+camera's pictures of objects in view to the describe_model of config.toml's [agent],
+or its simple_model without one (decision PK-76); without --vision it reports
+UNAVAILABLE.
 
 --people-memory chooses where `remember_person` and `recognize_person` keep the people
 the robot meets, from the faces and appearances that --vision collects (ADR-0070):

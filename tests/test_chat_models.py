@@ -57,9 +57,10 @@ def api_key(monkeypatch):
 # -- Settings ---------------------------------------------------------------------
 
 
-def test_the_repo_config_builds_its_model_with_no_agent_section(api_key):
+def test_the_repo_config_keeps_the_default_agent_settings(api_key):
     config = load_config(REPO_CONFIG)
-    assert "agent" not in config
+    # Its [agent] names only the describe model.
+    assert set(config["agent"]) == {"describe_vendor", "describe_model"}
     assert agent_settings(config) == {
         "run_limit": DEFAULT_RUN_LIMIT,
         "deadline_s": DEFAULT_DEADLINE_S,
@@ -95,20 +96,36 @@ def test_build_model_picks_the_role(api_key):
 
 def test_the_repo_config_names_a_describe_model_on_openrouter(api_key):
     config = load_config(REPO_CONFIG)
-    assert config["vendor"]["describe_model"] == "openai"
-    assert build_describe_model(config).model_name == "qwen/qwen3.8-27b:nitro"
+    model = build_describe_model(config)
+    assert model.model_name == "qwen/qwen3.8-27b:nitro"
+    assert model.openai_api_base == config["openai"]["base_url"]
 
 
-def test_the_describe_model_is_its_own_role_when_named(api_key):
-    config = config_for()
-    config["vendor"]["describe_model"] = "ollama"
-    config["ollama"]["describe_model"] = "eyes-ollama"
-    assert build_describe_model(config).model == "eyes-ollama"
+def test_rais_own_loader_still_reads_the_repo_config():
+    # RAI's load_config refuses a key it does not know in [vendor] or a vendor's table.
+    from rai.initialization.model_initialization import load_config as rai_load_config
+
+    ours = load_config(REPO_CONFIG)
+    assert rai_load_config(str(REPO_CONFIG)).openai.simple_model == ours["openai"]["simple_model"]
+
+
+def test_the_describe_model_is_the_one_agent_names(api_key):
+    config = config_for(describe_vendor="ollama", describe_model="eyes-ollama", deadline_s=12.0)
+    model = build_describe_model(config)
+    assert model.model == "eyes-ollama"
+    assert model.base_url == "http://127.0.0.1:2"
+    assert model._client._client.timeout == httpx.Timeout(12.0)
 
 
 def test_without_a_describe_model_the_simple_model_describes(api_key):
     assert build_describe_model(config_for()).model_name == "small-openai"
     assert build_describe_model(config_for("ollama")).model == "small-ollama"
+
+
+@pytest.mark.parametrize("half", [{"describe_vendor": "openai"}, {"describe_model": "eyes"}])
+def test_half_a_describe_model_is_refused(api_key, half):
+    with pytest.raises(ValueError, match="both describe_vendor and describe_model"):
+        build_describe_model(config_for(**half))
 
 
 def test_an_unknown_vendor_is_refused():

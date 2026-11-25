@@ -2,8 +2,8 @@
 
 find_objects gives an object's label, not its colour, its brand or the words printed on
 it. describe_objects sends the camera's picture of each object, the crop that
-walkie-vision cuts around its box, to a vision chat model, config.toml's describe_model,
-and passes on what that model says.
+walkie-vision cuts around its box, to a vision chat model, the describe_model of
+config.toml's [agent], and passes on what that model says.
 
 - One model call per picture, so each picture is answered on its own: a call that fails
   or is still running at the batch's end gives an error for its id only.

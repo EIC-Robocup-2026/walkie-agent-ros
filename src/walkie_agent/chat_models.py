@@ -15,12 +15,6 @@ from langchain_core.language_models import BaseChatModel
 
 from walkie_agent.config import agent_settings
 
-# The role of the model that describes the camera's pictures of objects (decision
-# PK-76), and the role it falls back to in a config.toml that names no such model.
-DESCRIBE_ROLE = "describe_model"
-DESCRIBE_FALLBACK_ROLE = "simple_model"
-
-
 def build_model(config: dict[str, Any], role: str = "complex_model") -> BaseChatModel:
     """The model that `[vendor]` names for `role`, such as complex_model."""
     vendor = config["vendor"][role]
@@ -28,13 +22,21 @@ def build_model(config: dict[str, Any], role: str = "complex_model") -> BaseChat
 
 
 def build_describe_model(config: dict[str, Any]) -> BaseChatModel:
-    """The model that describes pictures: describe_model, or simple_model without it.
+    """The model that describes the camera's pictures of objects (decision PK-76).
 
-    The fallback applies only when `[vendor]` has no describe_model. The chosen model
-    must take image parts. A missing key is a KeyError, as in build_model.
+    `describe_vendor` and `describe_model` in `[agent]` name it, and it must take image
+    parts; without either, the simple_model that `[vendor]` names describes. The keys
+    live in `[agent]`, not `[vendor]` and the vendor's table, because RAI's
+    load_config refuses keys it does not know there. It must name both, as a fallback
+    must, so a vendor alone never picks a model.
     """
-    has_role = DESCRIBE_ROLE in config.get("vendor", {})
-    return build_model(config, DESCRIBE_ROLE if has_role else DESCRIBE_FALLBACK_ROLE)
+    agent = config.get("agent", {})
+    vendor, name = agent.get("describe_vendor"), agent.get("describe_model")
+    if not vendor and not name:
+        return build_model(config, "simple_model")
+    if not (vendor and name):
+        raise ValueError("A describe model needs both describe_vendor and describe_model in [agent].")
+    return _chat_model(config, vendor, name)
 
 
 def build_fallback(config: dict[str, Any]) -> BaseChatModel | None:

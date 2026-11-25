@@ -578,9 +578,11 @@ is for. GPSR and arms keep the tool text they had. The decision is PK-76 in
   data, never instructions. A description is cut to 300 characters. A call that fails
   or is still running at the batch's end fails its own id only, and the log names the
   id and the exception's type, never the picture.
-- **The model.** `[vendor] describe_model`, `qwen/qwen3.8-27b:nitro` through
-  OpenRouter in the repository's `config.toml`, or `simple_model` in a config that
-  names none. Only a run with `--vision` builds it; otherwise `ctx.describer` answers
+- **The model.** `describe_vendor` and `describe_model` in `[agent]`,
+  `qwen/qwen3.8-27b:nitro` through OpenRouter in the repository's `config.toml`, or
+  `[vendor]`'s `simple_model` in a config that names none. They sit in `[agent]`
+  because RAI's `load_config` refuses unknown keys in `[vendor]` and the vendor
+  tables. Only a run with `--vision` builds it; otherwise `ctx.describer` answers
   `UNAVAILABLE`. FakeRobot gives a fixed picture and a canned description from the
   object's name.
 - **The call.** At most 6 distinct ids, repeats dropped in order; an empty list is

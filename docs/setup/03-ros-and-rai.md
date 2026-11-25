@@ -212,20 +212,26 @@ same API as OpenAI, so we use the `openai` vendor and change its model and URL:
 simple_model = "openai"
 complex_model = "openai"
 embeddings_model = "openai"
-describe_model = "openai"
 
 [openai]
 simple_model = "qwen/qwen3.8-27b:nitro"
 complex_model = "deepseek/deepseek-v4.1-flash:nitro"
 embeddings_model = "openai/text-embedding-3-small"
-describe_model = "qwen/qwen3.8-27b:nitro"
 base_url = "https://openrouter.ai/api/v1"
 ```
 
 To try another model, change `complex_model` to any
-[OpenRouter model ID](https://openrouter.ai/models). `describe_model` is the model
-that `describe_objects` sends the camera's pictures to, so it must read images.
-`rai-config-init` does not write it; without it, the agent uses `simple_model`.
+[OpenRouter model ID](https://openrouter.ai/models).
+
+`describe_objects` sends the camera's pictures to a model that reads images. Name it
+in an `[agent]` table, which `rai-config-init` does not write; without both keys, the
+agent uses `simple_model`:
+
+```toml title="config.toml"
+[agent]
+describe_vendor = "openai"
+describe_model = "qwen/qwen3.8-27b:nitro"
+```
 
 `rai-config-init` does not write the `[team]` table, so add it. The agent's
 `get_facts` tool reads the team from it, and the time from the computer's clock in
@@ -243,8 +249,8 @@ The same file has more than one reader:
 
 | Section | Who reads it |
 | ------- | ------------ |
-| `[vendor]`, `[openai]`, `[ollama]` | `walkie_agent.chat_models` reads `complex_model` and `base_url` of the vendor that `[vendor]` names, and with `--vision` `describe_model`, or `simple_model` without it |
-| `[agent]`, optional | `run_limit`, `deadline_s`, `fallback_vendor` and `fallback_model` for the agent. The defaults are provisional, and no fallback is selected |
+| `[vendor]`, `[openai]`, `[ollama]` | `walkie_agent.chat_models` reads `complex_model` and `base_url` of the vendor that `[vendor]` names, and with `--vision` `simple_model` when `[agent]` names no describe model |
+| `[agent]`, optional | `run_limit`, `deadline_s`, `fallback_vendor` and `fallback_model` for the agent, and with `--vision` `describe_vendor` and `describe_model`. The defaults are provisional, and no fallback is selected |
 | `[team]` | `walkie_agent.capabilities.facts` reads `name`, `country`, `affiliation` and `timezone` for `get_facts`. Required |
 | `[tracing.langfuse]` | The agent's Langfuse callback, when `use_langfuse` is true |
 | `[asr]`, `[tts]` | The voice entry points, through `rai_s2s` |
@@ -253,8 +259,9 @@ Nothing in this repository reads `embeddings_model`, `[tracing]`'s project or
 `[tracing.langsmith]`. They stay so the file keeps the shape of RAI's config. The
 embeddings fields were for the retired documentation search
 ([ADR-0068](../architecture/decisions/0068-static-robot-description.md)). RAI's own
-loader, `load_config` in `rai.initialization.model_initialization`, does not accept
-`describe_model` in `[vendor]`, so it no longer reads this file. Nothing here calls it.
+loader, `load_config` in `rai.initialization.model_initialization`, refuses a key it
+does not know in `[vendor]` or a vendor's table, so the agent's own keys go in
+`[agent]`, and `tests/test_chat_models.py` checks that RAI still reads the file.
 
 We deleted `[aws]` and `[google]`, because we do not use those vendors.
 

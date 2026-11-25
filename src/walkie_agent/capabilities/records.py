@@ -132,6 +132,12 @@ class RecalledObject:
     memory has no valid box for it, as when it never measured one. They serve the
     atomics that approach and pick it, and never reach the LLM, which names places
     only (ADR-0010).
+
+    `seen_at` is when it was last seen, in seconds of the node's clock (sim time under
+    --use-sim-time), the same sighting `seen_s_ago` counts back to, or None when
+    unknown. With ctx.base.pose_at it gives where Walkie stood when it last saw the
+    object (decision PK-79). Like `x` and `y` it serves the atomics only and never
+    reaches the LLM.
     """
 
     id: str
@@ -147,6 +153,7 @@ class RecalledObject:
     z: float | None = None
     size: tuple[float, float, float] | None = None
     yaw: float | None = None
+    seen_at: float | None = None
 
 
 @dataclass(frozen=True)

@@ -118,6 +118,18 @@ class Base(Protocol):
     for the end of the backend read it began last. It raises
     REFUSED for a `timeout_s` that is not positive, CANCELLED on a stop, and
     TIMEOUT, UNAVAILABLE or SKILL_FAILED when no usable pose comes in time.
+
+    pose_at gives the robot's pose in the map at `stamp_s`, in seconds of the
+    node's clock as RecalledObject.seen_at counts them, from the poses the
+    backend kept, without waiting (decision PK-79). It answers None when the
+    backend kept no pose close enough to that time, as for a time before the
+    backend started or further back than it keeps. It raises REFUSED for a
+    `stamp_s` that is not finite and CANCELLED on a stop.
+
+    go_to_pose drives to `pose` in the map, as go_to drives to a named place,
+    with the same checks, refusals and errors, and REFUSED for a pose that is
+    not finite. It serves the atomics that drive back to where Walkie stood,
+    and no LLM tool takes map coordinates (ADR-0010).
     """
 
     def places(self) -> Mapping[str, Location]: ...
@@ -138,6 +150,10 @@ class Base(Protocol):
         ...
 
     def pose(self, *, timeout_s: float = 1.0) -> Pose2D: ...
+
+    def pose_at(self, stamp_s: float) -> Pose2D | None: ...
+
+    def go_to_pose(self, pose: Pose2D, *, timeout_s: float = 120.0) -> Pose2D: ...
 
 
 class Speech(Protocol):

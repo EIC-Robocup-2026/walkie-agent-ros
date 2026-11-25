@@ -169,6 +169,13 @@ class FakeSubscription:
         self.msg_type, self.topic, self.callback, self.qos = msg_type, topic, callback, qos
 
 
+class FakeTimer:
+    """A timer that never fires by itself: a test calls `callback` when it wants a tick."""
+
+    def __init__(self, period: float, callback: Callable[[], None], callback_group: Any) -> None:
+        self.period, self.callback, self.callback_group = period, callback, callback_group
+
+
 class FakeNode:
     """The parts of a node the wrappers use. It resolves names as rclpy does."""
 
@@ -179,7 +186,9 @@ class FakeNode:
         self.graph_publishers: dict[str, int] = {}
         self.publishers: list[FakePublisher] = []
         self.subscriptions: list[FakeSubscription] = []
+        self.timers: list[FakeTimer] = []
         self.destroyed: list[Any] = []
+        self.destroyed_timers: list[FakeTimer] = []
         self.destroy_error: Exception | None = None
         self.use_sim_time = False
 
@@ -207,6 +216,16 @@ class FakeNode:
         self.subscriptions.append(FakeSubscription(msg_type, topic, callback, qos))
         return self.subscriptions[-1]
 
+    def create_timer(
+        self,
+        timer_period_sec: float,
+        callback: Callable[[], None],
+        callback_group: Any = None,
+        clock: Any = None,
+    ) -> FakeTimer:
+        self.timers.append(FakeTimer(timer_period_sec, callback, callback_group))
+        return self.timers[-1]
+
     def _destroy(self, entity: Any) -> bool:
         self.destroyed.append(entity)
         if self.destroy_error is not None:
@@ -215,6 +234,11 @@ class FakeNode:
 
     destroy_publisher = _destroy
     destroy_subscription = _destroy
+
+    def destroy_timer(self, timer: FakeTimer) -> bool:
+        # Apart from `destroyed`, which the tests read as the topics a close let go of.
+        self.destroyed_timers.append(timer)
+        return True
 
 
 class FakeConnector:

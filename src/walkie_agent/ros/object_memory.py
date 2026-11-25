@@ -50,6 +50,12 @@ later of the old and new stamps, so an object seen again early in the new run al
 reads as None. ObjectSummary tells no run from another, so a sim run restores the
 store from its seed first, with walkie-database's `db-restore` (decision SG-20).
 
+`seen_at` is that same last_seen in seconds, None when it is zero. It is the time
+ctx.base.pose_at looks up to find where Walkie stood when it last saw the object, so
+an earlier run's stamp has the same trouble there: a stamp the new clock has not
+reached yet finds no pose, and one it has passed finds wherever the robot stood at
+that time in this run. The restore from the seed is what keeps both away.
+
 `x` and `y` are the pose's position when geometry_valid and the pose is in the map
 frame, else None. Under the same condition, `size` is ObjectSummary.size, the upright
 box's sides, when each is finite and above zero, and `yaw` is the box's turn about
@@ -588,6 +594,7 @@ def _record(summary: ObjectSummary, on: str | None, now: float | None) -> Recall
         z=z,
         size=size,
         yaw=yaw,
+        seen_at=seen or None,
     )
 
 

@@ -8,6 +8,7 @@ gym. Verbs call the same guards as the ROS-backed ones, so the fake refuses
 what the robot refuses.
 """
 
+import bisect
 import copy
 import functools
 import hashlib
@@ -54,6 +55,7 @@ from walkie_agent.capabilities.guards import (
     check_relative_move,
     is_finite_number,
     relative_goal,
+    require_finite,
     require_person_details,
     require_question,
     require_text,
@@ -344,6 +346,13 @@ class FakeRobot:
     hand_over move the world's objects either way, and never the arms or the
     grippers. The arm state stays out of snapshot().
 
+    The base keeps each pose it takes with the time by `clock`, seconds of
+    time.monotonic unless a test passes its own, as the robot's node clock.
+    pose_at gives the pose the robot held at a time, since a drive here jumps
+    to its end, and None before the robot was made or after `clock`'s now.
+    go_to_pose drives as go_to does, to a pose, and counts the robot as at the
+    named place nearest that pose within NEAR_PLACE_M, if any.
+
     `drive_s` makes a drive take real seconds, for stop tests. `calls` logs
     every verb call with the robot's place and room as it ended and, for a
     lookup, the ids returned. `said` logs every line, and `faults` maps a verb
@@ -359,6 +368,7 @@ class FakeRobot:
         seed: int = 0,
         drive_s: float = 0.0,
         arm_poses: ArmPoses | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         described = chula_pat14_6(seed) if world is None else copy.deepcopy(dict(world))
         _check_world(described)
@@ -368,6 +378,9 @@ class FakeRobot:
         self._facts: dict[str, Any] | None = described.get("facts")
         self._at: str | None = described["start"]
         self._pose = self._pose_of(described["start"])
+        self.clock = clock
+        # (time by `clock`, the pose the robot took then), oldest first, for pose_at.
+        self._poses: list[tuple[float, Pose2D]] = [(clock(), self._pose)]
         self.drive_s = drive_s
         self.cancel = CancelToken()
         self.calls: list[dict[str, Any]] = []
@@ -463,6 +476,20 @@ class FakeRobot:
     def pose(self, *, timeout_s: float = 1.0) -> Pose2D:
         require_timeout(timeout_s)
         return self._pose
+
+    @_verb("base.pose_at")
+    def pose_at(self, stamp_s: float) -> Pose2D | None:
+        require_finite(stamp_s=stamp_s)
+        self.cancel.check("looking up where Walkie stood")
+        if not self._poses[0][0] <= stamp_s <= self.clock():
+            return None
+        index = bisect.bisect_right(self._poses, stamp_s, key=lambda taken: taken[0])
+        return self._poses[index - 1][1]
+
+    @_verb("base.go_to_pose")
+    def go_to_pose(self, pose: Pose2D, *, timeout_s: float = 120.0) -> Pose2D:
+        require_finite(x=pose.x, y=pose.y, yaw=pose.yaw)
+        return self._drive("the drive", pose, self._place_near(pose), timeout_s)
 
     # ctx.speech
 
@@ -808,6 +835,7 @@ class FakeRobot:
             raise StepError(ErrorCode.CANCELLED, f"The base stopped {what}.")
         with self.cancel.unless_cancelled(what):
             self._pose, self._at = goal, at
+            self._poses.append((self.clock(), goal))
         return goal
 
     def _require_arms(self) -> ArmPoses:
@@ -867,6 +895,11 @@ class FakeRobot:
             return None
         place = self._places[self._at]
         return self._at if self._distance(place, goal) <= NEAR_PLACE_M else None
+
+    def _place_near(self, goal: Pose2D) -> str | None:
+        """The named place nearest `goal` within NEAR_PLACE_M, if any."""
+        name = min(self._places, key=lambda name: self._distance(self._places[name], goal))
+        return name if self._distance(self._places[name], goal) <= NEAR_PLACE_M else None
 
     def _room(self) -> str:
         """The room of the robot's place, or of the nearest place once it left its place."""

@@ -735,6 +735,25 @@ def test_seen_s_ago_is_none_before_the_clock_has_started(database, memory, monke
     assert cup.seen_s_ago is None
 
 
+def test_seen_at_is_last_seen_in_seconds_whatever_the_clock_says(database, memory, monkeypatch):
+    database.objects = [
+        summary(18, "cup", seen_s=1234.25),
+        summary(6, "cup", seen_s=5.0),
+        summary(9, "cup"),
+    ]
+    # A clock that has not reached the sighting yet takes nothing from its time.
+    early = SimpleNamespace(now=lambda: SimpleNamespace(nanoseconds=round(1000e9)))
+    monkeypatch.setattr(memory, "_node", SimpleNamespace(get_clock=lambda: early))
+
+    seen, older, never = memory.search("cup")
+
+    assert seen.seen_at == pytest.approx(1234.25)
+    assert seen.seen_s_ago is None
+    assert older.seen_at == pytest.approx(5.0)
+    assert older.seen_s_ago == pytest.approx(995.0)
+    assert never.seen_at is None
+
+
 # -- room ---------------------------------------------------------------------------------
 
 

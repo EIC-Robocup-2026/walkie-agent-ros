@@ -181,6 +181,51 @@ def test_a_move_away_from_any_place_stays_at_no_place(robot):
     assert robot.snapshot()["at"] is None
 
 
+class Clock:
+    """A clock a test moves by hand, in seconds."""
+
+    def __init__(self, now: float = 100.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_pose_at_gives_the_pose_the_robot_held_at_a_time_by_its_clock():
+    clock = Clock()
+    robot = FakeRobot(world(), clock=clock)
+    clock.now = 110.0
+    robot.go_to("shelf")
+    clock.now = 120.0
+    robot.move_relative(1.0)
+    clock.now = 130.0
+
+    assert robot.pose_at(100.0) == fake.Pose2D(0.0, 0.0, 0.0)
+    assert robot.pose_at(109.9) == fake.Pose2D(0.0, 0.0, 0.0)
+    assert robot.pose_at(110.0) == fake.Pose2D(11.0, 0.0, 1.5)
+    assert robot.pose_at(125.0) == robot.pose()
+    # Before the robot was made, and after now.
+    assert robot.pose_at(99.9) is None
+    assert robot.pose_at(130.1) is None
+    assert code_of(robot.pose_at, math.nan) is ErrorCode.REFUSED
+    robot.cancel.cancel()
+    assert code_of(robot.pose_at, 110.0) is ErrorCode.CANCELLED
+
+
+def test_go_to_pose_drives_there_and_counts_the_nearest_place_within_reach():
+    robot = FakeRobot(world())
+
+    pose = robot.go_to_pose(fake.Pose2D(10.6, 0.3, 2.0))
+    assert pose == robot.pose() == fake.Pose2D(10.6, 0.3, 2.0)
+    assert robot.snapshot()["at"] == "shelf"
+
+    robot.go_to_pose(fake.Pose2D(5.0, 0.0, 0.0))
+    assert robot.snapshot()["at"] is None
+    assert code_of(robot.go_to_pose, fake.Pose2D(math.inf, 0.0, 0.0)) is ErrorCode.REFUSED
+    assert code_of(robot.go_to_pose, fake.Pose2D(1.0, 0.0, 0.0), timeout_s=0.0) is ErrorCode.REFUSED
+    assert robot.pose() == fake.Pose2D(5.0, 0.0, 0.0)
+
+
 def test_a_robot_at_no_place_sees_no_objects(robot):
     robot.move_relative(3.0)
     assert robot.objects() == []

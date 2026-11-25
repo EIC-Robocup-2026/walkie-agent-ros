@@ -36,11 +36,11 @@ from ros_fakes import (
 from walkie_agent.arm.answers import drive_verdict
 from walkie_agent.arm.results import NOT_FOUND, DriveCheck
 from walkie_agent.arm.state import ARMS_OUT, ArmsState, ArmState
-from walkie_agent.capabilities import Ctx, PersonSeen, UnavailableVision
+from walkie_agent.capabilities import Ctx, PersonSeen, Pose2D, UnavailableVision
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.locations import Location
-from walkie_agent.ros.base import RosBase
+from walkie_agent.ros.base import POSE_HISTORY_HZ, POSE_HISTORY_S, POSE_MATCH_S, RosBase
 from walkie_agent.ros.commander import GO_TO_POSE_ACTION, STOP_TOPIC
 from walkie_agent.ros.policy import FORBIDDEN_NAMES
 from walkie_agent.ros.speech import RosSpeech
@@ -546,6 +546,255 @@ def test_stop_during_tf_read_is_cancelled():
     assert rig.client.goals == []
 
 
+# -- The pose history and pose_at ----------------------------------------------------
+
+
+def tick(rig: Rig, x: float, y: float, yaw: float, *, at_s: float, clock_s: float | None = None):
+    """One tick of the pose history's timer, with TF's newest transform stamped `at_s`.
+
+    The clock reads `clock_s`, or `at_s` without it.
+    """
+    stamp_ns = round(at_s * 1e9)
+    rig.clock.nanoseconds = stamp_ns if clock_s is None else round(clock_s * 1e9)
+    rig.connector._tf_buffer.lookup = lambda: transform(x, y, yaw, stamp_ns=stamp_ns)
+    [timer] = rig.connector.node.timers
+    timer.callback()
+
+
+def test_the_pose_history_reads_the_newest_tf_on_its_own_timer_without_waiting():
+    rig = Rig()
+    [timer] = rig.connector.node.timers
+    assert timer.period == pytest.approx(1.0 / POSE_HISTORY_HZ)
+    assert isinstance(timer.callback_group, MutuallyExclusiveCallbackGroup)
+
+    tick(rig, 1.0, 2.0, 0.5, at_s=1000.0)
+
+    # Time zero asks for the newest transform, and no timeout means no wait.
+    assert rig.connector._tf_buffer.lookups == [("map", "base_footprint", 0, 0.0)]
+    assert rig.connector.tf_reads == []
+    assert astuple(rig.base.pose_at(1000.0)) == pytest.approx((1.0, 2.0, 0.5))
+
+
+def test_pose_at_interpolates_between_the_samples_around_the_time():
+    rig = Rig()
+    tick(rig, 0.0, 0.0, 0.0, at_s=1000.0)
+    tick(rig, 1.0, -2.0, 1.0, at_s=1000.2)
+
+    assert astuple(rig.base.pose_at(1000.05)) == pytest.approx((0.25, -0.5, 0.25))
+    assert astuple(rig.base.pose_at(1000.2)) == pytest.approx((1.0, -2.0, 1.0))
+
+
+def test_pose_at_turns_the_yaw_the_shorter_way_across_a_half_turn():
+    rig = Rig()
+    tick(rig, 0.0, 0.0, 3.0, at_s=1000.0)
+    tick(rig, 0.0, 0.0, -3.0, at_s=1000.2)
+
+    # 3.0 to -3.0 is 0.28 rad through a half turn, not 6 rad back through zero.
+    yaw = rig.base.pose_at(1000.1).yaw
+    assert abs(math.remainder(yaw - math.pi, math.tau)) == pytest.approx(0.0, abs=1e-9)
+    assert -math.pi <= yaw <= math.pi
+    quarter = rig.base.pose_at(1000.05).yaw
+    assert quarter == pytest.approx(3.0 + (math.tau - 6.0) / 4)
+
+
+def test_pose_at_holds_an_end_of_the_history_for_a_time_just_past_it_and_no_further():
+    rig = Rig()
+    tick(rig, 0.0, 0.0, 0.0, at_s=1000.0)
+    tick(rig, 1.0, 0.0, 0.0, at_s=1000.2)
+
+    # The newest sample can lag a sighting by a timer period; nothing is extrapolated.
+    assert astuple(rig.base.pose_at(1000.2 + POSE_MATCH_S)) == pytest.approx((1.0, 0.0, 0.0))
+    assert astuple(rig.base.pose_at(1000.0 - POSE_MATCH_S)) == pytest.approx((0.0, 0.0, 0.0))
+    assert rig.base.pose_at(1000.2 + POSE_MATCH_S + 0.01) is None
+    assert rig.base.pose_at(1000.0 - POSE_MATCH_S - 0.01) is None
+    assert rig.base.pose_at(10.0) is None
+
+    assert Rig().base.pose_at(1000.0) is None
+
+
+def test_pose_at_answers_none_inside_a_gap_in_the_history():
+    rig = Rig()
+    tick(rig, 0.0, 0.0, 0.0, at_s=1000.0)
+    # TF is down for three seconds: those ticks keep nothing.
+    rig.clock.nanoseconds = round(1001.5e9)
+    rig.connector._tf_buffer.lookup = missing_tf
+    rig.connector.node.timers[0].callback()
+    tick(rig, 3.0, 0.0, 0.0, at_s=1003.0)
+
+    assert rig.base.pose_at(1001.5) is None
+    assert rig.base.pose_at(1000.0 + POSE_MATCH_S + 0.01) is None
+    assert astuple(rig.base.pose_at(1000.0 + POSE_MATCH_S)) == pytest.approx((1.0, 0.0, 0.0))
+    assert astuple(rig.base.pose_at(1003.0 - POSE_MATCH_S)) == pytest.approx((2.0, 0.0, 0.0))
+
+
+def test_a_clock_that_moves_backwards_clears_the_history():
+    rig = Rig()
+    tick(rig, 1.0, 0.0, 0.0, at_s=1000.0)
+    tick(rig, 2.0, 0.0, 0.0, at_s=1000.2)
+    assert rig.base.pose_at(1000.1) is not None
+
+    # A sim reset: the clock starts again near zero.
+    rig.clock.nanoseconds = round(5e9)
+    assert rig.base.pose_at(1000.1) is None
+
+    # TF's newest transform still holds the old run's stamp, which is not kept.
+    tick(rig, 2.0, 0.0, 0.0, at_s=1000.2, clock_s=5.2)
+    assert rig.base.pose_at(1000.2) is None
+    tick(rig, 7.0, 0.0, 0.0, at_s=5.4)
+    tick(rig, 8.0, 0.0, 0.0, at_s=5.6)
+    assert astuple(rig.base.pose_at(5.5)) == pytest.approx((7.5, 0.0, 0.0))
+
+
+def test_a_rewound_clock_seen_first_by_a_tick_also_clears_the_history():
+    rig = Rig()
+    tick(rig, 1.0, 0.0, 0.0, at_s=1000.0)
+    tick(rig, 3.0, 0.0, 0.0, at_s=5.0)
+
+    assert rig.base.pose_at(1000.0) is None
+    assert astuple(rig.base.pose_at(5.0)) == pytest.approx((3.0, 0.0, 0.0))
+
+
+def test_the_history_keeps_samples_for_its_span_and_drops_older_ones():
+    rig = Rig()
+    tick(rig, 1.0, 0.0, 0.0, at_s=1000.0)
+    tick(rig, 2.0, 0.0, 0.0, at_s=1000.0 + POSE_HISTORY_S)
+    assert astuple(rig.base.pose_at(1000.0)) == pytest.approx((1.0, 0.0, 0.0))
+
+    tick(rig, 3.0, 0.0, 0.0, at_s=1000.0 + POSE_HISTORY_S + 0.2)
+    assert rig.base.pose_at(1000.0) is None
+    assert rig.base.pose_at(1000.0 + POSE_HISTORY_S) is not None
+
+
+def test_a_tick_keeps_only_a_newer_usable_transform_and_never_raises(caplog):
+    rig = Rig()
+    tick(rig, 1.0, 0.0, 0.0, at_s=1000.0)
+    # No newer than the last sample, as when TF has not updated since.
+    tick(rig, 9.0, 0.0, 0.0, at_s=1000.0, clock_s=1000.2)
+    # Stamped well ahead of the clock.
+    tick(rig, 9.0, 0.0, 0.0, at_s=1001.0, clock_s=1000.3)
+    # A transform between other frames, which gives no pose.
+    rig.connector._tf_buffer.lookup = lambda: transform(
+        9.0, 0.0, 0.0, stamp_ns=round(1000.4e9), child="base_link"
+    )
+    rig.connector.node.timers[0].callback()
+
+    def broken():
+        raise RuntimeError("the buffer is gone")
+
+    rig.connector._tf_buffer.lookup = broken
+    rig.connector.node.timers[0].callback()
+    rig.connector.node.timers[0].callback()
+
+    assert astuple(rig.base.pose_at(1000.0)) == pytest.approx((1.0, 0.0, 0.0))
+    assert astuple(rig.base.pose_at(1000.9)) == pytest.approx((1.0, 0.0, 0.0))
+    # A lasting fault is logged once, not at every tick.
+    assert [r.message for r in caplog.records].count(
+        "Could not sample the robot's pose for pose_at."
+    ) == 1
+
+
+@pytest.mark.parametrize("stamp", [math.nan, math.inf, True, "1000", None])
+def test_pose_at_refuses_a_time_that_is_not_finite(stamp):
+    rig = Rig()
+    with pytest.raises(StepError) as raised:
+        rig.base.pose_at(stamp)
+    assert raised.value.code is ErrorCode.REFUSED
+
+
+def test_pose_at_is_cancelled_by_a_stop_and_unavailable_after_close():
+    rig = Rig()
+    tick(rig, 1.0, 0.0, 0.0, at_s=1000.0)
+    rig.token.cancel()
+    with pytest.raises(StepError) as raised:
+        rig.base.pose_at(1000.0)
+    assert raised.value.code is ErrorCode.CANCELLED
+
+    rig.token.reset()
+    [timer] = rig.connector.node.timers
+    assert bounded(rig.base.close) is True
+    assert rig.connector.node.destroyed_timers == [timer]
+    rig.token.reset()  # close() stops, which sets the latch.
+    with pytest.raises(StepError) as raised:
+        rig.base.pose_at(1000.0)
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+    # A second close destroys nothing more.
+    assert bounded(rig.base.close) is True
+    assert rig.connector.node.destroyed_timers == [timer]
+
+
+def test_a_close_that_waits_for_a_goal_keeps_the_timer_until_the_goal_ends():
+    rig = Rig()
+    verb = Background(rig.base.go_to, "kitchen")
+    rig.client.wait_for_goals()
+    rig.stop()
+    assert verb.step_error().code is ErrorCode.CANCELLED
+
+    assert bounded(rig.base.close, timeout_s=1e-9) is False
+    assert rig.connector.node.destroyed_timers == []
+
+    bounded(rig.accept().finish, status=GoalStatus.STATUS_CANCELED)
+    assert bounded(rig.base.close) is True
+    assert rig.connector.node.destroyed_timers == rig.connector.node.timers
+
+
+# -- go_to_pose ----------------------------------------------------------------------
+
+
+def test_go_to_pose_sends_the_pose_as_a_map_goal_and_returns_the_pose_tf_gives():
+    rig = Rig()
+    rig.connector.robot = (2.9, 1.1, -0.4)
+    rig.clock.nanoseconds = 7_000_000_042
+    verb = Background(rig.base.go_to_pose, Pose2D(3.0, 1.0, -math.pi / 2))
+    rig.client.wait_for_goals()
+    goal = rig.client.goals[0].pose
+
+    assert goal.header.frame_id == "map"
+    assert (goal.header.stamp.sec, goal.header.stamp.nanosec) == (7, 42)
+    assert (goal.pose.position.x, goal.pose.position.y) == (3.0, 1.0)
+    assert goal.pose.orientation.z == pytest.approx(math.sin(-math.pi / 4))
+    assert goal.pose.orientation.w == pytest.approx(math.cos(-math.pi / 4))
+
+    bounded(rig.accept().finish)
+    assert astuple(verb.result()) == pytest.approx((2.9, 1.1, -0.4))
+    rig.assert_gate_free()
+
+
+@pytest.mark.parametrize(
+    ("pose", "timeout_s"),
+    [
+        (Pose2D(math.nan, 0.0, 0.0), 120.0),
+        (Pose2D(0.0, math.inf, 0.0), 120.0),
+        (Pose2D(0.0, 0.0, True), 120.0),
+        (Pose2D(0.0, 0.0, 0.0), 0.0),
+    ],
+)
+def test_go_to_pose_refuses_a_pose_that_is_not_finite_without_sending(pose, timeout_s):
+    rig = Rig()
+    with pytest.raises(StepError) as raised:
+        rig.base.go_to_pose(pose, timeout_s=timeout_s)
+    assert raised.value.code is ErrorCode.REFUSED
+    assert (rig.client.ready_polls, rig.connector.tf_reads, rig.client.goals) == (0, [], [])
+
+
+def test_go_to_pose_is_refused_during_a_live_goal_and_fails_as_go_to_does():
+    rig = Rig()
+    first, handle = send_and_drive(rig)
+    with pytest.raises(StepError) as raised:
+        rig.base.go_to_pose(Pose2D(1.0, 0.0, 0.0))
+    assert raised.value.code is ErrorCode.PRECONDITION_FAILED
+    assert len(rig.client.goals) == 1
+    bounded(handle.finish)
+    first.result()
+
+    verb = Background(rig.base.go_to_pose, Pose2D(1.0, 0.0, 0.0))
+    rig.client.wait_for_goals(2)
+    bounded(rig.accept().finish, status=GoalStatus.STATUS_ABORTED, error_code=104)
+    error = verb.step_error()
+    assert isinstance(error, GoalFailed)
+    assert error.code is ErrorCode.SKILL_FAILED
+    assert "Navigation failed for the drive (ABORTED, error code 104)." in error.message
+
+
 # -- Guards and policy -------------------------------------------------------------
 
 
@@ -688,6 +937,7 @@ class ArmsCheck:
 DRIVES = {
     "go_to": (lambda base, **kw: base.go_to("kitchen", **kw), "the drive to kitchen"),
     "move_relative": (lambda base, **kw: base.move_relative(forward_m=1.0, **kw), "the move"),
+    "go_to_pose": (lambda base, **kw: base.go_to_pose(Pose2D(1.0, 2.0, 0.0), **kw), "the drive"),
 }
 
 

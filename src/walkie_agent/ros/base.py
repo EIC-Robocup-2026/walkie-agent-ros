@@ -22,12 +22,23 @@ one to a future that is already done. So:
 - The fence holds only send_goal_async, or the final check of a success. No wait runs
   inside it. This orders a send and a success against cancel(), so a stop either sees a
   stored future or stops the send, and no success is committed after cancel() returned.
+
+The pose history behind pose_at (decision PK-79) is filled by a timer on the executor,
+which reads the newest map <- base transform from the connector's TF buffer without
+waiting, POSE_HISTORY_HZ times a second, and keeps POSE_HISTORY_S of samples. TF keeps
+only seconds of transforms, and a sighting can be minutes old. self._history_lock guards
+the history alone, so the timer never waits on a drive's lock, and it is a leaf: nothing
+else is taken inside it, and the clock is read inside it so that a sample and a lookup
+agree on which clock reading came first. A clock that moves backwards, as a sim reset
+does, clears the history, since its stamps belong to the old clock.
 """
 
+import bisect
 import logging
 import math
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import partial
@@ -39,6 +50,7 @@ from action_msgs.srv import CancelGoal
 from nav2_msgs.action import NavigateToPose
 from rclpy.action import ActionClient
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.time import Time
 from tf2_ros import TransformException
 
 from walkie_agent.capabilities.guards import (
@@ -78,6 +90,17 @@ _TF_LOOKUP_S = 0.01
 # A sample stamped further ahead of the clock than this predates a clock rollback, or
 # comes from a node on another clock. A little ahead is normal between two processes.
 _MAX_FUTURE_STAMP_NS = 500_000_000
+# The pose history behind pose_at (decision PK-79): how often it samples the pose, and
+# how far back it keeps samples, in seconds of the node's clock. Half an hour covers a
+# sighting from earlier in a task at 9000 samples; an older one has no pose, and the
+# atomics fall back to the named place nearest the object. Implementation defaults, not
+# measured robot requirements.
+POSE_HISTORY_HZ = 5.0
+POSE_HISTORY_S = 1800.0
+# The furthest a time may lie from the nearest kept sample for pose_at to answer. A gap
+# in the samples, as while TF was down, gives no pose further than this from its ends.
+POSE_MATCH_S = 1.0
+_NS_PER_S = 1_000_000_000
 
 _TERMINAL = {GoalStatus.STATUS_SUCCEEDED, GoalStatus.STATUS_CANCELED, GoalStatus.STATUS_ABORTED}
 _STATUS_NAMES = {
@@ -132,6 +155,9 @@ class RosBase:
 
     A drive waits for the longer of its timeout_s and `min_drive_timeout_s`, so a
     simulation that runs slower than real time can raise the bound of every drive.
+
+    It also owns one timer on the connector's node, the pose history's (see the
+    module's docstring), which close() destroys with the client.
     """
 
     def __init__(
@@ -178,6 +204,24 @@ class RosBase:
             self._node,
             NavigateToPose,
             self._action_name,
+            callback_group=MutuallyExclusiveCallbackGroup(),
+        )
+        # RAI's get_transform sleeps 0.1 s on a miss, which a timer on the executor must
+        # not do, so the history reads the Buffer that the connector's own listener
+        # fills, as RosVision does: a private attribute of the pinned RAI.
+        self._tf = connector._tf_buffer
+        self._history_lock = threading.Lock()
+        # (stamp in seconds of the node's clock, pose), oldest first, stamps rising.
+        self._history: deque[tuple[float, Pose2D]] = deque(
+            maxlen=math.ceil(POSE_HISTORY_HZ * POSE_HISTORY_S) + 1
+        )
+        # The latest clock reading the history saw, to notice the clock moving backwards.
+        self._history_clock_ns = 0
+        self._sample_failed = False
+        # Its own group, so a slow callback elsewhere on the node delays no sample.
+        self._pose_timer = self._node.create_timer(
+            1.0 / POSE_HISTORY_HZ,
+            self._sample_pose,
             callback_group=MutuallyExclusiveCallbackGroup(),
         )
 
@@ -247,14 +291,50 @@ class RosBase:
             self._require_open()
         return self._fresh_pose(min(self._tf_s, timeout_s), what)
 
+    def pose_at(self, stamp_s: float) -> Pose2D | None:
+        """The pose at `stamp_s`, from the two kept samples around it, or None.
+
+        The position is interpolated between the two samples, and the yaw turns
+        the shorter way between theirs. A time past either end of the history, up
+        to POSE_MATCH_S, takes that end's pose, since the newest sample can lag a
+        sighting by a timer period; the pose is not extrapolated. None when the
+        nearest sample is further than POSE_MATCH_S from `stamp_s`, which covers
+        a time outside the history and one inside a gap in it. A clock that moved
+        backwards since the history last looked clears it first. It raises
+        REFUSED for a `stamp_s` that is not finite, CANCELLED on a stop, and
+        UNAVAILABLE after close().
+        """
+        require_finite(stamp_s=stamp_s)
+        self._cancel.check("looking up where Walkie stood")
+        with self._lock:
+            self._require_open()
+        with self._history_lock:
+            self._note_clock(self._clock_ns())
+            return _interpolate(self._history, float(stamp_s))
+
+    def go_to_pose(self, pose: Pose2D, *, timeout_s: float = 120.0) -> Pose2D:
+        """Drive to `pose` in the map through the same drive as go_to, with its checks and errors.
+
+        For atomics only, such as one that drives back to where Walkie stood when
+        it saw an object; no LLM tool takes map coordinates (ADR-0010), and no
+        message names them. It refuses a pose that is not finite with REFUSED.
+        """
+        require_finite(x=pose.x, y=pose.y, yaw=pose.yaw)
+        require_timeout(timeout_s)
+        what = "the drive"
+        self._cancel.check(what)
+        target = Pose2D(float(pose.x), float(pose.y), float(pose.yaw))
+        return self._drive(what, timeout_s, lambda _deadline: target)
+
     # -- Lifecycle -------------------------------------------------------------
 
     def close(self, timeout_s: float = 5.0) -> bool:
-        """Stop, wait up to `timeout_s` for the goal to end, then destroy the client.
+        """Stop, wait up to `timeout_s` for the goal to end, then destroy the client and the timer.
 
-        Returns False, with the client alive, if the goal has not ended. The executor
-        has to keep spinning for its answers to arrive, so call this before the
-        connector's shutdown, and again to retry. unresolved() says what is left.
+        Returns False, with the client and the pose history's timer alive, if the
+        goal has not ended. The executor has to keep spinning for its answers to
+        arrive, so call this before the connector's shutdown, and again to retry.
+        unresolved() says what is left. pose_at refuses from the first call on.
         """
         with self._lock:
             self._closing = True
@@ -267,11 +347,17 @@ class RosBase:
             if self._operation is not None:
                 return False
             client, self._client = self._client, None
+            timer, self._pose_timer = self._pose_timer, None
         if client is not None:
             try:
                 client.destroy()
             except Exception:
                 logger.exception("Could not destroy the Nav2 action client.")
+        if timer is not None:
+            try:
+                self._node.destroy_timer(timer)
+            except Exception:
+                logger.exception("Could not destroy the pose history's timer.")
         return True
 
     def unresolved(self) -> list[str]:
@@ -575,6 +661,53 @@ class RosBase:
         operation.acceptance.set()
         operation.answered.set()
 
+    # -- The pose history -------------------------------------------------------
+
+    def _sample_pose(self) -> None:
+        """Keep the newest map <- base transform, on the executor. Never raises, never waits.
+
+        A read with no transform keeps nothing, as does a transform that gives no
+        pose, one no newer than the last sample, or one stamped well ahead of the
+        clock, which predates a clock rollback.
+        """
+        try:
+            stamped = self._tf.lookup_transform(MAP_FRAME, ROBOT_FRAME, Time())
+            if _transform_problem(stamped) is not None:
+                return
+            stamp_ns = stamped.header.stamp.sec * _NS_PER_S + stamped.header.stamp.nanosec
+            pose = _pose_of(stamped)
+            with self._history_lock:
+                now_ns = self._clock_ns()
+                self._note_clock(now_ns)
+                stamp_s = stamp_ns / _NS_PER_S
+                newer = not self._history or stamp_s > self._history[-1][0]
+                if newer and stamp_ns <= now_ns + _MAX_FUTURE_STAMP_NS:
+                    self._history.append((stamp_s, pose))
+                    while self._history[0][0] < stamp_s - POSE_HISTORY_S:
+                        self._history.popleft()
+        except TransformException:
+            return
+        except Exception:
+            # Once until a sample succeeds again, so a lasting fault does not log at 5 Hz.
+            if not self._sample_failed:
+                logger.warning("Could not sample the robot's pose for pose_at.", exc_info=True)
+            self._sample_failed = True
+            return
+        self._sample_failed = False
+
+    def _clock_ns(self) -> int:
+        try:
+            return self._node.get_clock().now().nanoseconds
+        except Exception as error:
+            raise ros_failure(error, "Reading the clock") from error
+
+    def _note_clock(self, now_ns: int) -> None:
+        """Call with the history lock held: clear the history if the clock moved backwards."""
+        if now_ns < self._history_clock_ns:
+            logger.info("The ROS clock moved backwards, so the pose history starts again.")
+            self._history.clear()
+        self._history_clock_ns = now_ns
+
     # -- TF --------------------------------------------------------------------
 
     def _fresh_pose(self, budget_s: float, what: str) -> Pose2D:
@@ -675,3 +808,28 @@ def _pose_of(stamped: Any) -> Pose2D:
     t, q = stamped.transform.translation, stamped.transform.rotation
     yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), q.w**2 + q.x**2 - q.y**2 - q.z**2)
     return Pose2D(t.x, t.y, yaw)
+
+
+def _interpolate(history: deque[tuple[float, Pose2D]], stamp_s: float) -> Pose2D | None:
+    """The pose at `stamp_s` by the history, as RosBase.pose_at describes it."""
+    if not history:
+        return None
+    first_s, first = history[0]
+    last_s, last = history[-1]
+    if stamp_s <= first_s:
+        return first if first_s - stamp_s <= POSE_MATCH_S else None
+    if stamp_s >= last_s:
+        return last if stamp_s - last_s <= POSE_MATCH_S else None
+    # The first sample stamped at or after stamp_s; the one before it is stamped earlier.
+    index = bisect.bisect_left(history, stamp_s, key=lambda sample: sample[0])
+    after_s, after = history[index]
+    before_s, before = history[index - 1]
+    if min(stamp_s - before_s, after_s - stamp_s) > POSE_MATCH_S:
+        return None
+    share = (stamp_s - before_s) / (after_s - before_s)
+    turn = math.remainder(after.yaw - before.yaw, math.tau)
+    return Pose2D(
+        before.x + share * (after.x - before.x),
+        before.y + share * (after.y - before.y),
+        math.remainder(before.yaw + share * turn, math.tau),
+    )

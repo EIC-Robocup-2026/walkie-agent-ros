@@ -39,8 +39,9 @@ That reset sends no motion, so a stop still ends every motion.
 The stand-off pose is reached with ctx.base.move_relative, a Nav2 goal like any other
 drive. When the first stand-off is further than one relative move allows, a drive
 comes first: back to where Walkie stood when it last saw the object
-(navigation.seen_from, decision PK-79) when the base kept that pose, else to the named
-place nearest the object. The approach headings are taken from that viewpoint when it
+(navigation.seen_from, decision PK-79) when the base kept that pose and a stand-off
+lies within one move of it, then, should that drive fail far off, to the named place
+nearest the object. The approach headings are taken from that viewpoint when it
 is known, else from where the robot stands. The viewpoint is a spot the robot stood on
 with a line of sight to the object, so a stand-off on its side faces the object across
 floor the robot is known to reach. A heading taken from elsewhere, such as from the
@@ -65,7 +66,6 @@ import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import partial
 
 from walkie_agent.arm import answers
 from walkie_agent.arm.pick import (
@@ -87,7 +87,7 @@ from walkie_agent.arm.pick import (
 )
 from walkie_agent.capabilities import Ctx, Pose2D, RecalledObject
 from walkie_agent.capabilities.guards import MAX_MOVE_M
-from walkie_agent.errors import ErrorCode, StepError
+from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.perception.object_words import matches
 from walkie_agent.tools.atomic.held import held_objects, record
 from walkie_agent.tools.atomic.navigation import APPROACH_PLACE_MAX_M, approach_place, seen_from
@@ -481,44 +481,20 @@ def _drive_to_standoff(
     spot had a line of sight to the object and the robot stood on it, so a stand-off
     on its side is one the robot can reach facing the object; from the far side of a
     table, the global costmap, built from the 2D lidar alone, cannot see the tabletop
-    a stand-off there would sit under. A first drive comes when the first stand-off
-    is further than one relative move allows: go_to_pose back to that spot, or go_to
-    the named place nearest the object without one; the headings are then taken
-    again. A heading whose drive Nav2 fails (SKILL_FAILED) gives way to the next,
-    unless the base stopped near its stand-off pose (_near); any other error is
-    raised as it is. Each heading's plan goes to ctx.display before its drive.
+    a stand-off there would sit under. When the first stand-off is further than one
+    relative move allows, _drive_closer comes first, and the headings are then taken
+    again. A heading whose drive Nav2 ended without success (GoalFailed) gives way to
+    the next, unless the base stopped near its stand-off pose (_near). Any other
+    error is raised as it is: after a goal whose state is unknown the base may still
+    be driving, so neither its pose nor the next goal is any use (S2-9). Each
+    heading's plan goes to ctx.display before its drive.
     """
     viewpoint = seen_from(ctx, found)
     start = ctx.base.pose()
     plans = _plans(settings, grasp, found, viewpoint or start)
     if _distance(start, plans[0]) > MAX_MOVE_M:
-        if viewpoint is not None:
-            where = "where Walkie last saw it"
-            drive_first = partial(ctx.base.go_to_pose, viewpoint)
-        else:
-            place = approach_place(ctx, found)
-            if place is None:
-                raise StepError(
-                    ErrorCode.PRECONDITION_FAILED,
-                    f"{label.capitalize()} is far away, and Walkie knows no named place "
-                    f"within {APPROACH_PLACE_MAX_M:g} m of it to drive to first.",
-                )
-            where = place.name
-            drive_first = partial(ctx.base.go_to, place.name)
-        try:
-            drive_first()
-        except StepError as error:
-            # The first drive only has to bring the stand-off within one relative
-            # move. Nav2 aborted the drive to the Chula bar 0.1 m from its goal.
-            if error.code is not ErrorCode.SKILL_FAILED:
-                raise
-            start = ctx.base.pose()
-            first = _plans(settings, grasp, found, viewpoint or start)[0]
-            if _distance(start, first) > MAX_MOVE_M:
-                raise
-            logger.info("The drive to %s failed close enough to go on: %s", where, error)
-        start = ctx.base.pose()
-        plans = _plans(settings, grasp, found, viewpoint or start)
+        _drive_closer(ctx, settings, grasp, found, label, viewpoint)
+        plans = _plans(settings, grasp, found, viewpoint or ctx.base.pose())
     failures: list[str] = []
     for plan in plans:
         here = ctx.base.pose()
@@ -533,9 +509,7 @@ def _drive_to_standoff(
         ctx.display.show_pick(plan, found, "driving to the stand-off")
         try:
             ctx.base.move_relative(forward, left, turn)
-        except StepError as error:
-            if error.code is not ErrorCode.SKILL_FAILED:
-                raise
+        except GoalFailed as error:
             if _near(ctx.base.pose(), plan):
                 logger.info(
                     "The drive to %s at heading %.2f failed close to its goal; the pick "
@@ -554,6 +528,60 @@ def _drive_to_standoff(
         f"Walkie could not reach a spot to pick up {label} from, after {len(plans)} tries. "
         f"The last one: {failures[-1]}.",
     )
+
+
+def _drive_closer(
+    ctx: Ctx,
+    settings: PickSettings,
+    grasp: Grasp,
+    found: RecalledObject,
+    label: str,
+    viewpoint: Pose2D | None,
+) -> None:
+    """The first drive of _drive_to_standoff, to where a stand-off is one relative move away.
+
+    It tries go_to_pose back to `viewpoint`, where Walkie last saw `found`, when the
+    first stand-off from there lies within one relative move of it, then go_to the
+    named place nearest the object (approach_place). A drive that Nav2 ended without
+    success (GoalFailed) still counts when the base stopped within one move of the
+    first stand-off, since Nav2 aborted the drive to the Chula bar 0.1 m from its
+    goal; otherwise the next drive is tried, and the last one's failure is raised.
+    Any other error is raised as it is. PRECONDITION_FAILED when neither drive applies.
+    """
+    def ended_near(where: str, error: GoalFailed) -> bool:
+        here = ctx.base.pose()
+        near = _distance(here, _plans(settings, grasp, found, viewpoint or here)[0]) <= MAX_MOVE_M
+        logger.info(
+            "The drive to %s failed %s: %s", where, "close enough to go on" if near else "far off",
+            error,
+        )
+        return near
+
+    failed: GoalFailed | None = None
+    if viewpoint is not None:
+        first = _plans(settings, grasp, found, viewpoint)[0]
+        if _distance(viewpoint, first) <= MAX_MOVE_M:
+            try:
+                ctx.base.go_to_pose(viewpoint)
+                return
+            except GoalFailed as error:
+                if ended_near("where Walkie last saw it", error):
+                    return
+                failed = error
+    place = approach_place(ctx, found)
+    if place is None and failed is not None:
+        raise failed
+    if place is None:
+        raise StepError(
+            ErrorCode.PRECONDITION_FAILED,
+            f"{label.capitalize()} is far away, and Walkie knows no named place "
+            f"within {APPROACH_PLACE_MAX_M:g} m of it to drive to first.",
+        )
+    try:
+        ctx.base.go_to(place.name)
+    except GoalFailed as error:
+        if not ended_near(place.name, error):
+            raise
 
 
 def _plans(

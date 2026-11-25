@@ -25,6 +25,12 @@ APPROACH_PLACE_MAX_M = 2.0
 # A pose this close to an object, seen from above, is no viewpoint on it: no heading
 # faces the object from there (seen_from).
 VIEWPOINT_MIN_M = 0.05
+# A pose further than this from an object is no viewpoint on it either (seen_from):
+# go_to_object would stop further from the object than a named place within
+# APPROACH_PLACE_MAX_M, and pick_object's stand-off would lie beyond one relative
+# move (MAX_MOVE_M, 3 m) from it. A glance from across a room, or a stale sighting
+# time from an earlier run, gives such a pose.
+VIEWPOINT_MAX_M = 3.0
 # The states in which a remembered object is no longer where Walkie saw it.
 _MOVED_STATES = frozenset({"grasping", "held", "handed_over", "discarded"})
 
@@ -147,22 +153,31 @@ def go_to_object(ctx: Ctx, object_id: str) -> str:
     # Where Walkie stood when it last saw the object had a line of sight to it, which a
     # named place near it need not have (decision PK-79).
     viewpoint = seen_from(ctx, found)
+    failed = ""
     if viewpoint is not None:
         try:
             ctx.base.go_to_pose(viewpoint)
-        except StepError as error:
-            if error.code is not ErrorCode.SKILL_FAILED:
-                raise
+        except GoalFailed as error:
+            # Only a drive known to have ended: with its state unknown the base may
+            # still be driving, and the next goal would be refused (S2-9).
             logger.warning(
                 "Could not drive back to where Walkie last saw %s, so driving to the named "
                 "place nearest it: %s",
                 label,
                 error,
             )
+            failed = error.message.rstrip(".")
         else:
             facing = _face_point(ctx, found.x, found.y, label)
             return f"{renamed}Drove back to where Walkie last saw {label}, {facing}.{after}"
     place = approach_place(ctx, found)
+    if place is None and failed:
+        raise StepError(
+            ErrorCode.SKILL_FAILED,
+            f"{renamed}Walkie could not drive back to where it last saw {label} ({failed}), "
+            f"and knows no named place within {APPROACH_PLACE_MAX_M:g} m of it to try "
+            f"instead.{room}",
+        )
     if place is None:
         raise StepError(
             ErrorCode.PRECONDITION_FAILED,
@@ -210,9 +225,9 @@ def seen_from(ctx: Ctx, found: RecalledObject) -> Pose2D | None:
     the object's centre from there. That pose had a line of sight to the object, so
     go_to_object and pick_object drive back to it before a named place. None when the
     sighting's time or the object's position is unknown, when the base kept no pose
-    for that time, or when the pose lies within VIEWPOINT_MIN_M of the object. A
-    failed lookup is logged and counts as unknown; a stop is raised, since nothing
-    more may run under it.
+    for that time, or when the pose lies within VIEWPOINT_MIN_M or further than
+    VIEWPOINT_MAX_M from the object. A failed lookup is logged and counts as
+    unknown; a stop is raised, since nothing more may run under it.
     """
     if found.seen_at is None or found.x is None or found.y is None:
         return None
@@ -225,7 +240,9 @@ def seen_from(ctx: Ctx, found: RecalledObject) -> Pose2D | None:
             "Could not look up where Walkie stood when it last saw object %s: %s", found.id, error
         )
         return None
-    if pose is None or math.hypot(found.x - pose.x, found.y - pose.y) <= VIEWPOINT_MIN_M:
+    if pose is None:
+        return None
+    if not VIEWPOINT_MIN_M < math.hypot(found.x - pose.x, found.y - pose.y) <= VIEWPOINT_MAX_M:
         return None
     return Pose2D(pose.x, pose.y, math.atan2(found.y - pose.y, found.x - pose.x))
 

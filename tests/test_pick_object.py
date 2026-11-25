@@ -23,6 +23,7 @@ from walkie_agent.capabilities import Ctx, GripperReading, NoDisplay, Pose2D, Re
 from walkie_agent.capabilities.fake import HELD_FINGER_M, FakeRobot
 from walkie_agent.errors import ErrorCode, GoalFailed, StepError
 from walkie_agent.tools.atomic import grasp, pick_object
+from walkie_agent.tools.atomic.navigation import VIEWPOINT_MAX_M
 
 ABORTED = "Nav2 aborted the goal."
 READS = frozenset(("base.pose", "base.places", "base.pose_at"))
@@ -1026,30 +1027,102 @@ def test_a_far_object_with_no_place_near_it_is_driven_to_where_walkie_last_saw_i
     assert robot.pose().y > 20.0
 
 
-@pytest.mark.parametrize(("arrives", "goes_on"), [(True, True), (False, False)])
-def test_a_failed_drive_back_goes_on_only_when_it_ended_near_enough(
-    arm_poses, monkeypatch, arrives, goes_on
-):
-    robot, ctx = seen_from_side(arm_poses, 9.0, 2.0, Pose2D(9.0, 3.5, 0.0), room="living room")
+def aborting_go_to_pose(monkeypatch, robot: FakeRobot, *, arrives: bool) -> GoalFailed:
+    """Make every go_to_pose fail as Nav2 aborts it, at its goal or before the base moved.
+
+    The stand-in drive is not logged.
+    """
     original = robot.go_to_pose
     aborted = GoalFailed(ErrorCode.SKILL_FAILED, ABORTED)
 
     def short(pose, **kwargs):
-        # Nav2 aborts the drive, either at the viewpoint or before the base moved.
         if arrives:
             original(pose, **kwargs)
         raise aborted
 
     monkeypatch.setattr(robot, "go_to_pose", short)
+    return aborted
 
-    if goes_on:
-        pick_object(ctx, "water bottle")
-        at_stand_off(robot, 9.0, 2.0)
-        assert robot.pose().y > 2.0
-    else:
-        assert fails(ctx) is aborted
-        # The stand-in drive is not logged, and nothing else moved.
-        assert verbs(robot) == []
+
+def test_a_failed_drive_back_that_ended_near_enough_goes_on(arm_poses, monkeypatch):
+    robot, ctx = seen_from_side(arm_poses, 9.0, 2.0, Pose2D(9.0, 3.5, 0.0), room="living room")
+    aborting_go_to_pose(monkeypatch, robot, arrives=True)
+
+    pick_object(ctx, "water bottle")
+
+    assert "base.go_to" not in verbs(robot)
+    at_stand_off(robot, 9.0, 2.0)
+    assert robot.pose().y > 2.0
+
+
+def test_a_failed_drive_back_that_ended_far_off_drives_to_the_nearest_place(
+    arm_poses, monkeypatch
+):
+    # A chair now stands where Walkie saw the bottle from; the sofa is still free.
+    robot, ctx = seen_from_side(arm_poses, 9.0, 2.0, Pose2D(9.0, 3.5, 0.0), room="living room")
+    aborting_go_to_pose(monkeypatch, robot, arrives=False)
+
+    pick_object(ctx, "water bottle")
+
+    assert verbs(robot)[:2] == ["base.go_to", "base.move_relative"]
+    assert next(c for c in robot.calls if c["verb"] == "base.go_to")["args"]["place"] == "sofa"
+    # The headings still come from the viewpoint's side.
+    at_stand_off(robot, 9.0, 2.0)
+    assert robot.pose().y > 2.0
+
+
+def test_a_failed_drive_back_far_off_with_no_place_near_is_raised(arm_poses, monkeypatch):
+    robot, ctx = seen_from_side(arm_poses, 20.0, 20.0, Pose2D(20.0, 21.5, 0.0), room=None)
+    aborted = aborting_go_to_pose(monkeypatch, robot, arrives=False)
+
+    assert fails(ctx) is aborted
+    assert verbs(robot) == []
+
+
+def test_a_drive_back_whose_state_is_unknown_is_raised_and_nothing_else_drives(
+    arm_poses, monkeypatch
+):
+    # The base may still be driving, so neither its pose nor a next goal is any use.
+    robot, ctx = seen_from_side(arm_poses, 9.0, 2.0, Pose2D(9.0, 3.5, 0.0), room="living room")
+    unknown = StepError(ErrorCode.SKILL_FAILED, "Lost track of the drive back.")
+    fail_on_call(monkeypatch, robot, "go_to_pose", 1, unknown)
+
+    assert fails(ctx) is unknown
+    assert verbs(robot) == []
+
+
+def test_a_glance_from_further_than_viewpoint_max_m_drives_to_the_nearest_place(arm_poses):
+    robot, ctx = seen_from_side(
+        arm_poses, 9.0, 2.0, Pose2D(9.0, 2.0 + VIEWPOINT_MAX_M + 0.5, 0.0), room="living room"
+    )
+
+    pick_object(ctx, "water bottle")
+
+    # As with no viewpoint: the sofa first, and the headings from where the robot stood.
+    assert verbs(robot)[:2] == ["base.go_to", "base.move_relative"]
+    assert "base.go_to_pose" not in verbs(robot)
+    at_stand_off(robot, 9.0, 2.0)
+    assert robot.pose().x > 9.0
+
+
+def test_a_viewpoint_whose_first_stand_off_is_beyond_one_move_is_not_driven_to(arm_poses):
+    # A bottle lying along x, seen from 2.95 m to its +y side. The fingers must close
+    # across its 5 cm, so the first stand-off is to its side, 3.03 m from the viewpoint.
+    robot, ctx = seen_from_side(
+        arm_poses,
+        9.0,
+        2.0,
+        Pose2D(9.0, 4.95, 0.0),
+        room="living room",
+        size=(0.30, 0.05, 0.20),
+        yaw=0.0,
+    )
+
+    pick_object(ctx, "water bottle")
+
+    assert verbs(robot)[:2] == ["base.go_to", "base.move_relative"]
+    assert "base.go_to_pose" not in verbs(robot)
+    at_stand_off(robot, 9.0, 2.0)
 
 
 # Driving to the stand-off
@@ -1069,6 +1142,17 @@ def test_a_failed_drive_tries_the_next_heading(arm_poses, monkeypatch):
     assert move["args"]["turn_deg"] == pytest.approx(first + 30.0)
     assert math.degrees(robot.pose().yaw) == pytest.approx(first + 30.0)
     at_stand_off(robot, 1.0, 0.0)
+
+
+def test_a_drive_to_a_stand_off_whose_state_is_unknown_is_raised_and_no_next_heading_tried(
+    arm_poses, monkeypatch
+):
+    robot, ctx = picking(arm_poses, remembered())
+    unknown = StepError(ErrorCode.SKILL_FAILED, "Lost track of the drive.")
+    fail_on_call(monkeypatch, robot, "move_relative", 1, unknown)
+
+    assert fails(ctx) is unknown
+    assert "base.move_relative" not in verbs(robot)
 
 
 def test_the_hand_moves_in_along_the_line_from_where_the_base_stopped(arm_poses, monkeypatch):

@@ -20,6 +20,7 @@ from walkie_agent.tools.atomic import go_to_object, list_room_objects, recall_ob
 from walkie_agent.tools.atomic.memory import RECALL_LIMIT, ROOM_LIMIT
 from walkie_agent.tools.atomic.navigation import (
     APPROACH_PLACE_MAX_M,
+    VIEWPOINT_MAX_M,
     VIEWPOINT_MIN_M,
     seen_from,
 )
@@ -505,6 +506,8 @@ def test_seen_from_is_where_walkie_stood_at_the_sighting_facing_the_object():
         {"seen_at": 50.0},
         # Walkie stood on the object, as near as the base can tell.
         {"x": 5.0, "y": 1.0 + VIEWPOINT_MIN_M / 2},
+        # A glance from across the room.
+        {"x": 5.0 - VIEWPOINT_MAX_M - 0.01, "y": 1.0},
     ],
 )
 def test_seen_from_is_none_without_a_sighting_a_position_or_a_kept_pose(options):
@@ -513,6 +516,12 @@ def test_seen_from_is_none_without_a_sighting_a_position_or_a_kept_pose(options)
     robot.calls.clear()
 
     assert seen_from(ctx, found) is None
+
+
+def test_seen_from_takes_a_pose_as_far_as_viewpoint_max_m():
+    robot, ctx = seen_earlier(x=5.0 - VIEWPOINT_MAX_M, y=1.0)
+
+    assert seen_from(ctx, ctx.object_memory.get("18")) == Pose2D(5.0, 1.0, math.pi)
 
 
 def test_seen_from_logs_a_failed_lookup_as_unknown_and_raises_a_stop(caplog):
@@ -551,15 +560,9 @@ def test_go_to_object_keeps_its_other_sentences_when_it_drives_back():
     )
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        GoalFailed(ErrorCode.SKILL_FAILED, "Nav2 aborted the goal."),
-        StepError(ErrorCode.SKILL_FAILED, "Nav2 finished the drive, but the pose is unknown."),
-    ],
-)
-def test_a_failed_drive_back_goes_to_the_named_place_nearest_instead(failure, caplog):
+def test_a_failed_drive_back_goes_to_the_named_place_nearest_instead(caplog):
     robot, ctx = seen_earlier()
+    failure = GoalFailed(ErrorCode.SKILL_FAILED, "Nav2 aborted the goal.")
     robot.faults["base.go_to_pose"] = failure
 
     assert go_to_object(ctx, "18").startswith(
@@ -575,8 +578,31 @@ def test_a_failed_drive_back_goes_to_the_named_place_nearest_instead(failure, ca
     assert failure.message in caplog.text
 
 
+def test_a_failed_drive_back_with_no_named_place_near_says_the_drive_failed():
+    # 2.5 m from VIEWPOINT, and more than APPROACH_PLACE_MAX_M from every named place.
+    robot, ctx = seen_earlier(x=5.0, y=-1.5)
+    robot.faults["base.go_to_pose"] = GoalFailed(ErrorCode.SKILL_FAILED, "Nav2 aborted the goal.")
+
+    error = fails(go_to_object, ctx, "18")
+
+    assert error.code is ErrorCode.SKILL_FAILED
+    assert error.message.startswith(
+        "Walkie could not drive back to where it last saw the cup 18 (Nav2 aborted the goal), "
+        "and knows no named place within 2 m of it to try instead."
+    )
+    assert base_verbs(robot) == ["base.pose_at", "base.go_to_pose", "base.places"]
+
+
 @pytest.mark.parametrize(
-    "code", [ErrorCode.CANCELLED, ErrorCode.PRECONDITION_FAILED, ErrorCode.TIMEOUT]
+    "code",
+    [
+        ErrorCode.CANCELLED,
+        ErrorCode.PRECONDITION_FAILED,
+        ErrorCode.TIMEOUT,
+        # A plain StepError: the drive's state is unknown, so the base may still be
+        # driving, and a drive to the named place would be refused for it.
+        ErrorCode.SKILL_FAILED,
+    ],
 )
 def test_any_other_failure_of_the_drive_back_is_raised(code):
     robot, ctx = seen_earlier()

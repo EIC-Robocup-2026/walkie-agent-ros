@@ -1,4 +1,4 @@
-"""The shared guards, the cancel token, UnavailableArms, UnavailableFacts and the Ctx container."""
+"""The shared guards, the cancel token, the Unavailable stand-ins and the Ctx container."""
 
 import math
 import threading
@@ -15,15 +15,19 @@ from walkie_agent.capabilities import (
     Pose2D,
     UnavailableArms,
     UnavailableFacts,
+    UnavailableVision,
 )
 from walkie_agent.capabilities.guards import (
     MAX_MOVE_M,
+    MAX_QUESTION_CHARS,
     CancelToken,
+    begin_crops,
     begin_lookup,
     check_relative_move,
     is_finite_number,
     relative_goal,
     require_finite,
+    require_question,
     require_text,
     require_timeout,
 )
@@ -95,6 +99,52 @@ def test_begin_lookup_checks_the_bound_then_the_query_then_the_latch():
         ErrorCode.CANCELLED,
         "Cancelled looking for people: a stop is in effect.",
     )
+
+
+def test_begin_crops_checks_the_bound_then_the_ids_then_the_latch():
+    token = CancelToken()
+    assert begin_crops(token, ("cup_2", "bottle_3"), 1.0, "looking at objects") == [
+        "cup_2",
+        "bottle_3",
+    ]
+    token.cancel()
+    with pytest.raises(StepError) as bound:
+        begin_crops(token, "cup_2", 0, "looking at objects")
+    assert bound.value.message == "Refused: timeout_s must be positive, not 0."
+    for bad in ("cup_2", ["cup_2", 3], None, {"cup_2": 1}):
+        with pytest.raises(StepError) as ids:
+            begin_crops(token, bad, 1.0, "looking at objects")
+        assert (ids.value.code, ids.value.message) == (
+            ErrorCode.REFUSED,
+            "Refused: object_ids must be a list of ids.",
+        )
+    with pytest.raises(StepError) as latch:
+        begin_crops(token, [], 1.0, "looking at objects")
+    assert latch.value.message == "Cancelled looking at objects: a stop is in effect."
+
+
+def test_require_question_collapses_whitespace_and_refuses_what_is_long_or_not_text():
+    assert require_question("") == ""
+    assert require_question("  What does\n the label say? ") == "What does the label say?"
+    assert require_question("x" * MAX_QUESTION_CHARS) == "x" * MAX_QUESTION_CHARS
+    with pytest.raises(StepError) as long:
+        require_question("x" * (MAX_QUESTION_CHARS + 1))
+    assert long.value.message == "Refused: a question must be at most 300 characters long."
+    assert code_of(require_question, 3) is ErrorCode.REFUSED
+
+
+def test_unavailable_vision_checks_the_crops_arguments_then_raises():
+    token = CancelToken()
+    vision = UnavailableVision(token)
+    with pytest.raises(StepError) as raised:
+        vision.crops(["cup_2"])
+    assert (raised.value.code, raised.value.message) == (
+        ErrorCode.UNAVAILABLE,
+        "Live object perception is not connected.",
+    )
+    assert code_of(vision.crops, "cup_2") is ErrorCode.REFUSED
+    token.cancel()
+    assert code_of(vision.crops, ["cup_2"]) is ErrorCode.CANCELLED
 
 
 @pytest.mark.parametrize(

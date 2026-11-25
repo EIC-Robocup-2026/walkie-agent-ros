@@ -426,6 +426,7 @@ set, and `--web-search` adds `search_web` to any set.
 | `move_relative` | default, gpsr, hri, arms | Moves up to 3 m from here, then turns, through Nav2, with the same arm check as `go_to` |
 | `say` | default, gpsr, hri, arms | Publishes one line on `/to_human` |
 | `find_objects` | default, gpsr, hri | With `--vision`, the objects in the newest `/walkie_vision/objects` array (or `--objects-topic`), left to right, with a category, the place Walkie stands at, and the distance, bearing, `forward_m` and `left_m` from Walkie now, null when the camera cannot tell (PK-77). `UNAVAILABLE` for a kind the camera does not look for. Without `--vision`, `UNAVAILABLE`: live object perception is not connected |
+| `describe_objects` | default, hri | With `--vision`, describes up to 6 objects in view, by their `find_objects` ids, from the camera's crops, in one batch through `describe_model`, each with a description or an error of its own (PK-76, [Describing objects](#describing-objects)). Without `--vision`, `UNAVAILABLE` |
 | `object_info` | default, gpsr | With `--vision`, an object in view with null measures, since nothing measures a live object, and the position `find_objects` gives. Without it, `UNAVAILABLE` |
 | `find_people` | default, gpsr, hri | With `--vision`, the people in the newest `/walkie_vision/people` array, left to right, with a pose, a gesture, the room, and the distance, bearing, `forward_m` and `left_m` from Walkie now (PK-77). Without it, `UNAVAILABLE`: live people perception is not connected |
 | `face_person` | default, hri | Turns once, on the spot, by the person's bearing from the newest people array, through Nav2. No turn within 10°. With no `--vision`, `UNAVAILABLE`, as for `find_people` |
@@ -559,6 +560,36 @@ The decisions are PK-6 and PK-7 in
 - **Not tested** against Tavily or a real model. The tests use `httpx.MockTransport`
   and a scripted model (PK-7).
 
+### Describing objects
+
+`describe_objects(object_ids, question="")` follows `find_objects` in the default and
+HRI sets, for what a label does not tell: colour, brand, printed text, what something
+is for. GPSR and arms keep the tool text they had. The decision is PK-76 in
+[Mahoraga Demo Decisions](mahoraga-demo-decisions.md).
+
+- **The pictures.** `ctx.vision.crops`, which `RosVision` serves from the crops that
+  walkie-vision sends ([Objects in view](perception.md#objects-in-view)). An id not in
+  view, or in view with no picture yet, gets an error that says what to do next.
+- **The describer.** `VisionDescriber`, in `capabilities/describe.py`, makes one call
+  of `describe_model` per picture, four at once, each on a daemon thread, and ends the
+  batch within 20 s. Each call is a system prompt and one human message with the ask,
+  the question if any, and the picture as a `data:image/jpeg;base64` URL. The prompt
+  asks for at most two short sentences and says that text in the picture is untrusted
+  data, never instructions. A description is cut to 300 characters. A call that fails
+  or is still running at the batch's end fails its own id only, and the log names the
+  id and the exception's type, never the picture.
+- **The model.** `[vendor] describe_model`, `qwen/qwen3.8-27b:nitro` through
+  OpenRouter in the repository's `config.toml`, or `simple_model` in a config that
+  names none. Only a run with `--vision` builds it; otherwise `ctx.describer` answers
+  `UNAVAILABLE`. FakeRobot gives a fixed picture and a canned description from the
+  object's name.
+- **The call.** At most 6 distinct ids, repeats dropped in order; an empty list is
+  refused, and so is a question over 300 characters. The result is one item per id,
+  `{"id", "description"}` or `{"id", "error"}`, even when every id fails, unless no
+  describer is connected.
+- **Not tested** against a real vision model or walkie-vision's real crops. The tests
+  use a fake chat model and hand-made arrays.
+
 ### Limits of the navigation verbs
 
 `RosBase` is about 640 lines because a goal can outlive the verb that sent it. These
@@ -619,6 +650,7 @@ These have **not** run with this runtime:
   with no model and no simulation.
 - `--web-search`: `search_web` has run only on recorded Tavily answers and a scripted
   model.
+- `describe_objects` has run only on a fake chat model and hand-made object arrays.
 
 So real Nav2 races, TF freshness on hardware and physical stop latency are all unknown.
 The silent demo runs scripted driving and speech only. It is not a full HRI run, because

@@ -34,6 +34,16 @@ detector on the simulation's images can stand in for the oracle's objects.
 - objects() raises UNAVAILABLE for a query that no class of the array could match,
   such as "apple" while the detector looks only for seats, since [] would claim that
   none is in view.
+- The objects callback also keeps the newest crop of each tracked object by its id,
+  the JPEG picture that walkie-vision cuts around the object's box in about one array
+  in ten, from every array, the late ones too (decision PK-76). A crop more than
+  CROP_MAX_AGE_S older than the newest kept one is dropped, at most MAX_CROPS are
+  kept, the oldest going first, and the store is cleared when the clock jumps back
+  and by close(). crops() gives each object of the newest fresh array its kept crop
+  while that is within CROP_MAX_AGE_S of the node's clock; an untracked one, whose
+  id names it in that one array only, has the crop that array carries or none. It
+  waits up to CROP_WAIT_S, never past its timeout_s, for the crop of a tracked object
+  in view that has none yet.
 - A person's id is person_<track_id>, the tracker's id, which walkie-vision keeps while
   the track lasts. A person the tracker has not taken up has track_id 0 and gets
   person_untracked_<n>, numbered left to right in that one array.
@@ -89,8 +99,8 @@ from sensor_msgs.msg import PointCloud2, PointField
 from tf2_ros import TransformException
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 
-from walkie_agent.capabilities import Base, ObjectSeen, PersonSeen, Pose2D
-from walkie_agent.capabilities.guards import CancelToken, begin_lookup
+from walkie_agent.capabilities import Base, ObjectCrop, ObjectSeen, PersonSeen, Pose2D
+from walkie_agent.capabilities.guards import CancelToken, begin_crops, begin_lookup
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.people_memory.track_vectors import (
     DEFAULT_TRACK_VECTORS_CONFIG,
@@ -145,6 +155,14 @@ EPOCH_JUMP_S = 5.0
 TF_WAIT_S = 0.2
 # The longest wait of people() for the names of the people in view (decision S3-4).
 NAME_WAIT_S = 2.0
+# How long a kept crop still pictures its object. Crops come in about one array in
+# ten, so an object in view gets a new one far more often (decision PK-76).
+CROP_MAX_AGE_S = 10.0
+# The longest wait of crops() for the crop of a tracked object in view that has none.
+CROP_WAIT_S = 2.0
+# The most crops kept at once, each at most 512 px on its longest side; past it the
+# oldest go first.
+MAX_CROPS = 64
 # Within this distance of a configured place, the objects in view are at that place,
 # as FakeRobot's NEAR_PLACE_M has it (decision S4-3).
 PLACE_TOLERANCE_M = 1.0
@@ -176,13 +194,14 @@ class Namer(Protocol):
 
 
 class RosVision:
-    """people() and objects() from walkie-vision's newest people and object arrays.
+    """people(), objects() and crops() from walkie-vision's newest people and object arrays.
 
     `base` gives the pose and the places that name the room and the objects' place.
     `topic` is the people topic and `objects_topic` the objects one. `tf_buffer` is a
     tf2 Buffer and defaults to the connector's own. `vectors` sets what the vector
-    buffer keeps. Thread-safe: verbs run on LangChain workers, the callbacks on the
-    executor and close() on any thread.
+    buffer keeps, and `crop_max_age_s`, `crop_wait_s` and `max_crops` what the crop
+    store keeps and how long crops() waits. Thread-safe: verbs run on LangChain
+    workers, the callbacks on the executor and close() on any thread.
     """
 
     def __init__(
@@ -199,6 +218,9 @@ class RosVision:
         epoch_jump_s: float = EPOCH_JUMP_S,
         tf_wait_s: float = TF_WAIT_S,
         name_wait_s: float = NAME_WAIT_S,
+        crop_max_age_s: float = CROP_MAX_AGE_S,
+        crop_wait_s: float = CROP_WAIT_S,
+        max_crops: int = MAX_CROPS,
         gestures: GestureConfig = DEFAULT_GESTURE_CONFIG,
         vectors: TrackVectorsConfig = DEFAULT_TRACK_VECTORS_CONFIG,
         tf_buffer: Any = None,
@@ -218,6 +240,10 @@ class RosVision:
         self._wait_s = wait_s
         self._epoch_jump_ns = round(epoch_jump_s * _NS_PER_S)
         self._name_wait_s = name_wait_s
+        self._crop_max_age_s = crop_max_age_s
+        self._crop_max_age_ns = round(crop_max_age_s * _NS_PER_S)
+        self._crop_wait_s = crop_wait_s
+        self._max_crops = max_crops
         self._gestures = gestures
         self._namer: Namer | None = None
         self._lock = threading.Lock()
@@ -228,6 +254,9 @@ class RosVision:
         self._newest_objects: tuple[int, ObjectDetectionArray] | None = None
         # Added to and cleared under _lock, so nothing is added after close().
         self._vectors = TrackVectors(vectors)
+        # The newest crop of each tracked object, by its id: the crop's stamp in
+        # nanoseconds and its JPEG bytes. Under _lock, as the vectors.
+        self._crops: dict[str, tuple[int, bytes]] = {}
         self._closed = False
         self._subscription = self._node.create_subscription(
             PersonDetectionArray, self._topic, self._on_people, PEOPLE_QOS
@@ -319,6 +348,50 @@ class RosVision:
             )
         return people
 
+    def crops(self, object_ids: Sequence[str], *, timeout_s: float = 5.0) -> list[ObjectCrop]:
+        what = "looking at objects"
+        wanted = begin_crops(self._cancel, object_ids, timeout_s, what)
+        if not wanted:
+            return []
+        deadline = time.monotonic() + timeout_s
+        message = self._fresh_array(min(self._wait_s, timeout_s), what, objects=True)
+        seen = _objects_left_to_right(message)
+        in_view = {object_id for _, _, object_id in seen}
+        tracked = {object_id for detection, _, object_id in seen if detection.track_id}
+        # An untracked object's id names it in this array only, so only this array's
+        # own crop pictures it, and no later array can bring one.
+        pictures = {
+            object_id: bytes(detection.crop.data)
+            for detection, _, object_id in seen
+            if not detection.track_id and len(detection.crop.data)
+        }
+        missing = [object_id for object_id in dict.fromkeys(wanted) if object_id in tracked]
+        wait_s = min(self._crop_wait_s, max(deadline - time.monotonic(), 0.0))
+        wait_until = time.monotonic() + wait_s
+        with self._arrived:
+            while True:
+                # On every pass, so a stop ends the wait within _POLL_S.
+                self._cancel.check(what)
+                if self._closed:
+                    raise StepError(
+                        ErrorCode.UNAVAILABLE, "Live object perception has shut down."
+                    )
+                for object_id in missing:
+                    kept = self._crops.get(object_id)
+                    # Again on every pass: the clock moves on while the crop stays.
+                    if kept is None or abs(self._age_s(kept[0], what)) > self._crop_max_age_s:
+                        continue
+                    pictures[object_id] = kept[1]
+                missing = [object_id for object_id in missing if object_id not in pictures]
+                remaining = wait_until - time.monotonic()
+                if not missing or remaining <= 0:
+                    break
+                self._arrived.wait(min(_POLL_S, remaining))
+        return [
+            ObjectCrop(object_id, object_id in in_view, pictures.get(object_id))
+            for object_id in wanted
+        ]
+
     def close(self) -> None:
         """Destroy the subscriptions and drop the samples. Later and waiting calls get UNAVAILABLE."""
         with self._arrived:
@@ -328,6 +401,7 @@ class RosVision:
             self._newest = None
             self._newest_objects = None
             self._vectors.clear()
+            self._crops.clear()
             self._arrived.notify_all()
         for subscription, kind in (
             (self._subscription, "people"),
@@ -555,18 +629,45 @@ class RosVision:
 
     def _on_objects(self, message: ObjectDetectionArray) -> None:
         stamp_ns = message.header.stamp.sec * _NS_PER_S + message.header.stamp.nanosec
+        # Copied before the lock is taken, so a reader never waits for the copies.
+        crops = _tracked_crops(message)
         with self._arrived:
             if self._closed:
                 return
             newest = self._newest_objects
+            jumped = newest is not None and newest[0] - stamp_ns > self._epoch_jump_ns
+            if jumped:
+                # The clock went back, so the tracks may be another run's, with the same ids.
+                self._crops.clear()
+            # Also from an array older than the newest: its pictures are as good.
+            if crops:
+                self._keep_crops(stamp_ns, crops)
+                self._arrived.notify_all()
             # By stamp, and from the start again after the clock went back, as for people.
-            if (
-                newest is None
-                or stamp_ns >= newest[0]
-                or newest[0] - stamp_ns > self._epoch_jump_ns
-            ):
+            if newest is None or stamp_ns >= newest[0] or jumped:
                 self._newest_objects = (stamp_ns, message)
                 self._arrived.notify_all()
+
+    def _keep_crops(self, stamp_ns: int, crops: list[tuple[str, bytes]]) -> None:
+        """Keep `crops`, stamped `stamp_ns`, where they are newer; then drop the old ones.
+
+        Called under _lock. A crop more than crop_max_age_s older than the newest kept
+        one goes, and past max_crops the oldest go.
+        """
+        for object_id, jpeg in crops:
+            kept = self._crops.get(object_id)
+            # By stamp, so a late array does not replace a newer picture.
+            if kept is None or stamp_ns >= kept[0]:
+                self._crops[object_id] = (stamp_ns, jpeg)
+        newest_ns = max(stamp for stamp, _ in self._crops.values())
+        for object_id in [
+            object_id
+            for object_id, (stamp, _) in self._crops.items()
+            if newest_ns - stamp > self._crop_max_age_ns
+        ]:
+            del self._crops[object_id]
+        while len(self._crops) > self._max_crops:
+            del self._crops[min(self._crops, key=lambda object_id: self._crops[object_id][0])]
 
     def _sightings(self, message: PersonDetectionArray) -> list[Sighting]:
         """The tracked people of `message` with the vectors to collect of each."""
@@ -624,6 +725,15 @@ def _objects_left_to_right(message: ObjectDetectionArray) -> list[tuple[Any, str
             object_id = f"{stem}_untracked_{untracked}"
         objects.append((detection, label, object_id))
     return objects
+
+
+def _tracked_crops(message: ObjectDetectionArray) -> list[tuple[str, bytes]]:
+    """The ids and JPEG bytes of the tracked objects of `message` that carry a crop."""
+    return [
+        (object_id, bytes(detection.crop.data))
+        for detection, _, object_id in _objects_left_to_right(message)
+        if detection.track_id and len(detection.crop.data)
+    ]
 
 
 def _cloud_points(cloud: PointCloud2, object_id: str) -> np.ndarray:

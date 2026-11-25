@@ -1,4 +1,4 @@
-"""Builds the chat model, the optional fallback and the tracing callbacks from config.toml.
+"""Builds the chat models, the optional fallback and the tracing callbacks from config.toml.
 
 It reads the same file as RAI but not through get_llm_model, because the provider
 options differ: ChatOllama silently ignores `timeout` and `max_retries`, and only
@@ -15,11 +15,26 @@ from langchain_core.language_models import BaseChatModel
 
 from walkie_agent.config import agent_settings
 
+# The role of the model that describes the camera's pictures of objects (decision
+# PK-76), and the role it falls back to in a config.toml that names no such model.
+DESCRIBE_ROLE = "describe_model"
+DESCRIBE_FALLBACK_ROLE = "simple_model"
+
 
 def build_model(config: dict[str, Any], role: str = "complex_model") -> BaseChatModel:
     """The model that `[vendor]` names for `role`, such as complex_model."""
     vendor = config["vendor"][role]
     return _chat_model(config, vendor, config[vendor][role])
+
+
+def build_describe_model(config: dict[str, Any]) -> BaseChatModel:
+    """The model that describes pictures: describe_model, or simple_model without it.
+
+    The fallback applies only when `[vendor]` has no describe_model. The chosen model
+    must take image parts. A missing key is a KeyError, as in build_model.
+    """
+    has_role = DESCRIBE_ROLE in config.get("vendor", {})
+    return build_model(config, DESCRIBE_ROLE if has_role else DESCRIBE_FALLBACK_ROLE)
 
 
 def build_fallback(config: dict[str, Any]) -> BaseChatModel | None:

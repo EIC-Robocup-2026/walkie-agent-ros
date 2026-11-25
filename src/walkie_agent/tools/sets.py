@@ -10,6 +10,7 @@ from collections.abc import Callable
 from typing import Any
 
 from walkie_agent.tools.atomic import (
+    describe_objects,
     face_person,
     find_objects,
     find_people,
@@ -84,6 +85,9 @@ GPSR: list[Callable[..., Any]] = [
 # (decision S4-5); object_info stays out, since nothing measures a live object. The
 # object memory atomics come before the arm atomics, and both are dropped without
 # their flags. pick_object comes last, and needs both flags.
+# describe_objects follows find_objects in HRI and DEFAULT, whose runs see live
+# objects, so the agent can ask about what a label does not tell; GPSR and ARMS keep
+# the tool text they had (decision PK-76).
 HRI: list[Callable[..., Any]] = [
     list_places,
     go_to,
@@ -91,6 +95,7 @@ HRI: list[Callable[..., Any]] = [
     say,
     find_people,
     find_objects,
+    describe_objects,
     face_person,
     remember_person,
     recognize_person,
@@ -117,6 +122,7 @@ DEFAULT: list[Callable[..., Any]] = [
     move_relative,
     say,
     find_objects,
+    describe_objects,
     object_info,
     find_people,
     face_person,

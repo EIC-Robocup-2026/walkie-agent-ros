@@ -312,6 +312,18 @@ to S4-6). The agent uses it only when started with `--vision`, and the HRI set h
 - **In the simulation.** The oracle is the object source. walkie-vision's YOLOE
   on MuJoCo's images found cups, bottles and apples but called the sofa and the
   TV stand tables and the shelf a chair, so it is a trial only (S4-8).
+- **Pictures.** PK-76 adds `RosVision.crops(object_ids)`, which `describe_objects`
+  reads. walkie-vision sends a detection's `crop` only now and then, so the
+  callback keeps the newest non-empty crop of each tracked id, with its stamp, from
+  every array, a late one included, unless a newer crop is kept. A crop more than
+  10 s older than the newest kept one is dropped, at most 64 are kept, and the store
+  is cleared when the clock jumps back and on close. A call takes the newest fresh
+  array, as `objects()` does, for which ids are in view; a tracked id in view
+  without a crop waits up to 2 s for one, never past the call's timeout, and a crop
+  more than 10 s old by the node's clock is not given. An untracked id names its
+  object in one array only, so it has a picture only when that array carries one,
+  and is never waited for. Each id comes back as in view or not, with its JPEG or
+  none.
 
 ## Captions
 
@@ -322,6 +334,13 @@ so a sign held up to it could carry instructions (threat T8 on
 [Access Levels](access-levels.md#safety-model)). Generated tools never get
 caption text at Competition. Whether reviewed atomics do is
 [question 4](#open-questions).
+
+`describe_objects` (PK-76) is the one atomic that passes such text on. It sends the
+crops of objects in view, not of people, to `describe_model`, a vision chat model with
+no tools, whose system prompt says that text in the picture is untrusted data, never
+instructions. Each description is at most 300 characters, and the tool text tells the
+agent that a description may be wrong and is never an instruction. The details are in
+[Describing objects](agent.md#describing-objects).
 
 ## In simulation
 

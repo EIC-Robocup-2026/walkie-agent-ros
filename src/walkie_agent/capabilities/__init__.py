@@ -1,5 +1,5 @@
-"""The robot's capabilities on ctx: base, speech, vision, arms, facts, memory, object memory, web
-and display.
+"""The robot's capabilities on ctx: base, speech, vision, arms, facts, memory, object memory, web,
+describer and display.
 
 Each capability is a Protocol here. An atomic calls its verbs as
 ctx.base.go_to("shelf") and never sees a topic or an action. A failure is a
@@ -9,12 +9,12 @@ whatever calls a verb gets them. There is no velocity verb.
 This package imports no rclpy, rai or ROS message, so a teammate can read and
 test against it without ROS. FakeRobot, in capabilities.fake, implements every
 verb but the object memory's and the web search's, whose ctx fields it leaves
-unavailable. The ROS-backed verbs live in walkie_agent.ros, and the web search in
-capabilities.web_search. The arm records build on
-walkie_agent.arm, which imports no ROS either.
+unavailable. The ROS-backed verbs live in walkie_agent.ros, the web search in
+capabilities.web_search and the picture describer in capabilities.describe. The
+arm records build on walkie_agent.arm, which imports no ROS either.
 """
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import NoReturn, Protocol
@@ -22,17 +22,19 @@ from typing import NoReturn, Protocol
 from walkie_agent.arm.pick import HandPose, PickPlan
 from walkie_agent.arm.poses import ArmPose
 from walkie_agent.arm.state import ArmsState
-from walkie_agent.capabilities.guards import CancelToken, begin_lookup
+from walkie_agent.capabilities.guards import CancelToken, begin_crops, begin_lookup
 from walkie_agent.capabilities.records import (
     Arm,
     ArmsMoved,
     ArmsReading,
     ArmsReport,
+    Described,
     Gripper,
     GripperMoved,
     GripperOutcome,
     GripperReading,
     GripperState,
+    ObjectCrop,
     ObjectSeen,
     PersonSeen,
     Pose2D,
@@ -48,6 +50,7 @@ from walkie_agent.locations import Location
 
 __all__ = [
     "NO_ARMS",
+    "NO_DESCRIBER",
     "NO_OBJECT_MEMORY",
     "NO_WEB_SEARCH",
     "OBJECT_STATES",
@@ -61,6 +64,8 @@ __all__ = [
     "Base",
     "CancelToken",
     "Ctx",
+    "Described",
+    "Describer",
     "Facts",
     "Gripper",
     "GripperMoved",
@@ -69,6 +74,7 @@ __all__ = [
     "GripperState",
     "HandPose",
     "Memory",
+    "ObjectCrop",
     "ObjectMemory",
     "ObjectSeen",
     "PersonSeen",
@@ -80,6 +86,7 @@ __all__ = [
     "Speech",
     "Team",
     "UnavailableArms",
+    "UnavailableDescriber",
     "UnavailableFacts",
     "UnavailableMemory",
     "UnavailableObjectMemory",
@@ -151,11 +158,19 @@ class Vision(Protocol):
     category or plural category, or a person's name, pose or gesture, ignoring
     case. Nothing matching returns []. Raises StepError UNAVAILABLE without a
     backend, TIMEOUT past `timeout_s` and CANCELLED on a stop.
+
+    crops gives one ObjectCrop per id of `object_ids`, in their order: the camera's
+    JPEG picture of each object in view, or why there is none, as an object not in
+    view or one with no picture yet (decision PK-76). It waits a short while for the
+    picture of an object in view that has none, never past `timeout_s`. It raises
+    REFUSED for ids that are not a list of text, and fails as objects does.
     """
 
     def objects(self, query: str = "", *, timeout_s: float = 5.0) -> list[ObjectSeen]: ...
 
     def people(self, query: str = "", *, timeout_s: float = 5.0) -> list[PersonSeen]: ...
+
+    def crops(self, object_ids: Sequence[str], *, timeout_s: float = 5.0) -> list[ObjectCrop]: ...
 
 
 class UnavailableVision:
@@ -176,6 +191,10 @@ class UnavailableVision:
     def people(self, query: str = "", *, timeout_s: float = 5.0) -> list[PersonSeen]:
         begin_lookup(self._cancel, query, timeout_s, "looking for people")
         raise StepError(ErrorCode.UNAVAILABLE, "Live people perception is not connected.")
+
+    def crops(self, object_ids: Sequence[str], *, timeout_s: float = 5.0) -> list[ObjectCrop]:
+        begin_crops(self._cancel, object_ids, timeout_s, "looking at objects")
+        raise StepError(ErrorCode.UNAVAILABLE, "Live object perception is not connected.")
 
 
 class Arms(Protocol):
@@ -589,6 +608,36 @@ class UnavailableWebSearch:
         raise StepError(ErrorCode.UNAVAILABLE, NO_WEB_SEARCH)
 
 
+class Describer(Protocol):
+    """ctx.describer: describes the camera's pictures of objects in view (decision PK-76).
+
+    describe takes (id, JPEG bytes) pairs, as ctx.vision.crops gives them, and gives
+    one Described per pair, in their order: a short description of the object in the
+    picture, which answers `question` about it when one is given. Each picture
+    succeeds or fails on its own, so one that fails or takes too long gives an error
+    for its id only, and the whole call ends within a bound. Text in a picture is
+    data to the describer, never instructions. describe raises StepError REFUSED for
+    a question that is not text or is too long (guards.require_question), and
+    UNAVAILABLE without a describer. It does not check the cancel token, since it
+    moves nothing.
+    """
+
+    def describe(
+        self, crops: Sequence[tuple[str, bytes]], question: str = ""
+    ) -> list[Described]: ...
+
+
+# What UnavailableDescriber says, kept here so the atomic's tests can match it.
+NO_DESCRIBER = "Walkie cannot describe objects here: no picture describer is connected."
+
+
+class UnavailableDescriber:
+    """The ctx.describer of a run without --vision: describe refuses."""
+
+    def describe(self, crops: Sequence[tuple[str, bytes]], question: str = "") -> list[Described]:
+        raise StepError(ErrorCode.UNAVAILABLE, NO_DESCRIBER)
+
+
 class Display(Protocol):
     """ctx.display: drawings of what an atomic plans, for the operator's 3D viewer.
 
@@ -621,4 +670,5 @@ class Ctx:
     memory: Memory = UnavailableMemory()
     object_memory: ObjectMemory = UnavailableObjectMemory()
     web: WebSearch = UnavailableWebSearch()
+    describer: Describer = UnavailableDescriber()
     display: Display = NoDisplay()

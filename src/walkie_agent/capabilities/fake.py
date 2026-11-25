@@ -16,7 +16,7 @@ import math
 import random
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -34,11 +34,13 @@ from walkie_agent.capabilities import (
     ArmsReading,
     ArmsReport,
     Ctx,
+    Described,
     Gripper,
     GripperMoved,
     GripperReading,
     GripperState,
     HandPose,
+    ObjectCrop,
     ObjectSeen,
     PersonSeen,
     Pose2D,
@@ -48,10 +50,12 @@ from walkie_agent.capabilities import (
 )
 from walkie_agent.capabilities.guards import (
     CancelToken,
+    begin_crops,
     check_relative_move,
     is_finite_number,
     relative_goal,
     require_person_details,
+    require_question,
     require_text,
     require_timeout,
 )
@@ -127,6 +131,9 @@ NEAR_PLACE_M = 1.0
 HELD = "robot"
 # The verbs whose records keep the ids they returned.
 LOOKUPS = frozenset({"vision.objects", "vision.people"})
+# The picture vision.crops gives of every object in view: a JPEG's start and end
+# markers around a tag, since the fake describer reads the id, never the picture.
+FAKE_CROP = b"\xff\xd8fake crop\xff\xd9"
 # The pose both arms start in, which every drive refusal names as its example.
 ARMS_START_POSE = answers.SAFE_EXAMPLE
 # The commander's status for every arm and gripper goal, all of which succeed in the fake.
@@ -159,6 +166,11 @@ def person_heading_deg(person_id: str) -> float:
     """
     digest = hashlib.sha256(f"heading:{person_id}".encode()).digest()
     return round(int.from_bytes(digest[:4], "big") / 2**32 * 360.0 - 180.0, 1)
+
+
+def fake_description(name: str) -> str:
+    """What the fake describer says of an object named `name`: its name and nothing more."""
+    return f"It looks like a {name}. The fake camera shows no colour, brand or printed text."
 
 
 def chula_pat14_6(seed: int = 0) -> dict[str, Any]:
@@ -299,10 +311,12 @@ def _check_arm_poses(arm_poses: ArmPoses) -> None:
 
 
 class FakeRobot:
-    """Implements Base, Speech, Vision, Arms, Facts and Memory over one world description.
+    """Implements Base, Speech, Vision, Arms, Facts, Memory and Describer over one world.
 
-    One object holds all six verb sets, since their names do not clash; `ctx`
-    is the Ctx that atomics take. `world=None` builds chula_pat14_6(seed), and a
+    One object holds all seven verb sets, since their names do not clash; `ctx`
+    is the Ctx that atomics take. Every object in view has the picture FAKE_CROP,
+    and the describer says only an object's name (fake_description), whatever the
+    question. `world=None` builds chula_pat14_6(seed), and a
     world with a broken name, coordinate or fact raises ValueError. A world with
     no "facts" has no fact source, so the facts verbs raise UNAVAILABLE.
     A person's bearing is their "heading_deg", a fixed direction in the map, or one
@@ -384,6 +398,7 @@ class FakeRobot:
             arms=self,
             facts=self,
             memory=self,
+            describer=self,
         )
 
     def snapshot(self) -> dict[str, Any]:
@@ -502,6 +517,33 @@ class FakeRobot:
             for person_id, who in sorted(self._people.items())
             if who["room"] == room and _matches(query, who["name"], who["pose"], who["gesture"])
         ]
+
+    @_verb("vision.crops")
+    def crops(self, object_ids: Sequence[str], *, timeout_s: float = 5.0) -> list[ObjectCrop]:
+        crops = []
+        for object_id in begin_crops(self.cancel, object_ids, timeout_s, "looking at objects"):
+            item = self._objects.get(object_id)
+            in_view = item is not None and self._in_view(item["at"])
+            crops.append(ObjectCrop(object_id, in_view, FAKE_CROP if in_view else None))
+        return crops
+
+    # ctx.describer
+
+    @_verb("describer.describe")
+    def describe(self, crops: Sequence[tuple[str, bytes]], question: str = "") -> list[Described]:
+        # The question is checked as the robot's describer checks it, and then
+        # ignored: the fake world knows only each object's name.
+        require_question(question)
+        described = []
+        for object_id, _ in crops:
+            item = self._objects.get(object_id)
+            if item is None:
+                described.append(
+                    Described(object_id, None, "The describer could not describe this picture.")
+                )
+            else:
+                described.append(Described(object_id, fake_description(item["name"])))
+        return described
 
     # ctx.arms. The pose and gripper verbs answer in the robot's words
     # (walkie_agent.arm.answers), and move nothing until the token's commit.

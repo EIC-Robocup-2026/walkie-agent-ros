@@ -20,7 +20,12 @@ from langchain_core.messages import AIMessage, HumanMessage
 from runtime_harness import ScriptedModel
 
 from walkie_agent.capabilities.fake import FakeRobot
-from walkie_agent.chat_models import build_callbacks, build_fallback, build_model
+from walkie_agent.chat_models import (
+    build_callbacks,
+    build_describe_model,
+    build_fallback,
+    build_model,
+)
 from walkie_agent.config import DEFAULT_DEADLINE_S, DEFAULT_RUN_LIMIT, agent_settings, load_config
 from walkie_agent.runtime import build_agent
 
@@ -86,6 +91,24 @@ def test_ollama_gets_the_timeout_through_client_kwargs():
 
 def test_build_model_picks_the_role(api_key):
     assert build_model(config_for(), "simple_model").model_name == "small-openai"
+
+
+def test_the_repo_config_names_a_describe_model_on_openrouter(api_key):
+    config = load_config(REPO_CONFIG)
+    assert config["vendor"]["describe_model"] == "openai"
+    assert build_describe_model(config).model_name == "qwen/qwen3.8-27b:nitro"
+
+
+def test_the_describe_model_is_its_own_role_when_named(api_key):
+    config = config_for()
+    config["vendor"]["describe_model"] = "ollama"
+    config["ollama"]["describe_model"] = "eyes-ollama"
+    assert build_describe_model(config).model == "eyes-ollama"
+
+
+def test_without_a_describe_model_the_simple_model_describes(api_key):
+    assert build_describe_model(config_for()).model_name == "small-openai"
+    assert build_describe_model(config_for("ollama")).model == "small-ollama"
 
 
 def test_an_unknown_vendor_is_refused():

@@ -180,6 +180,34 @@ class WebAnswer:
 
 
 @dataclass(frozen=True)
+class ObjectCrop:
+    """The camera's picture of one object in view, from ctx.vision.crops (decision PK-76).
+
+    `id` is the live id the call named, as find_objects gives it. `in_view` is False
+    when the newest array does not hold that id. `jpeg` is the picture's JPEG bytes,
+    or None when the object is not in view or no picture of it was taken in time.
+    """
+
+    id: str
+    in_view: bool
+    jpeg: bytes | None = None
+
+
+@dataclass(frozen=True)
+class Described:
+    """What ctx.describer said about one object's picture (decision PK-76).
+
+    `id` is the id the picture came with. `description` is the describer's text, at
+    most a few short sentences, or None when it failed for this picture; `error`
+    then says why, in a sentence the agent can read.
+    """
+
+    id: str
+    description: str | None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
 class ArmsReport:
     """What the arm backend knows about the arms at one moment, without asking the commander.
 

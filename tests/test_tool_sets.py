@@ -6,6 +6,7 @@ import pytest
 
 from walkie_agent.tools import atomic
 from walkie_agent.tools.atomic import (
+    describe_objects,
     get_arm_state,
     go_to_object,
     hand_over,
@@ -77,6 +78,7 @@ def test_hri_finds_objects_but_cannot_measure_or_move_them_and_ends_with_memorie
         "say",
         "find_people",
         "find_objects",
+        "describe_objects",
         "face_person",
         "remember_person",
         "recognize_person",
@@ -125,6 +127,7 @@ def test_hri_without_the_arm_and_object_memory_tools_is_the_set_it_was_before_th
         "say",
         "find_people",
         "find_objects",
+        "describe_objects",
         "face_person",
         "remember_person",
         "recognize_person",
@@ -192,6 +195,7 @@ def test_default_keeps_its_order_without_the_memory_tools():
         "move_relative",
         "say",
         "find_objects",
+        "describe_objects",
         "object_info",
         "find_people",
         "face_person",
@@ -209,6 +213,7 @@ def test_default_without_the_object_memory_tools_is_the_set_it_was_before_them()
         "move_relative",
         "say",
         "find_objects",
+        "describe_objects",
         "object_info",
         "find_people",
         "face_person",
@@ -222,6 +227,18 @@ def test_the_object_memory_tools_are_in_default_and_hri_alone():
     assert OBJECT_MEMORY <= set(HRI)
     assert OBJECT_MEMORY.isdisjoint(GPSR)
     assert OBJECT_MEMORY.isdisjoint(ARMS)
+
+
+@pytest.mark.parametrize("tool_set", [HRI, DEFAULT], ids=["HRI", "DEFAULT"])
+def test_describe_objects_comes_right_after_find_objects_in_hri_and_default(tool_set):
+    assert names(tool_set)[names(tool_set).index("find_objects") + 1] == "describe_objects"
+
+
+def test_describe_objects_is_in_no_other_set():
+    # GPSR keeps the tool text the Mahoraga runs measured, and ARMS is the arms alone.
+    assert describe_objects not in GPSR
+    assert describe_objects not in ARMS
+    assert all("describe_objects" in bound_tool_names(name) for name in ("hri", "default"))
 
 
 def test_the_memory_tools_are_in_hri_alone():

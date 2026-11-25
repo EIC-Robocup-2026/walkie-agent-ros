@@ -43,12 +43,14 @@ from walkie_agent.capabilities import (
     NoDisplay,
     Team,
     UnavailableArms,
+    UnavailableDescriber,
     UnavailableFacts,
     UnavailableMemory,
     UnavailableObjectMemory,
     UnavailableVision,
     UnavailableWebSearch,
 )
+from walkie_agent.capabilities.describe import VisionDescriber
 from walkie_agent.capabilities.facts import SystemFacts
 from walkie_agent.capabilities.web_search import TavilySearch
 from walkie_agent.chat_models import build_model
@@ -695,7 +697,7 @@ def test_injected_model_never_builds_network_clients(build, monkeypatch):
     def never(*_args, **_kwargs):
         raise AssertionError("assemble must not build a model or a tracer.")
 
-    for name in ("build_model", "build_fallback", "build_callbacks"):
+    for name in ("build_model", "build_describe_model", "build_fallback", "build_callbacks"):
         monkeypatch.setattr(main, name, never)
         monkeypatch.setattr(f"walkie_agent.chat_models.{name}", never)
     monkeypatch.setattr("walkie_agent.chat_models._chat_model", never)
@@ -1201,6 +1203,11 @@ def cli(monkeypatch, tmp_path, nav):
 
     monkeypatch.setattr(main, "load_dotenv", lambda: events.append("dotenv"))
     monkeypatch.setattr(main, "build_model", recording("build_model", lambda _config: state.model))
+    monkeypatch.setattr(
+        main,
+        "build_describe_model",
+        recording("build_describe_model", lambda _config: state.model),
+    )
     monkeypatch.setattr(main, "build_fallback", recording("build_fallback", main.build_fallback))
     monkeypatch.setattr(main, "build_callbacks", recording("build_callbacks", main.build_callbacks))
 
@@ -1904,6 +1911,31 @@ def test_cli_passes_a_tavily_search_only_with_web_search(cli, monkeypatch):
     # The agent's model and the summarizer: build_model ran once for each.
     assert cli.events.count("build_model") == 3
     assert main._parse_args([]).web_search is False
+
+
+def test_cli_passes_a_vision_describer_only_with_vision(cli, monkeypatch):
+    received = []
+
+    def assemble(**kwargs):
+        received.append(kwargs)
+        app = FakeApp(cli)
+        app.on_start = send
+        return app
+
+    monkeypatch.setattr(main, "assemble", assemble)
+    assert cli.run() == 0
+    assert received[-1]["describer"] is None
+    assert "build_describe_model" not in cli.events
+    assert cli.run("--vision") == 0
+    assert isinstance(received[-1]["describer"], VisionDescriber)
+    assert received[-1]["describer"]._model is cli.model
+    assert cli.events.count("build_describe_model") == 1
+
+
+def test_assemble_puts_the_describer_on_ctx_or_the_unavailable_one(build):
+    describer = UnavailableDescriber()
+    assert build(tool_set="hri", describer=describer).app.ctx.describer is describer
+    assert isinstance(build(tool_set="hri").app.ctx.describer, UnavailableDescriber)
 
 
 def test_assemble_with_a_web_search_binds_search_web_and_its_rule(build, monkeypatch):

@@ -21,7 +21,9 @@ With --vision, `find_people` reads walkie-vision's people on /walkie_vision/peop
 `find_objects` its objects on /walkie_vision/objects, which the simulation's
 oracle_perception publishes too. --objects-topic reads the objects elsewhere, such as
 walkie-vision's own detector on the simulation's images. Without --vision, both report
-UNAVAILABLE and the prompt says so.
+UNAVAILABLE and the prompt says so. With --vision, `describe_objects` also sends the
+camera's pictures of objects in view to config.toml's describe_model, or its
+simple_model without one (decision PK-76); without --vision it reports UNAVAILABLE.
 
 --people-memory chooses where `remember_person` and `recognize_person` keep the people
 the robot meets, from the faces and appearances that --vision collects (ADR-0070):
@@ -99,11 +101,13 @@ from walkie_agent.capabilities import (
     Arms,
     CancelToken,
     Ctx,
+    Describer,
     Facts,
     Memory,
     NoDisplay,
     ObjectMemory,
     UnavailableArms,
+    UnavailableDescriber,
     UnavailableFacts,
     UnavailableMemory,
     UnavailableObjectMemory,
@@ -111,9 +115,15 @@ from walkie_agent.capabilities import (
     UnavailableWebSearch,
     WebSearch,
 )
+from walkie_agent.capabilities.describe import VisionDescriber
 from walkie_agent.capabilities.facts import facts_from_config
 from walkie_agent.capabilities.web_search import TavilySearch, web_search_key
-from walkie_agent.chat_models import build_callbacks, build_fallback, build_model
+from walkie_agent.chat_models import (
+    build_callbacks,
+    build_describe_model,
+    build_fallback,
+    build_model,
+)
 from walkie_agent.config import agent_settings, compaction_settings, load_config
 from walkie_agent.locations import Location, load_locations
 from walkie_agent.people_memory.store import InMemoryPeopleMemory, PeopleMemory
@@ -421,6 +431,7 @@ def assemble(
     arm_poses: ArmPoses | None = None,
     scripts: AgentScripts | None = None,
     web_search: WebSearch | None = None,
+    describer: Describer | None = None,
 ) -> Application:
     """Wire the runtime and the ROS wrappers over a connector the caller already made.
 
@@ -459,6 +470,11 @@ def assemble(
     `web_search`, the TavilySearch that main() builds for --web-search, is ctx.web, and
     adds search_web to the set and its rule to the prompt. Without it, ctx.web is
     UnavailableWebSearch and no set binds search_web. The caller owns and closes it.
+
+    `describer`, the VisionDescriber that main() builds for --vision, is
+    ctx.describer, which describe_objects sends the crops of ctx.vision to. Without
+    it, ctx.describer is UnavailableDescriber. The sets bind describe_objects either
+    way, as they bind find_objects without vision.
 
     The Runner compacts a long history between tasks, with `model` as the summarizer
     and the thresholds of `config`'s [agent] table (compaction_settings, PK-74).
@@ -550,6 +566,7 @@ def assemble(
             arms=ctx_arms,
             object_memory=objects,
             web=web_search or UnavailableWebSearch(),
+            describer=describer or UnavailableDescriber(),
             display=display or NoDisplay(),
         )
         bridge = RosBridge(
@@ -885,6 +902,9 @@ def main(argv: list[str] | None = None) -> int:
             if web_search_api_key is None
             else TavilySearch(web_search_api_key, build_model(config))
         )
+        # describe_objects reads the crops that --vision brings, so only a run with it
+        # builds the picture model.
+        describer = VisionDescriber(build_describe_model(config)) if args.vision else None
         fallback = build_fallback(config)
         callbacks = build_callbacks(config)
         facts = facts_from_config(config)
@@ -920,6 +940,7 @@ def main(argv: list[str] | None = None) -> int:
             arm_poses=arm_poses,
             scripts=scripts,
             web_search=web_search,
+            describer=describer,
         )
     finally:
         # Application.close closed it already, unless the run failed before assembling.

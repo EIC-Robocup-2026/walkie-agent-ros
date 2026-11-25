@@ -24,11 +24,17 @@ from walkie_agent.tools.atomic.navigation import (
     list_places,
     move_relative,
 )
-from walkie_agent.tools.atomic.perception import find_objects, find_people, object_info
+from walkie_agent.tools.atomic.perception import (
+    describe_objects,
+    find_objects,
+    find_people,
+    object_info,
+)
 from walkie_agent.tools.atomic.speech import say
 from walkie_agent.tools.atomic.web import search_web
 
 __all__ = [
+    "describe_objects",
     "face_person",
     "find_objects",
     "find_people",

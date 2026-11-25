@@ -43,7 +43,7 @@ from walkie_vision_msgs.msg import (
     PersonDetectionArray,
 )
 
-from walkie_agent.capabilities import ObjectSeen, Pose2D, UnavailableVision
+from walkie_agent.capabilities import ObjectCrop, ObjectSeen, Pose2D, UnavailableVision
 from walkie_agent.capabilities.fake import GESTURES, POSES
 from walkie_agent.capabilities.guards import CancelToken
 from walkie_agent.errors import ErrorCode, StepError
@@ -61,6 +61,9 @@ from walkie_agent.perception.people_words import (
 )
 from walkie_agent.ros import vision as vision_module
 from walkie_agent.ros.vision import (
+    CROP_MAX_AGE_S,
+    CROP_WAIT_S,
+    MAX_CROPS,
     NAME_WAIT_S,
     PLACE_TOLERANCE_M,
     TF_WAIT_S,
@@ -1134,6 +1137,194 @@ def test_close_ends_every_later_objects_call(rig):
     assert str(raised.value) == "UNAVAILABLE: Live object perception has shut down."
 
 
+# -- The crop store and crops() (decision PK-76) ----------------------------------------
+
+
+def pictured(label: str, x: float, track_id: int = 0, jpeg: bytes = b"jpeg") -> ObjectDetection:
+    """thing(), carrying `jpeg` as its crop."""
+    detection = thing(label, x, track_id)
+    detection.crop.format = "jpeg"
+    detection.crop.data = jpeg
+    return detection
+
+
+def test_the_crop_defaults_are_the_decided_ones():
+    assert (CROP_MAX_AGE_S, CROP_WAIT_S, MAX_CROPS) == (10.0, 2.0, 64)
+
+
+def test_crops_give_the_newest_picture_of_each_tracked_object_across_arrays_without_crops(rig):
+    made = rig(crop_wait_s=SHORT_WAIT_S)
+    made.deliver_objects(pictured("cup", 100, 2, b"first"))
+    made.advance(0.5)
+    made.deliver_objects(pictured("cup", 100, 2, b"second"))
+    made.advance(0.5)
+    # walkie-vision sends a crop only now and then; the arrays between carry none.
+    made.deliver_objects(thing("cup", 100, 2), thing("bottle", 200, 3))
+    assert made.vision.crops(["cup_2", "bottle_3"]) == [
+        ObjectCrop("cup_2", True, b"second"),
+        ObjectCrop("bottle_3", True, None),
+    ]
+
+
+def test_a_late_array_keeps_its_crops_but_never_replaces_a_newer_one(rig):
+    made = rig(crop_wait_s=SHORT_WAIT_S)
+    made.deliver_objects(pictured("cup", 100, 2, b"new"))
+    made.deliver_objects(
+        pictured("cup", 100, 2, b"old"), pictured("apple", 300, 4, b"late"), age_s=0.5
+    )
+    # The late array is not the newest, so the apple is not in view yet.
+    assert made.vision.crops(["cup_2", "apple_4"]) == [
+        ObjectCrop("cup_2", True, b"new"),
+        ObjectCrop("apple_4", False, None),
+    ]
+    made.deliver_objects(thing("cup", 100, 2), thing("apple", 300, 4))
+    assert made.vision.crops(["apple_4", "cup_2"]) == [
+        ObjectCrop("apple_4", True, b"late"),
+        ObjectCrop("cup_2", True, b"new"),
+    ]
+
+
+def test_a_crop_older_than_the_max_age_by_the_nodes_clock_is_not_given(rig):
+    made = rig(crop_wait_s=SHORT_WAIT_S)
+    made.deliver_objects(pictured("cup", 100, 2, b"cup"))
+    made.advance(CROP_MAX_AGE_S - 1.0)
+    made.deliver_objects(thing("cup", 100, 2))
+    assert made.vision.crops(["cup_2"]) == [ObjectCrop("cup_2", True, b"cup")]
+    made.advance(2.0)
+    made.deliver_objects(thing("cup", 100, 2))
+    assert made.vision.crops(["cup_2"]) == [ObjectCrop("cup_2", True, None)]
+
+
+def test_the_store_drops_crops_far_older_than_its_newest(rig):
+    made = rig()
+    made.deliver_objects(pictured("cup", 100, 2))
+    made.advance(CROP_MAX_AGE_S + 1.0)
+    made.deliver_objects(pictured("bottle", 200, 3))
+    # The store itself, which no read can show: crops() checks the age again.
+    assert set(made.vision._crops) == {"bottle_3"}
+
+
+def test_the_store_keeps_at_most_max_crops_and_drops_the_oldest(rig):
+    made = rig(crop_wait_s=SHORT_WAIT_S, max_crops=2)
+    for track_id, label in ((2, "cup"), (3, "bottle"), (4, "apple")):
+        made.deliver_objects(pictured(label, 100 * track_id, track_id, label.encode()))
+        made.advance(0.1)
+    made.deliver_objects(thing("cup", 200, 2), thing("bottle", 300, 3), thing("apple", 400, 4))
+    assert made.vision.crops(["cup_2", "bottle_3", "apple_4"]) == [
+        ObjectCrop("cup_2", True, None),
+        ObjectCrop("bottle_3", True, b"bottle"),
+        ObjectCrop("apple_4", True, b"apple"),
+    ]
+
+
+def test_an_untracked_object_has_a_crop_only_from_the_newest_array_and_is_never_waited_for(rig):
+    # A wait for the untracked cup would outlast bounded()'s watchdog.
+    made = rig(crop_wait_s=WATCHDOG_S * 6)
+    made.deliver_objects(pictured("cup", 100, jpeg=b"untracked"), thing("bottle", 200, 3))
+    assert bounded(made.vision.crops, ["cup_untracked_1"]) == [
+        ObjectCrop("cup_untracked_1", True, b"untracked")
+    ]
+    made.deliver_objects(thing("cup", 100), thing("bottle", 200, 3))
+    assert bounded(made.vision.crops, ["cup_untracked_1"]) == [
+        ObjectCrop("cup_untracked_1", True, None)
+    ]
+
+
+def test_an_id_not_in_view_is_not_waited_for_and_differs_from_one_without_a_picture(rig):
+    made = rig(crop_wait_s=WATCHDOG_S * 6)
+    made.deliver_objects(pictured("cup", 100, 2, b"cup"), thing("chair", 300, 5))
+    made.deliver_objects(thing("cup", 100, 2), thing("chair", 300, 5))
+    assert bounded(made.vision.crops, ["bottle_9", "cup_2"]) == [
+        ObjectCrop("bottle_9", False, None),
+        ObjectCrop("cup_2", True, b"cup"),
+    ]
+    short = rig(crop_wait_s=SHORT_WAIT_S)
+    short.deliver_objects(thing("chair", 300, 5))
+    assert short.vision.crops(["chair_5", "bottle_9"]) == [
+        ObjectCrop("chair_5", True, None),
+        ObjectCrop("bottle_9", False, None),
+    ]
+
+
+def test_no_ids_give_no_crops_without_waiting_for_an_array(rig):
+    made = rig()
+    assert bounded(made.vision.crops, []) == []
+
+
+def test_crops_need_a_fresh_object_array(rig):
+    made = rig(wait_s=SHORT_WAIT_S)
+    made.deliver_objects(pictured("cup", 100, 2), age_s=1.5)
+    with pytest.raises(StepError) as raised:
+        made.vision.crops(["cup_2"])
+    assert raised.value.code is ErrorCode.UNAVAILABLE
+    assert "/walkie_vision/objects is 1.5 s old" in raised.value.message
+
+
+def test_a_crop_that_arrives_during_the_wait_ends_it(rig):
+    made = rig(crop_wait_s=WATCHDOG_S * 6)
+    made.deliver_objects(thing("cup", 100, 2))
+    read = made.clock_read()
+    call = Background(made.vision.crops, ["cup_2"])
+    assert read.wait(WATCHDOG_S)
+    made.node.clock.on_now = None
+    made.deliver_objects(pictured("cup", 100, 2, b"arrived"))
+    assert call.result() == [ObjectCrop("cup_2", True, b"arrived")]
+
+
+def test_the_wait_for_a_crop_never_outlasts_the_timeout(rig):
+    made = rig(crop_wait_s=WATCHDOG_S * 6)
+    made.deliver_objects(thing("cup", 100, 2))
+    started = time.monotonic()
+    assert bounded(made.vision.crops, ["cup_2"], timeout_s=0.2) == [
+        ObjectCrop("cup_2", True, None)
+    ]
+    assert time.monotonic() - started < WATCHDOG_S / 2
+
+
+def test_a_clock_that_jumps_back_drops_the_crops(rig):
+    made = rig(crop_wait_s=SHORT_WAIT_S)
+    made.deliver_objects(pictured("cup", 100, 2, b"before"))
+    # Back by more than the epoch jump and less than the crop max age, so only the
+    # dropped store, and not the age check, can hide the old picture.
+    made.advance(-6.0)
+    made.deliver_objects(thing("cup", 100, 2), pictured("bottle", 200, 3, b"after"))
+    assert made.vision.crops(["cup_2", "bottle_3"]) == [
+        ObjectCrop("cup_2", True, None),
+        ObjectCrop("bottle_3", True, b"after"),
+    ]
+
+
+def test_a_stop_ends_the_wait_for_a_crop(rig):
+    made = rig(crop_wait_s=WATCHDOG_S * 6)
+    made.deliver_objects(thing("cup", 100, 2))
+    read = made.clock_read()
+    call = Background(made.vision.crops, ["cup_2"])
+    assert read.wait(WATCHDOG_S)
+    made.node.clock.on_now = None
+    made.cancel.cancel()
+    error = call.step_error()
+    assert error.code is ErrorCode.CANCELLED
+    assert error.message == "Cancelled looking at objects: a stop is in effect."
+
+
+def test_close_ends_the_wait_for_a_crop_and_drops_the_store(rig):
+    made = rig(crop_wait_s=WATCHDOG_S * 6)
+    made.deliver_objects(pictured("bottle", 200, 3), thing("cup", 100, 2))
+    read = made.clock_read()
+    call = Background(made.vision.crops, ["cup_2"])
+    assert read.wait(WATCHDOG_S)
+    made.node.clock.on_now = None
+    bounded(made.vision.close)
+    assert str(call.step_error()) == "UNAVAILABLE: Live object perception has shut down."
+    assert made.vision._crops == {}
+    # An array that comes after close keeps no crop.
+    made.deliver_objects(pictured("bottle", 200, 3))
+    assert made.vision._crops == {}
+    with pytest.raises(StepError) as raised:
+        made.vision.crops(["bottle_3"])
+    assert str(raised.value) == "UNAVAILABLE: Live object perception has shut down."
+
+
 @pytest.mark.parametrize("vision", ["ros", "unavailable"])
 @pytest.mark.parametrize(
     ("call", "words"),
@@ -1142,6 +1333,10 @@ def test_close_ends_every_later_objects_call(rig):
         (lambda v: v.people(timeout_s=math.nan), "timeout_s"),
         (lambda v: v.people(3), "query"),
         (lambda v: v.objects(timeout_s=-1), "timeout_s must be positive"),
+        (lambda v: v.crops(["cup_2"], timeout_s=0), "timeout_s must be positive"),
+        (lambda v: v.crops("cup_2"), "object_ids must be a list of ids"),
+        (lambda v: v.crops(["cup_2", 3]), "object_ids must be a list of ids"),
+        (lambda v: v.crops(None), "object_ids must be a list of ids"),
     ],
 )
 def test_bad_arguments_are_refused_as_unavailablevision_refuses_them(rig, vision, call, words):

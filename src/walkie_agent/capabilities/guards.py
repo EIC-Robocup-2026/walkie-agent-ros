@@ -8,7 +8,7 @@ fake refuses exactly what the robot refuses.
 import math
 import threading
 import time
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 
 from walkie_agent.capabilities.records import Pose2D
@@ -25,6 +25,9 @@ MAX_NAME_CHARS = 40
 MAX_FACTS = 8
 MAX_FACT_KEY_CHARS = 30
 MAX_FACT_VALUE_CHARS = 80
+# The longest question ctx.describer takes about a picture (decision PK-76): a
+# sentence or two, enough for "what does the label say?" and far from a prompt.
+MAX_QUESTION_CHARS = 300
 
 
 class CancelToken:
@@ -144,6 +147,43 @@ def begin_lookup(cancel: CancelToken, query: str, timeout_s: float, what: str) -
     require_timeout(timeout_s)
     require_text(query=query)
     cancel.check(what)
+
+
+def begin_crops(
+    cancel: CancelToken, object_ids: Sequence[str], timeout_s: float, what: str
+) -> list[str]:
+    """The guards that open ctx.vision.crops: the bound, the ids, then the latch.
+
+    Returns the ids as a list. Raises StepError REFUSED for a `timeout_s` that does
+    not bound a wait or `object_ids` that is not a list of text, a lone string
+    included, and CANCELLED while `cancel` is set. `what` names the step in the
+    CANCELLED message.
+    """
+    require_timeout(timeout_s)
+    if (
+        isinstance(object_ids, str)
+        or not isinstance(object_ids, Sequence)
+        or not all(isinstance(object_id, str) for object_id in object_ids)
+    ):
+        raise StepError(ErrorCode.REFUSED, "Refused: object_ids must be a list of ids.")
+    cancel.check(what)
+    return list(object_ids)
+
+
+def require_question(question: str) -> str:
+    """The question for ctx.describer with its whitespace collapsed; "" for none.
+
+    Raises StepError REFUSED for a question that is not text or is longer than
+    MAX_QUESTION_CHARS.
+    """
+    require_text(question=question)
+    text = " ".join(question.split())
+    if len(text) > MAX_QUESTION_CHARS:
+        raise StepError(
+            ErrorCode.REFUSED,
+            f"Refused: a question must be at most {MAX_QUESTION_CHARS} characters long.",
+        )
+    return text
 
 
 def require_person_details(

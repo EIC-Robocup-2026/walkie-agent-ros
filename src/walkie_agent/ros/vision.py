@@ -118,9 +118,9 @@ from walkie_agent.perception.geometry import (
     floor_range,
     mean_yaw,
     relative_position,
+    round_deg,
     to_map,
     torso_pixels,
-    wrap_deg,
 )
 from walkie_agent.perception.gestures import DEFAULT_GESTURE_CONFIG, GestureConfig, classify_gestures
 from walkie_agent.perception.object_words import category_of, looks_for, matches
@@ -802,8 +802,7 @@ def _object_position(
         return None, None
     distance_m, bearing_deg = relative_position((pose.x, pose.y), pose.yaw, point)
     if bearing_deg is not None:
-        # As a person's: + 0.0 turns -0.0 into 0.0, so it never reads as "-0".
-        bearing_deg = round(bearing_deg, 1) + 0.0
+        bearing_deg = round_deg(bearing_deg)
     return distance_m, bearing_deg
 
 
@@ -858,8 +857,7 @@ def _bearing_and_distance(
         distance_m, centred = relative_position((pose.x, pose.y), pose.yaw, floor)
         if centred is not None:
             bearing = centred
-    # + 0.0 turns -0.0 into 0.0, so a person straight ahead never reads as "-0".
-    return round(wrap_deg(bearing), 1) + 0.0, distance_m
+    return round_deg(bearing), distance_m
 
 
 def stale_message(topic: str, age_s: float | None, max_age_s: float, wait_s: float) -> str:

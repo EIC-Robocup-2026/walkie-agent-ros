@@ -63,7 +63,7 @@ from walkie_agent.capabilities.guards import (
 )
 from walkie_agent.errors import ErrorCode, StepError
 from walkie_agent.locations import Location
-from walkie_agent.perception.geometry import wrap_deg
+from walkie_agent.perception.geometry import round_deg
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -923,8 +923,7 @@ class FakeRobot:
     def _bearing_deg(self, person_id: str, who: Mapping[str, Any]) -> float:
         """The person's direction from the base's heading, so a turn by it faces them."""
         heading = who["heading_deg"] if "heading_deg" in who else person_heading_deg(person_id)
-        # + 0.0 turns -0.0 into 0.0, so a person straight ahead never reads as "-0".
-        return round(wrap_deg(heading - math.degrees(self._pose.yaw)), 1) + 0.0
+        return round_deg(heading - math.degrees(self._pose.yaw))
 
     def _holding(self) -> str | None:
         return next((key for key, item in self._objects.items() if item["at"] == HELD), None)

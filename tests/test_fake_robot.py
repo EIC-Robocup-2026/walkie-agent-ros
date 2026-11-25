@@ -389,6 +389,14 @@ def test_a_bearing_is_the_persons_heading_less_the_robots_yaw_and_a_turn_by_it_f
     assert math.copysign(1.0, robot.people()[0].bearing_deg) == 1.0
 
 
+def test_a_bearing_that_rounds_to_a_half_turn_reads_minus_180():
+    behind = world()
+    behind["people"]["ann"]["heading_deg"] = 179.96
+    behind["places"]["lobby"]["yaw"] = 0.0
+    [ann] = FakeRobot(behind).people()
+    assert ann.bearing_deg == -180.0
+
+
 def test_a_person_with_no_heading_gets_one_from_their_id_that_leaves_the_world_as_it_was(robot):
     first, again = robot.people()[0].bearing_deg, FakeRobot(world()).people()[0].bearing_deg
     assert first == again

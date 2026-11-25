@@ -18,6 +18,7 @@ from walkie_agent.perception.geometry import (
     pixel_yaw,
     relative_position,
     rotate,
+    round_deg,
     to_map,
     torso_pixels,
     wrap_deg,
@@ -378,3 +379,22 @@ def test_no_map_point_from_a_zero_quaternion_or_a_number_that_is_not_finite():
 )
 def test_wrap_deg_lands_in_minus_180_to_180(angle, wrapped):
     assert wrap_deg(angle) == pytest.approx(wrapped)
+
+
+@pytest.mark.parametrize(
+    ("angle", "rounded"),
+    [
+        (179.96, -180.0),
+        (-179.96, -180.0),
+        (116.565, 116.6),
+        (-0.04, 0.0),
+        (360.04, 0.0),
+        (-63.43, -63.4),
+        (539.94, 179.9),
+    ],
+)
+def test_round_deg_rounds_to_a_tenth_and_stays_in_minus_180_to_180(angle, rounded):
+    # Exact, not approx: a bearing reaches the model as text, so 116.60000000000002
+    # or "-0.0" is a wrong answer, not a close one.
+    assert round_deg(angle) == rounded
+    assert str(round_deg(angle)) == str(rounded)

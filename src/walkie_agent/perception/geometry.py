@@ -259,3 +259,13 @@ def rotate(
 def wrap_deg(angle_deg: float) -> float:
     """`angle_deg` in degrees, wrapped to [-180, 180)."""
     return (angle_deg + 180.0) % 360.0 - 180.0
+
+
+def round_deg(angle_deg: float) -> float:
+    """`angle_deg` wrapped to [-180, 180) and rounded to a tenth, still in that range.
+
+    Rounding carries 179.96 up to 180.0, which reads as -180.0. -0.0 reads as 0.0, so
+    straight ahead never reads as "-0".
+    """
+    rounded = round(wrap_deg(angle_deg), 1)
+    return (rounded - 360.0 if rounded >= 180.0 else rounded) + 0.0

@@ -31,7 +31,7 @@ from ros_fakes import (
     camera_transform,
     missing_tf,
 )
-from sensor_msgs.msg import CameraInfo
+from sensor_msgs.msg import CameraInfo, PointCloud2, PointField
 from test_perception_gestures import LYING, POINTING_RIGHT, RAISING_LEFT, SITTING, STANDING
 from test_projection import CX, FX
 from test_scene_file import CHULA_LOCATIONS, CHULA_SCENE, STREAM_ID, camera_info, living_room_camera
@@ -190,11 +190,66 @@ def seen(people) -> list[tuple]:
     return [(p.id, p.name, p.pose, p.gesture, p.room) for p in people]
 
 
-def thing(label: str, x: float, track_id: int = 0) -> ObjectDetection:
-    """An object detection of `label` whose box is centred at image column `x`."""
+def thing(
+    label: str, x: float, track_id: int = 0, points: PointCloud2 | None = None
+) -> ObjectDetection:
+    """An object detection of `label` whose box is centred at image column `x`, with `points`.
+
+    Without `points` the detection's cloud is the message's default, which has no points.
+    """
     detection = ObjectDetection(label=label, score=0.9, track_id=track_id)
     detection.bbox.center.position.x = float(x)
+    if points is not None:
+        detection.points = points
     return detection
+
+
+def cloud(
+    points,
+    *,
+    offsets: tuple[int, int, int] = (0, 4, 8),
+    point_step: int = 12,
+    big_endian: bool = False,
+    datatype: int = PointField.FLOAT32,
+) -> PointCloud2:
+    """A one-row cloud of `points`, x, y and z in the optical frame, packed as the fields say.
+
+    By default walkie-vision's layout: float32 x, y and z at offsets 0, 4 and 8,
+    little-endian, 12 bytes a point. The bytes between and after the fields are zero.
+    """
+    rows = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    kind = {PointField.FLOAT32: "f4", PointField.FLOAT64: "f8"}[datatype]
+    layout = np.dtype(
+        {
+            "names": ["x", "y", "z"],
+            "formats": [(">" if big_endian else "<") + kind] * 3,
+            "offsets": list(offsets),
+            "itemsize": point_step,
+        }
+    )
+    packed = np.zeros(len(rows), dtype=layout)
+    packed["x"], packed["y"], packed["z"] = rows.T
+    message = PointCloud2(
+        height=1,
+        width=len(rows),
+        fields=[
+            PointField(name=axis, offset=offset, datatype=datatype, count=1)
+            for axis, offset in zip("xyz", offsets, strict=True)
+        ],
+        is_bigendian=big_endian,
+        point_step=point_step,
+        row_step=point_step * len(rows),
+        is_dense=False,
+    )
+    message.data = packed.tobytes()
+    return message
+
+
+def around(x: float, y: float, z: float, spread: float = 0.05) -> list[tuple[float, float, float]]:
+    """27 points in the optical frame whose per-axis median is (x, y, z), and one hole."""
+    steps = (-spread, 0.0, spread)
+    grid = [(x + dx, y + dy, z + dz) for dx in steps for dy in steps for dz in steps]
+    return [*grid, (math.nan, math.nan, math.nan)]
 
 
 def with_vectors(
@@ -467,8 +522,8 @@ def test_a_pose_that_cannot_be_read_gives_no_room(rig, caplog, code):
     with caplog.at_level(logging.WARNING):
         [found] = made.vision.people()
     assert seen([found]) == [("person_1", None, "standing person", "", "")]
-    assert found.bearing_deg is None
-    assert "find_people reports no room and no bearings" in caplog.text
+    assert (found.bearing_deg, found.distance_m) == (None, None)
+    assert "find_people reports no room and no bearings or distances" in caplog.text
     # With no pose to subtract, TF is not even asked.
     assert made.connector._tf_buffer.lookups == []
 
@@ -587,14 +642,32 @@ def test_with_the_ankles_seen_a_bearing_is_from_the_bases_centre(rig):
     assert from_camera - by_id[f"person_{guest.track_id}"] > 3.5
 
 
+def test_with_the_ankles_seen_a_distance_is_from_the_bases_centre(rig):
+    made, people = chula_rig(rig)
+    at = made.base.at
+    camera = camera_position(living_room_camera())
+    by_id = {p.id: p.distance_m for p in made.vision.people()}
+    for who in people:
+        found = by_id[f"person_{who.track_id}"]
+        assert found == pytest.approx(math.hypot(who.x - at.x, who.y - at.y), abs=0.05), who
+    # From the base's centre, not from the camera ahead of it: the guest in front is
+    # farther from the centre, by about the 0.275 m the camera sits ahead.
+    [guest] = [who for who in people if who.face == "guest1"]
+    from_camera = math.hypot(guest.x - camera[0], guest.y - camera[1])
+    assert by_id[f"person_{guest.track_id}"] - from_camera > 0.15
+
+
 def test_without_an_ankle_a_bearing_is_the_cameras_direction(rig):
     made, people = chula_rig(rig, ankles=False)
     at = made.base.at
     camera = camera_position(living_room_camera())
-    by_id = {p.id: p.bearing_deg for p in made.vision.people()}
+    found = {p.id: p for p in made.vision.people()}
     for who in people:
-        found = by_id[f"person_{who.track_id}"]
-        assert found == pytest.approx(degrees_from(camera[0], camera[1], at.yaw, who), abs=0.1)
+        seen_person = found[f"person_{who.track_id}"]
+        assert seen_person.bearing_deg == pytest.approx(
+            degrees_from(camera[0], camera[1], at.yaw, who), abs=0.1
+        )
+        assert seen_person.distance_m is None
 
 
 def test_a_move_and_a_turn_of_the_base_since_the_image_count_with_the_ankles_seen(rig):
@@ -607,10 +680,22 @@ def test_a_move_and_a_turn_of_the_base_since_the_image_count_with_the_ankles_see
         image_pose.yaw + math.radians(25.0),
     )
     made.base.at = now
-    by_id = {p.id: p.bearing_deg for p in made.vision.people()}
+    found = {p.id: p for p in made.vision.people()}
     for who in people:
-        found = by_id[f"person_{who.track_id}"]
-        assert found == pytest.approx(degrees_from(now.x, now.y, now.yaw, who), abs=0.3), who
+        seen_person = found[f"person_{who.track_id}"]
+        assert seen_person.bearing_deg == pytest.approx(
+            degrees_from(now.x, now.y, now.yaw, who), abs=0.3
+        ), who
+        assert seen_person.distance_m == pytest.approx(
+            math.hypot(who.x - now.x, who.y - now.y), abs=0.05
+        ), who
+
+
+def test_a_person_seen_only_by_the_box_has_a_bearing_but_no_distance(rig):
+    made = rig()
+    made.deliver(person(CX, BOX_ONLY, track_id=1))
+    [found] = made.vision.people()
+    assert (found.bearing_deg, found.distance_m) == (0.0, None)
 
 
 def test_a_query_looks_tf_up_once_and_only_when_someone_matches(rig):
@@ -628,8 +713,13 @@ def test_without_a_transform_people_come_without_bearings_and_a_warning(rig, cap
     made.deliver(person(100, track_id=1))
     with caplog.at_level(logging.WARNING):
         [found] = made.vision.people()
-    assert (found.id, found.room, found.bearing_deg) == ("person_1", "living room", None)
-    assert "find_people reports no bearings: map does not exist" in caplog.text
+    assert (found.id, found.room, found.bearing_deg, found.distance_m) == (
+        "person_1",
+        "living room",
+        None,
+        None,
+    )
+    assert "find_people reports no bearings or distances: map does not exist" in caplog.text
 
 
 def test_an_array_that_names_no_frame_gives_no_bearings_and_asks_tf_nothing(rig, caplog):
@@ -774,7 +864,10 @@ def test_a_pose_that_fails_leaves_the_place_unknown_with_a_warning(rig, caplog):
     made.deliver_objects(thing("cup", 20, 2))
     with caplog.at_level(logging.WARNING):
         assert [o.place for o in made.vision.objects()] == [UNKNOWN_PLACE]
-    assert "find_objects reports the place unknown: UNAVAILABLE: No pose." in caplog.text
+    assert (
+        "find_objects reports the place unknown and no positions: UNAVAILABLE: No pose."
+        in caplog.text
+    )
 
 
 def test_a_stop_while_the_pose_is_read_ends_objects(rig):
@@ -791,6 +884,184 @@ def test_objects_have_no_measures(rig):
     made.deliver_objects(thing("apple", 20, 2))
     [apple] = made.vision.objects()
     assert (apple.size_cm, apple.weight_g, apple.thickness_cm) == (None, None, None)
+
+
+# -- Where the objects are -----------------------------------------------------------------
+
+
+def test_an_objects_position_is_its_points_middle_from_the_base_now(rig):
+    made = rig()
+    # The default camera is level at the map's origin and faces along x; the base is
+    # at (0.2, 0). The cup's points sit 2 m ahead of the camera and 1 m to its left,
+    # so 1.8 m ahead of the base: 2.06 m away, 29.1 degrees to the left.
+    array = made.deliver_objects(
+        thing("cup", 300, track_id=2, points=cloud(around(-1.0, 0.3, 2.0))),
+        thing("bottle", 100, track_id=3),
+    )
+    by_id = {o.id: o for o in made.vision.objects()}
+    cup, bottle = by_id["cup_2"], by_id["bottle_3"]
+    assert cup.distance_m == pytest.approx(math.hypot(1.8, 1.0), abs=1e-6)
+    assert cup.bearing_deg == round(math.degrees(math.atan2(1.0, 1.8)), 1) == 29.1
+    # An object without points has neither, as every one of the oracle's has.
+    assert (bottle.distance_m, bottle.bearing_deg) == (None, None)
+    stamp_ns = Time.from_msg(array.header.stamp).nanoseconds
+    assert made.connector._tf_buffer.lookups == [("map", CAMERA_FRAME, stamp_ns, TF_WAIT_S)]
+    assert made.base.poses == 1
+
+
+def test_a_few_points_behind_the_object_do_not_move_it(rig):
+    made = rig()
+    on_the_cup = around(0.0, 0.0, 1.5, spread=0.02)
+    on_the_wall = [(0.0, 0.0, 4.0)] * 5
+    made.deliver_objects(thing("cup", 300, track_id=2, points=cloud(on_the_cup + on_the_wall)))
+    [cup] = made.vision.objects()
+    assert cup.distance_m == pytest.approx(1.5 - 0.2, abs=0.03)
+    assert cup.bearing_deg == 0.0
+    assert math.copysign(1.0, cup.bearing_deg) == 1.0
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {"offsets": (4, 8, 12), "point_step": 16},
+        {"offsets": (8, 0, 4), "point_step": 32},
+        {"big_endian": True},
+        {"datatype": PointField.FLOAT64, "offsets": (0, 8, 16), "point_step": 24},
+    ],
+    ids=["padded", "shuffled", "big-endian", "float64"],
+)
+def test_points_are_read_by_the_layout_their_fields_give(rig, layout):
+    made = rig()
+    points = cloud(around(-1.0, 0.3, 2.0), **layout)
+    made.deliver_objects(thing("cup", 300, track_id=2, points=points))
+    [cup] = made.vision.objects()
+    assert cup.distance_m == pytest.approx(math.hypot(1.8, 1.0), abs=1e-6)
+    assert cup.bearing_deg == 29.1
+
+
+def test_a_turn_and_a_move_of_the_base_since_the_image_count(rig):
+    made = rig()
+    # The image was taken with the camera turned 90 degrees left at the origin; the
+    # base has since driven to (1, 1) and turned to face along x.
+    made.connector._tf_buffer.lookup = lambda: camera_transform(math.radians(90.0))
+    made.base.at = Pose2D(1.0, 1.0, 0.0)
+    # 3 m ahead of the camera, so at (0, 3) in the map: 2.24 m from the base, 116.6 left.
+    made.deliver_objects(thing("cup", 300, track_id=2, points=cloud(around(0.0, 0.0, 3.0))))
+    [cup] = made.vision.objects()
+    assert cup.distance_m == pytest.approx(math.hypot(1.0, 2.0), abs=1e-6)
+    assert cup.bearing_deg == round(math.degrees(math.atan2(2.0, -1.0)), 1)
+
+
+def test_objects_without_points_read_no_tf(rig):
+    made = rig()
+    made.deliver_objects(thing("cup", 300, track_id=2), thing("chair", 100, track_id=3))
+    found = made.vision.objects()
+    assert [(o.distance_m, o.bearing_deg) for o in found] == [(None, None), (None, None)]
+    assert made.connector._tf_buffer.lookups == []
+
+
+def test_tf_is_read_once_and_only_for_the_objects_that_match(rig):
+    made = rig()
+    made.deliver_objects(
+        thing("cup", 300, track_id=2, points=cloud(around(0.0, 0.0, 2.0))),
+        thing("chair", 100, track_id=3, points=cloud(around(0.5, 0.0, 3.0))),
+        thing("apple", 200, track_id=4),
+    )
+    assert [o.distance_m for o in made.vision.objects("apple")] == [None]
+    assert made.connector._tf_buffer.lookups == []
+    assert all(o.distance_m is not None for o in made.vision.objects("furniture"))
+    assert len(made.connector._tf_buffer.lookups) == 1
+    assert len([o for o in made.vision.objects() if o.distance_m is not None]) == 2
+    assert len(made.connector._tf_buffer.lookups) == 2
+
+
+def test_without_a_transform_objects_come_without_positions_and_a_warning(rig, caplog):
+    made = rig()
+    made.connector._tf_buffer.lookup = missing_tf
+    made.deliver_objects(thing("cup", 300, track_id=2, points=cloud(around(0.0, 0.0, 2.0))))
+    with caplog.at_level(logging.WARNING):
+        [cup] = made.vision.objects()
+    assert (cup.id, cup.distance_m, cup.bearing_deg) == ("cup_2", None, None)
+    assert "find_objects reports no positions: map does not exist" in caplog.text
+
+
+def test_an_object_array_that_names_no_frame_gives_no_positions(rig, caplog):
+    made = rig()
+    array = ObjectDetectionArray(
+        detections=[thing("cup", 300, track_id=2, points=cloud(around(0.0, 0.0, 2.0)))],
+        camera_info=camera_info(),
+        classes=list(OBJECT_CLASSES),
+        stream_id=STREAM_ID,
+    )
+    array.header.stamp = Time(nanoseconds=made.node.clock.nanoseconds).to_msg()
+    made.objects_subscription.callback(array)
+    with caplog.at_level(logging.WARNING):
+        [cup] = made.vision.objects()
+    assert (cup.distance_m, cup.bearing_deg) == (None, None)
+    assert made.connector._tf_buffer.lookups == []
+    assert "find_objects reports no positions: the object array names no frame" in caplog.text
+
+
+def test_a_pose_that_fails_gives_no_positions_and_asks_tf_nothing(rig):
+    made = rig()
+    made.base.error = StepError(ErrorCode.TIMEOUT, "No map to base_footprint transform.")
+    made.deliver_objects(thing("cup", 300, track_id=2, points=cloud(around(0.0, 0.0, 2.0))))
+    [cup] = made.vision.objects()
+    assert (cup.place, cup.distance_m, cup.bearing_deg) == (UNKNOWN_PLACE, None, None)
+    assert made.connector._tf_buffer.lookups == []
+
+
+def test_the_wait_for_tf_of_objects_is_no_longer_than_what_is_left_of_the_call(rig):
+    made = rig()
+    made.deliver_objects(thing("cup", 300, track_id=2, points=cloud(around(0.0, 0.0, 2.0))))
+    made.vision.objects(timeout_s=0.05)
+    [(_, _, _, waited)] = made.connector._tf_buffer.lookups
+    assert 0.0 <= waited <= 0.05
+
+
+def test_an_unexpected_tf_error_ends_objects_as_internal(rig, caplog):
+    def broken():
+        raise RuntimeError("the buffer is broken")
+
+    made = rig()
+    made.connector._tf_buffer.lookup = broken
+    made.deliver_objects(thing("cup", 300, track_id=2, points=cloud(around(0.0, 0.0, 2.0))))
+    with caplog.at_level(logging.ERROR), pytest.raises(StepError) as raised:
+        made.vision.objects()
+    assert raised.value.code is ErrorCode.INTERNAL
+    assert "RuntimeError" in str(raised.value)
+    assert "the buffer is broken" in caplog.text
+
+
+def test_points_that_are_all_holes_give_no_position(rig):
+    made = rig()
+    holes = cloud([(math.nan, math.nan, math.nan)] * 40)
+    made.deliver_objects(thing("cup", 300, track_id=2, points=holes))
+    [cup] = made.vision.objects()
+    assert (cup.distance_m, cup.bearing_deg) == (None, None)
+    assert made.connector._tf_buffer.lookups == []
+
+
+def broken_clouds() -> dict[str, PointCloud2]:
+    no_z = cloud(around(0.0, 0.0, 2.0))
+    no_z.fields = no_z.fields[:2]
+    integers = cloud(around(0.0, 0.0, 2.0))
+    integers.fields[2].datatype = PointField.INT32
+    short = cloud(around(0.0, 0.0, 2.0))
+    short.data = short.data[:-1]
+    overlapping = cloud(around(0.0, 0.0, 2.0), offsets=(0, 4, 8), point_step=12)
+    overlapping.point_step = 8
+    return {"no-z": no_z, "integers": integers, "short": short, "overlapping": overlapping}
+
+
+@pytest.mark.parametrize("name", list(broken_clouds()))
+def test_points_that_do_not_fit_their_layout_give_no_position_and_a_warning(rig, caplog, name):
+    made = rig()
+    made.deliver_objects(thing("cup", 300, track_id=2, points=broken_clouds()[name]))
+    with caplog.at_level(logging.WARNING):
+        [cup] = made.vision.objects()
+    assert (cup.id, cup.distance_m, cup.bearing_deg) == ("cup_2", None, None)
+    assert "find_objects reports no position for cup_2" in caplog.text
 
 
 def test_objects_and_people_keep_their_own_newest_array(rig):

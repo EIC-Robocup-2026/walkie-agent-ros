@@ -34,7 +34,13 @@ class Pose2D:
 
 @dataclass(frozen=True)
 class ObjectSeen:
-    """One object in view. A plain id that later calls can name (decision 4)."""
+    """One object in view. A plain id that later calls can name (decision 4).
+
+    `distance_m` is how far the object is from the base's turning centre now, along
+    the floor, in metres. `bearing_deg` is its direction from straight ahead of the
+    base now, in degrees, positive to the left as a turn is, in [-180, 180). Each is
+    None when the backend cannot tell, as for an object with no depth.
+    """
 
     id: str
     name: str
@@ -45,14 +51,18 @@ class ObjectSeen:
     size_cm: float | None = None
     weight_g: float | None = None
     thickness_cm: float | None = None
+    distance_m: float | None = None
+    bearing_deg: float | None = None
 
 
 @dataclass(frozen=True)
 class PersonSeen:
     """One person in view. `pose` is a posture, such as "sitting person".
 
-    `bearing_deg` is where the person is from straight ahead of the base, in degrees,
-    positive to the left as a turn is, and None when the backend cannot tell.
+    `bearing_deg` is where the person is from straight ahead of the base now, in
+    degrees, positive to the left as a turn is, in [-180, 180). `distance_m` is how
+    far the person is from the base's turning centre now, along the floor, in metres.
+    Each is None when the backend cannot tell.
     """
 
     id: str
@@ -62,6 +72,7 @@ class PersonSeen:
     gesture: str
     room: str
     bearing_deg: float | None = None
+    distance_m: float | None = None
 
 
 @dataclass(frozen=True)

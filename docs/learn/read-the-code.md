@@ -133,7 +133,7 @@ connector, against a fake robot on a private domain. None of them is the robot's
 | `src/walkie_agent/ros/speech.py` | `RosSpeech`, which publishes on `/to_human` | `tests/test_ros_speech.py` |
 | `src/walkie_agent/ros/vision.py` | `RosVision`, which reads `/walkie_vision/people` with `--vision` | `tests/test_ros_vision.py` |
 | `src/walkie_agent/perception/people_words.py` | The pose and gesture phrases `find_people` gives, from the gesture rules' names | `tests/test_ros_vision.py` |
-| `src/walkie_agent/perception/geometry.py` | The map-frame yaw of a pixel's ray, the torso and ankle pixels a person's bearing comes from, and the person's distance where the ankles' rays meet the floor | `tests/test_perception_geometry.py`, `tests/test_ros_vision.py` |
+| `src/walkie_agent/perception/geometry.py` | The map-frame yaw of a pixel's ray, the torso and ankle pixels a person's bearing comes from, the person's distance where the ankles' rays meet the floor, an object's middle from its depth points, and a point's distance and bearing from the base | `tests/test_perception_geometry.py`, `tests/test_ros_vision.py` |
 | `src/walkie_agent/ros/operator_topics.py` | `RosBridge`, for the operator's topics | `tests/test_ros_bridge.py` |
 | `src/walkie_agent/ros/policy.py` | `FORBIDDEN_NAMES`, and the check on every endpoint | `tests/test_ros_base.py`, `tests/test_commander.py` |
 | `src/walkie_agent/main.py` | Assembly, flags, signals, exit codes | `tests/test_main.py` |

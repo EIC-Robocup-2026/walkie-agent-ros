@@ -209,7 +209,7 @@ on the robot, which the existing `find_people(description="")` atomic calls. The
 are no handles yet, and no vectors are kept. `RosVision` in `ros/vision.py` does it,
 and the agent uses it only when started with `--vision`
 ([mahoraga-demo-decisions.md](mahoraga-demo-decisions.md#see-remember-and-act), S1-1 to S1-8).
-S2 added each person's bearing, below.
+S2 added each person's bearing, and PK-77 their distance, below.
 
 - **The feed.** One subscription to `/walkie_vision/people`, best effort, depth 5
   and volatile, so it hears a reliable or a best-effort publisher. The callback
@@ -244,8 +244,16 @@ S2 added each person's bearing, below.
   floor, give the person's distance, and the bearing is their direction from the
   base's centre less its yaw now. With no ankle seen, it is the camera's
   direction less the base's yaw, a few degrees too wide for a person to the side.
-  `find_people` does not show it; `face_person` turns by it. A transform that
-  cannot be read gives None, and the people are still reported.
+  `face_person` turns by it. A transform that cannot be read gives None, and the
+  people are still reported.
+- **Distance.** PK-77 adds `distance_m` to each person: the horizontal distance
+  from the base's turning centre now to the point where the ankles' rays meet the
+  floor, the same point the bearing comes from. With no ankle seen, or that point
+  more than 8 m from the camera, it is None. `find_people` shows the distance and
+  the bearing, rounded to the centimetre and the degree, and from them `forward_m`
+  and `left_m`, the same point as `move_relative` takes it; each is null when the
+  camera cannot tell. They are robot-relative, so no map coordinate reaches the LLM
+  ([ADR-0010](decisions/0010-bounded-navigation-tool.md)).
 - **Not built.** `refind_person`, `localize_person`, the face and appearance
   vectors, and `NOT_FOUND` for nobody: the atomic returns an empty list, as
   FakeRobot does.
@@ -285,9 +293,18 @@ to S4-6). The agent uses it only when started with `--vision`, and the HRI set h
 - **Words.** `perception/object_words.py` gives each label FakeRobot's category, or
   `other`. A query matches the label, the category or its plural, ignoring case.
 - **Place.** The configured place within 1 m of the robot, read only when an object
-  matches, or `unknown`. Without depth, the place is where Walkie stands, so an
-  object across the room carries the robot's place. Size, weight and thickness are
-  null.
+  matches, or `unknown`. The place is where Walkie stands, not where the object is,
+  so an object across the room carries the robot's place. Size, weight and
+  thickness are null.
+- **Position.** PK-77 gives each object a `distance_m` and a `bearing_deg` from the
+  base's turning centre now, as for people. The per-axis median of the finite
+  points in the detection's `points` cloud, in the optical frame, goes into the map
+  frame with TF at the array's stamp, looked up once per call and only when a
+  matching object has points, and is then taken relative to the base's pose. The
+  median keeps the few points of the table or wall behind the object from pulling
+  it off. With no points, no transform or no pose, both are None. The oracle's
+  objects have no points, so in the simulation they have no position.
+  `find_objects` and `object_info` show the numbers as `find_people` does.
 - **What the camera looks for.** A query that none of the array's `classes` could
   match answers `UNAVAILABLE` and lists the classes, since an empty list would say
   the object is absent. walkie-vision runs one task's classes at a time, and its

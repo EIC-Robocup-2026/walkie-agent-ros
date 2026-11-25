@@ -1,4 +1,5 @@
-"""perception/geometry.py: the map-frame yaw of a pixel's ray, the floor's distance, and the angle wrap."""
+"""perception/geometry.py: the map-frame yaw of a pixel's ray, the floor's distance, a point's
+position from the base, the middle of a cloud, and the angle wrap."""
 
 import math
 
@@ -11,13 +12,15 @@ from walkie_agent.perception.geometry import (
     ANKLE_HEIGHT_M,
     MAX_FLOOR_RANGE_M,
     ankle_pixels,
+    cloud_median,
     floor_range,
     mean_yaw,
     pixel_yaw,
+    relative_position,
     rotate,
+    to_map,
     torso_pixels,
     wrap_deg,
-    yaw_from,
 )
 from walkie_agent.perception.gestures import COCO_KEYPOINTS
 from walkie_agent.sim.projection import camera_from_map_at, camera_position, project
@@ -259,14 +262,114 @@ def test_no_floor_range_without_the_numbers_for_a_ray():
     assert floor_range([ankle], K, (0.0, 0.0, 0.0, 0.0), origin) is None
 
 
-def test_the_yaw_from_the_centre_of_a_point_seen_from_the_camera():
+def test_the_position_from_the_centre_of_a_point_seen_from_the_camera():
     # A camera 0.275 m ahead of the centre, a person 2 m from it, 40 degrees left.
     yaw = math.radians(40.0)
-    found = yaw_from((0.0, 0.0), (0.275, 0.0), yaw, 2.0)
-    expected = math.atan2(2.0 * math.sin(yaw), 0.275 + 2.0 * math.cos(yaw))
-    assert found == pytest.approx(expected, abs=1e-12)
-    assert 35.0 < math.degrees(found) < 36.0
-    assert yaw_from((1.0, 2.0), (1.0, 1.0), math.pi / 2, 1.0) is None
+    point = (0.275 + 2.0 * math.cos(yaw), 2.0 * math.sin(yaw))
+    distance, bearing = relative_position((0.0, 0.0), 0.0, point)
+    assert distance == pytest.approx(math.hypot(*point), abs=1e-12)
+    assert bearing == pytest.approx(math.degrees(math.atan2(point[1], point[0])), abs=1e-9)
+    assert 35.0 < bearing < 36.0
+    assert 2.0 < distance < 2.25
+
+
+@pytest.mark.parametrize(
+    ("centre", "heading_deg", "point", "distance", "bearing"),
+    [
+        # Straight ahead, to the left and to the right of a base at the origin.
+        ((0.0, 0.0), 0.0, (2.0, 0.0), 2.0, 0.0),
+        ((0.0, 0.0), 0.0, (0.0, 1.5), 1.5, 90.0),
+        ((0.0, 0.0), 0.0, (1.0, -1.0), math.sqrt(2.0), -45.0),
+        # A base elsewhere, turned 90 degrees left: a point north of it is straight ahead.
+        ((1.0, 2.0), 90.0, (1.0, 5.0), 3.0, 0.0),
+        ((1.0, 2.0), 90.0, (0.0, 2.0), 1.0, 90.0),
+        # A height after x and y is ignored: the distance is along the floor.
+        ((0.0, 0.0), 0.0, (3.0, 4.0, 1.2), 5.0, math.degrees(math.atan2(4.0, 3.0))),
+        # Straight behind wraps to -180, never 180.
+        ((0.0, 0.0), 0.0, (-2.0, 0.0), 2.0, -180.0),
+        ((0.0, 0.0), 170.0, (1.0, -0.2), math.hypot(1.0, 0.2), wrap_deg(-11.31 - 170.0)),
+    ],
+)
+def test_the_distance_along_the_floor_and_the_bearing_from_the_heading(
+    centre, heading_deg, point, distance, bearing
+):
+    found_distance, found_bearing = relative_position(centre, math.radians(heading_deg), point)
+    assert found_distance == pytest.approx(distance, abs=1e-9)
+    assert found_bearing == pytest.approx(bearing, abs=0.01)
+    assert -180.0 <= found_bearing < 180.0
+
+
+def test_a_point_at_the_centre_has_a_distance_but_no_bearing():
+    assert relative_position((1.0, 2.0), 0.3, (1.0, 2.0)) == (0.0, None)
+
+
+@pytest.mark.parametrize(
+    ("centre", "heading", "point"),
+    [
+        ((0.0, 0.0), 0.0, (math.nan, 1.0)),
+        ((0.0, math.inf), 0.0, (1.0, 1.0)),
+        ((0.0, 0.0), math.nan, (1.0, 1.0)),
+    ],
+)
+def test_no_position_from_a_number_that_is_not_finite(centre, heading, point):
+    assert relative_position(centre, heading, point) == (None, None)
+
+
+def test_the_median_of_a_cloud_is_per_axis_and_leaves_out_rows_that_are_not_finite():
+    cloud = np.array(
+        [
+            [0.0, 1.0, 10.0],
+            [1.0, -1.0, 2.0],
+            [5.0, 0.0, 3.0],
+            # A hole in the depth image, and points with an infinity: none counts.
+            [math.nan, math.nan, math.nan],
+            [100.0, math.nan, 100.0],
+            [math.inf, 0.0, 0.0],
+            [0.0, 0.0, -math.inf],
+        ],
+        dtype=np.float32,
+    )
+    # Per axis, not the middle row: x's median is 1, y's 0 and z's 3.
+    assert cloud_median(cloud) == (1.0, 0.0, 3.0)
+
+
+def test_the_median_is_not_pulled_off_by_a_few_points_behind_the_object():
+    rng = np.random.default_rng(0)
+    on_the_object = rng.normal((0.1, 0.0, 1.5), 0.01, size=(90, 3))
+    on_the_wall = rng.normal((0.1, 0.0, 4.0), 0.01, size=(10, 3))
+    x, y, z = cloud_median(np.vstack([on_the_object, on_the_wall]))
+    assert z == pytest.approx(1.5, abs=0.02)
+    assert (x, y) == (pytest.approx(0.1, abs=0.01), pytest.approx(0.0, abs=0.01))
+
+
+@pytest.mark.parametrize(
+    "cloud",
+    [np.empty((0, 3)), np.full((4, 3), math.nan), np.array([[1.0, math.inf, 2.0]])],
+    ids=["empty", "all-nan", "inf"],
+)
+def test_no_median_without_a_finite_point(cloud):
+    assert cloud_median(cloud) is None
+
+
+def test_a_point_in_the_level_camera_goes_to_the_map_in_front_of_it():
+    origin = (1.0, 2.0, 1.2)
+    # Optical x is to the right, y down and z forward: 2 m ahead, 0.5 m left, 0.3 m down.
+    assert to_map(LEVEL, origin, (-0.5, 0.3, 2.0)) == pytest.approx((3.0, 2.5, 0.9), abs=1e-12)
+
+
+@pytest.mark.parametrize("yaw_deg", [0.0, 35.0, -120.0])
+def test_to_map_undoes_the_oracles_projection(yaw_deg):
+    camera_from_map, rotation, origin = sim_view(1.76, -1.48, yaw_deg, 9.0)
+    point = ahead_of(origin, math.radians(yaw_deg), 2.0, 0.4, 0.7)
+    in_camera = camera_from_map @ np.append(point, 1.0)
+    found = to_map(rotation, origin, tuple(float(v) for v in in_camera[:3]))
+    assert found == pytest.approx(tuple(point), abs=1e-9)
+
+
+def test_no_map_point_from_a_zero_quaternion_or_a_number_that_is_not_finite():
+    assert to_map((0.0, 0.0, 0.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 1.0)) is None
+    assert to_map(LEVEL, (0.0, math.nan, 0.0), (0.0, 0.0, 1.0)) is None
+    assert to_map(LEVEL, (0.0, 0.0, 0.0), (0.0, 0.0, math.inf)) is None
 
 
 @pytest.mark.parametrize(

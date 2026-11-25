@@ -7,7 +7,14 @@ import math
 
 import pytest
 
-from walkie_agent.capabilities import CancelToken, Ctx, PersonSeen, Recognized, Remembered
+from walkie_agent.capabilities import (
+    CancelToken,
+    Ctx,
+    ObjectSeen,
+    PersonSeen,
+    Recognized,
+    Remembered,
+)
 from walkie_agent.capabilities.fake import FakeRobot
 from walkie_agent.capabilities.guards import (
     MAX_FACT_KEY_CHARS,
@@ -129,10 +136,14 @@ def test_say_raises_on_blank_text(robot):
     assert code_of(say, robot.ctx, " ") is ErrorCode.REFUSED
 
 
+NO_POSITION = {"distance_m": None, "bearing_deg": None, "forward_m": None, "left_m": None}
+
+
 def test_find_objects_lists_what_is_in_view_without_its_measures(robot):
     robot.go_to("shelf")
+    # FakeRobot's objects are at places, not at a point, so they have no position.
     assert find_objects(robot.ctx, "apple") == [
-        {"id": "apple_1", "name": "apple", "category": "fruit", "place": "shelf"}
+        {"id": "apple_1", "name": "apple", "category": "fruit", "place": "shelf", **NO_POSITION}
     ]
     assert [seen["id"] for seen in find_objects(robot.ctx)] == ["apple_1", "banana_1"]
 
@@ -151,6 +162,7 @@ def test_object_info_adds_the_measures(robot):
         "size_cm": 19,
         "weight_g": 120,
         "thickness_cm": 4,
+        **NO_POSITION,
     }
 
 
@@ -159,7 +171,9 @@ def test_object_info_refuses_an_object_out_of_view(robot):
     assert code_of(object_info, robot.ctx, "apple_1") is ErrorCode.NOT_FOUND
 
 
-def test_find_people_lists_who_is_in_the_room(robot):
+def test_find_people_lists_who_is_in_the_room():
+    robot = facing(40.0)
+    # FakeRobot knows the direction of a person but not how far away they are.
     assert find_people(robot.ctx, "waving person") == [
         {
             "id": "jane",
@@ -167,9 +181,115 @@ def test_find_people_lists_who_is_in_the_room(robot):
             "pose": "sitting person",
             "gesture": "waving person",
             "room": "kitchen room",
+            **NO_POSITION,
+            "bearing_deg": 40,
         }
     ]
     assert find_people(robot.ctx, "lying person") == []
+
+
+class Sees:
+    """A vision that sees `objects` and `people` whatever the query."""
+
+    def __init__(self, objects=(), people=()) -> None:
+        self.seen_objects, self.seen_people = list(objects), list(people)
+
+    def objects(self, query="", *, timeout_s=5.0):
+        return self.seen_objects
+
+    def people(self, query="", *, timeout_s=5.0):
+        return self.seen_people
+
+
+def seeing(robot: FakeRobot, *, objects=(), people=()) -> Ctx:
+    return Ctx(cancel=robot.cancel, base=robot, speech=robot, vision=Sees(objects, people))
+
+
+def cup(distance_m: float | None, bearing_deg: float | None) -> ObjectSeen:
+    return ObjectSeen(
+        "cup_2", "cup", "dishes", "table", distance_m=distance_m, bearing_deg=bearing_deg
+    )
+
+
+@pytest.mark.parametrize(
+    ("distance", "bearing", "position"),
+    [
+        # 2.059 m at 29.06 degrees is 1.8 m ahead and 1.0 m to the left.
+        (2.0591, 29.06, {"distance_m": 2.06, "bearing_deg": 29, "forward_m": 1.8, "left_m": 1.0}),
+        # Straight ahead and straight to the right, with no -0.0.
+        (1.5, -0.04, {"distance_m": 1.5, "bearing_deg": 0, "forward_m": 1.5, "left_m": 0.0}),
+        (0.8, -90.0, {"distance_m": 0.8, "bearing_deg": -90, "forward_m": 0.0, "left_m": -0.8}),
+        # 179.6 rounds to 180, which wraps to -180; forward and left are from the unrounded.
+        (1.0, 179.6, {"distance_m": 1.0, "bearing_deg": -180, "forward_m": -1.0, "left_m": 0.01}),
+    ],
+)
+def test_find_objects_gives_where_an_object_is_from_walkie(robot, distance, bearing, position):
+    [found] = find_objects(seeing(robot, objects=[cup(distance, bearing)]))
+    named = {"id": "cup_2", "name": "cup", "category": "dishes", "place": "table"}
+    assert found == {**named, **position}
+    for key in ("forward_m", "left_m"):
+        assert math.copysign(1.0, found[key]) == math.copysign(1.0, position[key])
+
+
+@pytest.mark.parametrize(
+    ("distance", "bearing", "position"),
+    [
+        (None, None, NO_POSITION),
+        (1.2345, None, {**NO_POSITION, "distance_m": 1.23}),
+        (None, -32.5, {**NO_POSITION, "bearing_deg": -32}),
+    ],
+)
+def test_a_position_without_a_distance_or_a_bearing_has_no_forward_or_left(
+    robot, distance, bearing, position
+):
+    [found] = find_objects(seeing(robot, objects=[cup(distance, bearing)]))
+    assert {key: found[key] for key in NO_POSITION} == position
+
+
+def test_object_info_keeps_its_keys_and_adds_the_position(robot):
+    seen = ObjectSeen("cup_2", "cup", "dishes", "table", 9.0, 250.0, 8.0, 2.0591, 29.06)
+    assert object_info(seeing(robot, objects=[seen]), "cup_2") == {
+        "id": "cup_2",
+        "name": "cup",
+        "category": "dishes",
+        "place": "table",
+        "size_cm": 9.0,
+        "weight_g": 250.0,
+        "thickness_cm": 8.0,
+        "distance_m": 2.06,
+        "bearing_deg": 29,
+        "forward_m": 1.8,
+        "left_m": 1.0,
+    }
+
+
+def test_find_people_gives_where_a_person_is_from_walkie(robot):
+    guest = PersonSeen("person_3", None, "standing person", "", "living room", -45.04, 2.5)
+    assert find_people(seeing(robot, people=[guest])) == [
+        {
+            "id": "person_3",
+            "name": None,
+            "pose": "standing person",
+            "gesture": "",
+            "room": "living room",
+            "distance_m": 2.5,
+            "bearing_deg": -45,
+            "forward_m": 1.77,
+            "left_m": -1.77,
+        }
+    ]
+
+
+def test_a_person_without_a_bearing_has_only_a_distance(robot):
+    far = PersonSeen("person_4", None, "standing person", "", "living room", None, 3.0)
+    [found] = find_people(seeing(robot, people=[far]))
+    assert {key: found[key] for key in NO_POSITION} == {**NO_POSITION, "distance_m": 3.0}
+
+
+def test_the_position_keys_are_told_to_the_llm():
+    for atomic in (find_objects, object_info, find_people):
+        for key in NO_POSITION:
+            assert key in atomic.__doc__, (atomic.__name__, key)
 
 
 def facing(heading_deg: float, start_deg: float = 0.0) -> FakeRobot:
@@ -226,8 +346,12 @@ def short_turns(robot: FakeRobot, short_deg: float, error: StepError | None = No
     return Ctx(cancel=robot.cancel, base=base, speech=robot, vision=robot)
 
 
-def test_find_people_leaves_the_bearing_out():
-    assert "bearing_deg" not in find_people(facing(40.0).ctx)[0]
+def test_find_people_gives_the_bearing_that_face_person_turns_by():
+    [jane] = find_people(facing(-75.2, start_deg=10.0).ctx)
+    assert jane["bearing_deg"] == -85
+    assert face_person(facing(-75.2, start_deg=10.0).ctx, "jane") == (
+        "Turned 85 degrees right to face jane."
+    )
 
 
 @pytest.mark.parametrize(

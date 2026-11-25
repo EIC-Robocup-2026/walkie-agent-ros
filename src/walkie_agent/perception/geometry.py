@@ -1,13 +1,15 @@
-"""The map-frame yaw of a pixel's ray, how far away a person stands, and an angle wrap.
+"""The map-frame yaw of a pixel's ray, how far away a person or an object is, and an angle wrap.
 
 RosVision turns each person into a bearing with these: the rays through the person's
 torso_pixels(), or their box's centre, in the camera's optical frame, are rotated into
 the map frame with TF at the image's stamp, and their mean_yaw() is the person's
 direction from the camera. With the ankles in view, floor_range() is the person's
 distance from the camera, where the rays through the ankles meet the plane of an
-ankle above the floor, and yaw_from() turns direction and distance into the
-person's direction from the base's turning centre. This module imports no ROS, so
-the fake and the tests use it without a graph.
+ankle above the floor, and relative_position() turns the point there into the
+person's distance and direction from the base's turning centre. An object's
+cloud_median(), the middle of its depth points in the optical frame, goes into the
+map frame with to_map() and through relative_position() the same way. This module
+imports no ROS, so the fake and the tests use it without a graph.
 
 Ported in part from the experiment/hri-agent branch at 61d30e8 (perception/geometry.py),
 with three changes. That version kept only the box's column and set the ray's row to
@@ -24,6 +26,8 @@ degrees past them. The distance from the ankles corrects that.
 
 import math
 from collections.abc import Sequence
+
+import numpy as np
 
 from walkie_agent.perception.gestures import COCO_KEYPOINTS
 
@@ -133,18 +137,56 @@ def floor_range(
     return sum(ranges) / len(ranges) if ranges else None
 
 
-def yaw_from(
-    centre: Sequence[float], origin: Sequence[float], yaw: float, distance: float
-) -> float | None:
-    """The map yaw from `centre` (x, y) of the point `distance` from `origin` along `yaw`.
+def relative_position(
+    centre: Sequence[float], heading: float, point: Sequence[float]
+) -> tuple[float | None, float | None]:
+    """How far `point` is from `centre`, along the floor, and its bearing from `heading`.
 
-    None when that point is at the centre itself.
+    `centre` and `point` are x, y in one frame, and anything after y is ignored;
+    `heading` is a yaw in that frame, in radians, as a base's pose has it. The
+    bearing is in degrees, positive to the left as a turn is, wrapped to
+    [-180, 180). It is None for a point at the centre itself, which has no
+    direction from it, and both are None when a number is not finite.
     """
-    x = origin[0] + distance * math.cos(yaw) - centre[0]
-    y = origin[1] + distance * math.sin(yaw) - centre[1]
-    if math.hypot(x, y) < _MIN_DISTANCE_M:
+    x, y = point[0] - centre[0], point[1] - centre[1]
+    distance = math.hypot(x, y)
+    if not (math.isfinite(distance) and math.isfinite(heading)):
+        return None, None
+    if distance < _MIN_DISTANCE_M:
+        return distance, None
+    return distance, wrap_deg(math.degrees(math.atan2(y, x) - heading))
+
+
+def cloud_median(points: np.ndarray) -> tuple[float, float, float] | None:
+    """The per-axis median of the rows of `points`, an N x 3 array, that are finite throughout.
+
+    A row with a NaN or an infinity anywhere is left out, since a depth image's
+    holes come through as NaN. None when no row is left. The median and not the
+    mean, so that the few points of the table or the wall behind an object that its
+    box takes in do not pull the middle off it.
+    """
+    rows = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    finite = rows[np.isfinite(rows).all(axis=1)]
+    if not len(finite):
         return None
-    return math.atan2(y, x)
+    x, y, z = np.median(finite, axis=0)
+    return float(x), float(y), float(z)
+
+
+def to_map(
+    rotation: Sequence[float], origin: Sequence[float], point: tuple[float, float, float]
+) -> tuple[float, float, float] | None:
+    """`point`, given in a camera's frame, in the map frame.
+
+    `rotation` (a quaternion x, y, z, w) and `origin` (x, y, z) are the map <- camera
+    transform, as TF gives it. None for a zero quaternion, or when a number is not
+    finite.
+    """
+    rotated = rotate(rotation, point)
+    if rotated is None:
+        return None
+    moved = (rotated[0] + origin[0], rotated[1] + origin[1], rotated[2] + origin[2])
+    return moved if all(math.isfinite(value) for value in moved) else None
 
 
 def pixel_yaw(

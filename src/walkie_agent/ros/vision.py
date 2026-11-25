@@ -21,8 +21,16 @@ detector on the simulation's images can stand in for the oracle's objects.
   spells its ids; one the tracker has not taken up is <label>_untracked_<n>, numbered
   left to right in that one array. An id names the object only while it stays in view.
 - An object's place is the configured place within PLACE_TOLERANCE_M of the robot, or
-  UNKNOWN_PLACE away from every place: without depth the object's own position is not
-  known, so the place is where Walkie stands. Size, weight and thickness are None.
+  UNKNOWN_PLACE away from every place: the place is where Walkie stands, not where the
+  object is. Size, weight and thickness are None.
+- An object's distance and bearing come from its points, the depth points walkie-vision
+  cuts from its box, in the optical frame (decision PK-77). The per-axis median of
+  the finite points is the object's middle, which TF map <- the array's frame at its
+  stamp takes into the map; its distance and direction from the base's pose now,
+  less its yaw, are the object's. So a turn or a move since the image counts, as for
+  a person. TF is looked up once per call, waiting up to TF_WAIT_S, and only when an
+  object that matches has points. An object without points, as every one of the
+  oracle's is, and every object when TF or the pose cannot be read, has neither.
 - objects() raises UNAVAILABLE for a query that no class of the array could match,
   such as "apple" while the detector looks only for seats, since [] would claim that
   none is in view.
@@ -41,8 +49,9 @@ detector on the simulation's images can stand in for the oracle's objects.
   the namer leaves the names None and is logged; a stop still ends the call.
 - The room is the room of the configured place nearest the robot, read once per call,
   and only when someone matches. The pose read and the TF lookup wait only for what
-  is left of the call's timeout_s; past it, the people come with no room and no
-  bearing, so a call ends close to its timeout_s.
+  is left of the call's timeout_s; past it, the people come with no room, no bearing
+  and no distance, so a call ends close to its timeout_s. objects() bounds its pose
+  read and TF lookup the same way.
 - A person's direction from the camera is the mean map-frame yaw of the rays through
   their shoulders and hips, or through their box's centre with fewer than two of
   those seen, from the array's camera_info and TF map <- the array's frame at its
@@ -53,9 +62,10 @@ detector on the simulation's images can stand in for the oracle's objects.
   guest, 1.8 m away and 36 degrees to the left. With an ankle in view, the rays
   through the ankles meet the plane ANKLE_HEIGHT_M above the map's floor at the
   person's distance, and the bearing is the direction of that point from the base's
-  pose now, less its yaw. So a turn or a move since the image counts. Without an
-  ankle, or with a distance past MAX_FLOOR_RANGE_M, the bearing is the camera's
-  direction less the base's yaw now.
+  pose now, less its yaw. So a turn or a move since the image counts. The distance
+  from the base's pose now to that point is the person's distance (decision PK-77).
+  Without an ankle, or with a distance past MAX_FLOOR_RANGE_M, the bearing is the
+  camera's direction less the base's yaw now, and the distance is None.
 
 Ported in part from the experiment/hri-agent branch at 61d30e8 (its perception
 vision_feed module and the people half of its RosVision). The vector collection
@@ -71,9 +81,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Protocol
 
+import numpy as np
 from rclpy.duration import Duration
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
+from sensor_msgs.msg import PointCloud2, PointField
 from tf2_ros import TransformException
 from walkie_vision_msgs.msg import ObjectDetectionArray, PersonDetectionArray
 
@@ -92,11 +104,13 @@ from walkie_agent.people_memory.track_vectors import (
 from walkie_agent.perception import OBJECTS_TOPIC, PEOPLE_TOPIC
 from walkie_agent.perception.geometry import (
     ankle_pixels,
+    cloud_median,
     floor_range,
     mean_yaw,
+    relative_position,
+    to_map,
     torso_pixels,
     wrap_deg,
-    yaw_from,
 )
 from walkie_agent.perception.gestures import DEFAULT_GESTURE_CONFIG, GestureConfig, classify_gestures
 from walkie_agent.perception.object_words import category_of, looks_for, matches
@@ -146,6 +160,9 @@ _TRACKED_ID = re.compile(r"person_([1-9][0-9]*)")
 # The map <- camera transform at an array's stamp: the rotation as x, y, z, w, and the
 # optical centre's position as x, y, z.
 _Camera = tuple[tuple[float, float, float, float], tuple[float, float, float]]
+# The PointField datatypes an object's points may give x, y and z in, as numpy's kinds.
+# walkie-vision's contract says float32; a float64 cloud is read as its fields say.
+_FLOAT_KINDS = {PointField.FLOAT32: "f4", PointField.FLOAT64: "f8"}
 
 
 class Namer(Protocol):
@@ -240,19 +257,39 @@ class RosVision:
         if not looks_for(wanted, message.classes):
             raise StepError(ErrorCode.UNAVAILABLE, not_looked_for(query, message.classes))
         seen = [
-            (label, object_id)
-            for label, object_id in _objects_left_to_right(message)
+            (detection, label, object_id)
+            for detection, label, object_id in _objects_left_to_right(message)
             if matches(wanted, label)
         ]
         # Before the empty answer too, as in people().
         self._cancel.check(what)
         if not seen:
             return []
-        place = self._place(self._pose(deadline, "find_objects reports the place unknown"))
-        self._cancel.check(what)
-        return [
-            ObjectSeen(object_id, label, category_of(label), place) for label, object_id in seen
+        pose = self._pose(deadline, "find_objects reports the place unknown and no positions")
+        place = self._place(pose)
+        middles = [
+            cloud_median(_cloud_points(detection.points, object_id))
+            for detection, _, object_id in seen
         ]
+        camera = None
+        if pose is not None and any(middle is not None for middle in middles):
+            wait_s = min(self._tf_wait_s, max(deadline - time.monotonic(), 0.0))
+            camera = self._camera_transform(message, wait_s, objects=True)
+        self._cancel.check(what)
+        objects = []
+        for (_, label, object_id), middle in zip(seen, middles, strict=True):
+            distance_m, bearing_deg = _object_position(middle, camera, pose)
+            objects.append(
+                ObjectSeen(
+                    object_id,
+                    label,
+                    category_of(label),
+                    place,
+                    distance_m=distance_m,
+                    bearing_deg=bearing_deg,
+                )
+            )
+        return objects
 
     def people(self, query: str = "", *, timeout_s: float = 5.0) -> list[PersonSeen]:
         what = "looking for people"
@@ -266,7 +303,7 @@ class RosVision:
         self._cancel.check(what)
         if not seen:
             return []
-        pose = self._pose(deadline, "find_people reports no room and no bearings")
+        pose = self._pose(deadline, "find_people reports no room and no bearings or distances")
         room = self._room(pose)
         camera = None
         if pose is not None:
@@ -274,12 +311,13 @@ class RosVision:
             camera = self._camera_transform(message, wait_s)
         self._cancel.check(what)
         k = list(message.camera_info.k)
-        return [
-            replace(
-                person, room=room, bearing_deg=_bearing_deg(pixels, ankles, k, camera, pose)
+        people = []
+        for person, pixels, ankles in seen:
+            bearing_deg, distance_m = _bearing_and_distance(pixels, ankles, k, camera, pose)
+            people.append(
+                replace(person, room=room, bearing_deg=bearing_deg, distance_m=distance_m)
             )
-            for person, pixels, ankles in seen
-        ]
+        return people
 
     def close(self) -> None:
         """Destroy the subscriptions and drop the samples. Later and waiting calls get UNAVAILABLE."""
@@ -455,11 +493,23 @@ class RosVision:
             return None
         return min(places, key=lambda place: _distance(place, pose))
 
-    def _camera_transform(self, message: PersonDetectionArray, wait_s: float) -> _Camera | None:
-        """The map <- camera transform at the array's stamp; None without one."""
+    def _camera_transform(
+        self, message: Any, wait_s: float, *, objects: bool = False
+    ) -> _Camera | None:
+        """The map <- camera transform at the stamp of a people array, or an object array's.
+
+        `objects` says which `message` is. None without one, with a warning that says what the answer lacks. An
+        unexpected failure raises StepError INTERNAL.
+        """
+        if objects:
+            kind, what = "object", "Looking for objects"
+            without = "find_objects reports no positions"
+        else:
+            kind, what = "people", "Looking for people"
+            without = "find_people reports no bearings or distances"
         frame = message.header.frame_id
         if not frame:
-            logger.warning("find_people reports no bearings: the people array names no frame.")
+            logger.warning("%s: the %s array names no frame.", without, kind)
             return None
         try:
             transform = self._tf.lookup_transform(
@@ -469,11 +519,11 @@ class RosVision:
                 timeout=Duration(seconds=wait_s),
             )
         except TransformException as error:
-            # The people are still in view, so they are reported without a bearing.
-            logger.warning("find_people reports no bearings: %s", error)
+            # What is in view is still reported, only without where it is.
+            logger.warning("%s: %s", without, error)
             return None
         except Exception as error:
-            raise ros_failure(error, "Looking for people") from error
+            raise ros_failure(error, what) from error
         rotation = transform.transform.rotation
         origin = transform.transform.translation
         return (
@@ -555,8 +605,8 @@ def _left_to_right(message: PersonDetectionArray) -> list[tuple[Any, str]]:
     return people
 
 
-def _objects_left_to_right(message: ObjectDetectionArray) -> list[tuple[str, str]]:
-    """The labels of the objects of `message` with their ids, by the column of their box's centre."""
+def _objects_left_to_right(message: ObjectDetectionArray) -> list[tuple[Any, str, str]]:
+    """The objects of `message` with their labels and ids, by the column of their box's centre."""
     order = sorted(
         range(len(message.detections)),
         key=lambda i: (message.detections[i].bbox.center.position.x, i),
@@ -572,8 +622,79 @@ def _objects_left_to_right(message: ObjectDetectionArray) -> list[tuple[str, str
             # Numbered before the query filters, so a query does not renumber them.
             untracked += 1
             object_id = f"{stem}_untracked_{untracked}"
-        objects.append((label, object_id))
+        objects.append((detection, label, object_id))
     return objects
+
+
+def _cloud_points(cloud: PointCloud2, object_id: str) -> np.ndarray:
+    """The x, y and z of every point of `cloud`, as an N x 3 array in the cloud's own frame.
+
+    Read by what the cloud itself says: the offsets and datatypes of its x, y and z
+    fields, its point_step, row_step and byte order. Empty for a cloud with no
+    points, and, with a warning that names `object_id`, for one whose x, y or z is
+    missing or not a float, or whose data is shorter than its size says.
+    """
+    if cloud.width == 0 or cloud.height == 0:
+        return np.empty((0, 3))
+    fields = {field.name: field for field in cloud.fields}
+    order = ">" if cloud.is_bigendian else "<"
+    formats = []
+    for axis in ("x", "y", "z"):
+        field = fields.get(axis)
+        kind = None if field is None else _FLOAT_KINDS.get(field.datatype)
+        if kind is None:
+            logger.warning(
+                "find_objects reports no position for %s: its points have no float %s field.",
+                object_id,
+                axis,
+            )
+            return np.empty((0, 3))
+        formats.append(order + kind)
+    try:
+        layout = np.dtype(
+            {
+                "names": ["x", "y", "z"],
+                "formats": formats,
+                "offsets": [fields[axis].offset for axis in ("x", "y", "z")],
+                "itemsize": cloud.point_step,
+            }
+        )
+        # Rows row_step apart and points point_step apart, as the message lays them
+        # out; numpy refuses data too short for that.
+        grid = np.ndarray(
+            (cloud.height, cloud.width),
+            dtype=layout,
+            buffer=cloud.data,
+            strides=(cloud.row_step, cloud.point_step),
+        )
+    except (TypeError, ValueError) as error:
+        logger.warning(
+            "find_objects reports no position for %s: its points do not fit their layout: %s",
+            object_id,
+            error,
+        )
+        return np.empty((0, 3))
+    return np.stack([grid["x"], grid["y"], grid["z"]], axis=-1).reshape(-1, 3).astype(np.float64)
+
+
+def _object_position(
+    middle: tuple[float, float, float] | None, camera: _Camera | None, pose: Pose2D | None
+) -> tuple[float | None, float | None]:
+    """The distance and bearing from the base now of an object whose points' middle is `middle`.
+
+    `middle` is in the optical frame. Both None without a middle, a transform or a pose.
+    """
+    if middle is None or camera is None or pose is None:
+        return None, None
+    rotation, origin = camera
+    point = to_map(rotation, origin, middle)
+    if point is None:
+        return None, None
+    distance_m, bearing_deg = relative_position((pose.x, pose.y), pose.yaw, point)
+    if bearing_deg is not None:
+        # As a person's: + 0.0 turns -0.0 into 0.0, so it never reads as "-0".
+        bearing_deg = round(bearing_deg, 1) + 0.0
+    return distance_m, bearing_deg
 
 
 def _distance(place: Any, pose: Pose2D) -> float:
@@ -599,31 +720,36 @@ def _is_name(wanted: str, name: str | None) -> bool:
     return name is not None and name.strip().lower() == wanted
 
 
-def _bearing_deg(
+def _bearing_and_distance(
     pixels: list[tuple[float, float]],
     ankles: list[tuple[float, float]],
     k: list[float],
     camera: _Camera | None,
     pose: Pose2D | None,
-) -> float | None:
-    """The person's direction from the base's centre and heading, in degrees, or None.
+) -> tuple[float | None, float | None]:
+    """The person's direction from the base's centre and heading, in degrees, and distance from it.
 
-    The direction of the rays through `pixels`, at the distance of the floor under
-    `ankles`; the rays' own direction from the camera without that distance.
+    The point along the rays through `pixels`, at the distance of the floor under
+    `ankles`, gives both. Without that distance, the direction is the rays' own from
+    the camera, and the distance is None. Both None without a transform, a pose or a
+    ray.
     """
     if camera is None or pose is None:
-        return None
+        return None, None
     rotation, origin = camera
     yaw = mean_yaw(pixels, k, rotation)
     if yaw is None:
-        return None
-    distance = floor_range(ankles, k, rotation, origin) if ankles else None
-    if distance is not None:
-        centred = yaw_from((pose.x, pose.y), origin, yaw, distance)
+        return None, None
+    bearing = math.degrees(yaw - pose.yaw)
+    distance_m = None
+    range_m = floor_range(ankles, k, rotation, origin) if ankles else None
+    if range_m is not None:
+        floor = (origin[0] + range_m * math.cos(yaw), origin[1] + range_m * math.sin(yaw))
+        distance_m, centred = relative_position((pose.x, pose.y), pose.yaw, floor)
         if centred is not None:
-            yaw = centred
+            bearing = centred
     # + 0.0 turns -0.0 into 0.0, so a person straight ahead never reads as "-0".
-    return round(wrap_deg(math.degrees(yaw - pose.yaw)), 1) + 0.0
+    return round(wrap_deg(bearing), 1) + 0.0, distance_m
 
 
 def stale_message(topic: str, age_s: float | None, max_age_s: float, wait_s: float) -> str:

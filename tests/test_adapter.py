@@ -68,7 +68,10 @@ def test_the_schema_comes_from_the_signature_and_the_docstring(robot):
 
 def test_the_description_carries_what_comes_back_and_not_the_args_section(robot):
     description = as_tool(find_objects, robot.ctx).description
-    assert "keys id, name, category and place" in " ".join(description.split())
+    assert (
+        "keys id, name, category, place, distance_m, bearing_deg, forward_m and left_m"
+        in " ".join(description.split())
+    )
     assert "Args:" not in description
 
 
